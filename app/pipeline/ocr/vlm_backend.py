@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 from PIL import Image
 from app.pipeline.ocr.base import OcrResult
 
@@ -21,7 +22,7 @@ _PROMPT = (
 class VLMBackend:
     """Local GPU vision-LLM doing constrained per-region reads only."""
 
-    def __init__(self, model_id: str = None, max_new_tokens: int = 40):
+    def __init__(self, model_id: Optional[str] = None, max_new_tokens: int = 40):
         # Imported lazily so the default (CPU) image needs no torch.
         import torch
         from transformers import AutoModelForImageTextToText, AutoProcessor

@@ -21,3 +21,23 @@ def test_export_roundtrip(sample_pdf):
     assert r.headers["content-type"].startswith(
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     assert len(r.content) > 0
+
+
+def test_export_rejects_path_traversal_session_id(tmp_path):
+    # a malicious session_id must not escape the sessions dir or write a file
+    r = client.post("/api/export", json={
+        "session_id": "../../../../tmp/sindri_pwn_test",
+        "rows": [{"pos": 1}],
+    })
+    assert r.status_code == 404
+
+
+def test_image_rejects_bad_session_id():
+    r = client.get("/api/image/not-a-valid-uuid")
+    assert r.status_code == 404
+
+
+def test_image_missing_session_returns_404():
+    # well-formed but unknown session id
+    r = client.get("/api/image/" + "0" * 32)
+    assert r.status_code == 404

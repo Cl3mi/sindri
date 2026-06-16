@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 from typing import List, Tuple
 from PIL import Image
@@ -80,7 +81,7 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None) -> List[Characteri
     ny1 = render.height * _NOTES_FRAC[3]
     try:
         results.extend(extract_notes(image, (nx0, ny0, nx1, ny1), backend))
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[sindri.extract] notes extraction failed: {e!r}", file=sys.stderr, flush=True)
 
     return results
