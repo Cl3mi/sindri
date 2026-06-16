@@ -47,14 +47,14 @@ def _clamp(box, w, h):
     return (max(0, x0), max(0, y0), min(w, x1), min(h, y1))
 
 
-def extract(pdf_path, work_dir, dpi: int = 300) -> List[Characteristic]:
+def extract(pdf_path, work_dir, dpi: int = 300, backend=None) -> List[Characteristic]:
     work_dir = Path(work_dir)
     render = render_page(pdf_path, dpi=dpi, out_dir=work_dir)
     image = Image.open(render.png_path).convert("RGB")
 
     anchors = extract_anchors(pdf_path, scale=render.scale)
     labels = label_balloons(image)
-    backend = get_backend()
+    backend = backend or get_backend()
 
     results: List[Characteristic] = []
     for a in anchors:

@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from app.models import Characteristic
 from app.pipeline.extract import extract
+from app.pipeline.ocr import get_backend, backend_status
 from app.excel import write_workbook
 
 app = FastAPI(title="Sindri")
@@ -15,10 +16,21 @@ app = FastAPI(title="Sindri")
 _SESSIONS = Path(tempfile.gettempdir()) / "sindri_sessions"
 _SESSIONS.mkdir(exist_ok=True)
 
+# Load the OCR backend ONCE at startup (the VLM model is multi-GB — never
+# reload it per request) and reuse it for every upload.
+_BACKEND = get_backend()
+
 
 class ExportRequest(BaseModel):
     session_id: str
     rows: List[Characteristic]
+
+
+@app.get("/api/health")
+def health():
+    status = backend_status()
+    status["ocr_backend_active"] = type(_BACKEND).__name__
+    return status
 
 
 @app.post("/api/upload")
@@ -28,7 +40,7 @@ async def upload(file: UploadFile = File(...)):
     work.mkdir(parents=True, exist_ok=True)
     pdf_path = work / "input.pdf"
     pdf_path.write_bytes(await file.read())
-    rows = extract(pdf_path, work_dir=work, dpi=300)
+    rows = extract(pdf_path, work_dir=work, dpi=300, backend=_BACKEND)
     return JSONResponse({
         "session_id": session_id,
         "image_url": f"/api/image/{session_id}",
