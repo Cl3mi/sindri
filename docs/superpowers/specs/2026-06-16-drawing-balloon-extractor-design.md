@@ -63,25 +63,46 @@ note callouts) fill Characteristic + a text value, leaving tolerance columns bla
 
 Each stage is an independently testable unit with a clear input/output.
 
+> **Revised during implementation.** The original design associated balloons to
+> dimensions by tracing vector leader-line segments. In practice the balloons in
+> this template are circle+number+**arrowhead** glyphs, so the nearest vector
+> segments are the balloon's own geometry and the traced region landed back on
+> the balloon. The shipped approach instead uses the balloons' distinct **blue
+> colour** to find each arrowhead's pointing direction and crops the value
+> offset in that direction. See §4a. (The superseded `vectors`/`tracer` modules
+> were removed.)
+
 1. **Render** — PyMuPDF rasterizes the page at ~300 DPI → PNG (for OCR + display).
-   Persist the page→image affine transform for coordinate mapping.
-2. **Anchors** — PyMuPDF `get_text("dict")` extracts balloon numbers as text spans
+   Persist the page→image scale factor for coordinate mapping.
+2. **Anchors** — PyMuPDF `get_text("words")` extracts balloon numbers as text spans
    with bounding boxes. These are the canonical balloon IDs (no OCR error on the
-   number itself).
-3. **Vectors** — `get_drawings()` extracts leader-line segments and balloon circles.
-4. **Trace (association)** — for each balloon: find the leader line touching its
-   circle, follow it to its endpoint, and define a **target region** around that
-   endpoint. Fallback: directional nearest-text proximity when no clean leader exists.
-   This stage is deterministic and is **not** delegated to any ML model.
-5. **OCR (pluggable backend)** — read the target region (plus title-block regions for
-   material/notes). Returns `raw_text` + a confidence score. See §5.
-6. **Parse & classify** — rules convert `raw_text` into structured fields:
+   number itself) — verified to recover balloons 1–22 exactly.
+3. **Balloon arrow direction (association)** — see §4a.
+4. **OCR (pluggable backend)** — read the located value region. For vertical
+   (diameter) dimensions the crop is OCR'd at both 90° rotations and the better
+   parse is kept. Returns `text` + a confidence score. See §5.
+5. **Parse & classify** — rules convert the read text into structured fields:
    - Characteristic: `Ø`→Diameter, `R`→Radius, flatness glyph→Flatness, plain
      number→Distance, alphanumeric spec→Material/Note.
    - Nominal, Upper-tol, Lower-tol — handling stacked `+a/−b`, symmetric `±a`,
-     single-sided, and exact `0` forms. Comma decimals normalized consistently.
-7. **Confidence** — combine OCR confidence and trace certainty into a per-row flag for
-   the review UI.
+     single-sided, and exact `0` forms. Comma decimals preserved (European).
+6. **Confidence** — the OCR/VLM confidence becomes a per-row flag for the review UI.
+
+### 4a. Association via blue-arrow direction
+
+1. **Blue segmentation** — threshold the render for the balloons' blue colour.
+2. **Component isolation** — dilate (~6 px) so each balloon's circle, number and
+   arrowhead merge into one connected component without bridging neighbours;
+   pick the component under the balloon's anchor.
+3. **Direction** — the arrow tip is the component pixel farthest from the
+   component centroid; its bearing gives a cardinal direction (and whether the
+   dimension text runs horizontally or vertically).
+4. **Crop band** — a rectangle beyond the arrow tip in that direction, sized to
+   hold a dimension + tolerances. Fallback: a band to the right of the balloon
+   if no blue component is found.
+
+This stage is deterministic (no ML); only the *reading* of the located crop uses
+OCR/VLM.
 
 ### Data model
 
@@ -103,39 +124,43 @@ Characteristic:
 OCR is a single interface (`read_region(image_crop) -> (text, confidence)`) with two
 implementations, selected by environment variable (`OCR_BACKEND=tesseract|vlm`).
 
-### `tesseract` (default)
-- CPU-only Tesseract with German + English language data, character set tuned for
-  technical notation (digits, `Ø`, `R`, `,`, `±`, `°`).
-- Guarantees the one-container, no-GPU, no-internet baseline always works.
+### `tesseract` (default, no GPU)
+- CPU-only Tesseract with German + English language data, character allowlist tuned
+  for technical notation, plus crop preprocessing (grayscale, upscale, Otsu).
+- Guarantees the one-container, no-GPU, no-internet baseline always runs.
+- **Reading fidelity is low** on this content — stacked tolerances, the `Ø` symbol
+  and rotated diameters are largely unreadable. Useful mainly as a fallback and for
+  balloon/region detection; values then need manual entry in the review UI.
 
-### `vlm` (optional, GPU)
-- A **local** vision-LLM (e.g. Qwen2.5-VL-7B-Instruct, or a 3B variant for low VRAM)
-  runs on-machine — still fully offline.
-- Used **only** for *constrained per-region reads*: it is given the small cropped
-  image that the geometry stage already isolated and asked to return exactly the
-  characters as JSON. It is **never** asked to reason over the whole drawing or to
-  perform association.
-- Falls back to `tesseract` if no GPU is detected.
+### `vlm` (recommended for accuracy, GPU)
+- A **local** vision-LLM (Qwen2.5-VL-7B-Instruct by default; 3B via `VLM_MODEL_ID`)
+  runs on-machine — still fully offline after a one-time weight download.
+- Used **only** for *constrained per-region reads*: given the small crop the
+  geometry stage already located, it transcribes the dimension text on one line.
+  It is **never** asked to reason over the whole drawing or perform association.
+- **Validated result:** with correct crops it reads most dimensions accurately
+  (e.g. balloons 2/4/7 exact). Residual errors are crop-precision (neighbour bleed
+  on stacked balloons, GD&T frames) — see §11.
+- Falls back to `tesseract` if no CUDA GPU is detected; the active backend is logged
+  and exposed at `GET /api/health`.
 
-### Rationale (analysis result)
-- **Association** stays deterministic (exact balloon coords + vector leaders). A VLM
-  cannot beat provably-correct geometry and is unreliable in crowded balloon clusters
-  (17/18/19, 20/21/22) — so it is excluded from this stage.
-- **Reading values** is where Tesseract is weakest (the `Ø` symbol, GD&T glyphs,
-  stacked/rotated tolerance text). A modern VLM reads these markedly better.
-- **Hallucination** is the key risk for metrology data (a wrong tolerance is worse than
-  a blank). Constraining the VLM to small isolated crops plus the human review UI
-  reduces this risk to near zero.
-- **Costs:** requires host GPU + NVIDIA Container Toolkit, multi-GB weights, a
-  torch/CUDA layer (large image), slower cold start — hence opt-in, not default.
+### Why this split
+- **Association** is deterministic geometry (blue-arrow direction) — reproducible and
+  not subject to model hallucination.
+- **Reading values** is where Tesseract fails and the VLM excels (`Ø`, GD&T glyphs,
+  stacked/rotated tolerances).
+- **Hallucination** risk is bounded by constraining the VLM to small isolated crops
+  plus the human review UI.
+- **Cost:** needs a host GPU (NVIDIA CDI / Container Toolkit), multi-GB weights and a
+  torch/CUDA image — hence opt-in, not the default.
 
 ## 6. Review UI
 
-- **Left:** rendered drawing with clickable balloon markers at known coordinates;
-  selecting a table row highlights its balloon and traced target region.
+- **Left:** rendered drawing with balloon markers at known coordinates.
 - **Right:** editable table with the Excel columns. Low-confidence cells are flagged
   (amber). Rows that failed extraction appear empty for manual entry.
 - **Download .xlsx** triggers the backend to build the file with openpyxl.
+- The OCR backend is loaded once at startup and reused (the VLM model is multi-GB).
 
 ## 7. Excel output
 
@@ -149,31 +174,49 @@ headers, rows sorted by `Pos`, blank tolerance columns for non-dimensional rows.
   `CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]`.
 - **`docker-compose.yml`:** builds the image, maps `8000:8000`, optional `./data`
   bind-mount for convenient input/output.
-- **GPU override (optional):** `docker-compose.gpu.yml` adds
-  `deploy.resources.reservations.devices` for NVIDIA and sets `OCR_BACKEND=vlm`.
-- **Single command (default):** `docker compose up` → open `http://localhost:8000`.
+- **GPU image:** `Dockerfile.gpu` (PyTorch/CUDA base + transformers) sets
+  `OCR_BACKEND=vlm` and caches weights in `/models`.
+- **Single command (default, CPU):** `docker compose up` → `http://localhost:8000`.
+- **GPU launch:** `./run-gpu.sh` injects the GPU via **NVIDIA CDI**
+  (`--device nvidia.com/gpu=all`) under podman or docker. Compose's
+  `deploy.resources.devices` reservation is **not** used because podman-compose
+  ignores it (the container would silently see no GPU).
 
 ## 9. Testing
 
-- `sample.pdf` is the golden fixture (22 balloons + 4 notes; balloons 1–8 known).
-- **Unit tests** on the parser (raw string → fields): cover stacked `+/−`, symmetric
-  `±`, single-sided, exact `0`, `Ø`, `R`, flatness, and material/text strings.
-- **Unit tests** on the tracer with synthetic balloon+leader geometry.
-- **Integration test:** run the full pipeline on `sample.pdf`; assert balloon count and
-  that balloons 1–8 recover the known nominal/tolerance values.
-- OCR backend selection is mockable so tests run without a GPU.
+- `sample.pdf` is the golden fixture (balloons 1–22; balloons 1–8 values known).
+- **Unit tests** on the parser (string → fields): stacked `+/−`, symmetric `±`,
+  single-sided, exact `0`, `Ø`, `R`, flatness, material/text.
+- **Unit tests** on the blue-arrow geometry with a synthetic balloon image.
+- **Integration test:** run the full pipeline on `sample.pdf`; assert all 22 balloons
+  are returned and (with an OCR binary) diameter classification holds.
+- OCR backend selection falls back to Tesseract without a GPU, so tests run anywhere.
 
 ## 10. Risks & mitigations
 
 | Risk | Mitigation |
 |------|------------|
-| OCR misreads small/rotated text | Review UI + per-cell confidence flags; optional VLM backend |
-| Leader-line ambiguity in dense regions | Proximity fallback + human correction in UI |
+| OCR misreads small/rotated text | VLM backend (recommended); review UI + confidence flags |
+| Crop catches a neighbouring dimension | Human correction in UI (see §11 status) |
 | Tolerance notation variants | Explicit parser rules + tests per form |
 | VLM hallucinated values | Constrained per-region reads only; never page-level reasoning; human review |
 | GPU/driver absence | VLM is opt-in; auto-fallback to Tesseract |
 
-## 11. Out of scope (YAGNI)
+## 11. Shipped status & known limitations (2026-06-16)
+
+Working end-to-end on `sample.pdf`, validated on an H100 host via the VLM backend:
+- All 22 leader balloons detected with correct positions; values read accurately by
+  the VLM when the crop is clean (balloons 2/4/7 exact, several others nominal-correct).
+- The CPU/Tesseract default runs everywhere but reads this content poorly — treat it as
+  detection + manual entry rather than full extraction.
+
+Known limitations (deferred — review UI covers them):
+- **Crop precision:** stacked balloons (1/2) and GD&T frames can bleed into a
+  neighbouring dimension; a tighter band + sharper VLM prompt is the next improvement.
+- **Notes 101–104:** not yet extracted into rows (only the 22 leader balloons appear).
+- A few tolerance digits misread (e.g. `0,1`→`0,0`).
+
+## 12. Out of scope (YAGNI)
 
 - Multi-page PDFs and non-Intercable templates (template is fixed per requirements).
 - Cloud/online anything (hard offline requirement).

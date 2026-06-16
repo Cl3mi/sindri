@@ -1653,3 +1653,15 @@ git commit -m "feat: docker packaging and README"
 **Type consistency:** `Characteristic` fields (`pos, char_type, nominal, upper_tol, lower_tol, raw_text, confidence, balloon_xy, target_region`) are used identically across `parser.py`, `excel.py`, `notes.py`, `extract.py`, and `main.py`. `OcrResult(text, confidence)` and `read_region(image)` are consistent across both backends and the factory `get_backend()`. `RenderResult` fields (`png_path, width, height, scale, page_rect`) match their uses in `extract.py`.
 
 **Known tuning points (expected during execution, not failures):** `_NOTES_FRAC` region, tracer `max_dist`/`region` sizes, and Tesseract `--psm`/whitelist may need adjustment against the real render — each has a test or smoke step that reveals when tuning is needed.
+
+---
+
+## Post-implementation revisions (2026-06-16)
+
+The plan was executed task-by-task, then revised based on results against the real drawing (see the design doc §4a, §5, §11):
+
+- **Tasks 7–8 (vector/tracer association) were replaced.** The segment-leader-tracing model cropped the balloon glyph itself, because the nearest segments are the balloon's own circle/arrow. Association now uses **blue-balloon connected-component arrow-direction** detection (`app/pipeline/balloons.py`); `vectors.py`/`tracer.py` and their tests were removed.
+- **OCR reading:** Tesseract reads this content poorly even with correct crops and preprocessing. The **local VLM backend (Qwen2.5-VL)** is the accuracy path and is validated working on an H100 host; Tesseract remains the no-GPU fallback.
+- **GPU launch:** via **NVIDIA CDI** (`./run-gpu.sh`, `--device nvidia.com/gpu=all`), not compose `deploy.devices` (ignored by podman-compose).
+- **Observability/perf:** backend selection is logged + exposed at `GET /api/health`; the backend is loaded once at startup (not per request).
+- **Deferred:** notes 101–104 extraction and crop-precision tightening — handled by the review UI for now.
