@@ -1,0 +1,11 @@
+services:
+  sindri:
+    environment:
+      - OCR_BACKEND=vlm
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
