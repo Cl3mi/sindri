@@ -3,9 +3,8 @@ import pytest
 from PIL import Image, ImageDraw
 from app.pipeline.ocr.tesseract_backend import TesseractBackend
 
-pytestmark = pytest.mark.skipif(shutil.which("tesseract") is None,
-                                reason="tesseract binary not installed")
-
+@pytest.mark.skipif(shutil.which("tesseract") is None,
+                    reason="tesseract binary not installed")
 def test_tesseract_reads_simple_text():
     img = Image.new("RGB", (220, 80), "white")
     d = ImageDraw.Draw(img)
@@ -14,3 +13,16 @@ def test_tesseract_reads_simple_text():
     result = backend.read_region(img)
     assert "12" in result.text
     assert 0.0 <= result.confidence <= 1.0
+
+
+from app.pipeline.ocr import get_backend
+
+def test_factory_defaults_to_tesseract(monkeypatch):
+    monkeypatch.delenv("OCR_BACKEND", raising=False)
+    backend = get_backend()
+    assert isinstance(backend, TesseractBackend)
+
+def test_factory_vlm_falls_back_without_gpu(monkeypatch):
+    monkeypatch.setenv("OCR_BACKEND", "vlm")
+    backend = get_backend()
+    assert isinstance(backend, TesseractBackend)
