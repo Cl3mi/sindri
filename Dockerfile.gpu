@@ -1,0 +1,24 @@
+# GPU image: bundles torch/CUDA (from the base) + transformers for the local
+# vision-LLM OCR backend. Larger than the default CPU image; build only when
+# you have an NVIDIA GPU + NVIDIA Container Toolkit on the host.
+FROM pytorch/pytorch:2.4.1-cuda12.4-cudnn9-runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        tesseract-ocr tesseract-ocr-deu \
+        libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY requirements.txt requirements-gpu.txt ./
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir -r requirements-gpu.txt
+
+COPY app ./app
+
+# Model weights are cached here; mount a volume to persist across runs and to
+# support fully-offline operation after a one-time download.
+ENV HF_HOME=/models
+ENV OCR_BACKEND=vlm
+
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

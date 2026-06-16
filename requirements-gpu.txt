@@ -1,0 +1,5 @@
+# Extra deps for the optional local GPU vision-LLM OCR backend.
+# torch + CUDA come from the pytorch base image in Dockerfile.gpu.
+transformers>=4.49
+accelerate>=1.0
+qwen-vl-utils>=0.0.8
