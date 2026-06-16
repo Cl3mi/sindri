@@ -1,11 +1,10 @@
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 from PIL import Image
 from app.models import Characteristic
 from app.pipeline.render import render_page
 from app.pipeline.anchors import extract_anchors
-from app.pipeline.vectors import extract_segments
-from app.pipeline.tracer import trace_target
+from app.pipeline.balloons import label_balloons, value_region
 from app.pipeline.parser import parse_value
 from app.pipeline.notes import extract_notes
 from app.pipeline.ocr import get_backend
@@ -14,11 +13,7 @@ from app.pipeline.ocr import get_backend
 _NOTES_FRAC = (0.55, 0.0, 1.0, 0.22)
 
 
-def _hint_for(anchor_number: int) -> str:
-    return ""  # extendable: map specific balloons to 'material'/'flatness' if needed
-
-
-def _safe_read(backend, crop):
+def _safe_read(backend, crop) -> Tuple[str, float]:
     """Call backend.read_region(crop), returning ("", 0.0) on any failure."""
     try:
         result = backend.read_region(crop)
@@ -27,28 +22,55 @@ def _safe_read(backend, crop):
         return "", 0.0
 
 
+def _score(text: str, conf: float) -> float:
+    """Prefer reads that parse into a real dimension (nominal/tolerance present)."""
+    c = parse_value(text)
+    return (1.0 if c.nominal else 0.0) + (0.5 if c.upper_tol else 0.0) + conf
+
+
+def _best_read(backend, crop: Image.Image, vertical: bool) -> Tuple[str, float]:
+    """Read a crop; for vertical dimensions try both 90 rotations and keep the best."""
+    candidates = [crop]
+    if vertical:
+        candidates = [crop.rotate(-90, expand=True), crop.rotate(90, expand=True)]
+    best_text, best_conf, best_score = "", 0.0, -1.0
+    for im in candidates:
+        text, conf = _safe_read(backend, im)
+        s = _score(text, conf)
+        if s > best_score:
+            best_text, best_conf, best_score = text, conf, s
+    return best_text, best_conf
+
+
+def _clamp(box, w, h):
+    x0, y0, x1, y1 = box
+    return (max(0, x0), max(0, y0), min(w, x1), min(h, y1))
+
+
 def extract(pdf_path, work_dir, dpi: int = 300) -> List[Characteristic]:
     work_dir = Path(work_dir)
     render = render_page(pdf_path, dpi=dpi, out_dir=work_dir)
-    scale = render.scale
     image = Image.open(render.png_path).convert("RGB")
 
-    anchors = extract_anchors(pdf_path, scale=scale)
-    segments = extract_segments(pdf_path, scale=scale)
+    anchors = extract_anchors(pdf_path, scale=render.scale)
+    labels = label_balloons(image)
     backend = get_backend()
 
     results: List[Characteristic] = []
     for a in anchors:
-        region = trace_target((a.x, a.y), segments)
-        x0, y0, x1, y1 = region
-        x0, y0 = max(0, x0), max(0, y0)
-        x1, y1 = min(render.width, x1), min(render.height, y1)
-        crop = image.crop((x0, y0, x1, y1))
-        text, confidence = _safe_read(backend, crop)
-        c = parse_value(text, hint=_hint_for(a.number))
+        vr = value_region(labels, (a.x, a.y))
+        if vr is None:
+            # fallback: a band to the right of the balloon
+            box, vertical = (a.x + 30, a.y - 48, a.x + 260, a.y + 48), False
+        else:
+            box, vertical = vr.box, vr.vertical
+        box = _clamp(box, render.width, render.height)
+        crop = image.crop(box)
+        text, confidence = _best_read(backend, crop, vertical)
+        c = parse_value(text)
         c.pos = a.number
         c.balloon_xy = (a.x, a.y)
-        c.target_region = (x0, y0, x1, y1)
+        c.target_region = box
         c.confidence = confidence
         results.append(c)
 
