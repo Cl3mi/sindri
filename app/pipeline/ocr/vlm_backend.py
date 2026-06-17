@@ -18,6 +18,19 @@ _PROMPT = (
     "If there is no dimension text, output nothing. No explanation."
 )
 
+# Detection prompt: the model LOCATES every inspection callout in the tile and
+# returns JSON only. It does not need to transcribe accurately — Stage 2 re-reads
+# each crop with read_region. kind is coarse; box is in pixels of THIS image.
+_DETECT_PROMPT = (
+    "This image is a tile cropped from a mechanical engineering drawing. Find "
+    "EVERY inspection callout: linear/diameter/radius dimensions with their "
+    "tolerances, GD&T feature-control frames, surface-finish symbols, numbered "
+    "notes, and material/process specifications. Return ONLY a JSON array, no "
+    "prose. Each element: {\"box\":[x0,y0,x1,y1],\"kind\":\"dimension|gdt|"
+    "surface|note|material\"}. box is pixel coordinates within this image. If "
+    "there are no callouts, return []."
+)
+
 
 class VLMBackend:
     """Local GPU vision-LLM doing constrained per-region reads only."""
@@ -52,3 +65,21 @@ class VLMBackend:
         trimmed = out[0][inputs["input_ids"].shape[1]:]
         text = self.processor.decode(trimmed, skip_special_tokens=True).strip()
         return OcrResult(text=text, confidence=0.9 if text else 0.0)
+
+    def detect_regions(self, image: Image.Image):
+        from app.pipeline.detect import parse_detections
+        messages = [{"role": "user", "content": [
+            {"type": "image", "image": image.convert("RGB")},
+            {"type": "text", "text": _DETECT_PROMPT},
+        ]}]
+        inputs = self.processor.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=True,
+            return_dict=True, return_tensors="pt",
+        ).to(self.model.device)
+        with self.torch.inference_mode():
+            out = self.model.generate(
+                **inputs, max_new_tokens=1024, do_sample=False,
+            )
+        trimmed = out[0][inputs["input_ids"].shape[1]:]
+        text = self.processor.decode(trimmed, skip_special_tokens=True).strip()
+        return parse_detections(text)
