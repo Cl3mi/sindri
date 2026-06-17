@@ -1,4 +1,4 @@
-from app.pipeline.detect import Detection, tile_grid, dedupe, merge_adjacent
+from app.pipeline.detect import Detection, tile_grid, dedupe, merge_adjacent, parse_detections
 
 
 def test_detection_dataclass_fields():
@@ -60,3 +60,35 @@ def test_merge_adjacent_does_not_merge_different_kinds():
     a = Detection(box=(10, 10, 50, 30), kind="dimension", conf=0.8)
     b = Detection(box=(12, 35, 52, 55), kind="note", conf=0.6)
     assert len(merge_adjacent([a, b], x_tol=20, y_gap=20)) == 2
+
+
+def test_parse_detections_valid_json():
+    raw = '[{"box":[1,2,3,4],"kind":"dimension","conf":0.9}]'
+    dets = parse_detections(raw)
+    assert len(dets) == 1
+    assert dets[0].box == (1, 2, 3, 4)
+    assert dets[0].kind == "dimension"
+
+
+def test_parse_detections_strips_code_fence_and_prose():
+    raw = 'Here you go:\n```json\n[{"box":[0,0,5,5],"kind":"note"}]\n```'
+    dets = parse_detections(raw)
+    assert len(dets) == 1
+    assert dets[0].kind == "note"
+    assert dets[0].conf == 1.0
+
+
+def test_parse_detections_garbage_returns_empty():
+    assert parse_detections("not json at all") == []
+    assert parse_detections("") == []
+
+
+def test_parse_detections_skips_invalid_items():
+    raw = ('[{"box":[0,0,5,5],"kind":"dimension"},'
+           '{"box":[10,10,8,8],"kind":"dimension"},'
+           '{"kind":"note"},'
+           '{"box":[1,1,2,2],"kind":"weird"}]')
+    dets = parse_detections(raw)
+    assert len(dets) == 2
+    assert dets[0].box == (0, 0, 5, 5)
+    assert dets[1].kind == "dimension"
