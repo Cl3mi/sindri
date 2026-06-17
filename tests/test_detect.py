@@ -1,4 +1,4 @@
-from app.pipeline.detect import Detection, tile_grid, dedupe
+from app.pipeline.detect import Detection, tile_grid, dedupe, merge_adjacent
 
 
 def test_detection_dataclass_fields():
@@ -40,3 +40,23 @@ def test_dedupe_keeps_distant_same_kind():
     a = Detection(box=(0, 0, 50, 50), kind="dimension", conf=0.9)
     b = Detection(box=(500, 500, 550, 550), kind="dimension", conf=0.8)
     assert len(dedupe([a, b])) == 2
+
+
+def test_merge_adjacent_combines_vertically_stacked_same_kind():
+    nominal = Detection(box=(10, 10, 50, 30), kind="dimension", conf=0.8)
+    tol = Detection(box=(12, 35, 52, 55), kind="dimension", conf=0.6)
+    merged = merge_adjacent([nominal, tol], x_tol=20, y_gap=20)
+    assert len(merged) == 1
+    assert merged[0].box == (10, 10, 52, 55)
+
+
+def test_merge_adjacent_leaves_far_apart_boxes():
+    a = Detection(box=(10, 10, 50, 30), kind="dimension", conf=0.8)
+    b = Detection(box=(10, 200, 50, 220), kind="dimension", conf=0.6)
+    assert len(merge_adjacent([a, b], x_tol=20, y_gap=20)) == 2
+
+
+def test_merge_adjacent_does_not_merge_different_kinds():
+    a = Detection(box=(10, 10, 50, 30), kind="dimension", conf=0.8)
+    b = Detection(box=(12, 35, 52, 55), kind="note", conf=0.6)
+    assert len(merge_adjacent([a, b], x_tol=20, y_gap=20)) == 2
