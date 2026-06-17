@@ -20,3 +20,15 @@ def number_characteristics(chars, band_tol: int = 60):
     for i, c in enumerate(ordered, start=1):
         c.pos = i
     return ordered
+
+
+def place_balloons(chars, offset: int = 70, margin: int = 10):
+    """Set balloon_xy for each characteristic: a marker offset up-and-left from
+    the callout's top-left corner, clamped so it stays on the page. The leader
+    line to the callout is drawn later from balloon_xy to target_region."""
+    for c in chars:
+        x0, y0 = c.target_region[0], c.target_region[1]
+        bx = max(margin, x0 - offset)
+        by = max(margin, y0 - offset)
+        c.balloon_xy = (bx, by)
+    return chars
