@@ -15,3 +15,15 @@ def test_characteristic_roundtrip_dict():
     d = c.model_dump()
     assert d["pos"] == 1 and d["nominal"] == "1,2"
     assert Characteristic(**d) == c
+
+def test_characteristic_has_id_kind_source_defaults():
+    c = Characteristic(pos=1)
+    assert c.id == ""
+    assert c.kind == ""
+    assert c.source == "auto"
+
+def test_characteristic_accepts_new_fields():
+    c = Characteristic(pos=2, id="abc", kind="dimension", source="manual")
+    assert c.id == "abc"
+    assert c.kind == "dimension"
+    assert c.source == "manual"
