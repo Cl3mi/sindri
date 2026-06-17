@@ -1,21 +1,19 @@
-import sys
+import uuid
 from pathlib import Path
 from typing import List, Tuple
 from PIL import Image
 from app.models import Characteristic
 from app.pipeline.render import render_page
-from app.pipeline.anchors import extract_anchors
-from app.pipeline.balloons import label_balloons, value_region
+from app.pipeline.detect import detect_characteristics
+from app.pipeline.place import number_characteristics, place_balloons
 from app.pipeline.parser import parse_value
-from app.pipeline.notes import extract_notes
 from app.pipeline.ocr import get_backend
 
-# Notes table region as a fraction of page (top-right block); tuned for the template.
-_NOTES_FRAC = (0.55, 0.0, 1.0, 0.22)
+# detector kind -> parser hint
+_HINTS = {"material": "material", "note": "note", "gdt": "flatness"}
 
 
 def _safe_read(backend, crop) -> Tuple[str, float]:
-    """Call backend.read_region(crop), returning ("", 0.0) on any failure."""
     try:
         result = backend.read_region(crop)
         return result.text, result.confidence
@@ -24,13 +22,12 @@ def _safe_read(backend, crop) -> Tuple[str, float]:
 
 
 def _score(text: str, conf: float) -> float:
-    """Prefer reads that parse into a real dimension (nominal/tolerance present)."""
     c = parse_value(text)
     return (1.0 if c.nominal else 0.0) + (0.5 if c.upper_tol else 0.0) + conf
 
 
 def _best_read(backend, crop: Image.Image, vertical: bool) -> Tuple[str, float]:
-    """Read a crop; for vertical dimensions try both 90 rotations and keep the best."""
+    """Read a crop; for vertical callouts try both 90 rotations and keep the best."""
     candidates = [crop]
     if vertical:
         candidates = [crop.rotate(-90, expand=True), crop.rotate(90, expand=True)]
@@ -45,43 +42,37 @@ def _best_read(backend, crop: Image.Image, vertical: bool) -> Tuple[str, float]:
 
 def _clamp(box, w, h):
     x0, y0, x1, y1 = box
-    return (max(0, x0), max(0, y0), min(w, x1), min(h, y1))
+    return (max(0, int(x0)), max(0, int(y0)), min(w, int(x1)), min(h, int(y1)))
+
+
+def _is_vertical(box) -> bool:
+    return (box[3] - box[1]) > (box[2] - box[0]) * 1.3
 
 
 def extract(pdf_path, work_dir, dpi: int = 300, backend=None) -> List[Characteristic]:
     work_dir = Path(work_dir)
+    backend = backend or get_backend()
+    if not hasattr(backend, "detect_regions"):
+        raise RuntimeError("auto-ballooning requires the VLM backend")
+
     render = render_page(pdf_path, dpi=dpi, out_dir=work_dir)
     image = Image.open(render.png_path).convert("RGB")
 
-    anchors = extract_anchors(pdf_path, scale=render.scale)
-    labels = label_balloons(image)
-    backend = backend or get_backend()
+    detections = detect_characteristics(image, backend)
 
     results: List[Characteristic] = []
-    for a in anchors:
-        vr = value_region(labels, (a.x, a.y))
-        if vr is None:
-            # fallback: a band to the right of the balloon
-            box, vertical = (a.x + 30, a.y - 48, a.x + 260, a.y + 48), False
-        else:
-            box, vertical = vr.box, vr.vertical
-        box = _clamp(box, render.width, render.height)
+    for d in detections:
+        box = _clamp(d.box, render.width, render.height)
         crop = image.crop(box)
-        text, confidence = _best_read(backend, crop, vertical)
-        c = parse_value(text)
-        c.pos = a.number
-        c.balloon_xy = (a.x, a.y)
+        text, confidence = _best_read(backend, crop, _is_vertical(box))
+        c = parse_value(text, hint=_HINTS.get(d.kind, ""))
+        c.id = uuid.uuid4().hex
+        c.kind = d.kind
+        c.source = "auto"
         c.target_region = box
         c.confidence = confidence
         results.append(c)
 
-    nx0 = render.width * _NOTES_FRAC[0]
-    ny0 = render.height * _NOTES_FRAC[1]
-    nx1 = render.width * _NOTES_FRAC[2]
-    ny1 = render.height * _NOTES_FRAC[3]
-    try:
-        results.extend(extract_notes(image, (nx0, ny0, nx1, ny1), backend))
-    except Exception as e:
-        print(f"[sindri.extract] notes extraction failed: {e!r}", file=sys.stderr, flush=True)
-
+    number_characteristics(results)
+    place_balloons(results)
     return results
