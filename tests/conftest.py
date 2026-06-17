@@ -15,3 +15,25 @@ def ensure_sample_pdf():
 @pytest.fixture
 def sample_pdf():
     return FIXTURES / "sample.pdf"
+
+
+from app.pipeline.detect import Detection
+from app.pipeline.ocr.base import OcrResult
+
+
+class StubVLMBackend:
+    """Test double for the VLM backend: returns canned detections (tile-local)
+    and a canned transcription. Has detect_regions, so extract() treats it as a
+    detection-capable backend."""
+
+    def __init__(self, detections=None, text="1,2 +0,1 -0,1", confidence=0.9):
+        self._detections = detections or []
+        self._text = text
+        self._confidence = confidence
+
+    def detect_regions(self, image):
+        return [Detection(box=d.box, kind=d.kind, conf=d.conf)
+                for d in self._detections]
+
+    def read_region(self, image):
+        return OcrResult(text=self._text, confidence=self._confidence)

@@ -1,4 +1,4 @@
-from app.pipeline.detect import Detection, tile_grid, dedupe, merge_adjacent, parse_detections
+from app.pipeline.detect import Detection, tile_grid, dedupe, merge_adjacent, parse_detections, detect_characteristics
 
 
 def test_detection_dataclass_fields():
@@ -92,3 +92,23 @@ def test_parse_detections_skips_invalid_items():
     assert len(dets) == 2
     assert dets[0].box == (0, 0, 5, 5)
     assert dets[1].kind == "dimension"
+
+
+from PIL import Image
+from tests.conftest import StubVLMBackend
+
+
+def test_detect_characteristics_single_tile_passes_box_through():
+    img = Image.new("RGB", (400, 300), "white")
+    backend = StubVLMBackend(detections=[Detection((10, 20, 60, 40), "dimension", 0.9)])
+    dets = detect_characteristics(img, backend)
+    assert len(dets) == 1
+    assert dets[0].box == (10, 20, 60, 40)
+
+
+def test_detect_characteristics_offsets_per_tile():
+    img = Image.new("RGB", (2000, 1000), "white")
+    backend = StubVLMBackend(detections=[Detection((0, 0, 30, 30), "note", 0.8)])
+    dets = detect_characteristics(img, backend)
+    xs = sorted(d.box[0] for d in dets)
+    assert xs == [0, 720]
