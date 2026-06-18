@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sindri — Drawing Balloon Extractor</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; display: flex; height: 100vh; }
+    #left { flex: 1; overflow: auto; border-right: 1px solid #ccc; position: relative; }
+    #left img { width: 100%; display: block; }
+    .marker { position: absolute; width: 18px; height: 18px; margin: -9px 0 0 -9px;
+              border: 2px solid #2563eb; border-radius: 50%;
+              background: rgba(37,99,235,.2); cursor: move; font-size: 10px;
+              color: #1e3a8a; text-align: center; line-height: 16px; user-select: none; }
+    .marker .del { position: absolute; top: -10px; right: -10px; width: 14px;
+                   height: 14px; border-radius: 50%; background: #dc2626; color: #fff;
+                   font-size: 10px; line-height: 14px; cursor: pointer; display: none; }
+    .marker:hover .del { display: block; }
+    #left.adding { cursor: crosshair; }
+    #addBtn.active { background: #2563eb; color: #fff; }
+    #right { width: 46%; overflow: auto; padding: 12px; }
+    table { border-collapse: collapse; width: 100%; font-size: 13px; }
+    th, td { border: 1px solid #ddd; padding: 3px 5px; }
+    td[contenteditable] { background: #fff; }
+    tr.low td { background: #fff7ed; }
+    #bar { padding: 8px 12px; border-bottom: 1px solid #ccc; display: flex; gap: 8px; align-items: center; }
+    button { padding: 6px 12px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div id="left"><div id="overlay"></div></div>
+  <div id="right">
+    <div id="bar">
+      <input type="file" id="file" accept="application/pdf" />
+    <button id="addBtn">+ Add balloon</button>
+    <button id="exportBtn" disabled>Download Excel</button>
+    <button id="exportPdfBtn" disabled>Download ballooned PDF</button>
+      <span id="status"></span>
+    </div>
+    <table id="grid">
+      <thead><tr><th>Pos</th><th>Characteristic</th><th>Nominal</th><th>Upper-tol</th><th>Lower-tol</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

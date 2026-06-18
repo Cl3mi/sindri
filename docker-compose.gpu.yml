@@ -1,0 +1,23 @@
+# GPU override: build the torch/transformers image and expose the NVIDIA GPU.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+services:
+  sindri:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    environment:
+      - OCR_BACKEND=vlm
+      # - VLM_MODEL_ID=Qwen/Qwen2.5-VL-3B-Instruct   # uncomment for lower VRAM
+    volumes:
+      - ./data:/data
+      - hf_models:/models        # persist the downloaded model weights
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  hf_models:

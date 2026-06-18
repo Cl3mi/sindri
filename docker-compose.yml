@@ -1,0 +1,9 @@
+services:
+  sindri:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+    environment:
+      - OCR_BACKEND=tesseract
