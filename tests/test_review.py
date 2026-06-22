@@ -65,3 +65,17 @@ def test_combination_empty_read_and_rotation_ambiguity():
                                     rotation_ambiguous=True)
     assert flagged is True
     assert reasons == ["empty read", "rotation ambiguity"]
+
+
+def test_theoretical_row_with_text_but_no_nominal_is_flagged():
+    # a boxed theoretical value that read text but parsed no number is a garbled read
+    _, reasons = review_flags(_row(char_type="Theoretical", nominal="", raw_text="garbled"),
+                              rotation_ambiguous=False)
+    assert reasons == ["missing nominal"]
+
+
+def test_theoretical_row_with_nominal_is_not_flagged():
+    flagged, reasons = review_flags(_row(char_type="Theoretical", nominal="20", raw_text="20"),
+                                    rotation_ambiguous=False)
+    assert flagged is False
+    assert reasons == []

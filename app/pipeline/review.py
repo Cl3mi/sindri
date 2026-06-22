@@ -5,9 +5,14 @@ from typing import List, Tuple
 
 from app.models import Characteristic
 
-# Measurement types that must carry a numeric nominal. GD&T/Flatness/Position
-# (nominal "0"), Theoretical, Reference, Note and Material are intentionally exempt.
-DIMENSION_TYPES = {"Distance", "Diameter", "Radius"}
+# Measurement types that must carry a numeric nominal; a non-empty read that
+# parses to no nominal for one of these is a garbled-value read worth flagging.
+# Strings MUST match the char_type constants in parser.py exactly.
+# Exempt by design: GD&T/Flatness/Position (parser forces nominal "0"), Note and
+# Material (nominal holds text; an empty one is caught by the "empty read" rule),
+# and Reference (parser only assigns it when a number was parsed, so it can never
+# reach an empty nominal here).
+DIMENSION_TYPES = {"Distance", "Diameter", "Radius", "Theoretical"}
 LOW_CONF = 0.6
 
 
