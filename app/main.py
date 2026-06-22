@@ -12,6 +12,7 @@ from app.pipeline.extract import extract
 from app.pipeline.ocr import get_backend, backend_status
 from app.excel import write_workbook
 from app.pipeline.parser import parse_value
+from app.pipeline.review import review_flags
 from app.pipeline.place import place_balloons
 from app.pipeline.ballooned_pdf import render_ballooned_pdf
 from PIL import Image
@@ -119,6 +120,7 @@ def read_region(req: ReadRegionRequest):
     c.source = "manual"
     c.target_region = box
     c.confidence = conf
+    c.needs_review, c.review_reasons = review_flags(c, rotation_ambiguous=False)
     place_balloons([c])
     return c.model_dump()
 

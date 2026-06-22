@@ -90,3 +90,25 @@ def test_image_rejects_bad_session_id():
 
 def test_image_missing_session_returns_404():
     assert client.get("/api/image/" + "0" * 32).status_code == 404
+
+
+def test_read_region_sets_needs_review_on_empty_read(monkeypatch):
+    import app.main as main
+    from PIL import Image
+
+    # empty-text stub backend (StubVLMBackend.read_region returns text="")
+    monkeypatch.setattr("app.main._BACKEND", StubVLMBackend(text=""))
+
+    # a session with a page image present (read_region requires work/page.png)
+    # session id must be 32 lowercase hex chars to pass _session_dir validation
+    session = "5e5537e7ae00000000000000000000ae"
+    work = main._session_dir(session)
+    work.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (200, 200), "white").save(work / "page.png")
+
+    resp = client.post("/api/read_region",
+                       json={"session_id": session, "box": [10, 10, 80, 40]})
+    assert resp.status_code == 200
+    row = resp.json()
+    assert row["needs_review"] is True
+    assert row["review_reasons"] == ["empty read"]

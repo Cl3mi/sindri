@@ -155,9 +155,13 @@ function renderGrid() {
   tb.innerHTML = "";
   rows.forEach((r, i) => {
     const tr = document.createElement("tr");
-    if ((r.confidence ?? 0) < 0.6) tr.className = "low";
+    if (r.needs_review) {
+      tr.className = "low";
+      tr.title = (r.review_reasons || []).join(", ");
+    }
+    const posCell = `${r.needs_review ? "⚠ " : ""}${r.pos}`;
     tr.innerHTML =
-      `<td>${r.pos}</td>` +
+      `<td>${posCell}</td>` +
       ["char_type", "nominal", "upper_tol", "lower_tol"]
         .map((k) => `<td contenteditable data-i="${i}" data-k="${k}">${r[k] ?? ""}</td>`)
         .join("");
