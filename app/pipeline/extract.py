@@ -9,6 +9,7 @@ from app.pipeline.detect import detect_characteristics
 from app.pipeline.place import number_characteristics, place_balloons
 from app.pipeline.parser import parse_value
 from app.pipeline.ocr import get_backend
+from app.pipeline.review import review_flags
 
 # detector kind -> parser hint
 _HINTS = {"material": "material", "note": "note", "gdt": "gdt",
@@ -19,6 +20,9 @@ _HINTS = {"material": "material", "note": "note", "gdt": "gdt",
 # on customer drawings a boxed basic dimension valued 100-199 could be
 # mis-tagged here, which the human review step corrects (mark-everything).
 _NOTE_REF_RE = re.compile(r"^\s*(10[0-9]|1[1-9][0-9])\s*$")
+
+# how close the two rotation candidates must score to count as ambiguous
+ROTATION_EPS = 0.15
 
 
 def _safe_read(reader, crop) -> Tuple[str, float]:
@@ -34,18 +38,21 @@ def _score(text: str, conf: float) -> float:
     return (1.0 if c.nominal else 0.0) + (0.5 if c.upper_tol else 0.0) + conf
 
 
-def _best_read(backend, crop: Image.Image, vertical: bool) -> Tuple[str, float]:
-    """Read a crop; for vertical callouts try both 90 rotations and keep the best."""
+def _best_read(backend, crop: Image.Image, vertical: bool):
+    """Read a crop; for vertical callouts try both 90 rotations and keep the best.
+    Returns (text, conf, rotation_ambiguous) where rotation_ambiguous is True when
+    the crop is vertical and the best two candidates score within ROTATION_EPS."""
     candidates = [crop]
     if vertical:
         candidates = [crop.rotate(-90, expand=True), crop.rotate(90, expand=True)]
-    best_text, best_conf, best_score = "", 0.0, -1.0
+    scored = []
     for im in candidates:
         text, conf = _safe_read(backend.read_region, im)
-        s = _score(text, conf)
-        if s > best_score:
-            best_text, best_conf, best_score = text, conf, s
-    return best_text, best_conf
+        scored.append((_score(text, conf), text, conf))
+    scored.sort(key=lambda t: -t[0])
+    best_score, best_text, best_conf = scored[0]
+    ambiguous = len(scored) >= 2 and (best_score - scored[1][0]) < ROTATION_EPS
+    return best_text, best_conf, ambiguous
 
 
 def _clamp(box, w, h):
@@ -75,8 +82,10 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None) -> List[Characteri
         crop = image.crop(read_box)
         if d.subtype == "gdt" and hasattr(backend, "read_region_gdt"):
             text, confidence = _safe_read(backend.read_region_gdt, crop)
+            rotation_ambiguous = False
         else:
-            text, confidence = _best_read(backend, crop, _is_vertical(read_box))
+            text, confidence, rotation_ambiguous = _best_read(
+                backend, crop, _is_vertical(read_box))
 
         hint = _HINTS.get(d.kind, "")
         subtype = d.subtype or ""
@@ -92,6 +101,7 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None) -> List[Characteri
         c.source = "auto"
         c.target_region = outer
         c.confidence = confidence
+        c.needs_review, c.review_reasons = review_flags(c, rotation_ambiguous)
         results.append(c)
 
     number_characteristics(results)
