@@ -32,3 +32,19 @@ def test_characteristic_has_subtype_default_and_accepts_value():
     assert Characteristic(pos=1).subtype == ""
     c = Characteristic(pos=1, subtype="gdt")
     assert c.subtype == "gdt"
+
+
+def test_characteristic_has_review_fields_defaults_and_values():
+    c = Characteristic(pos=1)
+    assert c.needs_review is False
+    assert c.review_reasons == []
+    c2 = Characteristic(pos=2, needs_review=True, review_reasons=["empty read"])
+    assert c2.needs_review is True
+    assert c2.review_reasons == ["empty read"]
+
+
+def test_characteristic_review_reasons_are_independent_per_instance():
+    a = Characteristic(pos=1)
+    b = Characteristic(pos=2)
+    a.review_reasons.append("missing nominal")
+    assert b.review_reasons == []      # no shared mutable default

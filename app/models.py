@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 from pydantic import BaseModel
 
 class Characteristic(BaseModel):
@@ -13,5 +13,7 @@ class Characteristic(BaseModel):
     kind: str = ""               # detector kind: dimension|gdt|surface|note|material
     subtype: str = ""            # box sub-type: gdt|theoretical|reference|note_ref
     source: str = "auto"         # "auto" (detected) or "manual" (user-added)
+    needs_review: bool = False
+    review_reasons: List[str] = []   # e.g. ["empty read", "missing nominal"]
     balloon_xy: Optional[Tuple[float, float]] = None        # image-space
     target_region: Optional[Tuple[float, float, float, float]] = None  # x0,y0,x1,y1
