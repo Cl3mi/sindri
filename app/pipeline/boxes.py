@@ -19,7 +19,7 @@ class BoxDetection:
     outer_box: Tuple[int, int, int, int]
     inner_box: Tuple[int, int, int, int]
     cells: int
-    subtype: str          # gdt|theoretical|note_ref
+    subtype: str          # gdt|theoretical  (note_ref set downstream after OCR)
     conf: float
 
 
@@ -82,23 +82,22 @@ def _count_cells(gray, box, inset) -> int:
     return dividers + 1
 
 
-def _classify(box, cells, note_ref_max_side) -> str:
-    bw, bh = box[2] - box[0], box[3] - box[1]
-    if cells >= 2:
-        return "gdt"
-    if max(bw, bh) <= note_ref_max_side:
-        return "note_ref"
-    return "theoretical"
+# Boxed note-references (100-series numbers) are NOT classified here — they look
+# the same size as a boxed theoretical dim at production DPI.  They are retagged
+# downstream once OCR confirms 100-series content.  "note_ref" is therefore a
+# valid subtype value on BoxDetection but is set later, not by this module.
+def _classify(box, cells) -> str:
+    return "gdt" if cells >= 2 else "theoretical"
 
 
 def detect_boxes(image: Image.Image, min_side: int = 12, max_area_frac: float = 0.05,
-                 inset: int = 4, note_ref_max_side: int = 40) -> List[BoxDetection]:
+                 inset: int = 4) -> List[BoxDetection]:
     try:
         gray = np.array(image.convert("L"))
         out = []
         for box in _find_rectangles(gray, min_side, max_area_frac):
             cells = _count_cells(gray, box, inset)
-            subtype = _classify(box, cells, note_ref_max_side)
+            subtype = _classify(box, cells)
             x0, y0, x1, y1 = box
             inner = (x0 + inset, y0 + inset, x1 - inset, y1 - inset)
             if inner[2] <= inner[0] or inner[3] <= inner[1]:

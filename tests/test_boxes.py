@@ -30,12 +30,13 @@ def test_single_box_classified_theoretical_with_inset_inner():
     assert b.inner_box[2] < b.outer_box[2] and b.inner_box[3] < b.outer_box[3]
 
 
-def test_small_box_classified_note_ref():
+def test_small_single_cell_box_is_theoretical_not_size_based():
     img = _blank()
     ImageDraw.Draw(img).rectangle([50, 50, 80, 78], outline="black", width=3)
     boxes = detect_boxes(img)
     assert len(boxes) == 1
-    assert boxes[0].subtype == "note_ref"
+    assert boxes[0].subtype == "theoretical"
+    assert boxes[0].cells == 1
 
 
 def test_multi_cell_box_classified_gdt():
