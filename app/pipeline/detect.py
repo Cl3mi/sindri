@@ -148,14 +148,18 @@ def _box_to_detection(b):
 
 
 def merge_boxes(vlm_dets, box_dets, iou_thresh: float = 0.5):
-    """Merge deterministic CV boxes into VLM detections. A CV box that overlaps
-    a VLM detection wins (it carries the clean inner crop + structure) and
-    suppresses the VLM duplicate; a CV box with no overlap is added; VLM
-    detections with no CV box are kept unchanged."""
+    """Intersection hybrid: a CV box is kept ONLY where it overlaps a VLM-detected
+    callout — CV supplies the clean frame-stripped crop + cell structure for a box
+    the VLM already identified, and suppresses that overlapped VLM detection. CV
+    boxes with no VLM overlap are dropped (standalone CV over-detects structural
+    rectangles like table cells). VLM detections not covered by a kept CV box are
+    returned as-is."""
     converted = [_box_to_detection(b) for b in box_dets]
-    kept = [v for v in vlm_dets
-            if all(_iou(v.box, c.box) <= iou_thresh for c in converted)]
-    return kept + converted
+    kept_cv = [c for c in converted
+               if any(_iou(c.box, v.box) > iou_thresh for v in vlm_dets)]
+    kept_vlm = [v for v in vlm_dets
+                if all(_iou(v.box, c.box) <= iou_thresh for c in kept_cv)]
+    return kept_vlm + kept_cv
 
 
 def detect_characteristics(image, backend, tile: int = 1280, overlap: float = 0.15):

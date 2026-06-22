@@ -41,7 +41,8 @@ def test_extract_reads_gdt_box_with_gdt_prompt_and_sets_subtype(tmp_path, sample
     box = BoxDetection(outer_box=(50, 50, 210, 82), inner_box=(54, 54, 206, 78),
                        cells=3, subtype="gdt", conf=0.8)
     monkeypatch.setattr(extract_mod, "detect_characteristics",
-                        lambda image, backend, **kw: merge_boxes([], [box]))
+                        lambda image, backend, **kw: merge_boxes(
+                            [Detection(box=(50, 50, 210, 82), kind="gdt", conf=0.9)], [box]))
     backend = StubVLMBackend(detections=[], gdt_text="⊕ Ø0.1 A")
     rows = extract_mod.extract(sample_pdf, tmp_path, backend=backend)
     assert len(rows) == 1
@@ -61,7 +62,8 @@ def test_extract_retags_boxed_100_series_as_note_ref(tmp_path, sample_pdf, monke
     box = BoxDetection(outer_box=(50, 50, 90, 78), inner_box=(54, 54, 86, 74),
                        cells=1, subtype="theoretical", conf=0.8)
     monkeypatch.setattr(extract_mod, "detect_characteristics",
-                        lambda image, backend, **kw: merge_boxes([], [box]))
+                        lambda image, backend, **kw: merge_boxes(
+                            [Detection(box=(50, 50, 90, 78), kind="dimension", conf=0.9)], [box]))
     backend = StubVLMBackend(detections=[], text="101")
     rows = extract_mod.extract(sample_pdf, tmp_path, backend=backend)
     assert len(rows) == 1

@@ -136,28 +136,30 @@ def test_merge_boxes_cv_wins_on_overlap():
     assert merged[0].inner_box == (102, 102, 158, 128)
 
 
-def test_merge_boxes_adds_non_overlapping_cv_box():
+def test_merge_boxes_drops_non_overlapping_cv_box():
+    # intersection hybrid: a CV box with no VLM support is dropped
     vlm = [Detection(box=(0, 0, 20, 20), kind="dimension", conf=0.9)]
     boxes = [BoxDetection(outer_box=(300, 300, 360, 330), inner_box=(304, 304, 356, 326),
                           cells=3, subtype="gdt", conf=0.8)]
     merged = merge_boxes(vlm, boxes)
-    assert len(merged) == 2
-    assert any(m.kind == "gdt" and m.subtype == "gdt" for m in merged)
-
-
-def test_merge_boxes_note_ref_maps_to_note_kind():
-    merged = merge_boxes([], [BoxDetection(outer_box=(0, 0, 30, 28),
-                          inner_box=(4, 4, 26, 24), cells=1,
-                          subtype="note_ref", conf=0.8)])
     assert len(merged) == 1
-    assert merged[0].kind == "note"
-    assert merged[0].subtype == "note_ref"
+    assert merged[0].kind == "dimension"        # only the VLM detection survives
+    assert all(m.subtype != "gdt" for m in merged)
 
 
-def test_detect_characteristics_includes_cv_boxes():
+def test_box_to_detection_maps_note_ref_to_note_kind():
+    from app.pipeline.detect import _box_to_detection
+    d = _box_to_detection(BoxDetection(outer_box=(0, 0, 30, 28), inner_box=(4, 4, 26, 24),
+                                       cells=1, subtype="note_ref", conf=0.8))
+    assert d.kind == "note"
+    assert d.subtype == "note_ref"
+
+
+def test_detect_characteristics_keeps_cv_box_overlapping_vlm():
     from PIL import Image, ImageDraw
     img = Image.new("RGB", (400, 300), "white")
     ImageDraw.Draw(img).rectangle([100, 100, 180, 132], outline="black", width=3)
-    backend = StubVLMBackend(detections=[])          # VLM finds nothing
+    # VLM detects a callout at the same spot; the CV box refines it (clean crop)
+    backend = StubVLMBackend(detections=[Detection((100, 100, 180, 132), "dimension", 0.9)])
     dets = detect_characteristics(img, backend)
-    assert any(d.subtype == "theoretical" for d in dets)
+    assert any(d.subtype == "theoretical" and d.inner_box is not None for d in dets)
