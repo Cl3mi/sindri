@@ -3,7 +3,8 @@ from app.pipeline.extract import extract
 from tests.conftest import StubVLMBackend
 
 
-def test_extract_detects_numbers_places_and_reads(sample_pdf, tmp_path):
+def test_extract_detects_numbers_places_and_reads(sample_pdf, tmp_path, monkeypatch):
+    monkeypatch.setattr("app.pipeline.boxes.detect_boxes", lambda image: [])
     backend = StubVLMBackend(
         detections=[Detection((40, 40, 120, 70), "dimension", 0.9)],
         text="1,2 +0,1 -0,1",

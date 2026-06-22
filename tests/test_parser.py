@@ -134,3 +134,9 @@ def test_flatness_hint_still_works_as_gdt_alias():
     assert c.char_type == FLATNESS
     assert c.nominal == "0"
     assert c.upper_tol == "0,1"
+
+def test_gdt_hint_on_plain_tolerance_text_is_not_position():
+    # a normal tolerance string routed through the gdt hint must NOT match the
+    # '+' sign as a position symbol; with no real symbol it defaults to Flatness
+    c = parse_value("1,2 +0,1 -0,1", hint="gdt")
+    assert c.char_type != "Position"

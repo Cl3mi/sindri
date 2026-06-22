@@ -13,12 +13,12 @@ REFERENCE = "Reference"
 # GD&T characteristic symbols -> characteristic name. Tolerant of common
 # OCR/VLM substitutions for the position symbol.
 _GDT_SYMBOLS = {
-    "⊕": "Position", "+": "Position",
+    "⊕": "Position",
     "⏥": FLATNESS, "▱": FLATNESS,
     "○": "Circularity", "◯": "Circularity",
     "◎": "Concentricity",
     "⌭": "Cylindricity",
-    "∥": "Parallelism", "//": "Parallelism",
+    "∥": "Parallelism",
     "⊥": "Perpendicularity",
     "∠": "Angularity",
     "⌖": "Position",
