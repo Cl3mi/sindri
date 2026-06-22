@@ -10,6 +10,28 @@ NOTE = "Note"
 THEORETICAL = "Theoretical"
 REFERENCE = "Reference"
 
+# GD&T characteristic symbols -> characteristic name. Tolerant of common
+# OCR/VLM substitutions for the position symbol.
+_GDT_SYMBOLS = {
+    "⊕": "Position", "+": "Position",
+    "⏥": FLATNESS, "▱": FLATNESS,
+    "○": "Circularity", "◯": "Circularity",
+    "◎": "Concentricity",
+    "⌭": "Cylindricity",
+    "∥": "Parallelism", "//": "Parallelism",
+    "⊥": "Perpendicularity",
+    "∠": "Angularity",
+    "⌖": "Position",
+}
+
+
+def _gdt_type(text: str) -> str:
+    for sym, name in _GDT_SYMBOLS.items():
+        if sym in text:
+            return name
+    return FLATNESS    # default geometric tolerance when no symbol is recognized
+
+
 # A signed decimal with EITHER separator, e.g. 0,1  -0.05  12  +0,1
 _NUM = r"[+\-±]?\d+(?:[.,]\d+)?"
 _NUM_RE = re.compile(_NUM)
@@ -54,6 +76,16 @@ def parse_value(raw: str, hint: str = "") -> Characteristic:
         nums = _NUM_RE.findall(text)
         c.char_type = THEORETICAL
         c.nominal = _norm(_strip_sign(nums[0])) if nums else ""
+        return c
+
+    if hint in ("gdt", "flatness"):
+        # geometric tolerance: nominal is the controlled zero, the value is the
+        # tolerance zone (spec example: Flatness -> 0 / 0,1 / 0).
+        c.char_type = _gdt_type(text)
+        nums = _NUM_RE.findall(text)        # ignores the leading Ø and datum letters
+        c.nominal = "0"
+        c.upper_tol = _norm(_strip_sign(nums[0])) if nums else ""
+        c.lower_tol = "0"
         return c
 
     # --- classify by leading symbol ---

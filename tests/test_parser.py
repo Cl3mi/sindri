@@ -113,3 +113,24 @@ def test_reference_parenthesized_multi_digit():
 def test_parenthetical_text_note_is_not_reference():
     c = parse_value("(optional)")
     assert c.char_type != REFERENCE
+
+
+def test_gdt_position_frame():
+    c = parse_value("⊕ Ø0.1 A", hint="gdt")
+    assert c.char_type == "Position"
+    assert c.nominal == "0"
+    assert c.upper_tol == "0,1"
+    assert c.lower_tol == "0"
+
+def test_gdt_flatness_value_only_defaults_to_flatness():
+    c = parse_value("0.1", hint="gdt")
+    assert c.char_type == FLATNESS
+    assert c.nominal == "0"
+    assert c.upper_tol == "0,1"
+    assert c.lower_tol == "0"
+
+def test_flatness_hint_still_works_as_gdt_alias():
+    c = parse_value("0,1", hint="flatness")
+    assert c.char_type == FLATNESS
+    assert c.nominal == "0"
+    assert c.upper_tol == "0,1"
