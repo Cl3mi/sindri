@@ -11,8 +11,11 @@ from dataclasses import dataclass
 @dataclass
 class Detection:
     box: tuple        # (x0, y0, x1, y1) page-space pixels
-    kind: str         # dimension|gdt|surface|note|material
+    kind: str         # dimension|gdt|surface|note|material|theoretical
     conf: float
+    inner_box: tuple = None     # frame-stripped read crop (boxed callouts only)
+    cells: int = 1              # cell count for multi-cell GD&T frames
+    subtype: str = None         # gdt|theoretical|note_ref (boxed callouts only)
 
 
 def _starts(length: int, tile: int, step: int):
@@ -100,7 +103,7 @@ def merge_adjacent(detections, x_tol: int = 20, y_gap: int = 20):
     return items
 
 
-_KINDS = {"dimension", "gdt", "surface", "note", "material"}
+_KINDS = {"dimension", "gdt", "surface", "note", "material", "theoretical"}
 
 
 def parse_detections(raw: str):
@@ -135,6 +138,30 @@ def parse_detections(raw: str):
     return out
 
 
+# CV box sub-type -> detector kind. note_ref folds into the existing notes path.
+_BOX_KIND = {"gdt": "gdt", "theoretical": "theoretical", "note_ref": "note"}
+
+
+def _box_to_detection(b):
+    return Detection(box=b.outer_box, kind=_BOX_KIND[b.subtype], conf=b.conf,
+                     inner_box=b.inner_box, cells=b.cells, subtype=b.subtype)
+
+
+def merge_boxes(vlm_dets, box_dets, iou_thresh: float = 0.5):
+    """Intersection hybrid: a CV box is kept ONLY where it overlaps a VLM-detected
+    callout — CV supplies the clean frame-stripped crop + cell structure for a box
+    the VLM already identified, and suppresses that overlapped VLM detection. CV
+    boxes with no VLM overlap are dropped (standalone CV over-detects structural
+    rectangles like table cells). VLM detections not covered by a kept CV box are
+    returned as-is."""
+    converted = [_box_to_detection(b) for b in box_dets]
+    kept_cv = [c for c in converted
+               if any(_iou(c.box, v.box) > iou_thresh for v in vlm_dets)]
+    kept_vlm = [v for v in vlm_dets
+                if all(_iou(v.box, c.box) <= iou_thresh for c in kept_cv)]
+    return kept_vlm + kept_cv
+
+
 def detect_characteristics(image, backend, tile: int = 1280, overlap: float = 0.15):
     """Run the detector over overlapping tiles, map detections to page space,
     then merge stacked callouts and dedupe overlaps. A tile whose detection call
@@ -153,4 +180,6 @@ def detect_characteristics(image, backend, tile: int = 1280, overlap: float = 0.
             acc.append(Detection(
                 box=(d.box[0] + tx0, d.box[1] + ty0, d.box[2] + tx0, d.box[3] + ty0),
                 kind=d.kind, conf=d.conf))
-    return dedupe(merge_adjacent(acc))
+    from app.pipeline.boxes import detect_boxes
+    vlm = dedupe(merge_adjacent(acc))
+    return merge_boxes(vlm, detect_boxes(image))

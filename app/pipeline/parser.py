@@ -7,10 +7,39 @@ FLATNESS = "Flatness"
 DISTANCE = "Distance"
 MATERIAL = "Material"
 NOTE = "Note"
+THEORETICAL = "Theoretical"
+REFERENCE = "Reference"
 
-# A signed European decimal, e.g. 0,1  -0,05  12  +0,1
-_NUM = r"[+\-±]?\d+(?:,\d+)?"
+# GD&T characteristic symbols -> characteristic name. Tolerant of common
+# OCR/VLM substitutions for the position symbol.
+_GDT_SYMBOLS = {
+    "⊕": "Position",
+    "⏥": FLATNESS, "▱": FLATNESS,
+    "○": "Circularity", "◯": "Circularity",
+    "◎": "Concentricity",
+    "⌭": "Cylindricity",
+    "∥": "Parallelism",
+    "⊥": "Perpendicularity",
+    "∠": "Angularity",
+    "⌖": "Position",
+}
+
+
+def _gdt_type(text: str) -> str:
+    for sym, name in _GDT_SYMBOLS.items():
+        if sym in text:
+            return name
+    return FLATNESS    # default geometric tolerance when no symbol is recognized
+
+
+# A signed decimal with EITHER separator, e.g. 0,1  -0.05  12  +0,1
+_NUM = r"[+\-±]?\d+(?:[.,]\d+)?"
 _NUM_RE = re.compile(_NUM)
+
+
+def _norm(tok: str) -> str:
+    """Normalize a captured number to European output: period decimal -> comma."""
+    return tok.replace(".", ",")
 
 
 def _clean(s: str) -> str:
@@ -25,6 +54,15 @@ def parse_value(raw: str, hint: str = "") -> Characteristic:
     text = _clean(raw)
     c = Characteristic(pos=0, raw_text=raw)
 
+    # --- reference / Klammermaß: a NUMERIC value in parentheses, no tolerance.
+    # A parenthetical text note (no number) falls through to normal handling. ---
+    if text.startswith("(") and text.endswith(")"):
+        nums = _NUM_RE.findall(text)
+        if nums:
+            c.char_type = REFERENCE
+            c.nominal = _norm(_strip_sign(nums[0]))
+            return c
+
     # --- non-numeric / text-class hints first ---
     if hint == "material":
         c.char_type = MATERIAL
@@ -33,6 +71,21 @@ def parse_value(raw: str, hint: str = "") -> Characteristic:
     if hint == "note":
         c.char_type = NOTE
         c.nominal = text
+        return c
+    if hint == "theoretical":
+        nums = _NUM_RE.findall(text)
+        c.char_type = THEORETICAL
+        c.nominal = _norm(_strip_sign(nums[0])) if nums else ""
+        return c
+
+    if hint in ("gdt", "flatness"):
+        # geometric tolerance: nominal is the controlled zero, the value is the
+        # tolerance zone (spec example: Flatness -> 0 / 0,1 / 0).
+        c.char_type = _gdt_type(text)
+        nums = _NUM_RE.findall(text)        # ignores the leading Ø and datum letters
+        c.nominal = "0"
+        c.upper_tol = _norm(_strip_sign(nums[0])) if nums else ""
+        c.lower_tol = "0"
         return c
 
     # --- classify by leading symbol ---
@@ -58,27 +111,31 @@ def parse_value(raw: str, hint: str = "") -> Characteristic:
     else:
         c.char_type = DISTANCE
 
-    # --- symmetric tolerance: "5 ±0,1" ---
-    sym = re.search(r"±\s*(\d+(?:,\d+)?)", body)
+    # --- symmetric tolerance: "5 ±0,1" / "5 ±0.1" ---
+    sym = re.search(r"±\s*(\d+(?:[.,]\d+)?)", body)
     if sym:
         nominal_part = body[:sym.start()]
         nums = _NUM_RE.findall(nominal_part)
-        c.nominal = nums[0] if nums else ""
-        c.upper_tol = sym.group(1)
-        c.lower_tol = "-" + sym.group(1)
+        c.nominal = _norm(nums[0]) if nums else ""
+        c.upper_tol = _norm(sym.group(1))
+        c.lower_tol = "-" + _norm(sym.group(1))
     else:
         nums = _NUM_RE.findall(body)
-        # signed tokens (with explicit +/-) are tolerances; the rest is nominal
         signed = [n for n in nums if n[0] in "+-"]
         unsigned = [n for n in nums if n[0] not in "+-"]
         if unsigned:
-            c.nominal = unsigned[0]
+            c.nominal = _norm(unsigned[0])
         elif nums:
-            c.nominal = _strip_sign(nums[0])
+            c.nominal = _norm(_strip_sign(nums[0]))
         if len(signed) >= 1:
-            c.upper_tol = _strip_sign(signed[0])
+            c.upper_tol = _norm(_strip_sign(signed[0]))
         if len(signed) >= 2:
-            c.lower_tol = signed[1] if signed[1][0] == "-" else "-" + signed[1]
+            c.lower_tol = _norm(signed[1]) if signed[1][0] == "-" else "-" + _norm(signed[1])
+        # a single explicit upper tol followed by an unsigned 0 is a MAX-type
+        # zero lower tol (e.g. "Ø6.6 +0.2 0")
+        if (len(signed) == 1 and signed[0][0] == "+"
+                and len(unsigned) >= 2 and _norm(unsigned[1]) in ("0", "0,0")):
+            c.lower_tol = "0"
 
     # --- flatness convention: nominal is the controlled feature (0), tol is the value ---
     if c.char_type == FLATNESS and c.upper_tol == "" and c.nominal:

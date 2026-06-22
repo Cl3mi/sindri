@@ -11,6 +11,7 @@ class Characteristic(BaseModel):
     confidence: float = 0.0
     id: str = ""                 # stable per-row id for the review UI
     kind: str = ""               # detector kind: dimension|gdt|surface|note|material
+    subtype: str = ""            # box sub-type: gdt|theoretical|reference|note_ref
     source: str = "auto"         # "auto" (detected) or "manual" (user-added)
     balloon_xy: Optional[Tuple[float, float]] = None        # image-space
     target_region: Optional[Tuple[float, float, float, float]] = None  # x0,y0,x1,y1

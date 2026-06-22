@@ -17,3 +17,17 @@ def test_vlm_detects_callouts_on_real_drawing(sample_pdf, tmp_path):
     image = Image.open(render.png_path).convert("RGB")
     dets = detect_characteristics(image, VLMBackend())
     assert len(dets) >= 10
+
+
+@gpu_only
+def test_detect_characteristics_surfaces_boxed_callouts(sample_pdf, tmp_path):
+    from PIL import Image
+    from app.pipeline.render import render_page
+    from app.pipeline.detect import detect_characteristics
+    from app.pipeline.ocr.vlm_backend import VLMBackend
+
+    render = render_page(sample_pdf, dpi=300, out_dir=tmp_path)
+    image = Image.open(render.png_path).convert("RGB")
+    dets = detect_characteristics(image, VLMBackend())
+    # the CV pass must contribute at least one structured box on a real drawing
+    assert any(d.subtype in ("gdt", "theoretical", "note_ref") for d in dets)

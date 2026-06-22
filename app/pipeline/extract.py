@@ -1,3 +1,4 @@
+import re
 import uuid
 from pathlib import Path
 from typing import List, Tuple
@@ -10,12 +11,19 @@ from app.pipeline.parser import parse_value
 from app.pipeline.ocr import get_backend
 
 # detector kind -> parser hint
-_HINTS = {"material": "material", "note": "note", "gdt": "flatness"}
+_HINTS = {"material": "material", "note": "note", "gdt": "gdt",
+          "theoretical": "theoretical"}
+
+# A bare 100-series integer in a box is a note-reference, not a dimension.
+# This encodes the Intercable internal convention (text notes numbered 100+);
+# on customer drawings a boxed basic dimension valued 100-199 could be
+# mis-tagged here, which the human review step corrects (mark-everything).
+_NOTE_REF_RE = re.compile(r"^\s*(10[0-9]|1[1-9][0-9])\s*$")
 
 
-def _safe_read(backend, crop) -> Tuple[str, float]:
+def _safe_read(reader, crop) -> Tuple[str, float]:
     try:
-        result = backend.read_region(crop)
+        result = reader(crop)
         return result.text, result.confidence
     except Exception:
         return "", 0.0
@@ -33,7 +41,7 @@ def _best_read(backend, crop: Image.Image, vertical: bool) -> Tuple[str, float]:
         candidates = [crop.rotate(-90, expand=True), crop.rotate(90, expand=True)]
     best_text, best_conf, best_score = "", 0.0, -1.0
     for im in candidates:
-        text, conf = _safe_read(backend, im)
+        text, conf = _safe_read(backend.read_region, im)
         s = _score(text, conf)
         if s > best_score:
             best_text, best_conf, best_score = text, conf, s
@@ -62,14 +70,27 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None) -> List[Characteri
 
     results: List[Characteristic] = []
     for d in detections:
-        box = _clamp(d.box, render.width, render.height)
-        crop = image.crop(box)
-        text, confidence = _best_read(backend, crop, _is_vertical(box))
-        c = parse_value(text, hint=_HINTS.get(d.kind, ""))
+        outer = _clamp(d.box, render.width, render.height)
+        read_box = _clamp(d.inner_box, render.width, render.height) if d.inner_box else outer
+        crop = image.crop(read_box)
+        if d.subtype == "gdt" and hasattr(backend, "read_region_gdt"):
+            text, confidence = _safe_read(backend.read_region_gdt, crop)
+        else:
+            text, confidence = _best_read(backend, crop, _is_vertical(read_box))
+
+        hint = _HINTS.get(d.kind, "")
+        subtype = d.subtype or ""
+        kind = d.kind
+        # content retag: a boxed value reading as a 100-series number is a note-ref
+        if subtype == "theoretical" and _NOTE_REF_RE.match(text or ""):
+            hint, subtype, kind = "note", "note_ref", "note"
+
+        c = parse_value(text, hint=hint)
         c.id = uuid.uuid4().hex
-        c.kind = d.kind
+        c.kind = kind
+        c.subtype = subtype
         c.source = "auto"
-        c.target_region = box
+        c.target_region = outer
         c.confidence = confidence
         results.append(c)
 
