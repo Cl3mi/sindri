@@ -38,10 +38,10 @@ def _score(text: str, conf: float) -> float:
     return (1.0 if c.nominal else 0.0) + (0.5 if c.upper_tol else 0.0) + conf
 
 
-def _best_read(backend, crop: Image.Image, vertical: bool):
+def _best_read(backend, crop: Image.Image, vertical: bool) -> Tuple[str, float, bool]:
     """Read a crop; for vertical callouts try both 90 rotations and keep the best.
     Returns (text, conf, rotation_ambiguous) where rotation_ambiguous is True when
-    the crop is vertical and the best two candidates score within ROTATION_EPS."""
+    the crop is vertical and the best two candidates differ by less than ROTATION_EPS."""
     candidates = [crop]
     if vertical:
         candidates = [crop.rotate(-90, expand=True), crop.rotate(90, expand=True)]

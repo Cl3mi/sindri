@@ -102,7 +102,7 @@ def test_extract_flags_empty_read(sample_pdf, tmp_path, monkeypatch):
     import app.pipeline.extract as extract_mod
     monkeypatch.setattr(boxes_mod, "detect_boxes", lambda image: [])
     det = Detection((40, 40, 120, 70), "dimension", 0.9)
-    monkeypatch.setattr(extract_mod, "detect_characteristics", lambda image, backend: [det])
+    monkeypatch.setattr(extract_mod, "detect_characteristics", lambda image, backend, **kw: [det])
     backend = StubVLMBackend(
         detections=[det], text="")
     rows = extract(sample_pdf, work_dir=tmp_path, dpi=300, backend=backend)
@@ -117,10 +117,30 @@ def test_extract_flags_missing_nominal(sample_pdf, tmp_path, monkeypatch):
     import app.pipeline.extract as extract_mod
     monkeypatch.setattr(boxes_mod, "detect_boxes", lambda image: [])
     det = Detection((40, 40, 120, 70), "dimension", 0.9)
-    monkeypatch.setattr(extract_mod, "detect_characteristics", lambda image, backend: [det])
+    monkeypatch.setattr(extract_mod, "detect_characteristics", lambda image, backend, **kw: [det])
     backend = StubVLMBackend(
         detections=[det], text="garbled")
     rows = extract(sample_pdf, work_dir=tmp_path, dpi=300, backend=backend)
     assert len(rows) == 1
     assert rows[0].needs_review is True
     assert "missing nominal" in rows[0].review_reasons
+
+
+def test_best_read_not_ambiguous_when_one_rotation_clearly_wins():
+    from PIL import Image
+    from app.pipeline.extract import _best_read
+    from app.pipeline.ocr.base import OcrResult
+
+    class OrientationBackend:
+        def __init__(self):
+            self.calls = 0
+
+        def read_region(self, image):
+            self.calls += 1
+            # first rotation reads a full dimension, second reads nothing
+            return OcrResult("1,2 +0,1 -0,1", 0.9) if self.calls == 1 else OcrResult("", 0.0)
+
+    tall = Image.new("RGB", (20, 80), "white")
+    text, conf, ambiguous = _best_read(OrientationBackend(), tall, vertical=True)
+    assert ambiguous is False
+    assert text == "1,2 +0,1 -0,1"
