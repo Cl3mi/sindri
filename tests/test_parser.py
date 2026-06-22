@@ -109,3 +109,7 @@ def test_reference_parenthesized_multi_digit():
     c = parse_value("(20)")
     assert c.char_type == REFERENCE
     assert c.nominal == "20"
+
+def test_parenthetical_text_note_is_not_reference():
+    c = parse_value("(optional)")
+    assert c.char_type != REFERENCE

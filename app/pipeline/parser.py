@@ -32,13 +32,14 @@ def parse_value(raw: str, hint: str = "") -> Characteristic:
     text = _clean(raw)
     c = Characteristic(pos=0, raw_text=raw)
 
-    # --- reference / Klammermaß: a value in parentheses, no tolerance ---
-    stripped = text.strip()
-    if stripped.startswith("(") and stripped.endswith(")"):
-        nums = _NUM_RE.findall(stripped)
-        c.char_type = REFERENCE
-        c.nominal = _norm(_strip_sign(nums[0])) if nums else ""
-        return c
+    # --- reference / Klammermaß: a NUMERIC value in parentheses, no tolerance.
+    # A parenthetical text note (no number) falls through to normal handling. ---
+    if text.startswith("(") and text.endswith(")"):
+        nums = _NUM_RE.findall(text)
+        if nums:
+            c.char_type = REFERENCE
+            c.nominal = _norm(_strip_sign(nums[0]))
+            return c
 
     # --- non-numeric / text-class hints first ---
     if hint == "material":
