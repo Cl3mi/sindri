@@ -27,3 +27,8 @@ def test_characteristic_accepts_new_fields():
     assert c.id == "abc"
     assert c.kind == "dimension"
     assert c.source == "manual"
+
+def test_characteristic_has_subtype_default_and_accepts_value():
+    assert Characteristic(pos=1).subtype == ""
+    c = Characteristic(pos=1, subtype="gdt")
+    assert c.subtype == "gdt"
