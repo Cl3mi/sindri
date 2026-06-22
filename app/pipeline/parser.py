@@ -85,7 +85,8 @@ def parse_value(raw: str, hint: str = "") -> Characteristic:
             c.lower_tol = _norm(signed[1]) if signed[1][0] == "-" else "-" + _norm(signed[1])
         # a single explicit upper tol followed by an unsigned 0 is a MAX-type
         # zero lower tol (e.g. "Ø6.6 +0.2 0")
-        if len(signed) == 1 and len(unsigned) >= 2 and unsigned[1] in ("0", "0,0"):
+        if (len(signed) == 1 and signed[0][0] == "+"
+                and len(unsigned) >= 2 and _norm(unsigned[1]) in ("0", "0,0")):
             c.lower_tol = "0"
 
     # --- flatness convention: nominal is the controlled feature (0), tol is the value ---
