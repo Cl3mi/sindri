@@ -1,4 +1,4 @@
-from app.pipeline.parser import parse_value, DIAMETER, RADIUS, FLATNESS, DISTANCE, MATERIAL
+from app.pipeline.parser import parse_value, DIAMETER, RADIUS, FLATNESS, DISTANCE, MATERIAL, THEORETICAL, REFERENCE
 
 def test_distance_stacked_tolerance():
     c = parse_value("1,2 +0,1 -0,1")
@@ -85,3 +85,27 @@ def test_negative_single_tol_does_not_trigger_max_zero():
     c = parse_value("10 -0.5 0")
     # the single signed token is negative -> MAX-zero rule must NOT fire
     assert c.lower_tol != "0"
+
+
+def test_theoretical_boxed_value_nominal_only():
+    c = parse_value("20", hint="theoretical")
+    assert c.char_type == THEORETICAL
+    assert c.nominal == "20"
+    assert c.upper_tol == "" and c.lower_tol == ""
+
+def test_theoretical_period_decimal():
+    c = parse_value("12.5", hint="theoretical")
+    assert c.char_type == THEORETICAL
+    assert c.nominal == "12,5"
+    assert c.upper_tol == "" and c.lower_tol == ""
+
+def test_reference_parenthesized_nominal_only():
+    c = parse_value("(1)")
+    assert c.char_type == REFERENCE
+    assert c.nominal == "1"
+    assert c.upper_tol == "" and c.lower_tol == ""
+
+def test_reference_parenthesized_multi_digit():
+    c = parse_value("(20)")
+    assert c.char_type == REFERENCE
+    assert c.nominal == "20"

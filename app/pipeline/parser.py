@@ -7,6 +7,8 @@ FLATNESS = "Flatness"
 DISTANCE = "Distance"
 MATERIAL = "Material"
 NOTE = "Note"
+THEORETICAL = "Theoretical"
+REFERENCE = "Reference"
 
 # A signed decimal with EITHER separator, e.g. 0,1  -0.05  12  +0,1
 _NUM = r"[+\-±]?\d+(?:[.,]\d+)?"
@@ -30,6 +32,14 @@ def parse_value(raw: str, hint: str = "") -> Characteristic:
     text = _clean(raw)
     c = Characteristic(pos=0, raw_text=raw)
 
+    # --- reference / Klammermaß: a value in parentheses, no tolerance ---
+    stripped = text.strip()
+    if stripped.startswith("(") and stripped.endswith(")"):
+        nums = _NUM_RE.findall(stripped)
+        c.char_type = REFERENCE
+        c.nominal = _norm(_strip_sign(nums[0])) if nums else ""
+        return c
+
     # --- non-numeric / text-class hints first ---
     if hint == "material":
         c.char_type = MATERIAL
@@ -38,6 +48,11 @@ def parse_value(raw: str, hint: str = "") -> Characteristic:
     if hint == "note":
         c.char_type = NOTE
         c.nominal = text
+        return c
+    if hint == "theoretical":
+        nums = _NUM_RE.findall(text)
+        c.char_type = THEORETICAL
+        c.nominal = _norm(_strip_sign(nums[0])) if nums else ""
         return c
 
     # --- classify by leading symbol ---
