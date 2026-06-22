@@ -14,7 +14,10 @@ from app.pipeline.ocr import get_backend
 _HINTS = {"material": "material", "note": "note", "gdt": "gdt",
           "theoretical": "theoretical"}
 
-# a bare 100-series integer in a box is a note-reference, not a dimension
+# A bare 100-series integer in a box is a note-reference, not a dimension.
+# This encodes the Intercable internal convention (text notes numbered 100+);
+# on customer drawings a boxed basic dimension valued 100-199 could be
+# mis-tagged here, which the human review step corrects (mark-everything).
 _NOTE_REF_RE = re.compile(r"^\s*(10[0-9]|1[1-9][0-9])\s*$")
 
 
