@@ -112,3 +112,52 @@ def test_detect_characteristics_offsets_per_tile():
     dets = detect_characteristics(img, backend)
     xs = sorted(d.box[0] for d in dets)
     assert xs == [0, 720]
+
+
+from app.pipeline.boxes import BoxDetection
+from app.pipeline.detect import merge_boxes
+
+
+def test_detection_dataclass_has_box_fields_defaulting_none():
+    d = Detection(box=(0, 0, 10, 10), kind="dimension", conf=0.9)
+    assert d.inner_box is None
+    assert d.cells == 1
+    assert d.subtype is None
+
+
+def test_merge_boxes_cv_wins_on_overlap():
+    vlm = [Detection(box=(100, 100, 160, 130), kind="dimension", conf=0.9)]
+    boxes = [BoxDetection(outer_box=(98, 98, 162, 132), inner_box=(102, 102, 158, 128),
+                          cells=1, subtype="theoretical", conf=0.8)]
+    merged = merge_boxes(vlm, boxes)
+    assert len(merged) == 1
+    assert merged[0].subtype == "theoretical"
+    assert merged[0].kind == "theoretical"
+    assert merged[0].inner_box == (102, 102, 158, 128)
+
+
+def test_merge_boxes_adds_non_overlapping_cv_box():
+    vlm = [Detection(box=(0, 0, 20, 20), kind="dimension", conf=0.9)]
+    boxes = [BoxDetection(outer_box=(300, 300, 360, 330), inner_box=(304, 304, 356, 326),
+                          cells=3, subtype="gdt", conf=0.8)]
+    merged = merge_boxes(vlm, boxes)
+    assert len(merged) == 2
+    assert any(m.kind == "gdt" and m.subtype == "gdt" for m in merged)
+
+
+def test_merge_boxes_note_ref_maps_to_note_kind():
+    merged = merge_boxes([], [BoxDetection(outer_box=(0, 0, 30, 28),
+                          inner_box=(4, 4, 26, 24), cells=1,
+                          subtype="note_ref", conf=0.8)])
+    assert len(merged) == 1
+    assert merged[0].kind == "note"
+    assert merged[0].subtype == "note_ref"
+
+
+def test_detect_characteristics_includes_cv_boxes():
+    from PIL import Image, ImageDraw
+    img = Image.new("RGB", (400, 300), "white")
+    ImageDraw.Draw(img).rectangle([100, 100, 180, 132], outline="black", width=3)
+    backend = StubVLMBackend(detections=[])          # VLM finds nothing
+    dets = detect_characteristics(img, backend)
+    assert any(d.subtype == "theoretical" for d in dets)
