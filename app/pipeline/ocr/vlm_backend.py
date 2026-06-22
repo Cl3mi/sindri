@@ -31,6 +31,17 @@ _DETECT_PROMPT = (
     "there are no callouts, return []."
 )
 
+# GD&T read prompt: the crop is the INNER content of a feature-control frame
+# (border already stripped). Transcribe symbol, tolerance value and datum(s)
+# on one line, e.g. "⊕ Ø0.1 A". The parser maps this to 0 / zone / 0.
+_GDT_PROMPT = (
+    "This image is the inner content of a GD&T feature control frame from a "
+    "mechanical drawing, with the surrounding box border removed. Transcribe it "
+    "on one line as: <symbol> <tolerance value> <datum letters>, e.g. "
+    "'⊕ Ø0.1 A' or '⏥ 0,05'. Use a comma as the decimal separator. Preserve the "
+    "geometric symbol and any Ø. Output nothing else, no explanation."
+)
+
 
 class VLMBackend:
     """Local GPU vision-LLM doing constrained per-region reads only."""
@@ -53,6 +64,23 @@ class VLMBackend:
         messages = [{"role": "user", "content": [
             {"type": "image", "image": image.convert("RGB")},
             {"type": "text", "text": _PROMPT},
+        ]}]
+        inputs = self.processor.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=True,
+            return_dict=True, return_tensors="pt",
+        ).to(self.model.device)
+        with self.torch.inference_mode():
+            out = self.model.generate(
+                **inputs, max_new_tokens=self.max_new_tokens, do_sample=False,
+            )
+        trimmed = out[0][inputs["input_ids"].shape[1]:]
+        text = self.processor.decode(trimmed, skip_special_tokens=True).strip()
+        return OcrResult(text=text, confidence=0.9 if text else 0.0)
+
+    def read_region_gdt(self, image: Image.Image) -> OcrResult:
+        messages = [{"role": "user", "content": [
+            {"type": "image", "image": image.convert("RGB")},
+            {"type": "text", "text": _GDT_PROMPT},
         ]}]
         inputs = self.processor.apply_chat_template(
             messages, add_generation_prompt=True, tokenize=True,
