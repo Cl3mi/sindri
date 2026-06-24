@@ -58,3 +58,23 @@ def review_flags_note(note: Note, two_columns: bool,
     if note.parent_pos is not None and note.parent_pos not in known_parents:
         reasons.append("orphan sub-bullet")
     return bool(reasons), reasons
+
+
+from dataclasses import dataclass
+from PIL import Image, ImageDraw
+
+
+@dataclass
+class NotesBlockRegion:
+    outer_box: Tuple[int, int, int, int]
+    lang_columns: List[Tuple[int, int]]
+
+
+def mask_region(image: Image.Image, region: NotesBlockRegion) -> Image.Image:
+    """Return a copy of `image` with `region.outer_box` filled white. The
+    original image is preserved so downstream manual re-reads still work."""
+    out = image.copy()
+    x0, y0, x1, y1 = region.outer_box
+    if x1 > x0 and y1 > y0:
+        ImageDraw.Draw(out).rectangle((x0, y0, x1, y1), fill="white")
+    return out

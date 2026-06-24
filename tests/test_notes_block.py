@@ -121,3 +121,28 @@ def test_empty_read_suppresses_missing_translation():
         _note(raw_text="", text_en="", text_de=""),
         two_columns=True, known_parents=set())
     assert reasons == ["empty read"]
+
+
+from PIL import Image
+from app.pipeline.notes_block import mask_region, NotesBlockRegion
+
+
+def test_mask_region_fills_with_white_inside_box():
+    img = Image.new("RGB", (100, 100), "black")
+    region = NotesBlockRegion(outer_box=(20, 30, 60, 70), lang_columns=[(20, 60)])
+    out = mask_region(img, region)
+    # inside the box is white
+    assert out.getpixel((30, 40)) == (255, 255, 255)
+    # outside the box is unchanged
+    assert out.getpixel((10, 10)) == (0, 0, 0)
+    # original image is untouched (copy semantics)
+    assert img.getpixel((30, 40)) == (0, 0, 0)
+
+
+def test_mask_region_box_with_zero_area_no_op():
+    img = Image.new("RGB", (50, 50), "black")
+    region = NotesBlockRegion(outer_box=(10, 10, 10, 10), lang_columns=[(10, 10)])
+    out = mask_region(img, region)
+    # still all black
+    assert out.getpixel((10, 10)) == (0, 0, 0)
+    assert out.getpixel((25, 25)) == (0, 0, 0)
