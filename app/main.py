@@ -63,7 +63,6 @@ async def upload(file: UploadFile = File(...)):
     pdf_path.write_bytes(await file.read())
     try:
         result = extract(pdf_path, work_dir=work, dpi=300, backend=_BACKEND)
-        rows = result.characteristics
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
@@ -71,7 +70,8 @@ async def upload(file: UploadFile = File(...)):
     return JSONResponse({
         "session_id": session_id,
         "image_url": f"/api/image/{session_id}",
-        "rows": [r.model_dump() for r in rows],
+        "rows": [r.model_dump() for r in result.characteristics],
+        "notes": result.notes.model_dump() if result.notes is not None else None,
     })
 
 

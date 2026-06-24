@@ -112,3 +112,41 @@ def test_read_region_sets_needs_review_on_empty_read(monkeypatch):
     row = resp.json()
     assert row["needs_review"] is True
     assert row["review_reasons"] == ["empty read"]
+
+
+def test_upload_returns_notes_field(monkeypatch, sample_pdf):
+    """The upload endpoint now returns {rows, notes}; notes may be null."""
+    from fastapi.testclient import TestClient
+    import app.main as main
+    from app.models import Characteristic, ExtractionResult, NoteBlock, Note
+
+    monkeypatch.setattr(main, "extract", lambda *a, **kw: ExtractionResult(
+        characteristics=[Characteristic(pos=1, char_type="Distance", nominal="1,2")],
+        notes=NoteBlock(region=(0, 0, 10, 10),
+                        notes=[Note(pos=101, text_en="A", text_de="B"),
+                               Note(pos=1, parent_pos=101, sub_index=1,
+                                    text_en="A1", text_de="A1")])
+    ))
+    client = TestClient(main.app)
+    with open(sample_pdf, "rb") as f:
+        r = client.post("/api/upload", files={"file": ("x.pdf", f, "application/pdf")})
+    assert r.status_code == 200
+    data = r.json()
+    assert "rows" in data and len(data["rows"]) == 1
+    assert "notes" in data and data["notes"] is not None
+    note_positions = [n["pos"] for n in data["notes"]["notes"]]
+    assert note_positions == [101, 1]
+
+
+def test_upload_returns_null_notes_when_extract_returns_none(monkeypatch, sample_pdf):
+    from fastapi.testclient import TestClient
+    import app.main as main
+    from app.models import Characteristic, ExtractionResult
+
+    monkeypatch.setattr(main, "extract", lambda *a, **kw: ExtractionResult(
+        characteristics=[Characteristic(pos=1)], notes=None))
+    client = TestClient(main.app)
+    with open(sample_pdf, "rb") as f:
+        r = client.post("/api/upload", files={"file": ("x.pdf", f, "application/pdf")})
+    assert r.status_code == 200
+    assert r.json()["notes"] is None
