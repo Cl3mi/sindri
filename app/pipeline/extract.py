@@ -1,24 +1,22 @@
 import re
 import uuid
 from pathlib import Path
-from typing import List, Tuple
+from typing import Tuple
 from PIL import Image
-from app.models import Characteristic
+from app.models import Characteristic, ExtractionResult
 from app.pipeline.render import render_page
 from app.pipeline.detect import detect_characteristics
 from app.pipeline.place import number_characteristics, place_balloons
 from app.pipeline.parser import parse_value
 from app.pipeline.ocr import get_backend
 from app.pipeline.review import review_flags
+from app.pipeline import notes_block as nb
 
 # detector kind -> parser hint
 _HINTS = {"material": "material", "note": "note", "gdt": "gdt",
           "theoretical": "theoretical"}
 
 # A bare 100-series integer in a box is a note-reference, not a dimension.
-# This encodes the Intercable internal convention (text notes numbered 100+);
-# on customer drawings a boxed basic dimension valued 100-199 could be
-# mis-tagged here, which the human review step corrects (mark-everything).
 _NOTE_REF_RE = re.compile(r"^\s*(10[0-9]|1[1-9][0-9])\s*$")
 
 # how close the two rotation candidates must score to count as ambiguous
@@ -39,9 +37,6 @@ def _score(text: str, conf: float) -> float:
 
 
 def _best_read(backend, crop: Image.Image, vertical: bool) -> Tuple[str, float, bool]:
-    """Read a crop; for vertical callouts try both 90 rotations and keep the best.
-    Returns (text, conf, rotation_ambiguous) where rotation_ambiguous is True when
-    the crop is vertical and the best two candidates differ by less than ROTATION_EPS."""
     candidates = [crop]
     if vertical:
         candidates = [crop.rotate(-90, expand=True), crop.rotate(90, expand=True)]
@@ -64,7 +59,7 @@ def _is_vertical(box) -> bool:
     return (box[3] - box[1]) > (box[2] - box[0]) * 1.3
 
 
-def extract(pdf_path, work_dir, dpi: int = 300, backend=None) -> List[Characteristic]:
+def extract(pdf_path, work_dir, dpi: int = 300, backend=None) -> ExtractionResult:
     work_dir = Path(work_dir)
     backend = backend or get_backend()
     if not hasattr(backend, "detect_regions"):
@@ -73,9 +68,27 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None) -> List[Characteri
     render = render_page(pdf_path, dpi=dpi, out_dir=work_dir)
     image = Image.open(render.png_path).convert("RGB")
 
-    detections = detect_characteristics(image, backend)
+    # Notes-block path: locate, read, parse, mask. Any failure leaves notes=None
+    # and the rest of the pipeline runs unchanged.
+    region = nb.locate_notes_block(image, backend)
+    notes_obj = None
+    if region is not None:
+        raw_notes = nb.read_notes_block(image, region, backend)
+        notes_obj = nb.parse_notes_block(raw_notes, region.outer_box)
+        known_parents = {n.pos for n in notes_obj.notes if n.parent_pos is None}
+        two_columns = len(region.lang_columns) == 2
+        for n in notes_obj.notes:
+            n.needs_review, n.review_reasons = nb.review_flags_note(
+                n, two_columns=two_columns, known_parents=known_parents)
+        image_for_detect = nb.mask_region(image, region)
+    else:
+        image_for_detect = image
 
-    results: List[Characteristic] = []
+    detections = detect_characteristics(image_for_detect, backend)
+
+    known_positions = ({n.pos for n in notes_obj.notes if n.parent_pos is None}
+                       if notes_obj is not None else None)
+    results = []
     for d in detections:
         outer = _clamp(d.box, render.width, render.height)
         read_box = _clamp(d.inner_box, render.width, render.height) if d.inner_box else outer
@@ -90,7 +103,6 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None) -> List[Characteri
         hint = _HINTS.get(d.kind, "")
         subtype = d.subtype or ""
         kind = d.kind
-        # content retag: a boxed value reading as a 100-series number is a note-ref
         if subtype == "theoretical" and _NOTE_REF_RE.match(text or ""):
             hint, subtype, kind = "note", "note_ref", "note"
 
@@ -101,9 +113,15 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None) -> List[Characteri
         c.source = "auto"
         c.target_region = outer
         c.confidence = confidence
-        c.needs_review, c.review_reasons = review_flags(c, rotation_ambiguous)
+        if subtype == "note_ref":
+            try:
+                c.note_ref_pos = int((text or "").strip())
+            except ValueError:
+                c.note_ref_pos = None
+        c.needs_review, c.review_reasons = review_flags(
+            c, rotation_ambiguous, known_note_positions=known_positions)
         results.append(c)
 
     number_characteristics(results)
     place_balloons(results)
-    return results
+    return ExtractionResult(characteristics=results, notes=notes_obj)

@@ -48,3 +48,39 @@ def test_characteristic_review_reasons_are_independent_per_instance():
     b = Characteristic(pos=2)
     a.review_reasons.append("missing nominal")
     assert b.review_reasons == []      # no shared mutable default
+
+
+def test_note_model_defaults():
+    from app.models import Note
+    n = Note(pos=101)
+    assert n.parent_pos is None
+    assert n.sub_index is None
+    assert n.text_en == "" and n.text_de == ""
+    assert n.needs_review is False and n.review_reasons == []
+
+
+def test_note_sub_bullet_carries_parent_and_sub_index():
+    from app.models import Note
+    n = Note(pos=1, parent_pos=101, sub_index=1, text_en="A", text_de="B")
+    assert n.parent_pos == 101 and n.sub_index == 1
+
+
+def test_note_block_model():
+    from app.models import Note, NoteBlock
+    nb = NoteBlock(region=(0, 0, 100, 100), notes=[Note(pos=101)])
+    assert nb.region == (0, 0, 100, 100)
+    assert len(nb.notes) == 1
+
+
+def test_extraction_result_with_no_notes():
+    from app.models import Characteristic, ExtractionResult
+    r = ExtractionResult(characteristics=[Characteristic(pos=1)], notes=None)
+    assert r.notes is None
+    assert len(r.characteristics) == 1
+
+
+def test_characteristic_has_optional_note_ref_pos():
+    from app.models import Characteristic
+    c = Characteristic(pos=1, note_ref_pos=101)
+    assert c.note_ref_pos == 101
+    assert Characteristic(pos=2).note_ref_pos is None

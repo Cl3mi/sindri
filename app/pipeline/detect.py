@@ -7,6 +7,8 @@ import json
 import sys
 from dataclasses import dataclass
 
+from app.pipeline.geom import _iou, _x_aligned, _y_close, _union
+
 
 @dataclass
 class Detection:
@@ -38,18 +40,6 @@ def tile_grid(width: int, height: int, tile: int = 1280, overlap: float = 0.15):
     return boxes
 
 
-def _iou(a: tuple, b: tuple) -> float:
-    ix0, iy0 = max(a[0], b[0]), max(a[1], b[1])
-    ix1, iy1 = min(a[2], b[2]), min(a[3], b[3])
-    iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
-    inter = iw * ih
-    if inter == 0:
-        return 0.0
-    area_a = (a[2] - a[0]) * (a[3] - a[1])
-    area_b = (b[2] - b[0]) * (b[3] - b[1])
-    return inter / float(area_a + area_b - inter)
-
-
 def dedupe(detections, iou_thresh: float = 0.5):
     """Greedy NMS: keep the highest-confidence box, suppress later boxes of the
     SAME kind that overlap it past the threshold. Different kinds never suppress
@@ -59,19 +49,6 @@ def dedupe(detections, iou_thresh: float = 0.5):
         if all(d.kind != k.kind or _iou(d.box, k.box) < iou_thresh for k in kept):
             kept.append(d)
     return kept
-
-
-def _x_aligned(a: tuple, b: tuple, x_tol: int) -> bool:
-    return a[0] <= b[2] + x_tol and b[0] <= a[2] + x_tol
-
-
-def _y_close(a: tuple, b: tuple, y_gap: int) -> bool:
-    gap = max(a[1] - b[3], b[1] - a[3])   # positive when boxes don't vertically overlap
-    return gap <= y_gap
-
-
-def _union(a: tuple, b: tuple) -> tuple:
-    return (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
 
 
 def merge_adjacent(detections, x_tol: int = 20, y_gap: int = 20):

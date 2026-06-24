@@ -2,12 +2,12 @@ import re
 import tempfile
 import uuid
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from app.models import Characteristic
+from app.models import Characteristic, NoteBlock
 from app.pipeline.extract import extract
 from app.pipeline.ocr import get_backend, backend_status
 from app.excel import write_workbook
@@ -40,6 +40,7 @@ _BACKEND = get_backend()
 class ExportRequest(BaseModel):
     session_id: str
     rows: List[Characteristic]
+    notes: Optional[NoteBlock] = None
 
 
 class ReadRegionRequest(BaseModel):
@@ -62,7 +63,7 @@ async def upload(file: UploadFile = File(...)):
     pdf_path = work / "input.pdf"
     pdf_path.write_bytes(await file.read())
     try:
-        rows = extract(pdf_path, work_dir=work, dpi=300, backend=_BACKEND)
+        result = extract(pdf_path, work_dir=work, dpi=300, backend=_BACKEND)
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
@@ -70,7 +71,8 @@ async def upload(file: UploadFile = File(...)):
     return JSONResponse({
         "session_id": session_id,
         "image_url": f"/api/image/{session_id}",
-        "rows": [r.model_dump() for r in rows],
+        "rows": [r.model_dump() for r in result.characteristics],
+        "notes": result.notes.model_dump() if result.notes is not None else None,
     })
 
 
@@ -87,7 +89,7 @@ def export(req: ExportRequest):
     work = _session_dir(req.session_id)
     work.mkdir(parents=True, exist_ok=True)
     out = work / "inspection.xlsx"
-    write_workbook(req.rows, out)
+    write_workbook(req.rows, out, notes=req.notes)
     return FileResponse(
         out,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
