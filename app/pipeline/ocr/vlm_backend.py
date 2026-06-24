@@ -43,6 +43,23 @@ _GDT_PROMPT = (
 )
 
 
+# Notes-block read prompt: the crop is the general-notes table from the
+# drawing. Each row begins with a 3-digit number (101…); some rows contain
+# inline numbered sub-bullets (1., 2., …). The model returns tab-separated
+# triples so the parser can align EN and DE columns in one pass.
+_NOTES_PROMPT = (
+    "This image is the general-notes table from a mechanical engineering "
+    "drawing. Each row begins with a 3-digit number (101, 102, …) followed "
+    "by the English note and then the German note. Some rows contain inline "
+    "numbered sub-bullets (1., 2., 3., …) — preserve them with their "
+    "numbers. Output one row per line in the form:\n"
+    "  <pos>\\t<english>\\t<german>\n"
+    "For sub-bullets, prefix with the parent pos: e.g. "
+    "\"101.1\\t<en>\\t<de>\". No prose, no headers, no explanations. Use a "
+    "comma as the decimal separator."
+)
+
+
 class VLMBackend:
     """Local GPU vision-LLM doing constrained per-region reads only."""
 
@@ -89,6 +106,23 @@ class VLMBackend:
         with self.torch.inference_mode():
             out = self.model.generate(
                 **inputs, max_new_tokens=self.max_new_tokens, do_sample=False,
+            )
+        trimmed = out[0][inputs["input_ids"].shape[1]:]
+        text = self.processor.decode(trimmed, skip_special_tokens=True).strip()
+        return OcrResult(text=text, confidence=0.9 if text else 0.0)
+
+    def read_notes_block(self, image: Image.Image) -> OcrResult:
+        messages = [{"role": "user", "content": [
+            {"type": "image", "image": image.convert("RGB")},
+            {"type": "text", "text": _NOTES_PROMPT},
+        ]}]
+        inputs = self.processor.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=True,
+            return_dict=True, return_tensors="pt",
+        ).to(self.model.device)
+        with self.torch.inference_mode():
+            out = self.model.generate(
+                **inputs, max_new_tokens=512, do_sample=False,
             )
         trimmed = out[0][inputs["input_ids"].shape[1]:]
         text = self.processor.decode(trimmed, skip_special_tokens=True).strip()

@@ -207,3 +207,46 @@ def test_locate_returns_none_when_detector_raises(monkeypatch):
             raise RuntimeError("kaboom")
     monkeypatch.setattr("app.pipeline.notes_block.detect_boxes", lambda image: [])
     assert locate_notes_block(_white_image(), Boom()) is None
+
+
+from app.pipeline.notes_block import read_notes_block
+
+
+class _StubBackendRead:
+    def __init__(self, text):
+        self._text = text
+
+    def read_region(self, image):
+        from app.pipeline.ocr.base import OcrResult
+        return OcrResult(text=self._text, confidence=0.9)
+
+
+def test_read_notes_block_returns_backend_text():
+    backend = _StubBackendRead("101\tA-en\tA-de")
+    region = NotesBlockRegion(outer_box=(0, 0, 100, 100), lang_columns=[(0, 50), (50, 100)])
+    text = read_notes_block(Image.new("RGB", (200, 200), "white"), region, backend)
+    assert text == "101\tA-en\tA-de"
+
+
+def test_read_notes_block_uses_notes_method_when_available():
+    class WithNotesMethod:
+        def read_notes_block(self, image):
+            from app.pipeline.ocr.base import OcrResult
+            return OcrResult(text="from-notes-method", confidence=0.9)
+        def read_region(self, image):
+            from app.pipeline.ocr.base import OcrResult
+            return OcrResult(text="from-generic-read", confidence=0.9)
+
+    region = NotesBlockRegion(outer_box=(0, 0, 100, 100), lang_columns=[(0, 100)])
+    text = read_notes_block(Image.new("RGB", (200, 200), "white"),
+                            region, WithNotesMethod())
+    assert text == "from-notes-method"
+
+
+def test_read_notes_block_returns_empty_string_when_backend_raises():
+    class Boom:
+        def read_region(self, image):
+            raise RuntimeError("kaboom")
+    region = NotesBlockRegion(outer_box=(0, 0, 100, 100), lang_columns=[(0, 100)])
+    text = read_notes_block(Image.new("RGB", (200, 200), "white"), region, Boom())
+    assert text == ""

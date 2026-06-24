@@ -209,3 +209,21 @@ def locate_notes_block(image, backend):
         print(f"[sindri.notes_block] locator failed: {e!r}",
               file=sys.stderr, flush=True)
         return None
+
+
+def read_notes_block(image, region: NotesBlockRegion, backend) -> str:
+    """Read the notes block once and return the raw transcription text.
+    Prefers a backend method named `read_notes_block` if the backend exposes
+    one (lets the VLM backend use a dedicated prompt); otherwise falls back
+    to the generic `read_region`. Never raises."""
+    crop = image.crop(region.outer_box)
+    try:
+        if hasattr(backend, "read_notes_block"):
+            result = backend.read_notes_block(crop)
+        else:
+            result = backend.read_region(crop)
+        return (result.text or "")
+    except Exception as e:
+        print(f"[sindri.notes_block] read failed: {e!r}",
+              file=sys.stderr, flush=True)
+        return ""
