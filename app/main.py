@@ -2,12 +2,12 @@ import re
 import tempfile
 import uuid
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from app.models import Characteristic
+from app.models import Characteristic, NoteBlock
 from app.pipeline.extract import extract
 from app.pipeline.ocr import get_backend, backend_status
 from app.excel import write_workbook
@@ -40,6 +40,7 @@ _BACKEND = get_backend()
 class ExportRequest(BaseModel):
     session_id: str
     rows: List[Characteristic]
+    notes: Optional[NoteBlock] = None
 
 
 class ReadRegionRequest(BaseModel):
@@ -88,7 +89,7 @@ def export(req: ExportRequest):
     work = _session_dir(req.session_id)
     work.mkdir(parents=True, exist_ok=True)
     out = work / "inspection.xlsx"
-    write_workbook(req.rows, out)
+    write_workbook(req.rows, out, notes=req.notes)
     return FileResponse(
         out,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

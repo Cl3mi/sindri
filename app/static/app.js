@@ -215,7 +215,7 @@ function renderNotes() {
 async function download(endpoint, filename) {
   const res = await fetch(endpoint, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId, rows }),
+    body: JSON.stringify({ session_id: sessionId, rows, notes: notesBlock }),
   });
   const blob = await res.blob();
   const a = document.createElement("a");

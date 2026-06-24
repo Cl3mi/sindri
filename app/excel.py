@@ -1,8 +1,8 @@
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Side, Font
-from app.models import Characteristic
+from app.models import Characteristic, NoteBlock
 
 HEADERS = [
     ("Pos.", "Pos."),
@@ -17,11 +17,7 @@ _border = Border(left=_thin, right=_thin, top=_thin, bottom=_thin)
 _center = Alignment(horizontal="center", vertical="center")
 
 
-def write_workbook(rows: Iterable[Characteristic], path: Path) -> None:
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Inspection"
-
+def _write_characteristics_sheet(ws, rows: Iterable[Characteristic]) -> None:
     for col, (de, en) in enumerate(HEADERS, start=1):
         top = ws.cell(1, col, de)
         bot = ws.cell(2, col, en)
@@ -42,5 +38,34 @@ def write_workbook(rows: Iterable[Characteristic], path: Path) -> None:
     for col, w in enumerate(widths, start=1):
         ws.column_dimensions[chr(64 + col)].width = w
 
+
+def _write_notes_sheet(ws, block: NoteBlock) -> None:
+    headers = ["Pos", "English", "German"]
+    for col, h in enumerate(headers, start=1):
+        cell = ws.cell(1, col, h)
+        cell.font = Font(bold=True)
+        cell.alignment = _center
+        cell.border = _border
+    # Render notes in source order. Sub-bullets show "<parent>.<sub>" as Pos.
+    for i, n in enumerate(block.notes, start=2):
+        if n.parent_pos is not None and n.sub_index is not None:
+            pos_label = f"{n.parent_pos}.{n.sub_index}"
+        else:
+            pos_label = f"{n.pos}"
+        ws.cell(i, 1, pos_label)
+        ws.cell(i, 2, n.text_en)
+        ws.cell(i, 3, n.text_de)
+    for col, w in enumerate([10, 48, 48], start=1):
+        ws.column_dimensions[chr(64 + col)].width = w
+
+
+def write_workbook(rows: Iterable[Characteristic], path: Path,
+                   notes: Optional[NoteBlock] = None) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Inspection"
+    _write_characteristics_sheet(ws, rows)
+    if notes is not None and notes.notes:
+        _write_notes_sheet(wb.create_sheet("Notes"), notes)
     path = Path(path)
     wb.save(path)
