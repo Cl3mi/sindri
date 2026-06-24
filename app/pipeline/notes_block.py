@@ -41,3 +41,20 @@ def parse_notes_block(raw: str, region: Tuple[float, float, float, float]) -> No
                 raw_text=line,
             ))
     return NoteBlock(region=region, notes=notes)
+
+
+def review_flags_note(note: Note, two_columns: bool,
+                      known_parents: set) -> Tuple[bool, List[str]]:
+    """Return (needs_review, reasons) for a parsed note.
+
+    Gating: an empty read is its own reason and does not also report
+    'missing translation'."""
+    reasons: List[str] = []
+    if not (note.raw_text or "").strip():
+        reasons.append("empty read")
+    else:
+        if two_columns and (not note.text_en.strip() or not note.text_de.strip()):
+            reasons.append("missing translation")
+    if note.parent_pos is not None and note.parent_pos not in known_parents:
+        reasons.append("orphan sub-bullet")
+    return bool(reasons), reasons

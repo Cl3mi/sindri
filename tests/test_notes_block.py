@@ -65,3 +65,59 @@ def test_three_digit_pos_outside_10x_range_still_accepted():
     raw = "199\tnote text en\tnote text de"
     nb = parse_notes_block(raw, region=(0, 0, 100, 100))
     assert nb.notes[0].pos == 199
+
+
+from app.models import Note
+from app.pipeline.notes_block import review_flags_note
+
+
+def _note(**kw):
+    base = dict(pos=101, text_en="A", text_de="B", raw_text="101\tA\tB")
+    base.update(kw)
+    return Note(**base)
+
+
+def test_clean_top_level_note_not_flagged():
+    flagged, reasons = review_flags_note(
+        _note(), two_columns=True, known_parents=set())
+    assert flagged is False
+    assert reasons == []
+
+
+def test_empty_raw_text_is_flagged():
+    flagged, reasons = review_flags_note(
+        _note(raw_text="", text_en="", text_de=""),
+        two_columns=True, known_parents=set())
+    assert flagged is True
+    assert reasons == ["empty read"]
+
+
+def test_missing_translation_when_two_columns_expected():
+    _, reasons = review_flags_note(
+        _note(text_de=""), two_columns=True, known_parents=set())
+    assert reasons == ["missing translation"]
+
+
+def test_missing_translation_not_reported_for_single_column_block():
+    _, reasons = review_flags_note(
+        _note(text_de=""), two_columns=False, known_parents=set())
+    assert reasons == []
+
+
+def test_orphan_sub_bullet_when_parent_not_in_block():
+    sub = _note(pos=1, parent_pos=999, sub_index=1, raw_text="999.1\tA\tB")
+    _, reasons = review_flags_note(sub, two_columns=True, known_parents={101})
+    assert "orphan sub-bullet" in reasons
+
+
+def test_sub_bullet_with_known_parent_not_flagged_for_orphan():
+    sub = _note(pos=1, parent_pos=101, sub_index=1, raw_text="101.1\tA\tB")
+    _, reasons = review_flags_note(sub, two_columns=True, known_parents={101})
+    assert reasons == []
+
+
+def test_empty_read_suppresses_missing_translation():
+    _, reasons = review_flags_note(
+        _note(raw_text="", text_en="", text_de=""),
+        two_columns=True, known_parents=set())
+    assert reasons == ["empty read"]
