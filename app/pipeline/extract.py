@@ -86,6 +86,8 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None) -> ExtractionResul
 
     detections = detect_characteristics(image_for_detect, backend)
 
+    known_positions = ({n.pos for n in notes_obj.notes if n.parent_pos is None}
+                       if notes_obj is not None else None)
     results = []
     for d in detections:
         outer = _clamp(d.box, render.width, render.height)
@@ -116,8 +118,6 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None) -> ExtractionResul
                 c.note_ref_pos = int((text or "").strip())
             except ValueError:
                 c.note_ref_pos = None
-        known_positions = ({n.pos for n in notes_obj.notes if n.parent_pos is None}
-                           if notes_obj is not None else None)
         c.needs_review, c.review_reasons = review_flags(
             c, rotation_ambiguous, known_note_positions=known_positions)
         results.append(c)
