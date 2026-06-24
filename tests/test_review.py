@@ -79,3 +79,26 @@ def test_theoretical_row_with_nominal_is_not_flagged():
                                     rotation_ambiguous=False)
     assert flagged is False
     assert reasons == []
+
+
+def test_unknown_note_reference_when_pos_not_in_block():
+    c = _row(char_type="Note", subtype="note_ref", raw_text="101",
+             nominal="101", note_ref_pos=101)
+    _, reasons = review_flags(c, rotation_ambiguous=False, known_note_positions={102, 103})
+    assert "unknown note reference" in reasons
+
+
+def test_known_note_reference_not_flagged():
+    c = _row(char_type="Note", subtype="note_ref", raw_text="101",
+             nominal="101", note_ref_pos=101)
+    flagged, reasons = review_flags(c, rotation_ambiguous=False,
+                                    known_note_positions={101, 102})
+    assert "unknown note reference" not in reasons
+    assert flagged is False
+
+
+def test_note_ref_when_no_block_present_skips_unknown_check():
+    c = _row(char_type="Note", subtype="note_ref", raw_text="101",
+             nominal="101", note_ref_pos=101)
+    _, reasons = review_flags(c, rotation_ambiguous=False, known_note_positions=None)
+    assert "unknown note reference" not in reasons

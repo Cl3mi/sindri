@@ -62,7 +62,8 @@ async def upload(file: UploadFile = File(...)):
     pdf_path = work / "input.pdf"
     pdf_path.write_bytes(await file.read())
     try:
-        rows = extract(pdf_path, work_dir=work, dpi=300, backend=_BACKEND)
+        result = extract(pdf_path, work_dir=work, dpi=300, backend=_BACKEND)
+        rows = result.characteristics
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
