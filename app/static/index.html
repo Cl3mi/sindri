@@ -1,61 +1,275 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark" data-density="comfortable">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Sindri — Drawing Balloon Extractor</title>
-  <style>
-    body { font-family: system-ui, sans-serif; margin: 0; display: flex; height: 100vh; }
-    #left { flex: 1; overflow: auto; border-right: 1px solid #ccc; position: relative; }
-    #left img { width: 100%; display: block; }
-    .marker { position: absolute; width: 18px; height: 18px; margin: -9px 0 0 -9px;
-              border: 2px solid #2563eb; border-radius: 50%;
-              background: rgba(37,99,235,.2); cursor: move; font-size: 10px;
-              color: #1e3a8a; text-align: center; line-height: 16px; user-select: none; }
-    .marker .del { position: absolute; top: -10px; right: -10px; width: 14px;
-                   height: 14px; border-radius: 50%; background: #dc2626; color: #fff;
-                   font-size: 10px; line-height: 14px; cursor: pointer; display: none; }
-    .marker:hover .del { display: block; }
-    #left.adding { cursor: crosshair; }
-    #addBtn.active { background: #2563eb; color: #fff; }
-    #right { width: 46%; overflow: auto; padding: 12px; }
-    table { border-collapse: collapse; width: 100%; font-size: 13px; }
-    th, td { border: 1px solid #ddd; padding: 3px 5px; }
-    td[contenteditable] { background: #fff; }
-    tr.low td { background: #fff7ed; }
-    #notes { margin-top: 16px; }
-    #notes h3 { margin: 0 0 6px 0; font-size: 14px; }
-    #notes table { border-collapse: collapse; width: 100%; font-size: 13px; }
-    #notes td.sub { padding-left: 18px; color: #444; }
-    #notes tr.low td { background: #fff7ed; }
-    .note-ref { color: #1d4ed8; cursor: pointer; margin-left: 4px; font-size: 11px; }
-    .note-ref:hover { text-decoration: underline; }
-    #bar { padding: 8px 12px; border-bottom: 1px solid #ccc; display: flex; gap: 8px; align-items: center; }
-    button { padding: 6px 12px; cursor: pointer; }
-  </style>
+  <title>Sindri — Drawing Inspection Workbench</title>
+  <link rel="stylesheet" href="/styles/tokens.css" />
+  <link rel="stylesheet" href="/styles/layout.css" />
+  <link rel="stylesheet" href="/styles/components.css" />
 </head>
 <body>
-  <div id="left"><div id="overlay"></div></div>
-  <div id="right">
-    <div id="bar">
-      <input type="file" id="file" accept="application/pdf" />
-    <button id="addBtn">+ Add balloon</button>
-    <button id="exportBtn" disabled>Download Excel</button>
-    <button id="exportPdfBtn" disabled>Download ballooned PDF</button>
-      <span id="status"></span>
+
+<!-- SVG icon sprite (line-stroke, 1.5px, currentColor) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-logo" viewBox="0 0 24 24" fill="none">
+      <path d="M5 19V5l14 14V5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24" fill="none"><path d="M5 12h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L19 7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.5"/><path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+    <symbol id="i-undo" viewBox="0 0 24 24" fill="none"><path d="M9 14l-4-4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 10h9a5 5 0 0 1 0 10h-2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+    <symbol id="i-redo" viewBox="0 0 24 24" fill="none"><path d="M15 14l4-4-4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M19 10h-9a5 5 0 0 0 0 10h2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24" fill="none"><path d="M12 4v12m0 0l-4-4m4 4l4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 20h16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+    <symbol id="i-fit-width" viewBox="0 0 24 24" fill="none"><path d="M3 12h18M3 12l3-3m-3 3l3 3M21 12l-3-3m3 3l-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-fit-page" viewBox="0 0 24 24" fill="none"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-target" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24" fill="none"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-warn" viewBox="0 0 24 24" fill="none"><path d="M12 3L2 20h20L12 3z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 10v5M12 17.5v.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/><path d="M12 11v6M12 7.5v.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-chev-down" viewBox="0 0 24 24" fill="none"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-keyboard" viewBox="0 0 24 24" fill="none"><rect x="3" y="6" width="18" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M7 10h.01M11 10h.01M15 10h.01M7 14h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.5"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4L7 17M17 7l1.4-1.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24" fill="none"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
+    <symbol id="i-density" viewBox="0 0 24 24" fill="none"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24" fill="none"><path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
+  </defs>
+</svg>
+
+<div id="app">
+
+  <!-- ===== HEADER =============================================== -->
+  <header id="shell-header">
+    <div class="brand">
+      <svg class="logo-mark"><use href="#i-logo"/></svg>
+      Sindri
+      <span class="sub">Drawing Inspection Workbench</span>
     </div>
-    <table id="grid">
-      <thead><tr><th>Pos</th><th>Characteristic</th><th>Nominal</th><th>Upper-tol</th><th>Lower-tol</th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <section id="notes" hidden>
-      <h3>Notes</h3>
-      <table>
-        <thead><tr><th>Pos</th><th>English</th><th>German</th></tr></thead>
-        <tbody></tbody>
-      </table>
+
+    <div class="file-chip" id="file-chip" hidden>
+      <svg width="13" height="13"><use href="#i-folder"/></svg>
+      <span class="name" id="file-name">—</span>
+      <button id="file-close" title="Close drawing"><svg width="11" height="11"><use href="#i-x"/></svg></button>
+    </div>
+
+    <div class="spacer"></div>
+
+    <div class="progress-mini" id="review-progress" hidden>
+      <span id="review-text">0/0 reviewed</span>
+      <div class="bar"><div id="review-bar" style="width:0%"></div></div>
+    </div>
+
+    <span class="status-pill" id="ocr-pill" title="OCR backend">
+      <span class="dot"></span><span id="ocr-label">OCR</span>
+    </span>
+
+    <span class="status-pill" id="status-pill" hidden>
+      <span class="dot"></span><span id="status-text">Ready</span>
+    </span>
+  </header>
+
+  <!-- ===== BODY (split layout) ================================= -->
+  <main id="shell-body">
+
+    <!-- LEFT: plan ----------------------------------------------- -->
+    <section id="left-pane">
+      <div class="toolbar">
+        <div class="group" role="group" aria-label="Zoom">
+          <button id="zoom-out" title="Zoom out (-)" aria-label="Zoom out">
+            <svg class="icon" width="14" height="14"><use href="#i-minus"/></svg>
+          </button>
+          <span class="zoom-readout" id="zoom-readout">—</span>
+          <button id="zoom-in" title="Zoom in (+)" aria-label="Zoom in">
+            <svg class="icon" width="14" height="14"><use href="#i-plus"/></svg>
+          </button>
+        </div>
+
+        <div class="group" role="group" aria-label="Fit">
+          <button id="fit-width" title="Fit width (W)">
+            <svg class="icon" width="14" height="14"><use href="#i-fit-width"/></svg>
+          </button>
+          <button id="fit-page" title="Fit page (F)">
+            <svg class="icon" width="14" height="14"><use href="#i-fit-page"/></svg>
+          </button>
+          <button id="zoom-100" title="Actual size (0)">
+            <span style="font-family:var(--font-mono);font-size:11px">1:1</span>
+          </button>
+        </div>
+
+        <div class="group" role="group" aria-label="Add">
+          <button id="add-btn" title="Add balloon: drag a box (A)">
+            <svg class="icon" width="14" height="14"><use href="#i-plus"/></svg>
+            <span>Add</span>
+          </button>
+        </div>
+
+        <div class="spacer"></div>
+
+        <div class="group" role="group" aria-label="History">
+          <button id="undo-btn" title="Undo (Ctrl+Z)" disabled>
+            <svg class="icon" width="14" height="14"><use href="#i-undo"/></svg>
+          </button>
+          <button id="redo-btn" title="Redo (Ctrl+Shift+Z)" disabled>
+            <svg class="icon" width="14" height="14"><use href="#i-redo"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div id="plan-viewport" class="scroll-thin">
+        <div id="plan-stage"><!-- img injected here --></div>
+        <div id="marker-layer"></div>
+        <div id="rubber-band"></div>
+
+        <div id="plan-empty">
+          <div class="inner">
+            <div class="title">Upload a technical drawing</div>
+            <div class="hint">Drop a PDF anywhere — or use the button below.</div>
+            <label class="btn primary file-btn" style="margin-top:14px">
+              <svg class="icon" width="14" height="14"><use href="#i-folder"/></svg>
+              Open PDF…
+              <input type="file" id="file-input-empty" accept="application/pdf" class="sr" />
+            </label>
+          </div>
+        </div>
+      </div>
     </section>
+
+    <!-- SPLIT HANDLE -------------------------------------------- -->
+    <div id="split-handle" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
+
+    <!-- RIGHT: inspection -------------------------------------- -->
+    <section id="right-pane">
+      <div class="toolbar">
+        <div class="search" id="search-wrap">
+          <svg width="13" height="13"><use href="#i-search"/></svg>
+          <input type="search" id="search-input" placeholder="Search characteristics…" autocomplete="off" />
+          <button class="clear" id="search-clear" title="Clear" aria-label="Clear search">
+            <svg width="11" height="11"><use href="#i-x"/></svg>
+          </button>
+        </div>
+
+        <div class="segmented" id="filter-pills">
+          <button data-filter="all" class="active">All <span class="count" id="cnt-all">0</span></button>
+          <button data-filter="review">Review <span class="count" id="cnt-review">0</span></button>
+          <button data-filter="ok">OK <span class="count" id="cnt-ok">0</span></button>
+        </div>
+
+        <div class="spacer"></div>
+
+        <button class="btn ghost" id="bulk-accept" title="Mark visible rows reviewed (Y)" disabled>
+          <svg class="icon"><use href="#i-check"/></svg>
+          <span id="bulk-accept-label">Accept all</span>
+        </button>
+
+        <button class="btn" id="export-xlsx" disabled>
+          <svg class="icon"><use href="#i-download"/></svg>
+          Excel
+        </button>
+        <button class="btn primary" id="export-pdf" disabled>
+          <svg class="icon"><use href="#i-download"/></svg>
+          Ballooned PDF
+        </button>
+      </div>
+
+      <div id="table-wrap" class="scroll-thin">
+        <table class="inspection">
+          <thead>
+            <tr>
+              <th class="check"><input type="checkbox" class="checkbox" id="select-all" aria-label="Select all visible" /></th>
+              <th>Pos</th>
+              <th>Characteristic</th>
+              <th class="num">Nominal</th>
+              <th class="num">+Tol</th>
+              <th class="num">−Tol</th>
+            </tr>
+          </thead>
+          <tbody id="grid-body"></tbody>
+        </table>
+
+        <section id="notes-section" hidden>
+          <div class="notes-header" id="notes-toggle">
+            <svg class="caret" width="11" height="11"><use href="#i-chev-down"/></svg>
+            Notes
+            <span class="count" id="notes-count">0</span>
+          </div>
+          <table class="notes">
+            <thead>
+              <tr><th style="width:60px">Pos</th><th>English</th><th>German</th></tr>
+            </thead>
+            <tbody id="notes-body"></tbody>
+          </table>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <!-- ===== FOOTER =============================================== -->
+  <footer id="shell-footer">
+    <span class="seg" id="foot-total"><span class="dot"></span><span id="foot-total-text">no session</span></span>
+    <span class="seg warn" id="foot-review" hidden><span class="dot"></span><span id="foot-review-text">0 to review</span></span>
+    <span class="seg" id="foot-selected" hidden><span class="dot"></span><span id="foot-selected-text"></span></span>
+
+    <div class="spacer"></div>
+
+    <span class="seg" id="foot-session" hidden></span>
+    <span class="sep"></span>
+
+    <button class="icon-btn" id="density-toggle" title="Toggle density">
+      <svg width="14" height="14"><use href="#i-density"/></svg>
+    </button>
+    <button class="icon-btn" id="theme-toggle" title="Toggle theme">
+      <svg width="14" height="14"><use href="#i-moon"/></svg>
+    </button>
+    <button class="icon-btn" id="help-toggle" title="Keyboard shortcuts (?)">
+      <svg width="14" height="14"><use href="#i-keyboard"/></svg>
+    </button>
+  </footer>
+</div>
+
+<!-- Toast container -->
+<div id="toasts"></div>
+
+<!-- Hidden file input for re-uploads -->
+<input type="file" id="file-input" accept="application/pdf" class="sr" />
+
+<!-- Keyboard help modal -->
+<div id="modal-backdrop">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <h2 id="modal-title">
+      Keyboard shortcuts
+      <button class="close-x" id="modal-close" aria-label="Close">
+        <svg width="14" height="14"><use href="#i-x"/></svg>
+      </button>
+    </h2>
+    <div class="shortcuts-grid">
+      <div class="group">
+        <h3>Plan viewer</h3>
+        <div class="row"><span>Zoom in / out</span><span><kbd>+</kbd><kbd>−</kbd></span></div>
+        <div class="row"><span>Fit width / page</span><span><kbd>W</kbd><kbd>F</kbd></span></div>
+        <div class="row"><span>Actual size (1:1)</span><span><kbd>0</kbd></span></div>
+        <div class="row"><span>Pan</span><span><kbd>Space</kbd> + drag, or middle-drag</span></div>
+        <div class="row"><span>Toggle add-balloon mode</span><span><kbd>A</kbd></span></div>
+      </div>
+      <div class="group">
+        <h3>Selection &amp; editing</h3>
+        <div class="row"><span>Nudge selected marker</span><span><kbd>←</kbd><kbd>↑</kbd><kbd>↓</kbd><kbd>→</kbd> · <kbd>Shift</kbd> ×10</span></div>
+        <div class="row"><span>Delete selected</span><span><kbd>Del</kbd></span></div>
+        <div class="row"><span>Undo / Redo</span><span><kbd>Ctrl</kbd>+<kbd>Z</kbd> · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd></span></div>
+        <div class="row"><span>Accept visible rows</span><span><kbd>Y</kbd></span></div>
+      </div>
+      <div class="group">
+        <h3>Navigation</h3>
+        <div class="row"><span>Focus search</span><span><kbd>/</kbd></span></div>
+        <div class="row"><span>Filter: All / Review / OK</span><span><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd></span></div>
+        <div class="row"><span>Help</span><span><kbd>?</kbd></span></div>
+      </div>
+    </div>
   </div>
-  <script src="/app.js"></script>
+</div>
+
+<script type="module" src="/js/main.js"></script>
 </body>
 </html>
