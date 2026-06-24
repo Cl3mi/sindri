@@ -78,3 +78,134 @@ def mask_region(image: Image.Image, region: NotesBlockRegion) -> Image.Image:
     if x1 > x0 and y1 > y0:
         ImageDraw.Draw(out).rectangle((x0, y0, x1, y1), fill="white")
     return out
+
+
+import sys
+from app.pipeline.geom import _iou, _x_aligned, _y_close, _union
+from app.pipeline.detect import tile_grid, Detection
+from app.pipeline.boxes import detect_boxes
+
+
+_LOCATOR_PAD = 8                # px padding when no CV snap is available
+_SNAP_IOU = 0.4                 # IoU threshold to consider a CV rectangle a snap
+_NOTE_CLUSTER_X_TOL = 30        # px: same-column note detections
+_NOTE_CLUSTER_Y_GAP = 40        # px: vertical gap allowed between adjacent rows
+
+
+def _cluster_notes(dets):
+    """Merge same-column, vertically-close note detections into one bounding
+    box. Returns the largest merged cluster, or None if no notes."""
+    notes = [d for d in dets if d.kind == "note"]
+    if not notes:
+        return None
+    items = [d.box for d in notes]
+    changed = True
+    while changed:
+        changed = False
+        out = []
+        used = [False] * len(items)
+        for i in range(len(items)):
+            if used[i]:
+                continue
+            a = items[i]
+            for j in range(i + 1, len(items)):
+                if used[j]:
+                    continue
+                b = items[j]
+                if (_x_aligned(a, b, _NOTE_CLUSTER_X_TOL)
+                        and _y_close(a, b, _NOTE_CLUSTER_Y_GAP)):
+                    a = _union(a, b)
+                    used[j] = True
+                    changed = True
+            out.append(a)
+        items = out
+    items.sort(key=lambda b: -((b[2] - b[0]) * (b[3] - b[1])))
+    return items[0]
+
+
+def _snap_to_cv(proposal, image, cv_boxes):
+    candidates = [b.outer_box for b in cv_boxes
+                  if _iou(proposal, b.outer_box) >= _SNAP_IOU
+                  and (b.outer_box[2] - b.outer_box[0]) * (b.outer_box[3] - b.outer_box[1])
+                      >= (proposal[2] - proposal[0]) * (proposal[3] - proposal[1])]
+    if not candidates:
+        return proposal
+    candidates.sort(key=lambda b: -((b[2] - b[0]) * (b[3] - b[1])))
+    return candidates[0]
+
+
+def _pad(box, image):
+    w, h = image.size
+    x0, y0, x1, y1 = box
+    return (max(0, int(x0) - _LOCATOR_PAD), max(0, int(y0) - _LOCATOR_PAD),
+            min(w, int(x1) + _LOCATOR_PAD), min(h, int(y1) + _LOCATOR_PAD))
+
+
+def _infer_columns(image, box):
+    """Return language-column x-ranges inside `box`. 2 columns if a strong
+    vertical divider is found near the middle, else 1."""
+    import numpy as np
+    import cv2
+    x0, y0, x1, y1 = box
+    crop = np.array(image.convert("L").crop((x0, y0, x1, y1)))
+    if crop.size == 0 or crop.shape[1] < 20:
+        return [(x0, x1)]
+    _, binv = cv2.threshold(crop, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+    rh = crop.shape[0]
+    col_ink = binv.sum(axis=0) / 255.0
+    midband_lo = int(crop.shape[1] * 0.30)
+    midband_hi = int(crop.shape[1] * 0.70)
+    threshold = 0.6 * rh
+    best = None
+    for x in range(midband_lo, midband_hi):
+        if col_ink[x] > threshold and (best is None or col_ink[x] > best[1]):
+            best = (x, col_ink[x])
+    if best is None:
+        return [(x0, x1)]
+    split_x = x0 + best[0]
+    return [(x0, split_x), (split_x, x1)]
+
+
+def locate_notes_block(image, backend):
+    """Three-step hybrid locator: VLM proposes notes detections; CV snaps the
+    region to the overlapping rectangle if one exists; columns inferred from
+    the ink density inside the snapped box. Never raises; any failure returns
+    None and the pipeline runs without a notes section."""
+    try:
+        width, height = image.size
+        acc = []
+        for (tx0, ty0, tx1, ty1) in tile_grid(width, height):
+            tile_img = image.crop((tx0, ty0, tx1, ty1))
+            try:
+                dets = backend.detect_regions(tile_img)
+            except Exception as e:
+                print(f"[sindri.notes_block] tile ({tx0},{ty0}) failed: {e!r}",
+                      file=sys.stderr, flush=True)
+                continue
+            for d in dets:
+                if d.kind != "note":
+                    continue
+                acc.append(Detection(
+                    box=(d.box[0] + tx0, d.box[1] + ty0,
+                         d.box[2] + tx0, d.box[3] + ty0),
+                    kind="note", conf=d.conf))
+        proposal = _cluster_notes(acc)
+        if proposal is None:
+            return None
+        try:
+            cv_boxes = detect_boxes(image)
+        except Exception:
+            cv_boxes = []
+        snapped = _snap_to_cv(proposal, image, cv_boxes)
+        if snapped == proposal:
+            snapped = _pad(proposal, image)
+        try:
+            columns = _infer_columns(image, snapped)
+        except Exception:
+            columns = [(snapped[0], snapped[2])]
+        return NotesBlockRegion(outer_box=tuple(int(v) for v in snapped),
+                                lang_columns=columns)
+    except Exception as e:
+        print(f"[sindri.notes_block] locator failed: {e!r}",
+              file=sys.stderr, flush=True)
+        return None

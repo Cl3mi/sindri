@@ -146,3 +146,64 @@ def test_mask_region_box_with_zero_area_no_op():
     # still all black
     assert out.getpixel((10, 10)) == (0, 0, 0)
     assert out.getpixel((25, 25)) == (0, 0, 0)
+
+
+from app.pipeline.detect import Detection
+from app.pipeline.boxes import BoxDetection
+from app.pipeline.notes_block import locate_notes_block
+
+
+class _StubBackendNotes:
+    """Returns the same note detections for every tile (the locator's tile-grid
+    pass will pick them up at offset (0,0))."""
+    def __init__(self, detections):
+        self._dets = detections
+
+    def detect_regions(self, image):
+        return list(self._dets)
+
+
+def _white_image(w=400, h=400):
+    return Image.new("RGB", (w, h), "white")
+
+
+def test_locate_returns_none_when_no_note_detections(monkeypatch):
+    backend = _StubBackendNotes(detections=[])
+    monkeypatch.setattr("app.pipeline.notes_block.detect_boxes", lambda image: [])
+    region = locate_notes_block(_white_image(), backend)
+    assert region is None
+
+
+def test_locate_clusters_adjacent_note_detections(monkeypatch):
+    # Three note detections stacked vertically inside the same column.
+    dets = [
+        Detection(box=(50, 20, 200, 40), kind="note", conf=0.9),
+        Detection(box=(50, 50, 200, 70), kind="note", conf=0.9),
+        Detection(box=(50, 80, 200, 100), kind="note", conf=0.9),
+    ]
+    backend = _StubBackendNotes(dets)
+    monkeypatch.setattr("app.pipeline.notes_block.detect_boxes", lambda image: [])
+    region = locate_notes_block(_white_image(), backend)
+    assert region is not None
+    # outer_box covers the union of the three, padded by 8
+    assert region.outer_box[0] <= 50 and region.outer_box[1] <= 20
+    assert region.outer_box[2] >= 200 and region.outer_box[3] >= 100
+
+
+def test_locate_snaps_to_overlapping_cv_rectangle(monkeypatch):
+    dets = [Detection(box=(60, 60, 200, 90), kind="note", conf=0.9)]
+    cv = BoxDetection(outer_box=(50, 50, 220, 110), inner_box=(54, 54, 216, 106),
+                      cells=2, subtype="theoretical", conf=0.8)
+    backend = _StubBackendNotes(dets)
+    monkeypatch.setattr("app.pipeline.notes_block.detect_boxes", lambda image: [cv])
+    region = locate_notes_block(_white_image(), backend)
+    # Snapped to the CV rectangle (which is larger and overlaps).
+    assert region.outer_box == (50, 50, 220, 110)
+
+
+def test_locate_returns_none_when_detector_raises(monkeypatch):
+    class Boom:
+        def detect_regions(self, image):
+            raise RuntimeError("kaboom")
+    monkeypatch.setattr("app.pipeline.notes_block.detect_boxes", lambda image: [])
+    assert locate_notes_block(_white_image(), Boom()) is None
