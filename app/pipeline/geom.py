@@ -18,7 +18,7 @@ def _x_aligned(a, b, x_tol: int) -> bool:
 
 
 def _y_close(a, b, y_gap: int) -> bool:
-    gap = max(a[1] - b[3], b[1] - a[3])
+    gap = max(a[1] - b[3], b[1] - a[3])   # positive when boxes don't vertically overlap
     return gap <= y_gap
 
 
