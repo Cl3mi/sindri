@@ -1,5 +1,6 @@
 let sessionId = null;
 let rows = [];
+let notesBlock = null;
 let imgEl = null;
 let addMode = false;
 
@@ -21,8 +22,10 @@ $("#file").addEventListener("change", async (e) => {
   const data = await res.json();
   sessionId = data.session_id;
   rows = data.rows;
+  notesBlock = data.notes;
   renderImage(data.image_url);
   renderGrid();
+  renderNotes();
   $("#exportBtn").disabled = false;
   $("#exportPdfBtn").disabled = false;
   $("#status").textContent = `${rows.length} characteristics`;
@@ -160,8 +163,11 @@ function renderGrid() {
       tr.title = (r.review_reasons || []).join(", ");
     }
     const posCell = `${r.needs_review ? "⚠ " : ""}${r.pos}`;
+    const refIndicator = r.note_ref_pos
+      ? `<span class="note-ref" data-pos="${r.note_ref_pos}">→ note ${r.note_ref_pos}</span>`
+      : "";
     tr.innerHTML =
-      `<td>${posCell}</td>` +
+      `<td>${posCell}${refIndicator}</td>` +
       ["char_type", "nominal", "upper_tol", "lower_tol"]
         .map((k) => `<td contenteditable data-i="${i}" data-k="${k}">${r[k] ?? ""}</td>`)
         .join("");
@@ -171,6 +177,38 @@ function renderGrid() {
     td.addEventListener("input", () => {
       rows[+td.dataset.i][td.dataset.k] = td.textContent;
     });
+  });
+  tb.querySelectorAll(".note-ref").forEach((el) => {
+    el.addEventListener("click", () => {
+      const target = document.getElementById(`note-${el.dataset.pos}`);
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  });
+}
+
+function renderNotes() {
+  const section = $("#notes");
+  const tb = section.querySelector("tbody");
+  tb.innerHTML = "";
+  if (!notesBlock || !notesBlock.notes || notesBlock.notes.length === 0) {
+    section.hidden = true;
+    return;
+  }
+  section.hidden = false;
+  notesBlock.notes.forEach((n) => {
+    const tr = document.createElement("tr");
+    const isSub = n.parent_pos != null;
+    if (n.needs_review) {
+      tr.className = "low";
+      tr.title = (n.review_reasons || []).join(", ");
+    }
+    const posLabel = isSub ? `${n.parent_pos}.${n.sub_index}` : `${n.pos}`;
+    const anchor = isSub ? "" : ` id="note-${n.pos}"`;
+    tr.innerHTML =
+      `<td${anchor} class="${isSub ? "sub" : ""}">${posLabel}</td>` +
+      `<td>${n.text_en ?? ""}</td>` +
+      `<td>${n.text_de ?? ""}</td>`;
+    tb.appendChild(tr);
   });
 }
 
