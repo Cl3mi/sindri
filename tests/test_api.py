@@ -257,6 +257,16 @@ def test_delete_missing_session_is_idempotent():
     assert r.status_code == 200
 
 
+@pytest.mark.parametrize("path", ["/", "/js/main.js", "/js/api.js"])
+def test_static_assets_force_revalidation(path):
+    """Static HTML/JS must carry Cache-Control: no-cache so a rebuilt backend
+    is never paired with a stale cached frontend (the source of the
+    `payload.rows.map` crash after a container rebuild)."""
+    r = client.get(path)
+    assert r.status_code == 200, r.text
+    assert "no-cache" in r.headers.get("cache-control", "")
+
+
 def test_delete_rejects_bad_session_id():
     r = client.delete("/api/session/not-a-valid-uuid")
     assert r.status_code == 404

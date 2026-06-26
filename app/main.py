@@ -12,6 +12,8 @@ import fitz  # PyMuPDF
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.types import Scope
+from starlette.responses import Response
 from pydantic import BaseModel
 from app.models import Characteristic, NoteBlock
 from app.pipeline.extract import extract
@@ -218,5 +220,18 @@ def export_pdf(req: ExportRequest):
     return FileResponse(out, media_type="application/pdf", filename="ballooned.pdf")
 
 
+class NoCacheStaticFiles(StaticFiles):
+    """Serve the SPA assets with `Cache-Control: no-cache` so browsers always
+    revalidate (cheap 304 via ETag when unchanged). This guarantees that after
+    a container rebuild the frontend matches the backend — a stale cached bundle
+    paired with the new API contract is what produced the `payload.rows.map`
+    crash on the extract flow."""
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 # static UI mounted last so /api/* takes precedence
-app.mount("/", StaticFiles(directory=str(Path(__file__).parent / "static"), html=True), name="static")
+app.mount("/", NoCacheStaticFiles(directory=str(Path(__file__).parent / "static"), html=True), name="static")
