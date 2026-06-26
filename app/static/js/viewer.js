@@ -24,8 +24,8 @@ const ZOOM_STEP = 1.2;
 
 let viewport, stage, markerLayer, rubber, img, empty;
 let zoom = 1, tx = 0, ty = 0;
-let panning = false, spaceDown = false, panStart = null;
-let addMode = false;
+let panning = false, spaceDown = false, altDown = false, panStart = null;
+let addMode = false, panMode = false;
 let drawing = null;        // { startView }
 let dragging = null;       // { id, lastView }
 
@@ -51,6 +51,7 @@ function bindZoomControls() {
   document.getElementById('fit-width').addEventListener('click', fitWidth);
   document.getElementById('fit-page') .addEventListener('click', fitPage);
   document.getElementById('zoom-100') .addEventListener('click', () => setZoom(1, viewportCenter()));
+  document.getElementById('pan-btn')  .addEventListener('click', togglePan);
   document.getElementById('add-btn')  .addEventListener('click', toggleAdd);
 }
 
@@ -153,8 +154,9 @@ function bindMouse() {
     if (e.target.closest('.marker .del')) return;        // delete-x click
     const onMarker = e.target.closest('.marker');
 
-    // PAN (space+drag or middle-button)
-    if ((spaceDown && e.button === 0) || e.button === 1) {
+    // PAN (space/alt + drag, persistent pan mode, or middle-button).
+    // Alt-drag wins over add-mode / marker-drag so it works anywhere.
+    if (((spaceDown || e.altKey || panMode) && e.button === 0) || e.button === 1) {
       e.preventDefault();
       panning = true;
       panStart = { x: e.clientX, y: e.clientY, tx, ty };
@@ -281,12 +283,16 @@ function bindKeys() {
       spaceDown = true; viewport.classList.add('space-down');
       e.preventDefault();
     }
+    if (e.key === 'Alt' && !altDown) {
+      altDown = true; viewport.classList.add('alt-down');
+    }
     if (e.key === '+' || e.key === '=') { zoomBy(ZOOM_STEP, viewportCenter()); e.preventDefault(); }
     if (e.key === '-' || e.key === '_') { zoomBy(1 / ZOOM_STEP, viewportCenter()); e.preventDefault(); }
     if (e.key === '0') { setZoom(1, viewportCenter()); }
     if (e.key.toLowerCase() === 'w') { fitWidth(); }
     if (e.key.toLowerCase() === 'f') { fitPage(); }
     if (e.key.toLowerCase() === 'a') { toggleAdd(); }
+    if (e.key.toLowerCase() === 'h') { togglePan(); }
     if (e.key === 'Delete' || e.key === 'Backspace') {
       if (state.selectedId) { apply(opDeleteRow(state.selectedId)); e.preventDefault(); }
     }
@@ -303,7 +309,14 @@ function bindKeys() {
     }
   });
   window.addEventListener('keyup', (e) => {
-    if (e.key === ' ') { spaceDown = false; viewport.classList.remove('space-down'); }
+    if (e.key === ' ')   { spaceDown = false; viewport.classList.remove('space-down'); }
+    if (e.key === 'Alt') { altDown   = false; viewport.classList.remove('alt-down'); }
+  });
+  // Alt+Tab etc. steal focus before keyup fires — reset on blur so the
+  // grab cursor doesn't get stuck.
+  window.addEventListener('blur', () => {
+    spaceDown = false; altDown = false;
+    viewport.classList.remove('space-down', 'alt-down');
   });
 }
 function isEditingText(el) {
@@ -315,8 +328,21 @@ function isEditingText(el) {
 
 function toggleAdd() {
   addMode = !addMode;
+  if (addMode) setPan(false);          // add and pan are mutually exclusive
   document.getElementById('add-btn').classList.toggle('active', addMode);
   viewport.classList.toggle('adding', addMode);
+}
+
+function togglePan() { setPan(!panMode); }
+function setPan(on) {
+  panMode = on;
+  if (panMode && addMode) {             // leaving add-mode when entering pan
+    addMode = false;
+    document.getElementById('add-btn').classList.remove('active');
+    viewport.classList.remove('adding');
+  }
+  document.getElementById('pan-btn').classList.toggle('active', panMode);
+  viewport.classList.toggle('panmode', panMode);
 }
 
 async function runReadRegion(planBox) {

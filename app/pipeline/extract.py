@@ -59,17 +59,27 @@ def _is_vertical(box) -> bool:
     return (box[3] - box[1]) > (box[2] - box[0]) * 1.3
 
 
-def extract(pdf_path, work_dir, dpi: int = 300, backend=None) -> ExtractionResult:
+def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
+            progress=None) -> ExtractionResult:
     work_dir = Path(work_dir)
     backend = backend or get_backend()
+
+    # `progress(step, detail, current, total)` lets callers stream pipeline
+    # status to the UI; it is a no-op when no callback is supplied.
+    def emit(step, detail="", current=None, total=None):
+        if progress is not None:
+            progress(step, detail, current, total)
+
     if not hasattr(backend, "detect_regions"):
         raise RuntimeError("auto-ballooning requires the VLM backend")
 
+    emit("render", "Rendering page")
     render = render_page(pdf_path, dpi=dpi, out_dir=work_dir)
     image = Image.open(render.png_path).convert("RGB")
 
     # Notes-block path: locate, read, parse, mask. Any failure leaves notes=None
     # and the rest of the pipeline runs unchanged.
+    emit("notes", "Reading notes block")
     region = nb.locate_notes_block(image, backend)
     notes_obj = None
     if region is not None:
@@ -84,12 +94,15 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None) -> ExtractionResul
     else:
         image_for_detect = image
 
+    emit("detect", "Detecting characteristics")
     detections = detect_characteristics(image_for_detect, backend)
 
     known_positions = ({n.pos for n in notes_obj.notes if n.parent_pos is None}
                        if notes_obj is not None else None)
+    total = len(detections)
+    emit("ocr", f"Reading {total} region{'' if total == 1 else 's'}", 0, total)
     results = []
-    for d in detections:
+    for i, d in enumerate(detections):
         outer = _clamp(d.box, render.width, render.height)
         read_box = _clamp(d.inner_box, render.width, render.height) if d.inner_box else outer
         crop = image.crop(read_box)
@@ -121,7 +134,9 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None) -> ExtractionResul
         c.needs_review, c.review_reasons = review_flags(
             c, rotation_ambiguous, known_note_positions=known_positions)
         results.append(c)
+        emit("ocr", "Reading regions", i + 1, total)
 
+    emit("place", "Placing balloons")
     number_characteristics(results)
     place_balloons(results)
     return ExtractionResult(characteristics=results, notes=notes_obj)

@@ -9,9 +9,11 @@
   cursor: default;
   min-height: 0;
 }
-#plan-viewport.panning { cursor: grabbing; }
-#plan-viewport.space-down { cursor: grab; }
 #plan-viewport.adding { cursor: crosshair; }
+#plan-viewport.space-down,
+#plan-viewport.alt-down,
+#plan-viewport.panmode { cursor: grab; }
+#plan-viewport.panning { cursor: grabbing; }   /* always wins while dragging */
 
 #plan-stage {
   position: absolute;
@@ -157,6 +159,98 @@ body.drag-over #plan-viewport {
   background: var(--accent-bg);
 }
 
+/* Extraction-in-progress state (replaces the empty state) ---------- */
+#plan-extracting {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  background: rgba(10, 13, 16, 0.45);
+  backdrop-filter: blur(1px);
+}
+#plan-extracting .inner {
+  pointer-events: auto;
+  min-width: 320px;
+  max-width: 420px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  padding: 24px 28px;
+  background: rgba(15, 20, 25, 0.55);
+}
+#plan-extracting .ex-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+#plan-extracting .ex-head-text .title {
+  color: var(--fg);
+  font-weight: 500;
+  font-size: var(--fs-lg);
+  margin-bottom: 2px;
+}
+#plan-extracting .ex-head-text .hint {
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+.ex-spinner {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2.5px solid var(--border-strong);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+#plan-extracting .ex-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+#plan-extracting .ex-steps li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--fs-sm);
+  color: var(--fg-faint);
+  transition: color var(--motion-fast);
+}
+#plan-extracting .ex-steps li .ex-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+}
+#plan-extracting .ex-steps li .ex-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border-strong);
+}
+#plan-extracting .ex-steps li.active {
+  color: var(--fg);
+}
+#plan-extracting .ex-steps li.active .ex-dot {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: 0 0 7px var(--accent);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+#plan-extracting .ex-steps li.done {
+  color: var(--fg-muted);
+}
+#plan-extracting .ex-steps li.done .ex-dot { display: none; }
+#plan-extracting .ex-steps li .ex-check { display: none; color: var(--ok); }
+#plan-extracting .ex-steps li.done .ex-check { display: block; }
+
 /* ===== Buttons ================================================== */
 .btn {
   appearance: none;
@@ -248,8 +342,8 @@ body.drag-over #plan-viewport {
 /* Search input -------------------------------------------------- */
 .search {
   position: relative;
-  flex: 1;
-  min-width: 0;
+  flex: 1 1 180px;
+  min-width: 160px;
   max-width: 280px;
 }
 .search svg {

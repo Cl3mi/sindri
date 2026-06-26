@@ -13,9 +13,6 @@
 <!-- SVG icon sprite (line-stroke, 1.5px, currentColor) -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <defs>
-    <symbol id="i-logo" viewBox="0 0 24 24" fill="none">
-      <path d="M5 19V5l14 14V5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-    </symbol>
     <symbol id="i-plus" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
     <symbol id="i-minus" viewBox="0 0 24 24" fill="none"><path d="M5 12h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
     <symbol id="i-x" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
@@ -36,6 +33,7 @@
     <symbol id="i-moon" viewBox="0 0 24 24" fill="none"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
     <symbol id="i-density" viewBox="0 0 24 24" fill="none"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
     <symbol id="i-folder" viewBox="0 0 24 24" fill="none"><path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
+    <symbol id="i-hand" viewBox="0 0 24 24" fill="none"><path d="M8 11V5.5a1.5 1.5 0 0 1 3 0V10m0-.5V4.5a1.5 1.5 0 0 1 3 0V10m0-.5a1.5 1.5 0 0 1 3 0V11m-9 0V8a1.5 1.5 0 0 0-3 0v6c0 3.3 2.7 6 6 6h1.5a6 6 0 0 0 6-6v-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   </defs>
 </svg>
 
@@ -44,7 +42,6 @@
   <!-- ===== HEADER =============================================== -->
   <header id="shell-header">
     <div class="brand">
-      <svg class="logo-mark"><use href="#i-logo"/></svg>
       Sindri
       <span class="sub">Drawing Inspection Workbench</span>
     </div>
@@ -99,7 +96,11 @@
           </button>
         </div>
 
-        <div class="group" role="group" aria-label="Add">
+        <div class="group" role="group" aria-label="Tools">
+          <button id="pan-btn" title="Pan: drag to reposition (H) · or hold Alt + drag anytime">
+            <svg class="icon" width="14" height="14"><use href="#i-hand"/></svg>
+            <span>Pan</span>
+          </button>
           <button id="add-btn" title="Add balloon: drag a box (A)">
             <svg class="icon" width="14" height="14"><use href="#i-plus"/></svg>
             <span>Add</span>
@@ -132,6 +133,19 @@
               Open PDF…
               <input type="file" id="file-input-empty" accept="application/pdf" class="sr" />
             </label>
+          </div>
+        </div>
+
+        <div id="plan-extracting" hidden>
+          <div class="inner">
+            <div class="ex-head">
+              <span class="ex-spinner" aria-hidden="true"></span>
+              <div class="ex-head-text">
+                <div class="title" id="ex-title">Extracting…</div>
+                <div class="hint" id="ex-detail">Starting…</div>
+              </div>
+            </div>
+            <ol class="ex-steps" id="ex-steps"></ol>
           </div>
         </div>
       </div>
@@ -250,7 +264,8 @@
         <div class="row"><span>Zoom in / out</span><span><kbd>+</kbd><kbd>−</kbd></span></div>
         <div class="row"><span>Fit width / page</span><span><kbd>W</kbd><kbd>F</kbd></span></div>
         <div class="row"><span>Actual size (1:1)</span><span><kbd>0</kbd></span></div>
-        <div class="row"><span>Pan</span><span><kbd>Space</kbd> + drag, or middle-drag</span></div>
+        <div class="row"><span>Pan</span><span><kbd>Space</kbd> / <kbd>Alt</kbd> + drag, or middle-drag</span></div>
+        <div class="row"><span>Toggle pan mode</span><span><kbd>H</kbd></span></div>
         <div class="row"><span>Toggle add-balloon mode</span><span><kbd>A</kbd></span></div>
       </div>
       <div class="group">

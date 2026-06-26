@@ -1,3 +1,4 @@
+import json
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
@@ -5,6 +6,42 @@ from app.pipeline.detect import Detection
 from tests.conftest import StubVLMBackend
 
 client = TestClient(app)
+
+
+def parse_sse(resp):
+    """Split an SSE upload response into (progress_events, result, error)."""
+    progress, result, error = [], None, None
+    for block in resp.text.split("\n\n"):
+        if not block.strip():
+            continue
+        event = data = None
+        for line in block.split("\n"):
+            if line.startswith("event:"):
+                event = line[len("event:"):].strip()
+            elif line.startswith("data:"):
+                data = line[len("data:"):].strip()
+        if data is None:
+            continue
+        payload = json.loads(data)
+        if event == "progress":
+            progress.append(payload)
+        elif event == "result":
+            result = payload
+        elif event == "error":
+            error = payload
+    return progress, result, error
+
+
+def upload_pdf(test_client, path, filename="sample.pdf"):
+    """POST a PDF and return the final extraction result payload."""
+    with open(path, "rb") as f:
+        r = test_client.post("/api/upload",
+                             files={"file": (filename, f, "application/pdf")})
+    assert r.status_code == 200
+    _progress, result, error = parse_sse(r)
+    assert error is None, error
+    assert result is not None
+    return result
 
 
 @pytest.fixture
@@ -18,10 +55,7 @@ def stub_backend(monkeypatch):
 
 
 def test_upload_returns_rows_and_image(sample_pdf, stub_backend):
-    with open(sample_pdf, "rb") as f:
-        r = client.post("/api/upload", files={"file": ("sample.pdf", f, "application/pdf")})
-    assert r.status_code == 200
-    data = r.json()
+    data = upload_pdf(client, sample_pdf)
     assert "session_id" in data
     assert len(data["rows"]) >= 1
     assert data["rows"][0]["source"] == "auto"
@@ -29,22 +63,38 @@ def test_upload_returns_rows_and_image(sample_pdf, stub_backend):
     assert data["image_url"].startswith("/api/image/")
 
 
-def test_upload_without_detection_backend_returns_400(sample_pdf, monkeypatch):
+def test_upload_streams_progress_events(sample_pdf, stub_backend):
+    with open(sample_pdf, "rb") as f:
+        r = client.post("/api/upload",
+                        files={"file": ("sample.pdf", f, "application/pdf")})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/event-stream")
+    progress, result, error = parse_sse(r)
+    assert error is None
+    assert result is not None
+    steps = [p["step"] for p in progress]
+    # the pipeline reports each stage in order
+    assert steps[0] == "render"
+    assert "detect" in steps and "ocr" in steps and "place" in steps
+
+
+def test_upload_without_detection_backend_streams_error(sample_pdf, monkeypatch):
     class ReadOnly:
         def read_region(self, image):
             from app.pipeline.ocr.base import OcrResult
             return OcrResult(text="", confidence=0.0)
     monkeypatch.setattr("app.main._BACKEND", ReadOnly())
     with open(sample_pdf, "rb") as f:
-        r = client.post("/api/upload", files={"file": ("sample.pdf", f, "application/pdf")})
-    assert r.status_code == 400
-    assert "VLM" in r.json()["detail"]
+        r = client.post("/api/upload",
+                        files={"file": ("sample.pdf", f, "application/pdf")})
+    assert r.status_code == 200
+    _progress, result, error = parse_sse(r)
+    assert result is None
+    assert error is not None and "VLM" in error["detail"]
 
 
 def test_read_region_returns_parsed_characteristic(sample_pdf, stub_backend):
-    with open(sample_pdf, "rb") as f:
-        up = client.post("/api/upload",
-                         files={"file": ("sample.pdf", f, "application/pdf")}).json()
+    up = upload_pdf(client, sample_pdf)
     r = client.post("/api/read_region",
                     json={"session_id": up["session_id"], "box": [40, 40, 200, 90]})
     assert r.status_code == 200
@@ -56,9 +106,7 @@ def test_read_region_returns_parsed_characteristic(sample_pdf, stub_backend):
 
 
 def test_export_xlsx_roundtrip(sample_pdf, stub_backend):
-    with open(sample_pdf, "rb") as f:
-        up = client.post("/api/upload",
-                         files={"file": ("sample.pdf", f, "application/pdf")}).json()
+    up = upload_pdf(client, sample_pdf)
     r = client.post("/api/export",
                     json={"session_id": up["session_id"], "rows": up["rows"]})
     assert r.status_code == 200
@@ -68,9 +116,7 @@ def test_export_xlsx_roundtrip(sample_pdf, stub_backend):
 
 
 def test_export_pdf_roundtrip(sample_pdf, stub_backend):
-    with open(sample_pdf, "rb") as f:
-        up = client.post("/api/upload",
-                         files={"file": ("sample.pdf", f, "application/pdf")}).json()
+    up = upload_pdf(client, sample_pdf)
     r = client.post("/api/export/pdf",
                     json={"session_id": up["session_id"], "rows": up["rows"]})
     assert r.status_code == 200
@@ -127,11 +173,8 @@ def test_upload_returns_notes_field(monkeypatch, sample_pdf):
                                Note(pos=1, parent_pos=101, sub_index=1,
                                     text_en="A1", text_de="A1")])
     ))
-    client = TestClient(main.app)
-    with open(sample_pdf, "rb") as f:
-        r = client.post("/api/upload", files={"file": ("x.pdf", f, "application/pdf")})
-    assert r.status_code == 200
-    data = r.json()
+    test_client = TestClient(main.app)
+    data = upload_pdf(test_client, sample_pdf, filename="x.pdf")
     assert "rows" in data and len(data["rows"]) == 1
     assert "notes" in data and data["notes"] is not None
     note_positions = [n["pos"] for n in data["notes"]["notes"]]
@@ -145,8 +188,6 @@ def test_upload_returns_null_notes_when_extract_returns_none(monkeypatch, sample
 
     monkeypatch.setattr(main, "extract", lambda *a, **kw: ExtractionResult(
         characteristics=[Characteristic(pos=1)], notes=None))
-    client = TestClient(main.app)
-    with open(sample_pdf, "rb") as f:
-        r = client.post("/api/upload", files={"file": ("x.pdf", f, "application/pdf")})
-    assert r.status_code == 200
-    assert r.json()["notes"] is None
+    test_client = TestClient(main.app)
+    data = upload_pdf(test_client, sample_pdf, filename="x.pdf")
+    assert data["notes"] is None

@@ -67,10 +67,13 @@ async function handleFile(file) {
     return;
   }
   setBusy(`Extracting from ${file.name}…`);
+  showExtracting(file.name);
   try {
-    const data = await uploadPdf(file);
+    const data = await uploadPdf(file, onExtractProgress);
     data.fileName = file.name;
-    setSession(data);
+    extractStepsDone();
+    setSession(data);          // viewer swaps in the page image, hides overlays
+    hideExtracting();
     setIdle();
     const charsN = data.rows.length;
     toast({
@@ -79,9 +82,68 @@ async function handleFile(file) {
       msg: `${charsN} characteristic${charsN === 1 ? '' : 's'} extracted`,
     });
   } catch (err) {
+    hideExtracting();
     setIdle();
     toast({ kind: 'error', title: 'Could not extract', msg: String(err.message || err) });
   }
+}
+
+// ===== Extraction status overlay ====================================
+// Ordered pipeline steps, keyed to the `step` values the server emits.
+const EXTRACT_STEPS = [
+  { key: 'render', label: 'Rendering page' },
+  { key: 'notes',  label: 'Reading notes block' },
+  { key: 'detect', label: 'Detecting characteristics' },
+  { key: 'ocr',    label: 'Reading regions' },
+  { key: 'place',  label: 'Placing balloons' },
+];
+
+function showExtracting(fileName) {
+  document.getElementById('plan-empty').hidden = true;
+  document.getElementById('ex-title').textContent = `Extracting ${fileName}`;
+  document.getElementById('ex-detail').textContent = 'Starting…';
+
+  const list = document.getElementById('ex-steps');
+  list.innerHTML = '';
+  for (const s of EXTRACT_STEPS) {
+    const li = document.createElement('li');
+    li.dataset.key = s.key;
+    li.innerHTML =
+      '<span class="ex-icon"><span class="ex-dot"></span>' +
+      '<svg class="ex-check" width="14" height="14"><use href="#i-check"/></svg></span>' +
+      `<span class="ex-label">${s.label}</span>`;
+    list.appendChild(li);
+  }
+  document.getElementById('plan-extracting').hidden = false;
+}
+
+function hideExtracting() {
+  document.getElementById('plan-extracting').hidden = true;
+}
+
+function onExtractProgress({ step, detail, current, total }) {
+  const idx = EXTRACT_STEPS.findIndex((s) => s.key === step);
+  if (idx === -1) return;
+
+  const items = document.querySelectorAll('#ex-steps li');
+  items.forEach((li, i) => {
+    li.classList.toggle('done', i < idx);
+    li.classList.toggle('active', i === idx);
+  });
+
+  let label = EXTRACT_STEPS[idx].label;
+  if (total != null && current != null) label += ` · ${current}/${total}`;
+  const active = items[idx];
+  if (active) active.querySelector('.ex-label').textContent = label;
+  document.getElementById('ex-detail').textContent = detail || label;
+}
+
+function extractStepsDone() {
+  document.querySelectorAll('#ex-steps li').forEach((li) => {
+    li.classList.remove('active');
+    li.classList.add('done');
+  });
+  document.getElementById('ex-detail').textContent = 'Done';
 }
 
 function setBusy(label) {

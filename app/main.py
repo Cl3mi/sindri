@@ -1,10 +1,14 @@
+import asyncio
+import json
+import queue
 import re
 import tempfile
+import threading
 import uuid
 from pathlib import Path
 from typing import List, Optional
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from app.models import Characteristic, NoteBlock
@@ -62,18 +66,47 @@ async def upload(file: UploadFile = File(...)):
     work.mkdir(parents=True, exist_ok=True)
     pdf_path = work / "input.pdf"
     pdf_path.write_bytes(await file.read())
-    try:
-        result = extract(pdf_path, work_dir=work, dpi=300, backend=_BACKEND)
-    except RuntimeError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception:
-        raise HTTPException(status_code=400, detail="could not read the PDF")
-    return JSONResponse({
-        "session_id": session_id,
-        "image_url": f"/api/image/{session_id}",
-        "rows": [r.model_dump() for r in result.characteristics],
-        "notes": result.notes.model_dump() if result.notes is not None else None,
-    })
+
+    # Extraction is CPU/GPU-bound and synchronous; run it in a worker thread
+    # and stream its pipeline progress to the browser as Server-Sent Events.
+    # The final result is delivered as a terminal `result` (or `error`) event.
+    events: "queue.Queue" = queue.Queue()
+    _DONE = object()
+
+    def worker():
+        def progress(step, detail="", current=None, total=None):
+            events.put(("progress", {
+                "step": step, "detail": detail,
+                "current": current, "total": total,
+            }))
+        try:
+            result = extract(pdf_path, work_dir=work, dpi=300,
+                             backend=_BACKEND, progress=progress)
+            events.put(("result", {
+                "session_id": session_id,
+                "image_url": f"/api/image/{session_id}",
+                "rows": [r.model_dump() for r in result.characteristics],
+                "notes": result.notes.model_dump() if result.notes is not None else None,
+            }))
+        except RuntimeError as e:
+            events.put(("error", {"detail": str(e)}))
+        except Exception:
+            events.put(("error", {"detail": "could not read the PDF"}))
+        finally:
+            events.put((_DONE, None))
+
+    async def stream():
+        threading.Thread(target=worker, daemon=True).start()
+        loop = asyncio.get_event_loop()
+        while True:
+            kind, payload = await loop.run_in_executor(None, events.get)
+            if kind is _DONE:
+                break
+            yield f"event: {kind}\ndata: {json.dumps(payload)}\n\n"
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
 
 
 @app.get("/api/image/{session_id}")

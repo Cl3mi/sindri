@@ -45,10 +45,6 @@ button, input, textarea, select {
   align-items: center;
   gap: 8px;
 }
-#shell-header .brand .logo-mark {
-  width: 18px; height: 18px;
-  color: var(--accent-strong);
-}
 #shell-header .brand .sub {
   font-weight: 400;
   color: var(--fg-faint);
@@ -167,15 +163,22 @@ body.col-resizing * { cursor: col-resize !important; }
 
 /* ===== Toolbar shared styles ====================================== */
 .toolbar {
-  height: var(--toolbar-h);
+  min-height: var(--toolbar-h);
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  padding: 0 10px;
+  padding: 5px 10px;
   background: var(--bg-elevated);
   border-bottom: 1px solid var(--border);
   min-width: 0;
-  overflow: hidden;
+}
+/* Fixed-size controls keep their intrinsic width and wrap to a new row
+   rather than shrinking until their contents collide. */
+.toolbar .group,
+.toolbar .segmented,
+.toolbar > .btn {
+  flex: none;
 }
 .toolbar .group {
   display: inline-flex;
