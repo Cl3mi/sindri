@@ -22,6 +22,7 @@ export const state = {
   fileName: null,
   rows: [],          // each row gets a transient `reviewed: bool` client-side
   notes: null,
+  title_block: [],
   selectedId: null,  // selected marker / row id
   hoverId: null,
   filter: 'all',     // 'all' | 'review' | 'ok'
@@ -35,6 +36,7 @@ export function setSession(payload) {
   state.imageUrl  = payload.image_url;
   state.rows      = payload.rows.map((r) => ({ ...r, reviewed: false }));
   state.notes     = payload.notes;
+  state.title_block = payload.title_block ?? [];
   state.fileName  = payload.fileName ?? state.fileName;
   state.selectedId = null;
   undoStack.length = 0;
@@ -50,6 +52,7 @@ export function clearSession() {
   state.fileName  = null;
   state.rows      = [];
   state.notes     = null;
+  state.title_block = [];
   state.selectedId = null;
   undoStack.length = 0;
   redoStack.length = 0;

@@ -163,6 +163,7 @@ function stopExtraction() {
 const EXTRACT_STEPS = [
   { key: 'render', label: 'Rendering page' },
   { key: 'notes',  label: 'Reading notes block' },
+  { key: 'title',  label: 'Reading title block' },
   { key: 'detect', label: 'Detecting characteristics' },
   { key: 'ocr',    label: 'Reading regions' },
   { key: 'place',  label: 'Placing balloons' },
@@ -233,7 +234,7 @@ function wireExports() {
   document.getElementById('export-xlsx').addEventListener('click', async () => {
     try {
       await exportFile('/api/export',
-        { session_id: state.sessionId, rows: state.rows, notes: state.notes },
+        { session_id: state.sessionId, rows: state.rows, notes: state.notes, title_block: state.title_block },
         'inspection.xlsx');
       toast({ kind: 'ok', title: 'Excel exported' });
     } catch (err) {
@@ -244,7 +245,7 @@ function wireExports() {
     setBusy('Rendering ballooned PDF…');
     try {
       await exportFile('/api/export/pdf',
-        { session_id: state.sessionId, rows: state.rows, notes: state.notes },
+        { session_id: state.sessionId, rows: state.rows, notes: state.notes, title_block: state.title_block },
         'ballooned.pdf');
       setIdle();
       toast({ kind: 'ok', title: 'PDF exported' });

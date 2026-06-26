@@ -11,12 +11,16 @@ const COLS = ['char_type', 'nominal', 'upper_tol', 'lower_tol'];
 const NUMERIC = new Set(['nominal', 'upper_tol', 'lower_tol']);
 
 let body, notesBody, notesSection, notesCount;
+let titleBody, titleSection, titleCount;
 
 export function initTable() {
   body         = document.getElementById('grid-body');
   notesBody    = document.getElementById('notes-body');
   notesSection = document.getElementById('notes-section');
   notesCount   = document.getElementById('notes-count');
+  titleBody    = document.getElementById('title-body');
+  titleSection = document.getElementById('title-section');
+  titleCount   = document.getElementById('title-count');
 
   on('session', renderAll);
   on('change',  renderAll);
@@ -28,6 +32,7 @@ export function initTable() {
   bindSelectAll();
   bindBulkAccept();
   bindNotesToggle();
+  bindTitleToggle();
 }
 
 function bindFilters() {
@@ -88,10 +93,18 @@ function bindNotesToggle() {
   });
 }
 
+function bindTitleToggle() {
+  document.getElementById('title-toggle').addEventListener('click', () => {
+    const collapsed = titleSection.dataset.collapsed === 'true';
+    titleSection.dataset.collapsed = collapsed ? 'false' : 'true';
+  });
+}
+
 // ===== Rendering ====================================================
 function renderAll() {
   renderRows();
   renderNotes();
+  renderTitleBlock();
   renderCounts();
   updateBulkAvailability();
 }
@@ -214,6 +227,28 @@ function renderNotes() {
     const en = document.createElement('td'); en.textContent = n.text_en ?? ''; tr.appendChild(en);
     const de = document.createElement('td'); de.textContent = n.text_de ?? ''; tr.appendChild(de);
     notesBody.appendChild(tr);
+  }
+}
+
+function renderTitleBlock() {
+  titleBody.innerHTML = '';
+  const fields = state.title_block;
+  if (!fields || fields.length === 0) {
+    titleSection.hidden = true;
+    return;
+  }
+  titleSection.hidden = false;
+  titleCount.textContent = fields.length;
+  for (const f of fields) {
+    const tr = document.createElement('tr');
+    if (f.needs_review) {
+      tr.classList.add('review');
+      tr.title = (f.review_reasons || []).join(', ');
+    }
+    const en = document.createElement('td'); en.textContent = f.label_en ?? ''; tr.appendChild(en);
+    const de = document.createElement('td'); de.textContent = f.label_de ?? ''; tr.appendChild(de);
+    const val = document.createElement('td'); val.textContent = f.value ?? ''; tr.appendChild(val);
+    titleBody.appendChild(tr);
   }
 }
 
