@@ -32,12 +32,20 @@ def parse_sse(resp):
     return progress, result, error
 
 
-def upload_pdf(test_client, path, filename="sample.pdf"):
-    """POST a PDF and return the final extraction result payload."""
+def save_pdf(test_client, path, filename="sample.pdf"):
+    """POST a PDF to /api/upload (save only) and return its metadata."""
     with open(path, "rb") as f:
         r = test_client.post("/api/upload",
                              files={"file": (filename, f, "application/pdf")})
-    assert r.status_code == 200
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def upload_pdf(test_client, path, filename="sample.pdf"):
+    """Save a PDF then run extraction; return the final extraction result."""
+    meta = save_pdf(test_client, path, filename)
+    r = test_client.post(f"/api/extract/{meta['session_id']}")
+    assert r.status_code == 200, r.text
     _progress, result, error = parse_sse(r)
     assert error is None, error
     assert result is not None
@@ -63,34 +71,53 @@ def test_upload_returns_rows_and_image(sample_pdf, stub_backend):
     assert data["image_url"].startswith("/api/image/")
 
 
-def test_upload_streams_progress_events(sample_pdf, stub_backend):
-    with open(sample_pdf, "rb") as f:
-        r = client.post("/api/upload",
-                        files={"file": ("sample.pdf", f, "application/pdf")})
+def test_extract_streams_progress_events(sample_pdf, stub_backend):
+    meta = save_pdf(client, sample_pdf)
+    r = client.post(f"/api/extract/{meta['session_id']}")
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/event-stream")
     progress, result, error = parse_sse(r)
     assert error is None
     assert result is not None
     steps = [p["step"] for p in progress]
-    # the pipeline reports each stage in order
     assert steps[0] == "render"
     assert "detect" in steps and "ocr" in steps and "place" in steps
 
 
-def test_upload_without_detection_backend_streams_error(sample_pdf, monkeypatch):
+def test_extract_without_detection_backend_streams_error(sample_pdf, monkeypatch):
     class ReadOnly:
         def read_region(self, image):
             from app.pipeline.ocr.base import OcrResult
             return OcrResult(text="", confidence=0.0)
     monkeypatch.setattr("app.main._BACKEND", ReadOnly())
-    with open(sample_pdf, "rb") as f:
-        r = client.post("/api/upload",
-                        files={"file": ("sample.pdf", f, "application/pdf")})
+    meta = save_pdf(client, sample_pdf)
+    r = client.post(f"/api/extract/{meta['session_id']}")
     assert r.status_code == 200
     _progress, result, error = parse_sse(r)
     assert result is None
     assert error is not None and "VLM" in error["detail"]
+
+
+def test_upload_returns_metadata_without_extracting(sample_pdf, stub_backend):
+    import app.main as main
+    meta = save_pdf(client, sample_pdf)
+    assert main._SESSION_RE.match(meta["session_id"])
+    assert meta["fileName"] == "sample.pdf"
+    assert meta["pages"] >= 1
+    # save-only: the input pdf is stored but no extraction artifacts exist yet
+    work = main._SESSIONS / meta["session_id"]
+    assert (work / "input.pdf").is_file()
+    assert not (work / "page.png").exists()
+
+
+def test_extract_rejects_bad_session_id():
+    # malformed id is rejected by _session_dir before any work
+    assert client.post("/api/extract/not-a-valid-uuid").status_code == 404
+
+
+def test_extract_unknown_session_returns_404():
+    # well-formed id but no saved input.pdf
+    assert client.post("/api/extract/" + "0" * 32).status_code == 404
 
 
 def test_read_region_returns_parsed_characteristic(sample_pdf, stub_backend):

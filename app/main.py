@@ -2,12 +2,14 @@ import asyncio
 import json
 import queue
 import re
+import shutil
 import tempfile
 import threading
 import uuid
 from pathlib import Path
 from typing import List, Optional
-from fastapi import FastAPI, UploadFile, File, HTTPException
+import fitz  # PyMuPDF
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -61,15 +63,32 @@ def health():
 
 @app.post("/api/upload")
 async def upload(file: UploadFile = File(...)):
+    """Save the PDF to a fresh session and return its metadata. Extraction is
+    a separate, explicitly-started step (`POST /api/extract/{session_id}`)."""
     session_id = uuid.uuid4().hex
     work = _SESSIONS / session_id
     work.mkdir(parents=True, exist_ok=True)
     pdf_path = work / "input.pdf"
     pdf_path.write_bytes(await file.read())
+    try:
+        with fitz.open(pdf_path) as doc:
+            pages = doc.page_count
+    except Exception:
+        shutil.rmtree(work, ignore_errors=True)
+        raise HTTPException(status_code=400, detail="could not read the PDF")
+    return {"session_id": session_id, "fileName": file.filename, "pages": pages}
 
-    # Extraction is CPU/GPU-bound and synchronous; run it in a worker thread
-    # and stream its pipeline progress to the browser as Server-Sent Events.
-    # The final result is delivered as a terminal `result` (or `error`) event.
+
+@app.post("/api/extract/{session_id}")
+async def extract_endpoint(session_id: str, request: Request):
+    """Run extraction for an already-uploaded session and stream pipeline
+    progress as Server-Sent Events. The final result is a terminal `result`
+    (or `error`) event."""
+    work = _session_dir(session_id)
+    pdf_path = work / "input.pdf"
+    if not pdf_path.is_file():
+        raise HTTPException(status_code=404, detail="unknown session")
+
     events: "queue.Queue" = queue.Queue()
     _DONE = object()
 
