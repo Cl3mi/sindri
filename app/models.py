@@ -39,6 +39,18 @@ class NoteBlock(BaseModel):
     notes: List[Note] = []
 
 
+class TitleField(BaseModel):
+    label: str = ""          # caption as printed, e.g. "Sheet / Blatt"
+    label_en: str = ""
+    label_de: str = ""
+    value: str = ""
+    box: Optional[Tuple[float, float, float, float]] = None
+    confidence: float = 0.0
+    needs_review: bool = False
+    review_reasons: List[str] = []   # e.g. ["empty value", "missing caption"]
+
+
 class ExtractionResult(BaseModel):
     characteristics: List[Characteristic]
     notes: Optional[NoteBlock] = None
+    title_block: List[TitleField] = []
