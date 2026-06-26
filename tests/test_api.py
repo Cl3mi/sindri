@@ -270,3 +270,31 @@ def test_static_assets_force_revalidation(path):
 def test_delete_rejects_bad_session_id():
     r = client.delete("/api/session/not-a-valid-uuid")
     assert r.status_code == 404
+
+
+def test_export_includes_title_block_sheet(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    import app.main as main
+    from openpyxl import load_workbook
+    import uuid
+
+    client = TestClient(main.app)
+    session_id = uuid.uuid4().hex
+    (main._SESSIONS / session_id).mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "session_id": session_id,
+        "rows": [],
+        "notes": None,
+        "title_block": [
+            {"label": "Sheet / Blatt", "label_en": "Sheet", "label_de": "Blatt",
+             "value": "1/1"}
+        ],
+    }
+    resp = client.post("/api/export", json=payload)
+    assert resp.status_code == 200
+    out = tmp_path / "got.xlsx"
+    out.write_bytes(resp.content)
+    wb = load_workbook(out)
+    assert "Title Block" in wb.sheetnames
+    assert wb["Title Block"].cell(2, 3).value == "1/1"

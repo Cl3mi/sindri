@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.types import Scope
 from starlette.responses import Response
 from pydantic import BaseModel
-from app.models import Characteristic, NoteBlock
+from app.models import Characteristic, NoteBlock, TitleField
 from app.pipeline.extract import extract
 from app.pipeline.ocr import get_backend, backend_status
 from app.excel import write_workbook
@@ -49,6 +49,7 @@ class ExportRequest(BaseModel):
     session_id: str
     rows: List[Characteristic]
     notes: Optional[NoteBlock] = None
+    title_block: List[TitleField] = []
 
 
 class ReadRegionRequest(BaseModel):
@@ -116,6 +117,7 @@ async def extract_endpoint(session_id: str, request: Request):
                 "image_url": f"/api/image/{session_id}",
                 "rows": [r.model_dump() for r in result.characteristics],
                 "notes": result.notes.model_dump() if result.notes is not None else None,
+                "title_block": [t.model_dump() for t in result.title_block],
             }))
         except _Cancelled:
             # client went away — drop the session and stop quietly
@@ -171,7 +173,7 @@ def export(req: ExportRequest):
     work = _session_dir(req.session_id)
     work.mkdir(parents=True, exist_ok=True)
     out = work / "inspection.xlsx"
-    write_workbook(req.rows, out, notes=req.notes)
+    write_workbook(req.rows, out, notes=req.notes, title_block=req.title_block)
     return FileResponse(
         out,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
