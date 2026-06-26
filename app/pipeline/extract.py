@@ -149,10 +149,14 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
     emit("place", "Placing balloons")
     number_characteristics(results)
     place_balloons(results)
-    # Free text outside the structured blocks (e.g. margin notes).
+    # Free text outside the structured blocks (e.g. margin notes). Exclude the
+    # notes/title regions AND every region the main detector already captured,
+    # so loose_text only adds text nothing else picked up (no double-extraction,
+    # no redundant reads).
     exclude = [b for b in (tb_region.outer_box if tb_region else None,
                            region.outer_box if region is not None else None)
                if b is not None]
+    exclude += [c.target_region for c in results if c.target_region is not None]
     title_fields += tb.loose_text(image, backend, exclude)
     return ExtractionResult(characteristics=results, notes=notes_obj,
                             title_block=title_fields)

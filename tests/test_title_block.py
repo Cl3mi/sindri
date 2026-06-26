@@ -311,3 +311,43 @@ def test_extract_attaches_title_block(tmp_path, monkeypatch):
     result = extract(work / "input.pdf", work_dir=work, dpi=150, backend=backend)
     assert len(result.title_block) == 1
     assert result.title_block[0].value == "A2"
+
+
+def test_margin_note_not_double_extracted_as_loose_text(tmp_path, monkeypatch):
+    """A 'note'-kind region the main detector captures as a Characteristic must
+    not ALSO appear as a loose title field (no double-extraction)."""
+    import shutil
+    from app.pipeline import title_block as tb2
+    from app.pipeline.detect import Detection as Det
+    from app.pipeline.ocr.base import OcrResult as OR
+
+    # No title block, no notes block — isolate the loose-text path.
+    monkeypatch.setattr("app.pipeline.extract.tb.locate_title_block",
+                        lambda image: None)
+    monkeypatch.setattr("app.pipeline.extract.nb.locate_notes_block",
+                        lambda image, backend: None)
+    # Make the title-block tiler a single full-page tile for determinism.
+    monkeypatch.setattr("app.pipeline.title_block.tile_grid",
+                        lambda w, h: [(0, 0, w, h)])
+
+    class _FB:
+        # one note-kind detection at a fixed page box
+        def detect_regions(self, image):
+            return [Det(box=(100, 100, 300, 140), kind="note", conf=0.9)]
+        def read_region(self, image):
+            return OR(text="NACH WAHL DES HERSTELLERS", confidence=0.8)
+
+    src = Path(__file__).parents[1] / "test_docs" / "T1025206_D.pdf"
+    if not src.exists():
+        src = Path(__file__).parents[1] / "sample.pdf"
+    work = tmp_path / "w"
+    work.mkdir()
+    shutil.copy(src, work / "input.pdf")
+
+    from app.pipeline.extract import extract
+    result = extract(work / "input.pdf", work_dir=work, dpi=150, backend=_FB())
+
+    # The note-kind region was detected -> it is a characteristic.
+    assert len(result.characteristics) >= 1
+    # It must NOT be duplicated into the loose title_block.
+    assert result.title_block == []
