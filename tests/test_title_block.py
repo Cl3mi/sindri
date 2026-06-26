@@ -218,3 +218,55 @@ def test_read_title_block_survives_backend_error():
             raise RuntimeError("kaboom")
 
     assert read_title_block(img, region, Boom()) == []
+
+
+from app.pipeline.detect import Detection
+from app.pipeline.title_block import loose_text
+
+
+class _LooseBackend:
+    """Detects the same note boxes for every tile, reads canned text."""
+    def __init__(self, dets, text):
+        self._dets = dets
+        self._text = text
+
+    def detect_regions(self, image):
+        return list(self._dets)
+
+    def read_region(self, image):
+        return OcrResult(text=self._text, confidence=0.8)
+
+
+def test_loose_text_emits_label_less_field_outside_excludes(monkeypatch):
+    # one note detection at tile-local (10,10,120,40); single tile at origin
+    monkeypatch.setattr("app.pipeline.title_block.tile_grid",
+                        lambda w, h: [(0, 0, 400, 400)])
+    backend = _LooseBackend([Detection(box=(10, 10, 120, 40), kind="note", conf=0.9)],
+                            text="NACH WAHL DES HERSTELLERS")
+    fields = loose_text(Image.new("RGB", (400, 400), "white"), backend,
+                        exclude_boxes=[(300, 300, 400, 400)])
+    assert len(fields) == 1
+    assert fields[0].label == "" and fields[0].value == "NACH WAHL DES HERSTELLERS"
+    assert fields[0].needs_review is False     # loose text not flagged
+
+
+def test_loose_text_drops_detections_inside_exclude(monkeypatch):
+    monkeypatch.setattr("app.pipeline.title_block.tile_grid",
+                        lambda w, h: [(0, 0, 400, 400)])
+    backend = _LooseBackend([Detection(box=(310, 310, 360, 340), kind="note", conf=0.9)],
+                            text="INSIDE TITLE BLOCK")
+    fields = loose_text(Image.new("RGB", (400, 400), "white"), backend,
+                        exclude_boxes=[(300, 300, 400, 400)])
+    assert fields == []
+
+
+def test_loose_text_survives_detector_error(monkeypatch):
+    monkeypatch.setattr("app.pipeline.title_block.tile_grid",
+                        lambda w, h: [(0, 0, 400, 400)])
+
+    class Boom:
+        def detect_regions(self, image):
+            raise RuntimeError("kaboom")
+
+    assert loose_text(Image.new("RGB", (400, 400), "white"), Boom(),
+                      exclude_boxes=[]) == []

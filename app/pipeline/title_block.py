@@ -13,6 +13,7 @@ import cv2
 from PIL import Image, ImageDraw
 
 from app.models import TitleField
+from app.pipeline.detect import tile_grid
 
 
 _FENCE_RE = re.compile(r"^```(?:json)?|```$", re.MULTILINE)
@@ -167,3 +168,51 @@ def read_title_block(image: Image.Image, region: TitleBlockRegion,
             needs_review=flagged, review_reasons=reasons,
         ))
     return fields
+
+
+def _overlaps(a, b) -> bool:
+    return not (a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])
+
+
+def loose_text(image: Image.Image, backend,
+               exclude_boxes: List[Tuple[float, float, float, float]]
+               ) -> List[TitleField]:
+    """Catch free text outside the structured blocks: detect `note`-kind regions
+    across the page, drop any overlapping an exclude box (title/notes blocks),
+    read the rest and emit label-less TitleFields. Never fatal."""
+    out: List[TitleField] = []
+    try:
+        w, h = image.size
+        boxes: List[Tuple[int, int, int, int]] = []
+        for (tx0, ty0, tx1, ty1) in tile_grid(w, h):
+            try:
+                dets = backend.detect_regions(image.crop((tx0, ty0, tx1, ty1)))
+            except Exception:
+                continue
+            for d in dets:
+                if d.kind != "note":
+                    continue
+                box = (d.box[0] + tx0, d.box[1] + ty0,
+                       d.box[2] + tx0, d.box[3] + ty0)
+                if any(_overlaps(box, ex) for ex in exclude_boxes):
+                    continue
+                if any(_overlaps(box, seen) for seen in boxes):
+                    continue
+                boxes.append(box)
+        for box in boxes:
+            try:
+                res = backend.read_region(image.crop(box))
+            except Exception:
+                continue
+            text = (res.text or "").strip()
+            if not text:
+                continue
+            out.append(TitleField(
+                label="", value=text,
+                box=tuple(float(v) for v in box), confidence=res.confidence,
+                needs_review=False, review_reasons=[],
+            ))
+    except Exception as e:
+        print(f"[sindri.title_block] loose_text failed: {e!r}",
+              file=sys.stderr, flush=True)
+    return out
