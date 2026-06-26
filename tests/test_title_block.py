@@ -90,7 +90,7 @@ def _grid_image():
     d.rectangle((10, 10, 390, 190), outline="black", width=3)
     d.line((200, 10, 200, 190), fill="black", width=3)
     d.line((10, 100, 390, 100), fill="black", width=3)
-    d.text((40, 40), "HELLO", fill="black")          # ink in top-left cell only
+    d.rectangle((40, 40, 110, 70), fill="black")     # ink in top-left cell only
     return img
 
 
@@ -132,7 +132,7 @@ def _page_with_bottom_right_grid():
     d.rectangle((600, 560, 980, 760), outline="black", width=3)
     d.line((790, 560, 790, 760), fill="black", width=3)
     d.line((600, 660, 980, 660), fill="black", width=3)
-    d.text((630, 590), "A2", fill="black")
+    d.rectangle((630, 590, 720, 630), fill="black")
     return img
 
 

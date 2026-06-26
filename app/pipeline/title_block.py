@@ -61,7 +61,7 @@ def review_flags_field(value: str, label: str,
 
 _MIN_CELL_W = 40          # px: ignore slivers and line artifacts
 _MIN_CELL_H = 18
-_INK_MIN = 0.001          # fraction of dark pixels for a cell to count as text
+_INK_MIN = 0.004          # fraction of dark pixels for a cell to count as text
 _BAND_TOL = 30            # px: rows within this y-band sort left-to-right
 
 
