@@ -97,6 +97,8 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
 
     # Title-block path: locate the bottom-right Schriftfeld, read its cells as
     # label/value fields, and mask it so its text is not misread as dimensions.
+    # Locate runs on the raw image; the bottom-right quadrant restriction makes
+    # overlap with a (typically elsewhere) notes block very unlikely.
     emit("title", "Reading title block")
     tb_region = tb.locate_title_block(image)
     title_fields = []
