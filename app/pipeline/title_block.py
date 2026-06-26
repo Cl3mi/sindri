@@ -136,3 +136,34 @@ def mask_region(image: Image.Image, region: TitleBlockRegion) -> Image.Image:
     if x1 > x0 and y1 > y0:
         ImageDraw.Draw(out).rectangle((x0, y0, x1, y1), fill="white")
     return out
+
+
+def read_title_block(image: Image.Image, region: TitleBlockRegion,
+                     backend) -> List[TitleField]:
+    """Read each ink-bearing cell as a {label, value} pair. Prefers a backend
+    `read_title_cell` method (dedicated prompt); falls back to `read_region`.
+    Per-cell failures are skipped, never fatal."""
+    fields: List[TitleField] = []
+    for box in region.cells:
+        crop = image.crop(box)
+        try:
+            if hasattr(backend, "read_title_cell"):
+                res = backend.read_title_cell(crop)
+            else:
+                res = backend.read_region(crop)
+            raw, conf = res.text, res.confidence
+        except Exception as e:
+            print(f"[sindri.title_block] cell read failed: {e!r}",
+                  file=sys.stderr, flush=True)
+            raw, conf = "", 0.0
+        label, value = parse_title_cell(raw)
+        if not label and not value:
+            continue
+        en, de = split_label(label)
+        flagged, reasons = review_flags_field(value, label, expect_caption=True)
+        fields.append(TitleField(
+            label=label, label_en=en, label_de=de, value=value,
+            box=tuple(float(v) for v in box), confidence=conf,
+            needs_review=flagged, review_reasons=reasons,
+        ))
+    return fields

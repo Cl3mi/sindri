@@ -156,3 +156,65 @@ def test_mask_region_fills_white_and_preserves_original():
     assert out.getpixel((30, 40)) == (255, 255, 255)   # inside masked
     assert out.getpixel((10, 10)) == (0, 0, 0)          # outside untouched
     assert img.getpixel((30, 40)) == (0, 0, 0)          # copy semantics
+
+
+from app.pipeline.ocr.base import OcrResult
+from app.pipeline.title_block import read_title_block
+
+
+class _StubTitleBackend:
+    """Returns a canned per-cell JSON read for read_title_cell."""
+    def __init__(self, by_call):
+        self._by_call = list(by_call)
+        self._i = 0
+
+    def read_title_cell(self, image):
+        text = self._by_call[self._i] if self._i < len(self._by_call) else ""
+        self._i += 1
+        return OcrResult(text=text, confidence=0.9 if text else 0.0)
+
+
+def test_read_title_block_builds_fields_with_split_labels():
+    img = _page_with_bottom_right_grid()
+    region = locate_title_block(img)
+    # force a single known ink cell so the read is deterministic
+    region.cells = [region.cells[0]]
+    backend = _StubTitleBackend(['{"label": "Size / Format", "value": "A2"}'])
+    fields = read_title_block(img, region, backend)
+    assert len(fields) == 1
+    f = fields[0]
+    assert f.label == "Size / Format"
+    assert f.label_en == "Size" and f.label_de == "Format"
+    assert f.value == "A2"
+    assert f.box is not None
+    assert f.needs_review is False
+
+
+def test_read_title_block_flags_empty_value():
+    img = _page_with_bottom_right_grid()
+    region = locate_title_block(img)
+    region.cells = [region.cells[0]]
+    backend = _StubTitleBackend(['{"label": "Scale / Maßstab", "value": ""}'])
+    fields = read_title_block(img, region, backend)
+    assert fields[0].needs_review is True
+    assert fields[0].review_reasons == ["empty value"]
+
+
+def test_read_title_block_skips_fully_empty_reads():
+    img = _page_with_bottom_right_grid()
+    region = locate_title_block(img)
+    region.cells = [region.cells[0]]
+    backend = _StubTitleBackend([''])     # no label, no value -> dropped
+    assert read_title_block(img, region, backend) == []
+
+
+def test_read_title_block_survives_backend_error():
+    img = _page_with_bottom_right_grid()
+    region = locate_title_block(img)
+    region.cells = [region.cells[0]]
+
+    class Boom:
+        def read_title_cell(self, image):
+            raise RuntimeError("kaboom")
+
+    assert read_title_block(img, region, Boom()) == []
