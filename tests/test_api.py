@@ -9,7 +9,7 @@ client = TestClient(app)
 
 
 def parse_sse(resp):
-    """Split an SSE upload response into (progress_events, result, error)."""
+    """Split an SSE extract response into (progress_events, result, error)."""
     progress, result, error = [], None, None
     for block in resp.text.split("\n\n"):
         if not block.strip():
