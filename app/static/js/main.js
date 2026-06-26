@@ -1,7 +1,7 @@
 // Entry point: wires modules, health check, file upload, exports.
 
 import { state, on, setSession, clearSession, undo, redo, canUndo, canRedo } from './state.js';
-import { uploadPdf, exportFile, health } from './api.js';
+import { savePdf, runExtraction, deleteSession, exportFile, health } from './api.js';
 import { initViewer } from './viewer.js';
 import { initTable } from './table.js';
 import {
@@ -9,6 +9,10 @@ import {
   initThemeAndDensity, initDragDrop,
 } from './ui.js';
 import { initShortcuts } from './shortcuts.js';
+
+// Pending upload awaiting confirmation, and the controller for the live run.
+let pendingUpload = null;   // { session_id, fileName }
+let extractAbort = null;    // AbortController while extraction is streaming
 
 function init() {
   initThemeAndDensity();
@@ -21,6 +25,7 @@ function init() {
   wireHeader();
   wireFooter();
   wireFileInputs();
+  wireExtractionControls();
   wireExports();
   wireUndoRedo();
   pingHealth();
@@ -66,26 +71,87 @@ async function handleFile(file) {
     toast({ kind: 'warn', title: 'Unsupported file', msg: 'Please drop a .pdf' });
     return;
   }
-  setBusy(`Extracting from ${file.name}…`);
-  showExtracting(file.name);
+  setBusy(`Opening ${file.name}…`);
   try {
-    const data = await uploadPdf(file, onExtractProgress);
-    data.fileName = file.name;
+    const meta = await savePdf(file);
+    pendingUpload = { session_id: meta.session_id, fileName: meta.fileName || file.name };
+    showConfirm(pendingUpload.fileName, meta.pages);
+  } catch (err) {
+    toast({ kind: 'error', title: 'Could not open PDF', msg: String(err.message || err) });
+  } finally {
+    setIdle();
+  }
+}
+
+// ===== Confirm → Start → Stop ======================================
+function wireExtractionControls() {
+  document.getElementById('cf-start').addEventListener('click', startExtraction);
+  document.getElementById('cf-cancel').addEventListener('click', cancelConfirm);
+  document.getElementById('ex-stop').addEventListener('click', stopExtraction);
+}
+
+function showConfirm(fileName, pages) {
+  document.getElementById('plan-empty').hidden = true;
+  document.getElementById('plan-extracting').hidden = true;
+  document.getElementById('cf-file').textContent = fileName;
+  document.getElementById('cf-pages').textContent =
+    `${pages} page${pages === 1 ? '' : 's'} · ready to extract`;
+  document.getElementById('plan-confirm').hidden = false;
+}
+
+function backToEmpty() {
+  document.getElementById('plan-confirm').hidden = true;
+  document.getElementById('plan-extracting').hidden = true;
+  document.getElementById('plan-empty').hidden = false;
+}
+
+function cancelConfirm() {
+  if (pendingUpload) deleteSession(pendingUpload.session_id);
+  pendingUpload = null;
+  backToEmpty();
+}
+
+async function startExtraction() {
+  if (!pendingUpload) return;
+  const { session_id, fileName } = pendingUpload;
+  document.getElementById('plan-confirm').hidden = true;
+  showExtracting(fileName);
+  setBusy(`Extracting from ${fileName}…`);
+  extractAbort = new AbortController();
+  try {
+    const data = await runExtraction(session_id, onExtractProgress, extractAbort.signal);
+    data.fileName = fileName;
     extractStepsDone();
     setSession(data);          // viewer swaps in the page image, hides overlays
     hideExtracting();
     setIdle();
+    pendingUpload = null;
+    extractAbort = null;
     const charsN = data.rows.length;
     toast({
       kind: 'ok',
-      title: `Loaded ${file.name}`,
+      title: `Loaded ${fileName}`,
       msg: `${charsN} characteristic${charsN === 1 ? '' : 's'} extracted`,
     });
   } catch (err) {
     hideExtracting();
     setIdle();
+    extractAbort = null;
+    if (err.name === 'AbortError') {   // user pressed Stop — session already cleaned up
+      backToEmpty();
+      return;
+    }
+    deleteSession(session_id);
+    pendingUpload = null;
+    backToEmpty();
     toast({ kind: 'error', title: 'Could not extract', msg: String(err.message || err) });
   }
+}
+
+function stopExtraction() {
+  if (extractAbort) extractAbort.abort();   // rejects runExtraction with AbortError
+  if (pendingUpload) deleteSession(pendingUpload.session_id);
+  pendingUpload = null;
 }
 
 // ===== Extraction status overlay ====================================
