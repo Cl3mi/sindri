@@ -136,6 +136,21 @@
           </div>
         </div>
 
+        <div id="plan-confirm" hidden>
+          <div class="inner">
+            <div class="title">Use this drawing?</div>
+            <div class="cf-file" id="cf-file">—</div>
+            <div class="hint" id="cf-pages">—</div>
+            <div class="cf-actions">
+              <button class="btn ghost" id="cf-cancel">Cancel</button>
+              <button class="btn primary" id="cf-start">
+                <svg class="icon" width="14" height="14"><use href="#i-check"/></svg>
+                Start extraction
+              </button>
+            </div>
+          </div>
+        </div>
+
         <div id="plan-extracting" hidden>
           <div class="inner">
             <div class="ex-head">
@@ -144,6 +159,10 @@
                 <div class="title" id="ex-title">Extracting…</div>
                 <div class="hint" id="ex-detail">Starting…</div>
               </div>
+              <button class="btn ghost" id="ex-stop" title="Stop extraction">
+                <svg class="icon" width="14" height="14"><use href="#i-x"/></svg>
+                Stop
+              </button>
             </div>
             <ol class="ex-steps" id="ex-steps"></ol>
           </div>

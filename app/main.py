@@ -2,12 +2,14 @@ import asyncio
 import json
 import queue
 import re
+import shutil
 import tempfile
 import threading
 import uuid
 from pathlib import Path
 from typing import List, Optional
-from fastapi import FastAPI, UploadFile, File, HTTPException
+import fitz  # PyMuPDF
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -61,20 +63,45 @@ def health():
 
 @app.post("/api/upload")
 async def upload(file: UploadFile = File(...)):
+    """Save the PDF to a fresh session and return its metadata. Extraction is
+    a separate, explicitly-started step (`POST /api/extract/{session_id}`)."""
     session_id = uuid.uuid4().hex
     work = _SESSIONS / session_id
     work.mkdir(parents=True, exist_ok=True)
     pdf_path = work / "input.pdf"
     pdf_path.write_bytes(await file.read())
+    try:
+        with fitz.open(pdf_path) as doc:
+            pages = doc.page_count
+    except Exception:
+        shutil.rmtree(work, ignore_errors=True)
+        raise HTTPException(status_code=400, detail="could not read the PDF")
+    return {"session_id": session_id, "fileName": file.filename, "pages": pages}
 
-    # Extraction is CPU/GPU-bound and synchronous; run it in a worker thread
-    # and stream its pipeline progress to the browser as Server-Sent Events.
-    # The final result is delivered as a terminal `result` (or `error`) event.
+
+class _Cancelled(Exception):
+    """Raised inside the extraction worker when the client disconnects, to
+    unwind the pipeline cooperatively at the next progress emit."""
+
+
+@app.post("/api/extract/{session_id}")
+async def extract_endpoint(session_id: str, request: Request):
+    """Run extraction for an already-uploaded session and stream pipeline
+    progress as Server-Sent Events. The final result is a terminal `result`
+    (or `error`) event."""
+    work = _session_dir(session_id)
+    pdf_path = work / "input.pdf"
+    if not pdf_path.is_file():
+        raise HTTPException(status_code=404, detail="unknown session")
+
     events: "queue.Queue" = queue.Queue()
     _DONE = object()
+    cancel = threading.Event()
 
     def worker():
         def progress(step, detail="", current=None, total=None):
+            if cancel.is_set():
+                raise _Cancelled()
             events.put(("progress", {
                 "step": step, "detail": detail,
                 "current": current, "total": total,
@@ -88,6 +115,9 @@ async def upload(file: UploadFile = File(...)):
                 "rows": [r.model_dump() for r in result.characteristics],
                 "notes": result.notes.model_dump() if result.notes is not None else None,
             }))
+        except _Cancelled:
+            # client went away — drop the session and stop quietly
+            shutil.rmtree(work, ignore_errors=True)
         except RuntimeError as e:
             events.put(("error", {"detail": str(e)}))
         except Exception:
@@ -99,7 +129,14 @@ async def upload(file: UploadFile = File(...)):
         threading.Thread(target=worker, daemon=True).start()
         loop = asyncio.get_event_loop()
         while True:
-            kind, payload = await loop.run_in_executor(None, events.get)
+            try:
+                kind, payload = await loop.run_in_executor(
+                    None, lambda: events.get(timeout=0.25))
+            except queue.Empty:
+                if await request.is_disconnected():
+                    cancel.set()
+                    break
+                continue
             if kind is _DONE:
                 break
             yield f"event: {kind}\ndata: {json.dumps(payload)}\n\n"
@@ -107,6 +144,16 @@ async def upload(file: UploadFile = File(...)):
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
                                       "X-Accel-Buffering": "no"})
+
+
+@app.delete("/api/session/{session_id}")
+def delete_session(session_id: str):
+    """Discard an uploaded session (cancelled confirm, or stopped extraction).
+    Idempotent: a missing directory is not an error; a malformed id is 404
+    via `_session_dir`."""
+    work = _session_dir(session_id)
+    shutil.rmtree(work, ignore_errors=True)
+    return {"ok": True}
 
 
 @app.get("/api/image/{session_id}")

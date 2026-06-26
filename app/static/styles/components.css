@@ -206,6 +206,58 @@ body.drag-over #plan-viewport {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* Confirm-before-extract state ------------------------------------- */
+#plan-confirm {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  background: rgba(10, 13, 16, 0.45);
+  backdrop-filter: blur(1px);
+}
+#plan-confirm .inner {
+  pointer-events: auto;
+  min-width: 320px;
+  max-width: 420px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  padding: 24px 28px;
+  background: rgba(15, 20, 25, 0.55);
+  text-align: center;
+}
+#plan-confirm .inner .title {
+  color: var(--fg);
+  font-weight: 500;
+  font-size: var(--fs-lg);
+  margin-bottom: 10px;
+}
+#plan-confirm .cf-file {
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  word-break: break-all;
+  margin-bottom: 2px;
+}
+#plan-confirm .hint {
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+#plan-confirm .cf-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+/* Stop button sits at the far right of the extracting header */
+#plan-extracting .ex-head #ex-stop {
+  margin-left: auto;
+  flex: none;
+  align-self: flex-start;
+}
+
 #plan-extracting .ex-steps {
   list-style: none;
   margin: 0;
