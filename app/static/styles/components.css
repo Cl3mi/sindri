@@ -597,11 +597,11 @@ table.inspection tr.reviewed td .review-dot { background: var(--ok); }
 }
 
 /* ===== Notes ==================================================== */
-#notes-section {
+#notes-section, #title-section {
   border-top: 1px solid var(--border);
   background: var(--bg-elevated);
 }
-#notes-section .notes-header {
+#notes-section .notes-header, #title-section .notes-header {
   display: flex; align-items: center; gap: 8px;
   padding: 8px 12px;
   font-size: var(--fs-xs);
@@ -612,7 +612,7 @@ table.inspection tr.reviewed td .review-dot { background: var(--ok); }
   cursor: pointer;
   user-select: none;
 }
-#notes-section .notes-header .count {
+#notes-section .notes-header .count, #title-section .notes-header .count {
   font-family: var(--font-mono);
   background: var(--bg-base);
   border: 1px solid var(--border);
@@ -624,13 +624,15 @@ table.inspection tr.reviewed td .review-dot { background: var(--ok); }
   text-transform: none;
   letter-spacing: 0;
 }
-#notes-section .notes-header .caret {
+#notes-section .notes-header .caret, #title-section .notes-header .caret {
   transition: transform var(--motion-fast);
 }
-#notes-section[data-collapsed="true"] .notes-header .caret {
+#notes-section[data-collapsed="true"] .notes-header .caret,
+#title-section[data-collapsed="true"] .notes-header .caret {
   transform: rotate(-90deg);
 }
-#notes-section[data-collapsed="true"] table.notes { display: none; }
+#notes-section[data-collapsed="true"] table.notes,
+#title-section[data-collapsed="true"] table.notes { display: none; }
 
 table.notes {
   width: 100%;
@@ -667,6 +669,8 @@ table.notes td.pos {
 }
 table.notes td.sub.pos { padding-left: 22px; color: var(--fg-faint); }
 table.notes tr.review td.pos { color: var(--warn); }
+/* title-block rows have no .pos cell — tint the whole review row instead */
+#title-section table.notes tr.review td { color: var(--warn); }
 table.notes tr.target { background: var(--accent-bg); }
 
 /* ===== Toast system ============================================ */
