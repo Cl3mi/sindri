@@ -60,6 +60,22 @@ _NOTES_PROMPT = (
 )
 
 
+# Title-block cell read prompt: the crop is ONE cell of the bottom-right title
+# block (Schriftfeld). Each cell holds a small bilingual caption ("English /
+# German") and a prominent value; the caption may sit above OR below the value.
+# Returns a JSON object so the parser can split caption from value in one pass.
+_TITLE_PROMPT = (
+    "This image is a single cell cropped from the title block (Schriftfeld) of "
+    "a mechanical engineering drawing. The cell contains a small printed caption "
+    "(a bilingual label in the form 'English / German', e.g. 'Sheet / Blatt' or "
+    "'Released / Freigabe') together with a prominent value. The caption may "
+    "appear ABOVE or BELOW the value. Return ONLY a JSON object "
+    "{\"label\": \"<caption as printed>\", \"value\": \"<the value>\"}. If the "
+    "cell has only a value and no caption, use an empty label. Use a comma as the "
+    "decimal separator. No prose, no explanation, no code fences."
+)
+
+
 class VLMBackend:
     """Local GPU vision-LLM doing constrained per-region reads only."""
 
@@ -123,6 +139,23 @@ class VLMBackend:
         with self.torch.inference_mode():
             out = self.model.generate(
                 **inputs, max_new_tokens=512, do_sample=False,
+            )
+        trimmed = out[0][inputs["input_ids"].shape[1]:]
+        text = self.processor.decode(trimmed, skip_special_tokens=True).strip()
+        return OcrResult(text=text, confidence=0.9 if text else 0.0)
+
+    def read_title_cell(self, image: Image.Image) -> OcrResult:
+        messages = [{"role": "user", "content": [
+            {"type": "image", "image": image.convert("RGB")},
+            {"type": "text", "text": _TITLE_PROMPT},
+        ]}]
+        inputs = self.processor.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=True,
+            return_dict=True, return_tensors="pt",
+        ).to(self.model.device)
+        with self.torch.inference_mode():
+            out = self.model.generate(
+                **inputs, max_new_tokens=128, do_sample=False,
             )
         trimmed = out[0][inputs["input_ids"].shape[1]:]
         text = self.processor.decode(trimmed, skip_special_tokens=True).strip()
