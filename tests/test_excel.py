@@ -1,5 +1,5 @@
 from openpyxl import load_workbook
-from app.models import Characteristic
+from app.models import Characteristic, TitleField
 from app.excel import write_workbook
 
 def test_write_workbook(tmp_path):
@@ -57,3 +57,29 @@ def test_notes_sheet_absent_when_no_notes_passed(tmp_path):
                    out)
     wb = load_workbook(out)
     assert "Notes" not in wb.sheetnames
+
+
+def test_workbook_has_title_block_sheet(tmp_path):
+    from app.excel import write_workbook
+    fields = [
+        TitleField(label="Sheet / Blatt", label_en="Sheet", label_de="Blatt",
+                   value="1/1"),
+        TitleField(label="Scale / Maßstab", label_en="Scale", label_de="Maßstab",
+                   value="5:1"),
+    ]
+    out = tmp_path / "wb.xlsx"
+    write_workbook([], out, title_block=fields)
+    wb = load_workbook(out)
+    assert "Title Block" in wb.sheetnames
+    ws = wb["Title Block"]
+    assert [c.value for c in ws[1]] == ["Label (EN)", "Label (DE)", "Value"]
+    assert ws.cell(2, 1).value == "Sheet" and ws.cell(2, 3).value == "1/1"
+    assert ws.cell(3, 2).value == "Maßstab"
+
+
+def test_workbook_omits_title_block_sheet_when_empty(tmp_path):
+    from app.excel import write_workbook
+    out = tmp_path / "wb.xlsx"
+    write_workbook([], out, title_block=[])
+    wb = load_workbook(out)
+    assert "Title Block" not in wb.sheetnames
