@@ -98,6 +98,28 @@ def test_extract_without_detection_backend_streams_error(sample_pdf, monkeypatch
     assert error is not None and "VLM" in error["detail"]
 
 
+def test_extraction_cancels_when_event_set(sample_pdf, stub_backend, tmp_path):
+    import threading
+    import app.main as main
+    from app.pipeline.extract import extract
+
+    cancel = threading.Event()
+    cancel.set()  # already cancelled before the first progress emit
+    seen = []
+
+    def progress(step, detail="", current=None, total=None):
+        seen.append(step)
+        if cancel.is_set():
+            raise main._Cancelled()
+
+    with pytest.raises(main._Cancelled):
+        extract(sample_pdf, work_dir=tmp_path, dpi=300,
+                backend=stub_backend, progress=progress)
+    # it unwound at the very first emit ("render"), never reaching "place"
+    assert seen == ["render"]
+    assert "place" not in seen
+
+
 def test_upload_returns_metadata_without_extracting(sample_pdf, stub_backend):
     import app.main as main
     meta = save_pdf(client, sample_pdf)

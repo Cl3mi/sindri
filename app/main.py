@@ -79,6 +79,11 @@ async def upload(file: UploadFile = File(...)):
     return {"session_id": session_id, "fileName": file.filename, "pages": pages}
 
 
+class _Cancelled(Exception):
+    """Raised inside the extraction worker when the client disconnects, to
+    unwind the pipeline cooperatively at the next progress emit."""
+
+
 @app.post("/api/extract/{session_id}")
 async def extract_endpoint(session_id: str, request: Request):
     """Run extraction for an already-uploaded session and stream pipeline
@@ -91,9 +96,12 @@ async def extract_endpoint(session_id: str, request: Request):
 
     events: "queue.Queue" = queue.Queue()
     _DONE = object()
+    cancel = threading.Event()
 
     def worker():
         def progress(step, detail="", current=None, total=None):
+            if cancel.is_set():
+                raise _Cancelled()
             events.put(("progress", {
                 "step": step, "detail": detail,
                 "current": current, "total": total,
@@ -107,6 +115,9 @@ async def extract_endpoint(session_id: str, request: Request):
                 "rows": [r.model_dump() for r in result.characteristics],
                 "notes": result.notes.model_dump() if result.notes is not None else None,
             }))
+        except _Cancelled:
+            # client went away — drop the session and stop quietly
+            shutil.rmtree(work, ignore_errors=True)
         except RuntimeError as e:
             events.put(("error", {"detail": str(e)}))
         except Exception:
@@ -118,7 +129,14 @@ async def extract_endpoint(session_id: str, request: Request):
         threading.Thread(target=worker, daemon=True).start()
         loop = asyncio.get_event_loop()
         while True:
-            kind, payload = await loop.run_in_executor(None, events.get)
+            try:
+                kind, payload = await loop.run_in_executor(
+                    None, lambda: events.get(timeout=0.25))
+            except queue.Empty:
+                if await request.is_disconnected():
+                    cancel.set()
+                    break
+                continue
             if kind is _DONE:
                 break
             yield f"event: {kind}\ndata: {json.dumps(payload)}\n\n"
