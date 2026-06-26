@@ -11,6 +11,7 @@ from app.pipeline.parser import parse_value
 from app.pipeline.ocr import get_backend
 from app.pipeline.review import review_flags
 from app.pipeline import notes_block as nb
+from app.pipeline import title_block as tb
 
 # detector kind -> parser hint
 _HINTS = {"material": "material", "note": "note", "gdt": "gdt",
@@ -94,6 +95,15 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
     else:
         image_for_detect = image
 
+    # Title-block path: locate the bottom-right Schriftfeld, read its cells as
+    # label/value fields, and mask it so its text is not misread as dimensions.
+    emit("title", "Reading title block")
+    tb_region = tb.locate_title_block(image)
+    title_fields = []
+    if tb_region is not None:
+        title_fields = tb.read_title_block(image, tb_region, backend)
+        image_for_detect = tb.mask_region(image_for_detect, tb_region)
+
     emit("detect", "Detecting characteristics")
     detections = detect_characteristics(image_for_detect, backend)
 
@@ -139,4 +149,10 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
     emit("place", "Placing balloons")
     number_characteristics(results)
     place_balloons(results)
-    return ExtractionResult(characteristics=results, notes=notes_obj)
+    # Free text outside the structured blocks (e.g. margin notes).
+    exclude = [b for b in (tb_region.outer_box if tb_region else None,
+                           region.outer_box if region is not None else None)
+               if b is not None]
+    title_fields += tb.loose_text(image, backend, exclude)
+    return ExtractionResult(characteristics=results, notes=notes_obj,
+                            title_block=title_fields)

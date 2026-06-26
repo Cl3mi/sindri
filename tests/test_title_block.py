@@ -1,3 +1,4 @@
+from pathlib import Path
 from app.models import TitleField, ExtractionResult
 
 
@@ -270,3 +271,43 @@ def test_loose_text_survives_detector_error(monkeypatch):
 
     assert loose_text(Image.new("RGB", (400, 400), "white"), Boom(),
                       exclude_boxes=[]) == []
+
+
+import uuid
+from app.pipeline.extract import extract
+
+
+def test_extract_attaches_title_block(tmp_path, monkeypatch):
+    """A fake backend + stubbed locate yields a title_block on the result and
+    masks the region before detection."""
+    from app.pipeline import title_block as tb
+    from app.models import TitleField as TF
+
+    region = tb.TitleBlockRegion(outer_box=(600, 560, 980, 760),
+                                 cells=[(610, 570, 780, 650)])
+    monkeypatch.setattr("app.pipeline.extract.tb.locate_title_block",
+                        lambda image: region)
+    monkeypatch.setattr(
+        "app.pipeline.extract.tb.read_title_block",
+        lambda image, reg, backend: [TF(label="Size / Format", label_en="Size",
+                                        label_de="Format", value="A2")])
+    monkeypatch.setattr("app.pipeline.extract.tb.loose_text",
+                        lambda image, backend, exclude_boxes: [])
+    # notes locator off so it doesn't interfere
+    monkeypatch.setattr("app.pipeline.extract.nb.locate_notes_block",
+                        lambda image, backend: None)
+
+    from tests.conftest import StubVLMBackend
+    backend = StubVLMBackend(detections=[])
+
+    import shutil
+    src = Path(__file__).parents[1] / "test_docs" / "T1025206_D.pdf"
+    if not src.exists():
+        src = Path(__file__).parents[1] / "sample.pdf"
+    work = tmp_path / "work"
+    work.mkdir()
+    shutil.copy(src, work / "input.pdf")
+
+    result = extract(work / "input.pdf", work_dir=work, dpi=150, backend=backend)
+    assert len(result.title_block) == 1
+    assert result.title_block[0].value == "A2"
