@@ -61,7 +61,7 @@ def review_flags_field(value: str, label: str,
 
 _MIN_CELL_W = 40          # px: ignore slivers and line artifacts
 _MIN_CELL_H = 18
-_INK_MIN = 0.004          # fraction of dark pixels for a cell to count as text
+_INK_MIN = 0.001          # fraction of dark pixels for a cell to count as text
 _BAND_TOL = 30            # px: rows within this y-band sort left-to-right
 
 
@@ -102,3 +102,37 @@ def detect_cells(image: Image.Image,
                       x0 + int(cx + cw), y0 + int(cy + ch)))
     cells.sort(key=lambda b: (round(b[1] / _BAND_TOL), b[0]))
     return cells
+
+
+@dataclass
+class TitleBlockRegion:
+    outer_box: Tuple[int, int, int, int]
+    cells: List[Tuple[int, int, int, int]]   # ink-bearing cells, reading order
+
+
+def locate_title_block(image: Image.Image) -> Optional[TitleBlockRegion]:
+    """Find the title block in the bottom-right quadrant. Returns None (non-fatal)
+    if no ink-bearing grid cells are found or anything goes wrong."""
+    try:
+        w, h = image.size
+        quad = (int(w * 0.5), int(h * 0.6), w, h)
+        cells = [c for c in detect_cells(image, quad) if _cell_has_ink(image, c)]
+        if not cells:
+            return None
+        outer = (min(c[0] for c in cells), min(c[1] for c in cells),
+                 max(c[2] for c in cells), max(c[3] for c in cells))
+        return TitleBlockRegion(outer_box=outer, cells=cells)
+    except Exception as e:
+        print(f"[sindri.title_block] locator failed: {e!r}",
+              file=sys.stderr, flush=True)
+        return None
+
+
+def mask_region(image: Image.Image, region: TitleBlockRegion) -> Image.Image:
+    """Return a copy of `image` with `region.outer_box` filled white, so the
+    main detector cannot misread title-block text as dimension callouts."""
+    out = image.copy()
+    x0, y0, x1, y1 = region.outer_box
+    if x1 > x0 and y1 > y0:
+        ImageDraw.Draw(out).rectangle((x0, y0, x1, y1), fill="white")
+    return out

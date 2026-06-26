@@ -117,3 +117,42 @@ def test_cell_has_ink_true_for_text_cell_false_for_blank():
     img = _grid_image()
     assert _cell_has_ink(img, (15, 15, 195, 95)) is True     # top-left has HELLO
     assert _cell_has_ink(img, (205, 105, 385, 185)) is False  # bottom-right blank
+
+
+from app.pipeline.title_block import (
+    TitleBlockRegion, locate_title_block, mask_region,
+)
+
+
+def _page_with_bottom_right_grid():
+    """A 1000x800 white page with a ruled 2x2 grid in the bottom-right corner
+    and text in its top-left cell."""
+    img = Image.new("RGB", (1000, 800), "white")
+    d = _ImageDraw.Draw(img)
+    d.rectangle((600, 560, 980, 760), outline="black", width=3)
+    d.line((790, 560, 790, 760), fill="black", width=3)
+    d.line((600, 660, 980, 660), fill="black", width=3)
+    d.text((630, 590), "A2", fill="black")
+    return img
+
+
+def test_locate_finds_bottom_right_region():
+    region = locate_title_block(_page_with_bottom_right_grid())
+    assert region is not None
+    assert isinstance(region, TitleBlockRegion)
+    # outer box sits in the bottom-right of the page
+    assert region.outer_box[0] >= 500 and region.outer_box[1] >= 480
+    assert len(region.cells) >= 1
+
+
+def test_locate_returns_none_on_blank_page():
+    assert locate_title_block(Image.new("RGB", (1000, 800), "white")) is None
+
+
+def test_mask_region_fills_white_and_preserves_original():
+    img = Image.new("RGB", (100, 100), "black")
+    region = TitleBlockRegion(outer_box=(20, 30, 60, 70), cells=[])
+    out = mask_region(img, region)
+    assert out.getpixel((30, 40)) == (255, 255, 255)   # inside masked
+    assert out.getpixel((10, 10)) == (0, 0, 0)          # outside untouched
+    assert img.getpixel((30, 40)) == (0, 0, 0)          # copy semantics
