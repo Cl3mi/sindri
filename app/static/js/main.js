@@ -67,6 +67,10 @@ function wireFileInputs() {
 
 async function handleFile(file) {
   if (!file) return;
+  if (extractAbort) {
+    toast({ kind: 'warn', title: 'Extraction in progress', msg: 'Stop the current run before opening another drawing.' });
+    return;
+  }
   if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
     toast({ kind: 'warn', title: 'Unsupported file', msg: 'Please drop a .pdf' });
     return;
