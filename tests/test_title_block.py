@@ -115,7 +115,7 @@ def test_detect_cells_empty_region_returns_empty():
 
 def test_cell_has_ink_true_for_text_cell_false_for_blank():
     img = _grid_image()
-    assert _cell_has_ink(img, (15, 15, 195, 95)) is True     # top-left has HELLO
+    assert _cell_has_ink(img, (15, 15, 195, 95)) is True     # top-left has ink rect
     assert _cell_has_ink(img, (205, 105, 385, 185)) is False  # bottom-right blank
 
 
