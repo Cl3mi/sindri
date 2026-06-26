@@ -75,3 +75,45 @@ def test_review_flags_loose_text_not_flagged():
 def test_review_flags_clean_field():
     flagged, reasons = review_flags_field(value="1/1", label="Sheet / Blatt")
     assert flagged is False and reasons == []
+
+
+from PIL import Image
+from PIL import ImageDraw as _ImageDraw
+from app.pipeline.title_block import detect_cells, _cell_has_ink
+
+
+def _grid_image():
+    """A 2x2 ruled grid (400x200) with text only in the top-left cell."""
+    img = Image.new("RGB", (400, 200), "white")
+    d = _ImageDraw.Draw(img)
+    # outer frame + one vertical + one horizontal divider, thick black lines
+    d.rectangle((10, 10, 390, 190), outline="black", width=3)
+    d.line((200, 10, 200, 190), fill="black", width=3)
+    d.line((10, 100, 390, 100), fill="black", width=3)
+    d.text((40, 40), "HELLO", fill="black")          # ink in top-left cell only
+    return img
+
+
+def test_detect_cells_finds_four_cells():
+    cells = detect_cells(_grid_image(), (0, 0, 400, 200))
+    # 2x2 grid -> 4 interior cells (give or take border slivers, so >= 4)
+    assert len(cells) >= 4
+    # every cell lies inside the image bounds
+    for x0, y0, x1, y1 in cells:
+        assert 0 <= x0 < x1 <= 400 and 0 <= y0 < y1 <= 200
+
+
+def test_detect_cells_reading_order_top_to_bottom_left_to_right():
+    cells = detect_cells(_grid_image(), (0, 0, 400, 200))
+    # first cell is in the top band and left of the last cell's column
+    assert cells[0][1] <= cells[-1][1]
+
+
+def test_detect_cells_empty_region_returns_empty():
+    assert detect_cells(Image.new("RGB", (400, 200), "white"), (0, 0, 5, 5)) == []
+
+
+def test_cell_has_ink_true_for_text_cell_false_for_blank():
+    img = _grid_image()
+    assert _cell_has_ink(img, (15, 15, 195, 95)) is True     # top-left has HELLO
+    assert _cell_has_ink(img, (205, 105, 385, 185)) is False  # bottom-right blank

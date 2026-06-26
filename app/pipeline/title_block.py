@@ -57,3 +57,48 @@ def review_flags_field(value: str, label: str,
     elif expect_caption and not label.strip():
         reasons.append("missing caption")
     return bool(reasons), reasons
+
+
+_MIN_CELL_W = 40          # px: ignore slivers and line artifacts
+_MIN_CELL_H = 18
+_INK_MIN = 0.004          # fraction of dark pixels for a cell to count as text
+_BAND_TOL = 30            # px: rows within this y-band sort left-to-right
+
+
+def _cell_has_ink(image: Image.Image, box: Tuple[int, int, int, int]) -> bool:
+    """True if the cell interior contains a meaningful amount of dark pixels."""
+    crop = np.asarray(image.convert("L").crop(box))
+    if crop.size == 0:
+        return False
+    return float((crop < 128).mean()) >= _INK_MIN
+
+
+def detect_cells(image: Image.Image,
+                 region_box: Tuple[float, float, float, float]
+                 ) -> List[Tuple[int, int, int, int]]:
+    """Detect ruled grid cells inside `region_box`. Returns cell boxes in
+    absolute page coordinates, sorted top-to-bottom then left-to-right. Empty
+    list on any too-small/blank region."""
+    x0, y0, x1, y1 = (int(v) for v in region_box)
+    crop = np.asarray(image.convert("L").crop((x0, y0, x1, y1)))
+    if crop.size == 0 or crop.shape[0] < 40 or crop.shape[1] < 40:
+        return []
+    bw = cv2.threshold(crop, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)[1]
+    h, w = bw.shape
+    hk = cv2.getStructuringElement(cv2.MORPH_RECT, (max(10, w // 25), 1))
+    vk = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(10, h // 25)))
+    hor = cv2.morphologyEx(bw, cv2.MORPH_OPEN, hk)
+    ver = cv2.morphologyEx(bw, cv2.MORPH_OPEN, vk)
+    grid = cv2.add(hor, ver)
+    inv = cv2.bitwise_not(grid)
+    _, _, stats, _ = cv2.connectedComponentsWithStats(inv, 8)
+    cells: List[Tuple[int, int, int, int]] = []
+    for cx, cy, cw, ch, _area in stats[1:]:
+        if cw < _MIN_CELL_W or ch < _MIN_CELL_H:
+            continue
+        if cw > w * 0.95 and ch > h * 0.95:   # the whole-region background blob
+            continue
+        cells.append((x0 + int(cx), y0 + int(cy),
+                      x0 + int(cx + cw), y0 + int(cy + ch)))
+    cells.sort(key=lambda b: (round(b[1] / _BAND_TOL), b[0]))
+    return cells
