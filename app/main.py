@@ -146,6 +146,16 @@ async def extract_endpoint(session_id: str, request: Request):
                                       "X-Accel-Buffering": "no"})
 
 
+@app.delete("/api/session/{session_id}")
+def delete_session(session_id: str):
+    """Discard an uploaded session (cancelled confirm, or stopped extraction).
+    Idempotent: a missing directory is not an error; a malformed id is 404
+    via `_session_dir`."""
+    work = _session_dir(session_id)
+    shutil.rmtree(work, ignore_errors=True)
+    return {"ok": True}
+
+
 @app.get("/api/image/{session_id}")
 def image(session_id: str):
     png = _session_dir(session_id) / "page.png"

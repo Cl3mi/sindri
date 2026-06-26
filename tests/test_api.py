@@ -240,3 +240,23 @@ def test_upload_returns_null_notes_when_extract_returns_none(monkeypatch, sample
     test_client = TestClient(main.app)
     data = upload_pdf(test_client, sample_pdf, filename="x.pdf")
     assert data["notes"] is None
+
+
+def test_delete_session_removes_dir(sample_pdf):
+    meta = save_pdf(client, sample_pdf)
+    import app.main as main
+    work = main._SESSIONS / meta["session_id"]
+    assert work.is_dir()
+    r = client.delete(f"/api/session/{meta['session_id']}")
+    assert r.status_code == 200
+    assert not work.exists()
+
+
+def test_delete_missing_session_is_idempotent():
+    r = client.delete("/api/session/" + "0" * 32)
+    assert r.status_code == 200
+
+
+def test_delete_rejects_bad_session_id():
+    r = client.delete("/api/session/not-a-valid-uuid")
+    assert r.status_code == 404
