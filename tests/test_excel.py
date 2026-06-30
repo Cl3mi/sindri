@@ -83,3 +83,55 @@ def test_workbook_omits_title_block_sheet_when_empty(tmp_path):
     write_workbook([], out, title_block=[])
     wb = load_workbook(out)
     assert "Title Block" not in wb.sheetnames
+
+
+def test_write_workbook_creates_marks_sheet(tmp_path):
+    from openpyxl import load_workbook
+    from app.models import Characteristic, Mark, MarkBlock
+    from app.excel import write_workbook
+
+    rows = [Characteristic(pos=1, char_type="Distance", nominal="10")]
+    marks = MarkBlock(region=(0, 0, 100, 100), marks=[
+        Mark(pos=101, text_en="EN-A", text_de="DE-A"),
+        Mark(pos=102, text_en="EN-B", text_de="DE-B"),
+    ])
+    out = tmp_path / "out.xlsx"
+    write_workbook(rows, out, marks=marks)
+
+    wb = load_workbook(out)
+    assert "Marks" in wb.sheetnames
+    ws = wb["Marks"]
+    # row 1 = headers; row 2+ = marks
+    assert ws.cell(1, 1).value == "Pos"
+    assert ws.cell(1, 2).value == "English"
+    assert ws.cell(1, 3).value == "German"
+    assert ws.cell(2, 1).value == "101"
+    assert ws.cell(2, 2).value == "EN-A"
+    assert ws.cell(2, 3).value == "DE-A"
+    assert ws.cell(3, 1).value == "102"
+
+
+def test_write_workbook_omits_marks_sheet_when_marks_none(tmp_path):
+    from openpyxl import load_workbook
+    from app.models import Characteristic
+    from app.excel import write_workbook
+
+    out = tmp_path / "out.xlsx"
+    write_workbook([Characteristic(pos=1)], out)
+    wb = load_workbook(out)
+    assert "Marks" not in wb.sheetnames
+
+
+def test_marks_sheet_ordered_before_notes_when_both_present(tmp_path):
+    from openpyxl import load_workbook
+    from app.models import Characteristic, Mark, MarkBlock, Note, NoteBlock
+    from app.excel import write_workbook
+
+    out = tmp_path / "out.xlsx"
+    write_workbook(
+        [Characteristic(pos=1)], out,
+        notes=NoteBlock(region=(0, 0, 1, 1), notes=[Note(pos=101)]),
+        marks=MarkBlock(region=(0, 0, 1, 1), marks=[Mark(pos=101)]),
+    )
+    wb = load_workbook(out)
+    assert wb.sheetnames == ["Inspection", "Marks", "Notes"]
