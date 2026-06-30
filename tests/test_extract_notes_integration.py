@@ -77,3 +77,80 @@ def test_t1025300_inline_bullets_appear_in_notes_not_characteristics(
     chars = result.characteristics
     bogus = [c for c in chars if c.nominal in ("16",) and c.char_type == "Distance"]
     assert bogus == []
+
+
+def test_extract_populates_marks_block_alongside_notes(sample_pdf, tmp_path, monkeypatch):
+    """End-to-end: when the marks locator returns a region and the backend
+    transcribes it, result.marks is populated independently of result.notes."""
+    import app.pipeline.extract as extract_mod
+    import app.pipeline.boxes as boxes_mod
+    from app.pipeline.marks_block import MarksBlockRegion
+    from app.pipeline.ocr.base import OcrResult
+
+    monkeypatch.setattr(boxes_mod, "detect_boxes", lambda image: [])
+
+    # Notes locator returns a region (so the existing notes path still runs).
+    notes_region = NotesBlockRegion(outer_box=(100, 100, 400, 300),
+                                    lang_columns=[(100, 250), (250, 400)])
+    monkeypatch.setattr("app.pipeline.notes_block.locate_notes_block",
+                        lambda image, backend: notes_region)
+
+    # Marks locator returns a top-right region.
+    marks_region = MarksBlockRegion(outer_box=(1500, 50, 1900, 400),
+                                    lang_columns=[(1500, 1700), (1700, 1900)])
+    monkeypatch.setattr("app.pipeline.marks_block.locate_marks_block",
+                        lambda image: marks_region)
+
+    monkeypatch.setattr(extract_mod, "detect_characteristics",
+                        lambda image, backend, **kw: [])
+
+    class _Backend:
+        # The same `read_notes_block` method is used for both notes and marks
+        # transcription. The pipeline crops different regions, but our stub
+        # ignores the crop and returns canned text — so we need to return
+        # different text depending on which call this is. We track call count.
+        def __init__(self):
+            self._calls = 0
+        def detect_regions(self, image): return []
+        def read_region(self, image): return OcrResult(text="", confidence=0.0)
+        def read_notes_block(self, image):
+            self._calls += 1
+            if self._calls == 1:
+                return OcrResult(text="101\tNote-EN\tNote-DE", confidence=0.9)
+            return OcrResult(text="111\tMark-EN\tMark-DE\n112\tM2-EN\tM2-DE",
+                             confidence=0.9)
+
+    result = extract_mod.extract(sample_pdf, tmp_path, backend=_Backend())
+
+    assert result.notes is not None
+    assert [n.pos for n in result.notes.notes] == [101]
+
+    assert result.marks is not None
+    assert [m.pos for m in result.marks.marks] == [111, 112]
+    assert result.marks.marks[0].text_en == "Mark-EN"
+    assert result.marks.marks[0].text_de == "Mark-DE"
+
+
+def test_extract_marks_none_when_locator_returns_none(sample_pdf, tmp_path, monkeypatch):
+    """When no top-right rectangle is found, result.marks is None and the
+    rest of the pipeline runs unchanged."""
+    import app.pipeline.extract as extract_mod
+    import app.pipeline.boxes as boxes_mod
+    from app.pipeline.ocr.base import OcrResult
+
+    monkeypatch.setattr(boxes_mod, "detect_boxes", lambda image: [])
+    monkeypatch.setattr("app.pipeline.notes_block.locate_notes_block",
+                        lambda image, backend: None)
+    monkeypatch.setattr("app.pipeline.marks_block.locate_marks_block",
+                        lambda image: None)
+    monkeypatch.setattr(extract_mod, "detect_characteristics",
+                        lambda image, backend, **kw: [])
+
+    class _Backend:
+        def detect_regions(self, image): return []
+        def read_region(self, image): return OcrResult(text="", confidence=0.0)
+
+    result = extract_mod.extract(sample_pdf, tmp_path, backend=_Backend())
+    assert result.notes is None
+    assert result.marks is None
+    assert result.characteristics == []

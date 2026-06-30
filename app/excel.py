@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Side, Font
-from app.models import Characteristic, NoteBlock, TitleField
+from app.models import Characteristic, NoteBlock, MarkBlock, TitleField
 
 HEADERS = [
     ("Pos.", "Pos."),
@@ -59,6 +59,21 @@ def _write_notes_sheet(ws, block: NoteBlock) -> None:
         ws.column_dimensions[chr(64 + col)].width = w
 
 
+def _write_marks_sheet(ws, block: MarkBlock) -> None:
+    headers = ["Pos", "English", "German"]
+    for col, h in enumerate(headers, start=1):
+        cell = ws.cell(1, col, h)
+        cell.font = Font(bold=True)
+        cell.alignment = _center
+        cell.border = _border
+    for i, m in enumerate(block.marks, start=2):
+        ws.cell(i, 1, f"{m.pos}")
+        ws.cell(i, 2, m.text_en)
+        ws.cell(i, 3, m.text_de)
+    for col, w in enumerate([10, 48, 48], start=1):
+        ws.column_dimensions[chr(64 + col)].width = w
+
+
 def _write_title_block_sheet(ws, fields) -> None:
     headers = ["Label (EN)", "Label (DE)", "Value"]
     for col, h in enumerate(headers, start=1):
@@ -76,11 +91,14 @@ def _write_title_block_sheet(ws, fields) -> None:
 
 def write_workbook(rows: Iterable[Characteristic], path: Path,
                    notes: Optional[NoteBlock] = None,
+                   marks: Optional[MarkBlock] = None,
                    title_block: Optional[Iterable[TitleField]] = None) -> None:
     wb = Workbook()
     ws = wb.active
     ws.title = "Inspection"
     _write_characteristics_sheet(ws, rows)
+    if marks is not None and marks.marks:
+        _write_marks_sheet(wb.create_sheet("Marks"), marks)
     if notes is not None and notes.notes:
         _write_notes_sheet(wb.create_sheet("Notes"), notes)
     if title_block:

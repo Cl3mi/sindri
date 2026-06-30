@@ -39,6 +39,20 @@ class NoteBlock(BaseModel):
     notes: List[Note] = []
 
 
+class Mark(BaseModel):
+    pos: int                          # 101, 102, …
+    text_en: str = ""
+    text_de: str = ""
+    raw_text: str = ""
+    needs_review: bool = False
+    review_reasons: List[str] = []
+
+
+class MarkBlock(BaseModel):
+    region: Tuple[float, float, float, float]
+    marks: List[Mark] = []
+
+
 class TitleField(BaseModel):
     label: str = ""          # caption as printed, e.g. "Sheet / Blatt"
     label_en: str = ""
@@ -54,3 +68,4 @@ class ExtractionResult(BaseModel):
     characteristics: List[Characteristic]
     notes: Optional[NoteBlock] = None
     title_block: List[TitleField] = []
+    marks: Optional[MarkBlock] = None

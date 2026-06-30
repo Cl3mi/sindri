@@ -11,6 +11,7 @@ const COLS = ['char_type', 'nominal', 'upper_tol', 'lower_tol'];
 const NUMERIC = new Set(['nominal', 'upper_tol', 'lower_tol']);
 
 let body, notesBody, notesSection, notesCount;
+let marksBody, marksSection, marksCount;
 let titleBody, titleSection, titleCount;
 
 export function initTable() {
@@ -18,6 +19,9 @@ export function initTable() {
   notesBody    = document.getElementById('notes-body');
   notesSection = document.getElementById('notes-section');
   notesCount   = document.getElementById('notes-count');
+  marksBody    = document.getElementById('marks-body');
+  marksSection = document.getElementById('marks-section');
+  marksCount   = document.getElementById('marks-count');
   titleBody    = document.getElementById('title-body');
   titleSection = document.getElementById('title-section');
   titleCount   = document.getElementById('title-count');
@@ -32,6 +36,7 @@ export function initTable() {
   bindSelectAll();
   bindBulkAccept();
   bindNotesToggle();
+  bindMarksToggle();
   bindTitleToggle();
 }
 
@@ -93,6 +98,13 @@ function bindNotesToggle() {
   });
 }
 
+function bindMarksToggle() {
+  document.getElementById('marks-toggle').addEventListener('click', () => {
+    const collapsed = marksSection.dataset.collapsed === 'true';
+    marksSection.dataset.collapsed = collapsed ? 'false' : 'true';
+  });
+}
+
 function bindTitleToggle() {
   document.getElementById('title-toggle').addEventListener('click', () => {
     const collapsed = titleSection.dataset.collapsed === 'true';
@@ -104,6 +116,7 @@ function bindTitleToggle() {
 function renderAll() {
   renderRows();
   renderNotes();
+  renderMarks();
   renderTitleBlock();
   renderCounts();
   updateBulkAvailability();
@@ -227,6 +240,32 @@ function renderNotes() {
     const en = document.createElement('td'); en.textContent = n.text_en ?? ''; tr.appendChild(en);
     const de = document.createElement('td'); de.textContent = n.text_de ?? ''; tr.appendChild(de);
     notesBody.appendChild(tr);
+  }
+}
+
+function renderMarks() {
+  marksBody.innerHTML = '';
+  const block = state.marks;
+  if (!block || !block.marks || block.marks.length === 0) {
+    marksSection.hidden = true;
+    return;
+  }
+  marksSection.hidden = false;
+  marksCount.textContent = block.marks.length;
+  for (const m of block.marks) {
+    const tr = document.createElement('tr');
+    if (m.needs_review) {
+      tr.classList.add('review');
+      tr.title = (m.review_reasons || []).join(', ');
+    }
+    const posTd = document.createElement('td');
+    posTd.className = 'pos';
+    posTd.textContent = `${m.pos}`;
+    posTd.id = `mark-${m.pos}`;
+    tr.appendChild(posTd);
+    const en = document.createElement('td'); en.textContent = m.text_en ?? ''; tr.appendChild(en);
+    const de = document.createElement('td'); de.textContent = m.text_de ?? ''; tr.appendChild(de);
+    marksBody.appendChild(tr);
   }
 }
 

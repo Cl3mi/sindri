@@ -298,3 +298,50 @@ def test_export_includes_title_block_sheet(tmp_path, monkeypatch):
     wb = load_workbook(out)
     assert "Title Block" in wb.sheetnames
     assert wb["Title Block"].cell(2, 3).value == "1/1"
+
+
+def test_export_request_accepts_marks_field():
+    """The export endpoint's request body must accept a `marks` field of
+    type Optional[MarkBlock] — symmetric with the existing `notes` field."""
+    from app.main import ExportRequest
+    from app.models import MarkBlock
+
+    req = ExportRequest(session_id="abc", rows=[], notes=None, marks=None)
+    assert req.marks is None
+
+    block = MarkBlock(region=(0, 0, 1, 1), marks=[])
+    req2 = ExportRequest(session_id="abc", rows=[], marks=block)
+    assert req2.marks == block
+
+
+def test_upload_returns_marks_field(monkeypatch, sample_pdf):
+    """Extraction result carries `marks` alongside `notes`."""
+    from fastapi.testclient import TestClient
+    import app.main as main
+    from app.models import (
+        Characteristic, ExtractionResult, MarkBlock, Mark,
+    )
+
+    monkeypatch.setattr(main, "extract", lambda *a, **kw: ExtractionResult(
+        characteristics=[Characteristic(pos=1, char_type="Distance", nominal="1,2")],
+        marks=MarkBlock(region=(0, 0, 10, 10),
+                        marks=[Mark(pos=101, text_en="A", text_de="B"),
+                               Mark(pos=102, text_en="C", text_de="D")])
+    ))
+    test_client = TestClient(main.app)
+    data = upload_pdf(test_client, sample_pdf, filename="x.pdf")
+    assert "marks" in data and data["marks"] is not None
+    mark_positions = [m["pos"] for m in data["marks"]["marks"]]
+    assert mark_positions == [101, 102]
+
+
+def test_upload_returns_null_marks_when_extract_returns_none(monkeypatch, sample_pdf):
+    from fastapi.testclient import TestClient
+    import app.main as main
+    from app.models import Characteristic, ExtractionResult
+
+    monkeypatch.setattr(main, "extract", lambda *a, **kw: ExtractionResult(
+        characteristics=[Characteristic(pos=1)], marks=None))
+    test_client = TestClient(main.app)
+    data = upload_pdf(test_client, sample_pdf, filename="x.pdf")
+    assert data["marks"] is None

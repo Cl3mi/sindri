@@ -84,3 +84,35 @@ def test_characteristic_has_optional_note_ref_pos():
     c = Characteristic(pos=1, note_ref_pos=101)
     assert c.note_ref_pos == 101
     assert Characteristic(pos=2).note_ref_pos is None
+
+
+def test_mark_defaults():
+    from app.models import Mark
+    m = Mark(pos=101)
+    assert m.pos == 101
+    assert m.text_en == "" and m.text_de == "" and m.raw_text == ""
+    assert m.needs_review is False
+    assert m.review_reasons == []
+
+
+def test_mark_review_reasons_are_independent_per_instance():
+    from app.models import Mark
+    a = Mark(pos=101)
+    b = Mark(pos=102)
+    a.review_reasons.append("unreadable")
+    assert b.review_reasons == []
+
+
+def test_markblock_holds_region_and_marks():
+    from app.models import Mark, MarkBlock
+    block = MarkBlock(region=(10, 20, 200, 100), marks=[Mark(pos=101, text_en="A")])
+    assert block.region == (10, 20, 200, 100)
+    assert len(block.marks) == 1
+    assert block.marks[0].text_en == "A"
+
+
+def test_extractionresult_marks_optional_default_none():
+    from app.models import ExtractionResult
+    r = ExtractionResult(characteristics=[])
+    assert r.notes is None
+    assert r.marks is None
