@@ -55,3 +55,33 @@ def test_sub_bullet_lines_are_dropped():
     raw = "101\tA\tB\n101.1\tsub\tnot expected\n102\tC\tD"
     block = parse_marks_block(raw, region=(0, 0, 100, 100))
     assert [m.pos for m in block.marks] == [101, 102]
+
+
+from app.models import Mark
+from app.pipeline.marks_block import review_flags_mark
+
+
+def _mark(**kw):
+    base = dict(pos=101, text_en="A", text_de="B", raw_text="101\tA\tB")
+    base.update(kw)
+    return Mark(**base)
+
+
+def test_clean_mark_not_flagged():
+    needs, reasons = review_flags_mark(_mark(), two_columns=True)
+    assert needs is False and reasons == []
+
+
+def test_empty_read_flagged():
+    needs, reasons = review_flags_mark(_mark(raw_text=""), two_columns=True)
+    assert needs is True and reasons == ["empty read"]
+
+
+def test_missing_german_flagged_when_two_columns():
+    needs, reasons = review_flags_mark(_mark(text_de=""), two_columns=True)
+    assert needs is True and reasons == ["missing translation"]
+
+
+def test_single_column_does_not_require_german():
+    needs, reasons = review_flags_mark(_mark(text_de=""), two_columns=False)
+    assert needs is False and reasons == []

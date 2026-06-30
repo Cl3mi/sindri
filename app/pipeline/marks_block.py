@@ -41,3 +41,17 @@ def parse_marks_block(raw: str, region: Tuple[float, float, float, float]) -> Ma
             raw_text=line,
         ))
     return MarkBlock(region=region, marks=marks)
+
+
+def review_flags_mark(mark: Mark, two_columns: bool) -> Tuple[bool, List[str]]:
+    """Return (needs_review, reasons) for a parsed mark.
+
+    An empty read is its own reason and does not also report
+    'missing translation'."""
+    reasons: List[str] = []
+    if not (mark.raw_text or "").strip():
+        reasons.append("empty read")
+    else:
+        if two_columns and (not mark.text_en.strip() or not mark.text_de.strip()):
+            reasons.append("missing translation")
+    return bool(reasons), reasons
