@@ -5,7 +5,7 @@ independent of) notes_block.py."""
 import re
 import sys
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -131,7 +131,7 @@ def _infer_columns(image: Image.Image, box: Tuple[int, int, int, int]) -> List[T
     return [(x0, split_x), (split_x, x1)]
 
 
-def locate_marks_block(image: Image.Image):
+def locate_marks_block(image: Image.Image) -> Optional[MarksBlockRegion]:
     """Find the Mark/Description legend by picking the largest rectangle whose
     centre lies in the top-right quadrant. Never raises; any failure logs to
     stderr and returns None so the pipeline runs without a marks section."""
