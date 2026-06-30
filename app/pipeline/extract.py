@@ -11,6 +11,7 @@ from app.pipeline.parser import parse_value
 from app.pipeline.ocr import get_backend
 from app.pipeline.review import review_flags
 from app.pipeline import notes_block as nb
+from app.pipeline import marks_block as mb
 from app.pipeline import title_block as tb
 
 # detector kind -> parser hint
@@ -91,9 +92,24 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
         for n in notes_obj.notes:
             n.needs_review, n.review_reasons = nb.review_flags_note(
                 n, two_columns=two_columns, known_parents=known_parents)
-        image_for_detect = nb.mask_region(image, region)
-    else:
-        image_for_detect = image
+
+    # Marks-block path: top-right legend table. Independent of the notes
+    # path — neither blocks the other. Same non-fatal convention.
+    region_marks = mb.locate_marks_block(image)
+    marks_obj = None
+    if region_marks is not None:
+        raw_marks = mb.read_marks_block(image, region_marks, backend)
+        marks_obj = mb.parse_marks_block(raw_marks, region_marks.outer_box)
+        two_columns_marks = len(region_marks.lang_columns) == 2
+        for m in marks_obj.marks:
+            m.needs_review, m.review_reasons = mb.review_flags_mark(
+                m, two_columns=two_columns_marks)
+
+    image_for_detect = image
+    if region is not None:
+        image_for_detect = nb.mask_region(image_for_detect, region)
+    if region_marks is not None:
+        image_for_detect = mb.mask_region(image_for_detect, region_marks)
 
     # Title-block path: locate the bottom-right Schriftfeld, read its cells as
     # label/value fields, and mask it so its text is not misread as dimensions.
@@ -152,13 +168,14 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
     number_characteristics(results)
     place_balloons(results)
     # Free text outside the structured blocks (e.g. margin notes). Exclude the
-    # notes/title regions AND every region the main detector already captured,
-    # so loose_text only adds text nothing else picked up (no double-extraction,
-    # no redundant reads).
+    # notes/marks/title regions AND every region the main detector already
+    # captured, so loose_text only adds text nothing else picked up
+    # (no double-extraction, no redundant reads).
     exclude = [b for b in (tb_region.outer_box if tb_region else None,
-                           region.outer_box if region is not None else None)
+                           region.outer_box if region is not None else None,
+                           region_marks.outer_box if region_marks is not None else None)
                if b is not None]
     exclude += [c.target_region for c in results if c.target_region is not None]
     title_fields += tb.loose_text(image, backend, exclude)
     return ExtractionResult(characteristics=results, notes=notes_obj,
-                            title_block=title_fields)
+                            title_block=title_fields, marks=marks_obj)
