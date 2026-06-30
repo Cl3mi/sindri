@@ -157,3 +157,22 @@ def locate_marks_block(image: Image.Image) -> Optional[MarksBlockRegion]:
         print(f"[sindri.marks_block] locator failed: {e!r}",
               file=sys.stderr, flush=True)
         return None
+
+
+def read_marks_block(image: Image.Image, region: MarksBlockRegion, backend) -> str:
+    """Read the marks block once and return the raw transcription text.
+
+    The marks table has the same bilingual 'pos / EN / DE' shape as the
+    notes table, so we reuse the VLM backend's notes prompt when available.
+    Falls back to the generic `read_region` otherwise. Never raises."""
+    crop = image.crop(region.outer_box)
+    try:
+        if hasattr(backend, "read_notes_block"):
+            result = backend.read_notes_block(crop)
+        else:
+            result = backend.read_region(crop)
+        return (result.text or "")
+    except Exception as e:
+        print(f"[sindri.marks_block] read failed: {e!r}",
+              file=sys.stderr, flush=True)
+        return ""

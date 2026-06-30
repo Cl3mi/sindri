@@ -161,3 +161,56 @@ def test_locator_picks_largest_when_multiple_top_right():
 
 def test_locator_returns_none_on_blank_image():
     assert locate_marks_block(_white_canvas()) is None
+
+
+from app.pipeline.marks_block import read_marks_block, MarksBlockRegion
+
+
+class _FakeOcrResult:
+    def __init__(self, text): self.text = text
+
+
+class _BackendWithNotesPrompt:
+    def __init__(self, text):
+        self._text = text
+        # tracks whether the dedicated prompt was used
+        self.used_notes_prompt = False
+
+    def read_notes_block(self, image):
+        self.used_notes_prompt = True
+        return _FakeOcrResult(self._text)
+
+    def read_region(self, image):
+        return _FakeOcrResult("WRONG-PROMPT")
+
+
+class _BackendGenericOnly:
+    def read_region(self, image):
+        return _FakeOcrResult("GENERIC")
+
+
+def test_read_marks_prefers_notes_prompt_when_available():
+    img = Image.new("RGB", (200, 200), color=(255, 255, 255))
+    region = MarksBlockRegion(outer_box=(0, 0, 100, 100), lang_columns=[(0, 100)])
+    backend = _BackendWithNotesPrompt("101\tA\tB")
+    text = read_marks_block(img, region, backend)
+    assert text == "101\tA\tB"
+    assert backend.used_notes_prompt is True
+
+
+def test_read_marks_falls_back_to_read_region():
+    img = Image.new("RGB", (200, 200), color=(255, 255, 255))
+    region = MarksBlockRegion(outer_box=(0, 0, 100, 100), lang_columns=[(0, 100)])
+    text = read_marks_block(img, region, _BackendGenericOnly())
+    assert text == "GENERIC"
+
+
+def test_read_marks_returns_empty_on_backend_exception():
+    img = Image.new("RGB", (200, 200), color=(255, 255, 255))
+    region = MarksBlockRegion(outer_box=(0, 0, 100, 100), lang_columns=[(0, 100)])
+
+    class _Bad:
+        def read_region(self, image):
+            raise RuntimeError("boom")
+
+    assert read_marks_block(img, region, _Bad()) == ""
