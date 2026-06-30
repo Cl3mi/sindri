@@ -108,3 +108,56 @@ def test_mask_region_noop_on_zero_size_box():
     region = MarksBlockRegion(outer_box=(10, 10, 10, 10), lang_columns=[(10, 10)])
     out = mask_region(img, region)
     assert out.getpixel((10, 10)) == (0, 0, 0)
+
+
+from app.pipeline.marks_block import locate_marks_block
+from PIL import ImageDraw
+
+
+def _white_canvas(w=1000, h=700):
+    return Image.new("RGB", (w, h), color=(255, 255, 255))
+
+
+def _draw_rect(img, x0, y0, x1, y1, stroke=3):
+    d = ImageDraw.Draw(img)
+    d.rectangle((x0, y0, x1, y1), outline=(0, 0, 0), width=stroke)
+    return img
+
+
+def test_locator_picks_top_right_rectangle():
+    img = _white_canvas()
+    # decoy in bottom-left
+    _draw_rect(img, 30, 500, 250, 650)
+    # target in top-right
+    _draw_rect(img, 700, 30, 970, 300)
+    region = locate_marks_block(img)
+    assert region is not None
+    x0, y0, x1, y1 = region.outer_box
+    # centre in top-right quadrant
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    assert cx > 0.55 * 1000
+    assert cy < 0.45 * 700
+    # roughly matches the drawn target (allow a few px for stroke)
+    assert abs(x0 - 700) <= 5 and abs(y0 - 30) <= 5
+    assert abs(x1 - 970) <= 5 and abs(y1 - 300) <= 5
+
+
+def test_locator_returns_none_when_no_top_right_rectangle():
+    img = _white_canvas()
+    _draw_rect(img, 30, 500, 250, 650)        # bottom-left
+    _draw_rect(img, 400, 300, 600, 500)       # centre
+    assert locate_marks_block(img) is None
+
+
+def test_locator_picks_largest_when_multiple_top_right():
+    img = _white_canvas()
+    _draw_rect(img, 700, 30, 800, 100)        # small top-right
+    _draw_rect(img, 600, 50, 970, 400)        # large top-right
+    region = locate_marks_block(img)
+    assert region is not None
+    x0, y0, x1, y1 = region.outer_box
+    assert abs(x0 - 600) <= 5 and abs(y1 - 400) <= 5
+
+
+def test_locator_returns_none_on_blank_image():
+    assert locate_marks_block(_white_canvas()) is None
