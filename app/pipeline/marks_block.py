@@ -55,3 +55,19 @@ def review_flags_mark(mark: Mark, two_columns: bool) -> Tuple[bool, List[str]]:
         if two_columns and (not mark.text_en.strip() or not mark.text_de.strip()):
             reasons.append("missing translation")
     return bool(reasons), reasons
+
+
+@dataclass
+class MarksBlockRegion:
+    outer_box: Tuple[int, int, int, int]
+    lang_columns: List[Tuple[int, int]]
+
+
+def mask_region(image: Image.Image, region: MarksBlockRegion) -> Image.Image:
+    """Return a copy of `image` with `region.outer_box` filled white. The
+    original image is preserved so downstream manual re-reads still work."""
+    out = image.copy()
+    x0, y0, x1, y1 = region.outer_box
+    if x1 > x0 and y1 > y0:
+        ImageDraw.Draw(out).rectangle((x0, y0, x1, y1), fill="white")
+    return out

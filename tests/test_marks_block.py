@@ -85,3 +85,26 @@ def test_missing_german_flagged_when_two_columns():
 def test_single_column_does_not_require_german():
     needs, reasons = review_flags_mark(_mark(text_de=""), two_columns=False)
     assert needs is False and reasons == []
+
+
+from PIL import Image
+from app.pipeline.marks_block import MarksBlockRegion, mask_region
+
+
+def test_mask_region_fills_outer_box_white_and_preserves_outside():
+    img = Image.new("RGB", (100, 100), color=(50, 50, 50))
+    region = MarksBlockRegion(outer_box=(20, 30, 60, 70), lang_columns=[(20, 60)])
+    out = mask_region(img, region)
+    # inside the box: white
+    assert out.getpixel((25, 35)) == (255, 255, 255)
+    # outside the box: untouched
+    assert out.getpixel((5, 5)) == (50, 50, 50)
+    # original not mutated
+    assert img.getpixel((25, 35)) == (50, 50, 50)
+
+
+def test_mask_region_noop_on_zero_size_box():
+    img = Image.new("RGB", (50, 50), color=(0, 0, 0))
+    region = MarksBlockRegion(outer_box=(10, 10, 10, 10), lang_columns=[(10, 10)])
+    out = mask_region(img, region)
+    assert out.getpixel((10, 10)) == (0, 0, 0)
