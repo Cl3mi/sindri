@@ -61,6 +61,21 @@ def _is_vertical(box) -> bool:
     return (box[3] - box[1]) > (box[2] - box[0]) * 1.3
 
 
+def _regions_overlap(a, b, min_frac: float = 0.5) -> bool:
+    """True if boxes a and b overlap by at least `min_frac` of the smaller box's
+    area — used to detect when the notes and marks locators found the same
+    physical legend (a small corner touch does not count)."""
+    ax0, ay0, ax1, ay1 = a
+    bx0, by0, bx1, by1 = b
+    ix0, iy0 = max(ax0, bx0), max(ay0, by0)
+    ix1, iy1 = min(ax1, bx1), min(ay1, by1)
+    if ix1 <= ix0 or iy1 <= iy0:
+        return False
+    inter = (ix1 - ix0) * (iy1 - iy0)
+    smaller = min((ax1 - ax0) * (ay1 - ay0), (bx1 - bx0) * (by1 - by0))
+    return smaller > 0 and inter / smaller >= min_frac
+
+
 def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
             progress=None) -> ExtractionResult:
     work_dir = Path(work_dir)
@@ -79,10 +94,19 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
     render = render_page(pdf_path, dpi=dpi, out_dir=work_dir)
     image = Image.open(render.png_path).convert("RGB")
 
-    # Notes-block path: locate, read, parse, mask. Any failure leaves notes=None
-    # and the rest of the pipeline runs unchanged.
+    # Locate the notes and marks legends first. On many drawings there is a
+    # single top-right legend that BOTH locators find; when their regions
+    # coincide the deterministic CV marks locator owns it and the notes region
+    # is dropped, so the legend is neither double-read nor double-masked.
     emit("notes", "Reading notes block")
     region = nb.locate_notes_block(image, backend)
+    region_marks = mb.locate_marks_block(image)
+    if (region is not None and region_marks is not None
+            and _regions_overlap(region.outer_box, region_marks.outer_box)):
+        region = None
+
+    # Notes-block path: read, parse, mask. Any failure leaves notes=None
+    # and the rest of the pipeline runs unchanged.
     notes_obj = None
     if region is not None:
         raw_notes = nb.read_notes_block(image, region, backend)
@@ -93,9 +117,7 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
             n.needs_review, n.review_reasons = nb.review_flags_note(
                 n, two_columns=two_columns, known_parents=known_parents)
 
-    # Marks-block path: top-right legend table. Independent of the notes
-    # path — neither blocks the other. Same non-fatal convention.
-    region_marks = mb.locate_marks_block(image)
+    # Marks-block path: top-right legend table.
     marks_obj = None
     if region_marks is not None:
         raw_marks = mb.read_marks_block(image, region_marks, backend)

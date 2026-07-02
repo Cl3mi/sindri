@@ -131,6 +131,44 @@ def test_extract_populates_marks_block_alongside_notes(sample_pdf, tmp_path, mon
     assert result.marks.marks[0].text_de == "Mark-DE"
 
 
+def test_notes_dropped_when_it_overlaps_marks_region(sample_pdf, tmp_path, monkeypatch):
+    """One physical legend located by BOTH paths: marks (deterministic CV) owns
+    it, and the overlapping notes region is dropped so it is neither double-read
+    nor double-masked."""
+    import app.pipeline.extract as extract_mod
+    import app.pipeline.boxes as boxes_mod
+    from app.pipeline.marks_block import MarksBlockRegion
+
+    monkeypatch.setattr(boxes_mod, "detect_boxes", lambda image: [])
+    box = (1500, 50, 1900, 400)
+    notes_region = NotesBlockRegion(outer_box=box, lang_columns=[(1500, 1700), (1700, 1900)])
+    marks_region = MarksBlockRegion(outer_box=box, lang_columns=[(1500, 1700), (1700, 1900)])
+    monkeypatch.setattr("app.pipeline.notes_block.locate_notes_block",
+                        lambda image, backend: notes_region)
+    monkeypatch.setattr("app.pipeline.marks_block.locate_marks_block",
+                        lambda image: marks_region)
+    monkeypatch.setattr(extract_mod, "detect_characteristics",
+                        lambda image, backend, **kw: [])
+
+    class _Backend:
+        def detect_regions(self, image): return []
+        def read_region(self, image): return OcrResult(text="", confidence=0.0)
+        def read_notes_block(self, image):
+            return OcrResult(text="111\tMark-EN\tMark-DE", confidence=0.9)
+
+    result = extract_mod.extract(sample_pdf, tmp_path, backend=_Backend())
+    assert result.marks is not None and [m.pos for m in result.marks.marks] == [111]
+    assert result.notes is None
+
+
+def test_regions_overlap_helper():
+    from app.pipeline.extract import _regions_overlap
+    assert _regions_overlap((0, 0, 100, 100), (0, 0, 100, 100)) is True
+    assert _regions_overlap((0, 0, 100, 100), (200, 200, 300, 300)) is False
+    # small corner touch (< 50% of the smaller box) is not "the same region"
+    assert _regions_overlap((0, 0, 100, 100), (90, 90, 300, 300)) is False
+
+
 def test_extract_marks_none_when_locator_returns_none(sample_pdf, tmp_path, monkeypatch):
     """When no top-right rectangle is found, result.marks is None and the
     rest of the pipeline runs unchanged."""
