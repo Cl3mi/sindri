@@ -7,3 +7,9 @@ transformers==4.51.3
 accelerate>=1.0
 qwen-vl-utils>=0.0.8
 autoawq>=0.2.6
+# autoawq ships no prebuilt CUDA kernels; it always JIT-compiles its
+# dequant kernel via Triton and depends on an unpinned "triton", which
+# otherwise resolves to a version whose stricter type rules break that
+# kernel (int32 * bfloat16). Pin to the version this base image's torch
+# 2.4.1 originally shipped with.
+triton==3.0.0
