@@ -12,6 +12,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from app.models import Mark, MarkBlock
+from app.pipeline import title_block as tb
 
 
 # Top-level row only. Marks table has no sub-bullets, so any "<pos>.<sub>\t…"
@@ -75,37 +76,11 @@ def mask_region(image: Image.Image, region: MarksBlockRegion) -> Image.Image:
     return out
 
 
-# Top-right quadrant thresholds (tunable). The locator considers only
-# rectangles whose centre falls into the region x > _CX_MIN_FRAC*W,
-# y < _CY_MAX_FRAC*H, and whose area is at least _MIN_AREA_FRAC of the page.
-_CX_MIN_FRAC = 0.55
-_CY_MAX_FRAC = 0.45
-_MIN_AREA_FRAC = 0.02
-_MAX_AREA_FRAC = 0.40   # legend table tops out around ~30 % of page
-_MIN_SIDE = 40          # px — reject narrow strips
-
-
-def _find_large_rectangles(gray: "np.ndarray") -> List[Tuple[int, int, int, int]]:
-    h, w = gray.shape
-    _, binv = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
-    contours, _ = cv2.findContours(binv, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-    page_area = float(w * h)
-    rects = []
-    for c in contours:
-        peri = cv2.arcLength(c, True)
-        approx = cv2.approxPolyDP(c, 0.04 * peri, True)
-        if len(approx) != 4 or not cv2.isContourConvex(approx):
-            continue
-        x, y, bw, bh = cv2.boundingRect(approx)
-        if bw < _MIN_SIDE or bh < _MIN_SIDE:
-            continue
-        area = bw * bh
-        if area < _MIN_AREA_FRAC * page_area:
-            continue
-        if area > _MAX_AREA_FRAC * page_area:
-            continue
-        rects.append((x, y, x + bw, y + bh))
-    return rects
+# Top-right quadrant the legend is searched in (fractions of page W/H). Kept
+# generous on height so a tall multi-row legend is not clipped, but well clear
+# of the bottom-right title block (which starts around y = 0.6 H).
+_QUAD_X_MIN_FRAC = 0.5
+_QUAD_Y_MAX_FRAC = 0.55
 
 
 def _infer_columns(image: Image.Image, box: Tuple[int, int, int, int]) -> List[Tuple[int, int]]:
@@ -131,27 +106,50 @@ def _infer_columns(image: Image.Image, box: Tuple[int, int, int, int]) -> List[T
     return [(x0, split_x), (split_x, x1)]
 
 
+def _legend_cells_in_band(
+        cells: List[Tuple[int, int, int, int]]
+) -> List[Tuple[int, int, int, int]]:
+    """Keep only the cells belonging to the legend table's row band.
+
+    The table's defining feature is a vertical stack of cells sharing an
+    x-column (the Mark-number column). We pick the x-column with the most
+    stacked cells, take its y-extent as the band, and drop any cell that starts
+    above or ends below it. This discards the large frame-enclosed corner
+    regions whose bounding boxes would otherwise engulf the whole quadrant and
+    over-mask the drawing views. With fewer than two stacked cells there is no
+    table to anchor on, so the cells are returned unchanged."""
+    from collections import defaultdict
+    cols: dict = defaultdict(list)
+    for c in cells:
+        cols[round(c[0] / 15)].append(c)
+    anchor = max(cols.values(), key=len)
+    if len(anchor) < 2:
+        return cells
+    by0 = min(c[1] for c in anchor)
+    by1 = max(c[3] for c in anchor)
+    tol = max(20, int(0.05 * (by1 - by0)))
+    band = [c for c in cells if c[1] >= by0 - tol and c[3] <= by1 + tol]
+    return band or cells
+
+
 def locate_marks_block(image: Image.Image) -> Optional[MarksBlockRegion]:
-    """Find the Mark/Description legend by picking the largest rectangle whose
-    centre lies in the top-right quadrant. Never raises; any failure logs to
+    """Find the Mark/Description legend in the top-right quadrant. Detects the
+    ruled grid cells (same primitive the title block uses) and returns the union
+    of the ink-bearing cells as the region — so a multi-row legend is captured
+    whole, not just its largest single cell. Never raises; any failure logs to
     stderr and returns None so the pipeline runs without a marks section."""
     try:
         w, h = image.size
-        gray = np.array(image.convert("L"))
-        candidates = []
-        for rect in _find_large_rectangles(gray):
-            x0, y0, x1, y1 = rect
-            cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
-            if cx < _CX_MIN_FRAC * w:
-                continue
-            if cy > _CY_MAX_FRAC * h:
-                continue
-            candidates.append(rect)
-        if not candidates:
+        quad = (int(w * _QUAD_X_MIN_FRAC), 0, w, int(h * _QUAD_Y_MAX_FRAC))
+        cells = [c for c in tb.detect_cells(image, quad)
+                 if tb._cell_has_ink(image, c)]
+        if not cells:
             return None
-        pick = max(candidates, key=lambda r: (r[2] - r[0]) * (r[3] - r[1]))
-        columns = _infer_columns(image, pick)
-        return MarksBlockRegion(outer_box=tuple(int(v) for v in pick),
+        cells = _legend_cells_in_band(cells)
+        outer = (min(c[0] for c in cells), min(c[1] for c in cells),
+                 max(c[2] for c in cells), max(c[3] for c in cells))
+        columns = _infer_columns(image, outer)
+        return MarksBlockRegion(outer_box=tuple(int(v) for v in outer),
                                 lang_columns=columns)
     except Exception as e:
         print(f"[sindri.marks_block] locator failed: {e!r}",

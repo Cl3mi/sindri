@@ -62,6 +62,43 @@ def test_merge_adjacent_does_not_merge_different_kinds():
     assert len(merge_adjacent([a, b], x_tol=20, y_gap=20)) == 2
 
 
+from app.pipeline.detect import resolve_cross_kind_overlaps
+
+
+def test_resolve_cross_kind_suppresses_near_identical_boxes():
+    # The same callout read once as a dimension and once as a GD&T frame in an
+    # overlapping tile: keep only the higher-confidence one.
+    a = Detection(box=(0, 0, 100, 100), kind="dimension", conf=0.9)
+    b = Detection(box=(2, 2, 102, 102), kind="gdt", conf=0.6)
+    kept = resolve_cross_kind_overlaps([a, b], iou_thresh=0.7)
+    assert len(kept) == 1
+    assert kept[0].kind == "dimension"
+
+
+def test_resolve_cross_kind_keeps_partial_overlap():
+    # A diameter beside a flatness frame partially overlap and are both real.
+    a = Detection(box=(0, 0, 100, 100), kind="dimension", conf=0.9)
+    b = Detection(box=(60, 60, 160, 160), kind="gdt", conf=0.8)
+    assert len(resolve_cross_kind_overlaps([a, b], iou_thresh=0.7)) == 2
+
+
+def test_resolve_cross_kind_keeps_distinct_same_kind():
+    a = Detection(box=(0, 0, 50, 50), kind="dimension", conf=0.9)
+    b = Detection(box=(500, 500, 550, 550), kind="dimension", conf=0.8)
+    assert len(resolve_cross_kind_overlaps([a, b], iou_thresh=0.7)) == 2
+
+
+def test_detect_characteristics_drops_cross_kind_duplicate():
+    img = Image.new("RGB", (400, 300), "white")
+    backend = StubVLMBackend(detections=[
+        Detection((50, 50, 150, 90), "dimension", 0.9),
+        Detection((51, 51, 151, 91), "surface", 0.5),   # same callout, wrong kind
+    ])
+    dets = detect_characteristics(img, backend)
+    assert len(dets) == 1
+    assert dets[0].kind == "dimension"
+
+
 def test_parse_detections_valid_json():
     raw = '[{"box":[1,2,3,4],"kind":"dimension","conf":0.9}]'
     dets = parse_detections(raw)

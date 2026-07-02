@@ -124,22 +124,71 @@ def _draw_rect(img, x0, y0, x1, y1, stroke=3):
     return img
 
 
-def test_locator_picks_top_right_rectangle():
-    img = _white_canvas()
-    # decoy in bottom-left
-    _draw_rect(img, 30, 500, 250, 650)
-    # target in top-right
-    _draw_rect(img, 700, 30, 970, 300)
-    region = locate_marks_block(img)
+def _page_with_top_right_legend(w=1000, h=800):
+    """A white page with a 3-row ruled legend flush against the drawing frame in
+    the top-right, ink in every row. The middle description cell is oversized, so
+    the largest *single* rectangle is an inner cell — this reproduces the real
+    drawing where picking the biggest rectangle missed the header and other rows.
+    """
+    img = Image.new("RGB", (w, h), color=(255, 255, 255))
+    d = ImageDraw.Draw(img)
+    d.rectangle((6, 6, w - 6, h - 6), outline=(0, 0, 0), width=3)  # drawing frame
+    left, top, right, bottom, div = 600, 6, w - 6, 360, 680
+    d.line((div, top, div, bottom), fill=(0, 0, 0), width=3)       # mark# | desc
+    d.line((left, top, left, bottom), fill=(0, 0, 0), width=3)
+    d.line((left, bottom, right, bottom), fill=(0, 0, 0), width=3)
+    for y in (90, 300):                       # row separators -> oversized middle
+        d.line((left, y, right, y), fill=(0, 0, 0), width=3)
+    for cy in (48, 195, 330):                 # ink in every row, both columns
+        d.rectangle((615, cy - 8, 670, cy + 8), fill=(0, 0, 0))
+        d.rectangle((700, cy - 6, right - 40, cy + 6), fill=(0, 0, 0))
+    return img
+
+
+from app.pipeline.marks_block import _legend_cells_in_band
+
+
+def test_legend_band_drops_tall_frame_enclosed_cells():
+    # Cells observed on the real drawing: three legend rows (mark# col + desc
+    # col) plus a tall frame-enclosed corner cell and a low sliver that must NOT
+    # be pulled into the region (they would over-mask the drawing views).
+    cells = [
+        (4064, 62, 4309, 176), (4313, 62, 6954, 176),
+        (4064, 179, 4309, 837), (4313, 179, 6246, 837),
+        (4064, 840, 4309, 1002), (4313, 840, 6954, 1002),
+        (4750, 2, 7014, 2728),        # tall corner region -> drop
+        (3508, 2165, 3561, 2728),     # low sliver -> drop
+    ]
+    band = _legend_cells_in_band(cells)
+    outer = (min(c[0] for c in band), min(c[1] for c in band),
+             max(c[2] for c in band), max(c[3] for c in band))
+    assert outer == (4064, 62, 6954, 1002)
+
+
+def test_locator_does_not_over_capture_below_legend():
+    # The region must stay within the legend rows, not swallow geometry beneath.
+    region = locate_marks_block(_page_with_top_right_legend())
+    assert region is not None
+    assert region.outer_box[3] <= 400
+
+
+def test_locator_spans_full_multirow_legend():
+    # Regression: must capture the WHOLE table, not just the largest inner cell.
+    region = locate_marks_block(_page_with_top_right_legend())
     assert region is not None
     x0, y0, x1, y1 = region.outer_box
-    # centre in top-right quadrant
+    assert y0 <= 30, f"top row missed: y0={y0}"
+    assert y1 >= 330, f"bottom row missed: y1={y1}"
+    assert x0 <= 640 and x1 >= 940
+
+
+def test_locator_region_centre_in_top_right():
+    region = locate_marks_block(_page_with_top_right_legend())
+    assert region is not None
+    x0, y0, x1, y1 = region.outer_box
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-    assert cx > 0.55 * 1000
-    assert cy < 0.45 * 700
-    # roughly matches the drawn target (allow a few px for stroke)
-    assert abs(x0 - 700) <= 5 and abs(y0 - 30) <= 5
-    assert abs(x1 - 970) <= 5 and abs(y1 - 300) <= 5
+    assert cx > 0.5 * 1000
+    assert cy < 0.5 * 800
 
 
 def test_locator_returns_none_when_no_top_right_rectangle():
@@ -149,14 +198,11 @@ def test_locator_returns_none_when_no_top_right_rectangle():
     assert locate_marks_block(img) is None
 
 
-def test_locator_picks_largest_when_multiple_top_right():
+def test_locator_ignores_ink_less_outline_in_top_right():
+    # An empty bordered box (no text) is not a legend.
     img = _white_canvas()
-    _draw_rect(img, 700, 30, 800, 100)        # small top-right
-    _draw_rect(img, 600, 50, 970, 400)        # large top-right
-    region = locate_marks_block(img)
-    assert region is not None
-    x0, y0, x1, y1 = region.outer_box
-    assert abs(x0 - 600) <= 5 and abs(y1 - 400) <= 5
+    _draw_rect(img, 700, 30, 970, 300)
+    assert locate_marks_block(img) is None
 
 
 def test_locator_returns_none_on_blank_image():

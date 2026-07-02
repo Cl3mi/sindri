@@ -51,6 +51,21 @@ def dedupe(detections, iou_thresh: float = 0.5):
     return kept
 
 
+def resolve_cross_kind_overlaps(detections, iou_thresh: float = 0.7):
+    """Suppress duplicate detections of the *same physical callout* that survived
+    same-kind `dedupe` because they were classified as different kinds (e.g. one
+    tile read a value as a `dimension`, an overlapping tile read it as a `gdt`
+    frame). Keep the highest-confidence box; drop any other box — of any kind —
+    overlapping it past a HIGH threshold. The threshold is deliberately stricter
+    than `dedupe`'s so genuinely distinct callouts that merely touch (a diameter
+    beside a GD&T frame) are preserved."""
+    kept = []
+    for d in sorted(detections, key=lambda d: -d.conf):
+        if all(_iou(d.box, k.box) < iou_thresh for k in kept):
+            kept.append(d)
+    return kept
+
+
 def merge_adjacent(detections, x_tol: int = 20, y_gap: int = 20):
     """Merge same-kind boxes that are horizontally aligned and vertically close,
     so a stacked callout (tolerance over a nominal) becomes one crop. Repeats
@@ -159,4 +174,5 @@ def detect_characteristics(image, backend, tile: int = 1280, overlap: float = 0.
                 kind=d.kind, conf=d.conf))
     from app.pipeline.boxes import detect_boxes
     vlm = dedupe(merge_adjacent(acc))
-    return merge_boxes(vlm, detect_boxes(image))
+    merged = merge_boxes(vlm, detect_boxes(image))
+    return resolve_cross_kind_overlaps(merged)
