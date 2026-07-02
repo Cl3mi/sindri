@@ -67,6 +67,17 @@ def test_three_digit_pos_outside_10x_range_still_accepted():
     assert nb.notes[0].pos == 199
 
 
+def test_notes_parses_json_with_sub_bullet():
+    raw = ('[{"pos":101,"en":"parent","de":"eltern"},'
+           '{"pos":101,"sub":1,"en":"child","de":"kind"}]')
+    nb = parse_notes_block(raw, region=(0, 0, 100, 100))
+    top = [n for n in nb.notes if n.sub_index is None]
+    subs = [n for n in nb.notes if n.sub_index is not None]
+    assert [n.pos for n in top] == [101]
+    assert subs and subs[0].parent_pos == 101 and subs[0].sub_index == 1
+    assert subs[0].text_en == "child" and subs[0].text_de == "kind"
+
+
 from app.models import Note
 from app.pipeline.notes_block import review_flags_note
 
