@@ -8,13 +8,14 @@ def test_gdt_prompt_exists_and_is_frame_aware():
     assert "comma" in p.lower()
 
 
-def test_notes_block_prompt_is_constrained_and_tab_separated():
+def test_notes_block_prompt_requests_json_array():
     from app.pipeline.ocr.vlm_backend import _NOTES_PROMPT
-    p = _NOTES_PROMPT.lower()
-    assert "general-notes" in p
-    assert "\\t" in p          # the prompt instructs tab-separated output
-    assert "comma as the decimal separator" in p
-    assert "no prose" in p
+    p = _NOTES_PROMPT
+    assert "general-notes" in p.lower()
+    assert "JSON array" in p            # structured output, not tab-delimited
+    assert '"pos"' in p
+    assert "comma as the decimal separator" in p.lower()
+    assert "no prose" in p.lower()
 
 
 def test_title_prompt_requests_json_label_value():

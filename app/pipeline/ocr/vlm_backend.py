@@ -48,15 +48,14 @@ _GDT_PROMPT = (
 # inline numbered sub-bullets (1., 2., …). The model returns tab-separated
 # triples so the parser can align EN and DE columns in one pass.
 _NOTES_PROMPT = (
-    "This image is the general-notes table from a mechanical engineering "
-    "drawing. Each row begins with a 3-digit number (101, 102, …) followed "
-    "by the English note and then the German note. Some rows contain inline "
-    "numbered sub-bullets (1., 2., 3., …) — preserve them with their "
-    "numbers. Output one row per line in the form:\n"
-    "  <pos>\\t<english>\\t<german>\n"
-    "For sub-bullets, prefix with the parent pos: e.g. "
-    "\"101.1\\t<en>\\t<de>\". No prose, no headers, no explanations. Use a "
-    "comma as the decimal separator."
+    "This image is the general-notes / mark-legend table from a mechanical "
+    "engineering drawing. Each row starts with a 3-digit number (101, 102, …) "
+    "and contains an English text and a German text; a single cell may span "
+    "several lines. Return ONLY a JSON array, one object per row, of the form "
+    '[{"pos": 101, "en": "<english>", "de": "<german>"}]. For an inline '
+    'numbered sub-bullet, add "sub": <n>. If a row has no German text use an '
+    "empty string. Use a comma as the decimal separator. No prose, no code "
+    "fences, no trailing text."
 )
 
 
