@@ -24,7 +24,7 @@ set -euo pipefail
 HOST="${HOST:-4mehpc4_3}"
 DIR="${DIR:-sindri}"
 GPU="${GPU:-nvidia.com/gpu=1}"
-MODEL="${VLM_MODEL_ID:-Qwen/Qwen2.5-VL-7B-Instruct}"
+MODEL="${VLM_MODEL_ID:-Qwen/Qwen2.5-VL-72B-Instruct-AWQ}"
 PDF="${PDF:-/data/T1025300_B.pdf}"
 MODE="${MODE:-vlm}"                       # vlm | cv
 BUILD="${BUILD:-1}"                       # 1 = rebuild image, 0 = skip
