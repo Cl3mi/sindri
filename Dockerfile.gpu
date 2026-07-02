@@ -1,7 +1,12 @@
 # GPU image: bundles torch/CUDA (from the base) + transformers for the local
 # vision-LLM OCR backend. Larger than the default CPU image; build only when
 # you have an NVIDIA GPU + NVIDIA Container Toolkit on the host.
-FROM pytorch/pytorch:2.4.1-cuda12.4-cudnn9-runtime
+#
+# torch 2.6.0 (not 2.4.1): autoawq-kernels requires torch>=2.5.1, and 2.6.0 is
+# the exact version autoawq's own "last tested" config used alongside
+# transformers 4.51.3 (see requirements-gpu.txt). Stays on CUDA 12.4 — the
+# CUDA-13 requirement that ruled out newer torch only appears at torch>=2.7.1.
+FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         tesseract-ocr tesseract-ocr-deu \

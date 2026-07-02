@@ -2,11 +2,18 @@
 # torch + CUDA come from the pytorch base image in Dockerfile.gpu.
 # transformers pinned: newer releases require gptqmodel for AWQ loading,
 # which in turn needs torch>=2.7.1 built for CUDA 13 (too new for this
-# host's driver). 4.51.3 is the last version that loads AWQ via autoawq.
+# host's driver). 4.51.3 is the last version that loads AWQ via autoawq, and
+# is also the version autoawq itself last tested against (alongside torch
+# 2.6.0 — see Dockerfile.gpu).
 transformers==4.51.3
 accelerate>=1.0
 qwen-vl-utils>=0.0.8
-autoawq>=0.2.6
+# Pinned exactly, not >=: older autoawq releases (0.2.6-0.2.8) each carry
+# their own narrower, mutually-incompatible transformers/torch pins, which
+# sends pip's resolver backtracking through all of them and produces a
+# ResolutionImpossible once autoawq-kernels is added below. 0.2.9 has no
+# torch constraint and only needs transformers>=4.45.0.
+autoawq==0.2.9
 # The autoawq PyPI package ships no compiled CUDA kernels itself: at runtime
 # it tries to import the separately-packaged `awq_ext` extension and only
 # falls back to JIT-compiling its dequant kernel via Triton if that import
@@ -15,10 +22,6 @@ autoawq>=0.2.6
 # weights against float16/bfloat16 scales — a real upstream bug, not a
 # version- or dtype-mismatch on our end). Installing autoawq-kernels gives
 # autoawq the compiled `awq_ext` module so it skips the Triton path entirely.
-# 0.0.9 is the last release (project archived); 0.0.8 was built for torch
-# 2.4.1, which matches this image's base torch, so ABI should line up.
+# 0.0.9 is the last release (project archived) and needs torch>=2.5.1, hence
+# the torch 2.6.0 base image.
 autoawq-kernels==0.0.9
-# Kept as a safety net for the Triton fallback path in case awq_ext ever
-# fails to import (e.g. on a GPU/driver combo autoawq-kernels wasn't built
-# for) — pinned to the version this base image's torch 2.4.1 shipped with.
-triton==3.0.0
