@@ -93,8 +93,12 @@ class VLMBackend:
         self.max_new_tokens = max_new_tokens
         model_id = model_id or os.getenv("VLM_MODEL_ID", _DEFAULT_MODEL)
         self.processor = AutoProcessor.from_pretrained(model_id)
+        # AWQ's Triton dequant kernel only supports float16: mixing its int32
+        # unpacked weights with bfloat16 scales fails to compile. Qwen2.5-VL's
+        # config defaults to bfloat16, so torch_dtype="auto" picks the
+        # unsupported dtype for AWQ checkpoints; force float16 instead.
         self.model = AutoModelForImageTextToText.from_pretrained(
-            model_id, torch_dtype="auto", device_map="auto"
+            model_id, torch_dtype=torch.float16, device_map="auto"
         )
         self.model.eval()
 
