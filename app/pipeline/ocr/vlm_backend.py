@@ -75,6 +75,12 @@ _TITLE_PROMPT = (
 )
 
 
+def _mean_token_confidence(step_probs) -> float:
+    """Mean of per-token max-softmax probabilities; 0.0 for an empty sequence."""
+    probs = list(step_probs)
+    return float(sum(probs) / len(probs)) if probs else 0.0
+
+
 class VLMBackend:
     """Local GPU vision-LLM doing constrained per-region reads only."""
 
@@ -92,10 +98,14 @@ class VLMBackend:
         )
         self.model.eval()
 
-    def read_region(self, image: Image.Image) -> OcrResult:
+    def _generate_text(self, prompt: str, image: Image.Image,
+                       max_new_tokens: int):
+        """Run one constrained generation and return (text, confidence). The
+        confidence is the mean per-token top-softmax probability of the greedy
+        decode, so an uncertain read scores low and can be flagged for review."""
         messages = [{"role": "user", "content": [
             {"type": "image", "image": image.convert("RGB")},
-            {"type": "text", "text": _PROMPT},
+            {"type": "text", "text": prompt},
         ]}]
         inputs = self.processor.apply_chat_template(
             messages, add_generation_prompt=True, tokenize=True,
@@ -103,62 +113,31 @@ class VLMBackend:
         ).to(self.model.device)
         with self.torch.inference_mode():
             out = self.model.generate(
-                **inputs, max_new_tokens=self.max_new_tokens, do_sample=False,
+                **inputs, max_new_tokens=max_new_tokens, do_sample=False,
+                output_scores=True, return_dict_in_generate=True,
             )
-        trimmed = out[0][inputs["input_ids"].shape[1]:]
-        text = self.processor.decode(trimmed, skip_special_tokens=True).strip()
-        return OcrResult(text=text, confidence=0.9 if text else 0.0)
+        seq = out.sequences[0][inputs["input_ids"].shape[1]:]
+        text = self.processor.decode(seq, skip_special_tokens=True).strip()
+        step_probs = [float(self.torch.softmax(s[0], dim=-1).max())
+                      for s in out.scores]
+        conf = _mean_token_confidence(step_probs) if text else 0.0
+        return text, conf
+
+    def read_region(self, image: Image.Image) -> OcrResult:
+        text, conf = self._generate_text(_PROMPT, image, self.max_new_tokens)
+        return OcrResult(text=text, confidence=conf)
 
     def read_region_gdt(self, image: Image.Image) -> OcrResult:
-        messages = [{"role": "user", "content": [
-            {"type": "image", "image": image.convert("RGB")},
-            {"type": "text", "text": _GDT_PROMPT},
-        ]}]
-        inputs = self.processor.apply_chat_template(
-            messages, add_generation_prompt=True, tokenize=True,
-            return_dict=True, return_tensors="pt",
-        ).to(self.model.device)
-        with self.torch.inference_mode():
-            out = self.model.generate(
-                **inputs, max_new_tokens=self.max_new_tokens, do_sample=False,
-            )
-        trimmed = out[0][inputs["input_ids"].shape[1]:]
-        text = self.processor.decode(trimmed, skip_special_tokens=True).strip()
-        return OcrResult(text=text, confidence=0.9 if text else 0.0)
+        text, conf = self._generate_text(_GDT_PROMPT, image, self.max_new_tokens)
+        return OcrResult(text=text, confidence=conf)
 
     def read_notes_block(self, image: Image.Image) -> OcrResult:
-        messages = [{"role": "user", "content": [
-            {"type": "image", "image": image.convert("RGB")},
-            {"type": "text", "text": _NOTES_PROMPT},
-        ]}]
-        inputs = self.processor.apply_chat_template(
-            messages, add_generation_prompt=True, tokenize=True,
-            return_dict=True, return_tensors="pt",
-        ).to(self.model.device)
-        with self.torch.inference_mode():
-            out = self.model.generate(
-                **inputs, max_new_tokens=512, do_sample=False,
-            )
-        trimmed = out[0][inputs["input_ids"].shape[1]:]
-        text = self.processor.decode(trimmed, skip_special_tokens=True).strip()
-        return OcrResult(text=text, confidence=0.9 if text else 0.0)
+        text, conf = self._generate_text(_NOTES_PROMPT, image, 512)
+        return OcrResult(text=text, confidence=conf)
 
     def read_title_cell(self, image: Image.Image) -> OcrResult:
-        messages = [{"role": "user", "content": [
-            {"type": "image", "image": image.convert("RGB")},
-            {"type": "text", "text": _TITLE_PROMPT},
-        ]}]
-        inputs = self.processor.apply_chat_template(
-            messages, add_generation_prompt=True, tokenize=True,
-            return_dict=True, return_tensors="pt",
-        ).to(self.model.device)
-        with self.torch.inference_mode():
-            out = self.model.generate(
-                **inputs, max_new_tokens=128, do_sample=False,
-            )
-        trimmed = out[0][inputs["input_ids"].shape[1]:]
-        text = self.processor.decode(trimmed, skip_special_tokens=True).strip()
-        return OcrResult(text=text, confidence=0.9 if text else 0.0)
+        text, conf = self._generate_text(_TITLE_PROMPT, image, 128)
+        return OcrResult(text=text, confidence=conf)
 
     def detect_regions(self, image: Image.Image):
         from app.pipeline.detect import parse_detections
