@@ -17,7 +17,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY requirements.txt requirements-gpu.txt ./
 RUN pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir -r requirements-gpu.txt
+    && pip install --no-cache-dir -r requirements-gpu.txt \
+    && pip install --no-cache-dir --no-deps autoawq==0.2.8
 
 COPY app ./app
 

@@ -12,12 +12,6 @@
 transformers==4.49.0
 accelerate>=1.0
 qwen-vl-utils>=0.0.8
-# Pinned exactly, not >=: older autoawq releases (0.2.6-0.2.8) each carry
-# their own narrower, mutually-incompatible transformers/torch pins, which
-# sends pip's resolver backtracking through all of them and produces a
-# ResolutionImpossible once autoawq-kernels is added below. 0.2.9 has no
-# torch constraint and only needs transformers>=4.45.0.
-autoawq==0.2.9
 # The autoawq PyPI package ships no compiled CUDA kernels itself: at runtime
 # it tries to import the separately-packaged `awq_ext` extension and only
 # falls back to JIT-compiling its dequant kernel via Triton if that import
@@ -27,3 +21,32 @@ autoawq==0.2.9
 # 0.0.9 is the last release (project archived) and needs torch>=2.5.1, hence
 # the torch 2.6.0 base image.
 autoawq-kernels==0.0.9
+# autoawq itself is installed separately in Dockerfile.gpu via `pip install
+# --no-deps autoawq==0.2.8` — NOT listed here, and NOT 0.2.9. Two reasons:
+#
+# 1. autoawq 0.2.9 unconditionally imports awq/models/qwen3.py at package
+#    init (`import awq` -> awq.models.auto -> every awq/models/*.py file),
+#    which does `from transformers.models.qwen3.modeling_qwen3 import ...`.
+#    That submodule doesn't exist in transformers 4.49.0 (Qwen3 landed
+#    later) -> ModuleNotFoundError on every VLMBackend() init. 0.2.8 has no
+#    qwen3/qwen3_moe/qwen2_5_vl/qwen2_5_omni files at all, so it never tries
+#    this import. We don't need those per-architecture AWQ wrapper classes
+#    anyway — loading goes through transformers' own AutoAWQ integration,
+#    which only needs the generic awq.modules.linear.gemm.WQLinear_GEMM.
+# 2. autoawq 0.2.8 declares transformers>=4.45.0,<=4.47.1 — incompatible
+#    with our transformers==4.49.0 pin (needed for Qwen2.5-VL support), so a
+#    normal `pip install -r` here would hit the same ResolutionImpossible we
+#    already fixed once. Verified by reading 0.2.8's actual model-loading
+#    code path (awq/models/base.py and everything it imports) that nothing
+#    it needs is transformers-version-sensitive beyond what 4.49.0 already
+#    has, so the declared upper bound is stale packaging metadata, not a
+#    real runtime requirement — safe to install with --no-deps.
+#
+# --no-deps skips ALL of 0.2.8's declared deps, not just the disputed
+# transformers pin, so its other real ones are listed explicitly here so
+# normal resolution still installs them: datasets (imported eagerly by
+# awq.utils.calib_data even though we never calibrate) and zstandard.
+# tokenizers/huggingface_hub/typing_extensions/accelerate are already
+# pulled in transitively by transformers/accelerate above.
+datasets>=2.20
+zstandard
