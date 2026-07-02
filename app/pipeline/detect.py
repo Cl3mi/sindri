@@ -4,6 +4,7 @@ Stage 1 of the pipeline: tile the rendered page, run the VLM as a detector on
 each tile, map tile-local boxes back to page space, then merge and dedupe.
 """
 import json
+import statistics
 import sys
 from dataclasses import dataclass
 
@@ -66,11 +67,20 @@ def resolve_cross_kind_overlaps(detections, iou_thresh: float = 0.7):
     return kept
 
 
-def merge_adjacent(detections, x_tol: int = 20, y_gap: int = 20):
+def merge_adjacent(detections, x_tol: int = 20, y_gap: int = 20, max_lines: int = 2):
     """Merge same-kind boxes that are horizontally aligned and vertically close,
     so a stacked callout (tolerance over a nominal) becomes one crop. Repeats
-    until no further merge is possible."""
+    until no further merge is possible.
+
+    A merge is rejected if the resulting box would be taller than `max_lines`
+    typical rows (median detection height + gaps). This stops a column of
+    distinct stacked dimensions (e.g. Ø20 / Ø15 / Ø7) from collapsing into a
+    single detection."""
     items = list(detections)
+    if not items:
+        return []
+    line_h = statistics.median(b.box[3] - b.box[1] for b in items)
+    cap = max_lines * line_h + (max_lines - 1) * y_gap
     changed = True
     while changed:
         changed = False
@@ -86,8 +96,10 @@ def merge_adjacent(detections, x_tol: int = 20, y_gap: int = 20):
                 b = items[j]
                 if (a.kind == b.kind and _x_aligned(a.box, b.box, x_tol)
                         and _y_close(a.box, b.box, y_gap)):
-                    a = Detection(box=_union(a.box, b.box), kind=a.kind,
-                                  conf=max(a.conf, b.conf))
+                    u = _union(a.box, b.box)
+                    if (u[3] - u[1]) > cap:
+                        continue
+                    a = Detection(box=u, kind=a.kind, conf=max(a.conf, b.conf))
                     used[j] = True
                     changed = True
             out.append(a)

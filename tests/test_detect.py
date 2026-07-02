@@ -50,6 +50,15 @@ def test_merge_adjacent_combines_vertically_stacked_same_kind():
     assert merged[0].box == (10, 10, 52, 55)
 
 
+def test_merge_adjacent_does_not_collapse_three_stacked_dims():
+    # A column of three distinct same-kind callouts must not become one box.
+    a = Detection(box=(10, 10, 50, 30), kind="dimension", conf=0.9)
+    b = Detection(box=(10, 45, 50, 65), kind="dimension", conf=0.9)
+    c = Detection(box=(10, 80, 50, 100), kind="dimension", conf=0.9)
+    merged = merge_adjacent([a, b, c], x_tol=20, y_gap=20)
+    assert len(merged) >= 2   # not all three fused into one
+
+
 def test_merge_adjacent_leaves_far_apart_boxes():
     a = Detection(box=(10, 10, 50, 30), kind="dimension", conf=0.8)
     b = Detection(box=(10, 200, 50, 220), kind="dimension", conf=0.6)
