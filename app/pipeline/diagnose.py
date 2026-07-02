@@ -108,6 +108,37 @@ def summarize_result(result) -> dict:
     }
 
 
+def _raw_summary(raw: str) -> dict:
+    return {
+        "chars": len(raw),
+        "lines": len(raw.splitlines()),
+        "has_tab": "\t" in raw,
+        "preview": raw[:1000],
+    }
+
+
+def capture_raw_reads(image: Image.Image, backend) -> dict:
+    """Instrument the read->parse boundary: return the *raw* VLM transcription of
+    the marks and notes blocks (before parsing), plus a `has_tab` flag. When a
+    block is located but yields 0 parsed rows, this shows whether the model
+    emitted the tab-delimited format the parsers require. Never raises."""
+    out: dict = {}
+    try:
+        reg = mb.locate_marks_block(image)
+        if reg is not None:
+            out["marks"] = _raw_summary(mb.read_marks_block(image, reg, backend))
+    except Exception as e:  # pragma: no cover - defensive
+        out["marks_error"] = repr(e)
+    try:
+        from app.pipeline import notes_block as nb
+        nreg = nb.locate_notes_block(image, backend)
+        if nreg is not None:
+            out["notes"] = _raw_summary(nb.read_notes_block(image, nreg, backend))
+    except Exception as e:  # pragma: no cover - defensive
+        out["notes_error"] = repr(e)
+    return out
+
+
 def _annotate(image: Image.Image, result=None) -> Image.Image:
     """Draw located regions and balloon markers for a visual sanity check."""
     vis = image.copy()
@@ -139,12 +170,17 @@ def run(pdf_path: str, dpi: int = 300, out_dir=None, use_vlm: bool = False,
     report = {"pdf": str(pdf_path), "dpi": dpi, **build_cv_report(image)}
     result = None
     if use_vlm:
+        # One backend instance, reused for extraction and raw-read instrumentation
+        # so the model is loaded only once.
+        from app.pipeline.ocr import get_backend
+        from app.pipeline.extract import extract
+        backend = get_backend()
         try:
-            from app.pipeline.extract import extract
-            result = extract(pdf_path, out_dir, dpi=dpi)
+            result = extract(pdf_path, out_dir, dpi=dpi, backend=backend)
             report["extraction"] = summarize_result(result)
         except Exception as e:
             report["extraction_error"] = repr(e)
+        report["raw_reads"] = capture_raw_reads(image, backend)
 
     if save_image:
         annotated = _annotate(image, result)

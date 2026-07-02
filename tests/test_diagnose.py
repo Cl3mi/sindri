@@ -1,7 +1,8 @@
 from PIL import Image, ImageDraw
 
 from app.models import Characteristic, ExtractionResult, Mark, MarkBlock, Note, NoteBlock
-from app.pipeline.diagnose import build_cv_report, summarize_result
+from app.pipeline.diagnose import build_cv_report, summarize_result, capture_raw_reads
+from app.pipeline.ocr.base import OcrResult
 
 
 def _page_with_legend_and_title(w=1000, h=900):
@@ -38,6 +39,23 @@ def test_build_cv_report_blank_page():
     report = build_cv_report(Image.new("RGB", (1000, 900), "white"))
     assert report["marks"]["located"] is False
     assert report["title_block"]["located"] is False
+
+
+class _FakeVLM:
+    """Backend exposing only read_notes_block (used by read_marks_block)."""
+    def __init__(self, notes_text):
+        self._t = notes_text
+    def read_notes_block(self, image):
+        return OcrResult(text=self._t, confidence=0.9)
+
+
+def test_capture_raw_reads_reports_marks_transcription_and_tab_flag():
+    img = _page_with_legend_and_title()          # marks region is locatable
+    backend = _FakeVLM("101 CONTACT AREA\n102 PART FREE")   # spaces, no tabs
+    raw = capture_raw_reads(img, backend)
+    assert raw["marks"]["has_tab"] is False
+    assert "101" in raw["marks"]["preview"]
+    assert raw["marks"]["chars"] > 0
 
 
 def _char(pos, box):
