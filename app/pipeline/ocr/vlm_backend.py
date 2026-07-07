@@ -75,6 +75,28 @@ _TITLE_PROMPT = (
 )
 
 
+# A read crop wider/taller than this many pixels is downscaled before it reaches
+# the model. A full legend crop (~2890x1436 px at 300 dpi) otherwise OOMs the
+# vision encoder — the CUDA allocator aborts mid-generate, the read wrapper
+# swallows it to "", and the whole notes/marks table comes back empty. Confirmed
+# by a downscale sweep: native crashes; <=2000 px reads cleanly. 1600 sits below
+# the crash and below one detection tile (1280 sq) in pixel count, and stays
+# above the point where the model starts splitting each text line into its own
+# row. Small callout/title crops are already well under this, so unaffected.
+_MAX_READ_LONG_EDGE = 1600
+
+
+def _cap_long_edge(image: Image.Image, max_long_edge: int = _MAX_READ_LONG_EDGE) -> Image.Image:
+    """Downscale `image` so its longest side is at most `max_long_edge`, keeping
+    aspect ratio. Returns the image unchanged when already within bounds."""
+    w, h = image.size
+    longest = max(w, h)
+    if longest <= max_long_edge:
+        return image
+    s = max_long_edge / longest
+    return image.resize((max(1, int(w * s)), max(1, int(h * s))), Image.LANCZOS)
+
+
 def _mean_token_confidence(step_probs) -> float:
     """Mean of per-token max-softmax probabilities; 0.0 for an empty sequence."""
     probs = list(step_probs)
@@ -108,7 +130,7 @@ class VLMBackend:
         confidence is the mean per-token top-softmax probability of the greedy
         decode, so an uncertain read scores low and can be flagged for review."""
         messages = [{"role": "user", "content": [
-            {"type": "image", "image": image.convert("RGB")},
+            {"type": "image", "image": _cap_long_edge(image.convert("RGB"))},
             {"type": "text", "text": prompt},
         ]}]
         inputs = self.processor.apply_chat_template(
