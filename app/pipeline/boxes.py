@@ -80,6 +80,52 @@ def _classify(box, cells) -> str:
     return "gdt" if cells >= 2 else "theoretical"
 
 
+def tighten_to_ink(image: Image.Image, box, pad: int = 3,
+                   min_area_frac: float = 0.02):
+    """Shrink `box` to the bounding box of the ink inside it.
+
+    The VLM detector returns generous boxes that swallow leader lines,
+    arrowheads and whitespace around a callout; that oversize both pushes the
+    balloon far from the number (placement anchors on the box corner) and dilutes
+    the read crop. This projects the ink inside the box onto each axis and returns
+    the tight extent (plus a small `pad`), in page coordinates.
+
+    Robustness: an empty/degenerate box, a box with no ink, or a tight extent
+    that collapses below `min_area_frac` of the original (Otsu noise on a nearly
+    blank crop) all return the ORIGINAL box unchanged. Never raises."""
+    try:
+        x0, y0, x1, y1 = (int(v) for v in box)
+        if x1 <= x0 or y1 <= y0:
+            return box
+        crop = np.array(image.convert("L").crop((x0, y0, x1, y1)))
+        if crop.size == 0:
+            return box
+        _, binv = cv2.threshold(crop, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+        ink = binv // 255
+        h, w = ink.shape
+        # A row/col counts as ink only above a small floor, so a stray speckle or
+        # a 1px thresholding artefact does not defeat the shrink.
+        row_floor = max(1, int(0.01 * w))
+        col_floor = max(1, int(0.01 * h))
+        rows = np.where(ink.sum(axis=1) >= row_floor)[0]
+        cols = np.where(ink.sum(axis=0) >= col_floor)[0]
+        if rows.size == 0 or cols.size == 0:
+            return box
+        ny0, ny1 = int(rows[0]), int(rows[-1]) + 1
+        nx0, nx1 = int(cols[0]), int(cols[-1]) + 1
+        nx0 = max(0, nx0 - pad); ny0 = max(0, ny0 - pad)
+        nx1 = min(w, nx1 + pad); ny1 = min(h, ny1 + pad)
+        tight = (x0 + nx0, y0 + ny0, x0 + nx1, y0 + ny1)
+        orig_area = (x1 - x0) * (y1 - y0)
+        tight_area = (tight[2] - tight[0]) * (tight[3] - tight[1])
+        if orig_area > 0 and tight_area < min_area_frac * orig_area:
+            return box
+        return tight
+    except Exception as e:                       # never fatal
+        print(f"[sindri.boxes] tighten failed: {e!r}", file=sys.stderr, flush=True)
+        return box
+
+
 def detect_boxes(image: Image.Image, min_side: int = 12, max_area_frac: float = 0.05,
                  inset: int = 4) -> List[BoxDetection]:
     try:

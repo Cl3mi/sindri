@@ -40,3 +40,18 @@ def test_place_balloons_clamps_to_page_margin():
     place_balloons([c], offset=70, margin=10)
     bx, by = c.balloon_xy
     assert bx == 10 and by == 10
+
+
+def test_place_balloons_default_gap_is_dpi_scaled():
+    c = _char((200, 200, 260, 230))
+    place_balloons([c])                       # dpi=300, gap_pt=14 -> 58 px
+    assert c.balloon_xy == (142, 142)
+
+
+def test_place_balloons_gap_scales_with_dpi():
+    a = _char((200, 200, 260, 230))
+    b = _char((200, 200, 260, 230))
+    place_balloons([a], dpi=300)              # 58 px
+    place_balloons([b], dpi=150)              # 29 px -> balloon closer in px
+    assert a.balloon_xy == (142, 142)
+    assert b.balloon_xy == (171, 171)

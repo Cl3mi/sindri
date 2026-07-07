@@ -22,13 +22,23 @@ def number_characteristics(chars, band_tol: int = 60):
     return ordered
 
 
-def place_balloons(chars, offset: int = 70, margin: int = 10):
+def place_balloons(chars, dpi: int = 300, gap_pt: float = 14.0,
+                   margin: int = 10, offset: int = None):
     """Set balloon_xy for each characteristic: a marker offset up-and-left from
     the callout's top-left corner, clamped so it stays on the page. The leader
-    line to the callout is drawn later from balloon_xy to target_region."""
+    line to the callout is drawn later from balloon_xy to target_region.
+
+    The gap is expressed in PDF points (`gap_pt`) and converted to render pixels
+    via `dpi`, so the balloon sits a physically-constant distance from the
+    callout at any render resolution — it does not blow up with DPI the way a
+    fixed pixel offset did. Since detection boxes are now tightened to their ink
+    (see boxes.tighten_to_ink), this corner is the real glyph corner, so a modest
+    gap keeps the balloon next to its number instead of drifting into the page.
+    `offset` (pixels) overrides the computed gap when given."""
+    gap = offset if offset is not None else int(round(gap_pt * dpi / 72.0))
     for c in chars:
         x0, y0 = c.target_region[0], c.target_region[1]
-        bx = max(margin, x0 - offset)
-        by = max(margin, y0 - offset)
+        bx = max(margin, x0 - gap)
+        by = max(margin, y0 - gap)
         c.balloon_xy = (bx, by)
     return chars

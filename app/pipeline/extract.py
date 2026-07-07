@@ -6,6 +6,7 @@ from PIL import Image
 from app.models import Characteristic, ExtractionResult
 from app.pipeline.render import render_page
 from app.pipeline.detect import detect_characteristics
+from app.pipeline import boxes as bx
 from app.pipeline.place import number_characteristics, place_balloons
 from app.pipeline.parser import parse_value
 from app.pipeline.ocr import get_backend
@@ -48,13 +49,40 @@ def _best_read(backend, crop: Image.Image, vertical: bool) -> Tuple[str, float, 
         scored.append((_score(text, conf), text, conf))
     scored.sort(key=lambda t: -t[0])
     best_score, best_text, best_conf = scored[0]
-    ambiguous = len(scored) >= 2 and (best_score - scored[1][0]) < ROTATION_EPS
+    # An empty winning read is not "rotation-ambiguous" — both orientations
+    # simply read nothing. Only flag ambiguity when a real read was produced and
+    # the runner-up scores within EPS of it.
+    ambiguous = (len(scored) >= 2 and bool((best_text or "").strip())
+                 and (best_score - scored[1][0]) < ROTATION_EPS)
     return best_text, best_conf, ambiguous
 
 
 def _clamp(box, w, h):
     x0, y0, x1, y1 = box
     return (max(0, int(x0)), max(0, int(y0)), min(w, int(x1)), min(h, int(y1)))
+
+
+# Read-crop normalization: give the reader a little context around the (tight)
+# box and upscale small crops so faint sub-mm text and stacked tolerances read
+# consistently instead of "sometimes". Frame-stripped CV inner boxes are read
+# with pad=0 (padding would re-introduce the border the crop deliberately removed).
+_CROP_PAD = 6           # px of context added around a VLM read box
+_MIN_CROP_H = 40        # upscale crops shorter than this…
+_MAX_UPSCALE = 3.0      # …but never by more than this factor
+
+
+def _prep_crop(image, box, w, h, pad: int):
+    x0, y0, x1, y1 = box
+    if pad:
+        x0, y0 = max(0, x0 - pad), max(0, y0 - pad)
+        x1, y1 = min(w, x1 + pad), min(h, y1 + pad)
+    crop = image.crop((x0, y0, x1, y1))
+    ch = crop.height
+    if 0 < ch < _MIN_CROP_H:
+        scale = min(_MAX_UPSCALE, _MIN_CROP_H / ch)
+        crop = crop.resize((max(1, int(crop.width * scale)),
+                            max(1, int(ch * scale))), Image.LANCZOS)
+    return crop
 
 
 def _is_vertical(box) -> bool:
@@ -154,8 +182,15 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
     results = []
     for i, d in enumerate(detections):
         outer = _clamp(d.box, render.width, render.height)
+        # Tighten generous VLM boxes to their ink so the balloon anchors on the
+        # real glyph corner and the read crop isn't diluted. CV boxes already
+        # carry an exact frame-stripped inner_box, so leave those untouched.
+        if d.inner_box is None:
+            outer = _clamp(bx.tighten_to_ink(image, outer),
+                           render.width, render.height)
         read_box = _clamp(d.inner_box, render.width, render.height) if d.inner_box else outer
-        crop = image.crop(read_box)
+        crop = _prep_crop(image, read_box, render.width, render.height,
+                          pad=0 if d.inner_box else _CROP_PAD)
         if d.subtype == "gdt" and hasattr(backend, "read_region_gdt"):
             text, confidence = _safe_read(backend.read_region_gdt, crop)
             rotation_ambiguous = False
@@ -188,7 +223,7 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
 
     emit("place", "Placing balloons")
     number_characteristics(results)
-    place_balloons(results)
+    place_balloons(results, dpi=dpi)
     # Free text outside the structured blocks (e.g. margin notes). Exclude the
     # notes/marks/title regions AND every region the main detector already
     # captured, so loose_text only adds text nothing else picked up

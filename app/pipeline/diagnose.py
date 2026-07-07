@@ -10,8 +10,10 @@ Two modes:
   duplicate detections, review flags) plus the marks/notes/title counts.
 
 Both modes print a single JSON blob to stdout and, unless ``--no-image`` is
-given, save an annotated PNG (marks = red, title = blue, notes = green,
-balloons = orange) next to the rendered page for a visual check.
+given, save an annotated PNG next to the rendered page for a visual check:
+marks = red, title = blue, notes = green, characteristic boxes = orange, and —
+in ``--vlm`` mode — each balloon marker + its leader line to the callout (also
+orange) so placement distance is obvious.
 
     python -m app.pipeline.diagnose test_docs/T1025300_B.pdf
     python -m app.pipeline.diagnose drawing.pdf --vlm --out /tmp/diag
@@ -92,20 +94,58 @@ def _hist(values) -> dict:
     return out
 
 
-def summarize_result(result) -> dict:
-    """Summarise an ExtractionResult for a quick correctness read: counts,
-    kind/char-type histograms, likely duplicates, and review-flag totals."""
-    chars = result.characteristics
+def _read_sample(c) -> dict:
+    tr = c.target_region or (0, 0, 0, 0)
     return {
+        "pos": c.pos, "kind": c.kind, "char_type": c.char_type,
+        "conf": round(c.confidence, 3),
+        "nominal": c.nominal, "upper_tol": c.upper_tol, "lower_tol": c.lower_tol,
+        "box_wh": [int(tr[2] - tr[0]), int(tr[3] - tr[1])],
+        "raw": (c.raw_text or "").replace("\n", " ")[:40],
+    }
+
+
+def _box_size_stats(chars, page_w, page_h) -> dict:
+    """Width/height of characteristic boxes as a fraction of the page — a proxy
+    for whether detection boxes are sanely tight (post tighten_to_ink) or still
+    engulfing whitespace/leader lines."""
+    import statistics as _st
+    fr = [((c.target_region[2] - c.target_region[0]) / page_w,
+           (c.target_region[3] - c.target_region[1]) / page_h)
+          for c in chars if c.target_region is not None]
+    if not fr:
+        return {}
+    return {
+        "median_w_frac": round(_st.median(w for w, _ in fr), 4),
+        "median_h_frac": round(_st.median(h for _, h in fr), 4),
+        "max_w_frac": round(max(w for w, _ in fr), 4),
+        "max_h_frac": round(max(h for _, h in fr), 4),
+        "oversized": sum(1 for w, h in fr if w > 0.15 or h > 0.10),
+    }
+
+
+def summarize_result(result, page=None) -> dict:
+    """Summarise an ExtractionResult for a quick correctness read: counts,
+    kind/char-type histograms, likely duplicates, review-flag totals, and — to
+    judge read quality and placement — per-read samples, low-confidence reads
+    and box-size stats. `page` is an optional (width, height) for the box-size
+    fractions; omitted, those stats are skipped."""
+    chars = result.characteristics
+    out = {
         "characteristics": len(chars),
         "by_kind": _hist(c.kind for c in chars if c.kind),
         "by_char_type": _hist(c.char_type for c in chars if c.char_type),
         "needs_review": sum(1 for c in chars if c.needs_review),
         "potential_duplicates": _potential_duplicates(chars),
+        "low_confidence": [_read_sample(c) for c in chars if c.confidence < 0.6][:25],
+        "reads": [_read_sample(c) for c in sorted(chars, key=lambda c: c.pos)][:40],
         "marks": len(result.marks.marks) if result.marks is not None else None,
         "notes": len(result.notes.notes) if result.notes is not None else None,
         "title_fields": len(result.title_block),
     }
+    if page is not None:
+        out["box_size"] = _box_size_stats(chars, page[0], page[1])
+    return out
 
 
 def _raw_summary(raw: str) -> dict:
@@ -155,6 +195,17 @@ def _annotate(image: Image.Image, result=None) -> Image.Image:
         for c in result.characteristics:
             if c.target_region is not None:
                 d.rectangle(c.target_region, outline=(255, 140, 0), width=4)
+            # leader line + balloon marker, so placement (distance to the
+            # callout) is visible at a glance in the annotated PNG.
+            if c.balloon_xy is not None and c.target_region is not None:
+                bx, by = c.balloon_xy
+                cx = (c.target_region[0] + c.target_region[2]) / 2.0
+                cy = (c.target_region[1] + c.target_region[3]) / 2.0
+                d.line((bx, by, cx, cy), fill=(255, 140, 0), width=2)
+                r = 14
+                d.ellipse((bx - r, by - r, bx + r, by + r),
+                          outline=(255, 140, 0), width=3)
+                d.text((bx - 4, by - 6), str(c.pos), fill=(255, 140, 0))
     return vis
 
 
@@ -177,7 +228,7 @@ def run(pdf_path: str, dpi: int = 300, out_dir=None, use_vlm: bool = False,
         backend = get_backend()
         try:
             result = extract(pdf_path, out_dir, dpi=dpi, backend=backend)
-            report["extraction"] = summarize_result(result)
+            report["extraction"] = summarize_result(result, page=image.size)
         except Exception as e:
             report["extraction_error"] = repr(e)
         report["raw_reads"] = capture_raw_reads(image, backend)
