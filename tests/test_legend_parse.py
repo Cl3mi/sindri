@@ -37,3 +37,28 @@ def test_json_sub_bullet_carries_parent_and_index():
 def test_garbage_returns_empty():
     assert parse_rows("no rows here") == []
     assert parse_rows("") == []
+
+
+def test_merges_consecutive_same_pos_rows():
+    # The VLM sometimes emits one object per LINE of a multi-line cell; these
+    # collapse back into a single row per mark number.
+    raw = ('[{"pos":101,"en":"LINE ONE","de":"ZEILE EINS"},'
+           '{"pos":101,"en":"LINE TWO","de":"ZEILE ZWEI"}]')
+    rows = parse_rows(raw)
+    assert len(rows) == 1
+    assert rows[0]["pos"] == 101
+    assert rows[0]["en"] == "LINE ONE LINE TWO"
+    assert rows[0]["de"] == "ZEILE EINS ZEILE ZWEI"
+
+
+def test_does_not_merge_sub_bullet_into_parent():
+    raw = ('[{"pos":101,"en":"P","de":"P"},'
+           '{"pos":101,"sub":1,"en":"C","de":"C"}]')
+    rows = parse_rows(raw)
+    assert len(rows) == 2
+
+
+def test_does_not_merge_distinct_pos():
+    raw = ('[{"pos":101,"en":"A","de":"A"},'
+           '{"pos":102,"en":"B","de":"B"}]')
+    assert [r["pos"] for r in parse_rows(raw)] == [101, 102]

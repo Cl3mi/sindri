@@ -67,6 +67,14 @@ def test_three_digit_pos_outside_10x_range_still_accepted():
     assert nb.notes[0].pos == 199
 
 
+def test_drops_empty_content_reference_bubbles():
+    # An on-drawing reference bubble reads as a bare number with no description;
+    # it must NOT become a notes row.
+    raw = '[{"pos":101,"en":"","de":""},{"pos":102,"en":"REAL NOTE","de":"ECHTE"}]'
+    nb = parse_notes_block(raw, region=(0, 0, 100, 100))
+    assert [n.pos for n in nb.notes] == [102]
+
+
 def test_notes_parses_json_with_sub_bullet():
     raw = ('[{"pos":101,"en":"parent","de":"eltern"},'
            '{"pos":101,"sub":1,"en":"child","de":"kind"}]')

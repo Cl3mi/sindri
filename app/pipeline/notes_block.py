@@ -13,6 +13,11 @@ def parse_notes_block(raw: str, region: Tuple[float, float, float, float]) -> No
     linked to its parent pos. Malformed input yields no notes (non-fatal)."""
     notes: List[Note] = []
     for r in parse_rows(raw):
+        # A bare number with no description is an on-drawing reference bubble
+        # (or a stray detection), never a genuine notes row — drop it so it
+        # cannot pollute the notes table.
+        if not (r["en"] or "").strip() and not (r["de"] or "").strip():
+            continue
         if r["sub"] is None:
             notes.append(Note(pos=r["pos"], text_en=r["en"], text_de=r["de"],
                               raw_text=r["raw"]))

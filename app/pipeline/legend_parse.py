@@ -61,11 +61,29 @@ def _from_text(raw):
     return rows
 
 
+def _merge_same_pos(rows):
+    """Collapse consecutive top-level rows that share a pos into one row,
+    concatenating their EN/DE text. The VLM sometimes emits one object per LINE
+    of a multi-line description cell; this restores one row per mark number.
+    Sub-bullet rows (sub set) are never merged."""
+    merged = []
+    for r in rows:
+        prev = merged[-1] if merged else None
+        if (prev is not None and r["sub"] is None and prev["sub"] is None
+                and r["pos"] == prev["pos"]):
+            prev["en"] = " ".join(x for x in (prev["en"], r["en"]) if x)
+            prev["de"] = " ".join(x for x in (prev["de"], r["de"]) if x)
+        else:
+            merged.append(dict(r))
+    return merged
+
+
 def parse_rows(raw: str):
     """Parse a legend transcription into row dicts. Tries JSON first (handles
-    multi-line cells cleanly), then falls back to tolerant line parsing."""
+    multi-line cells cleanly), then falls back to tolerant line parsing.
+    Consecutive rows with the same pos are merged (see _merge_same_pos)."""
     raw = raw or ""
     rows = _from_json(raw)
     if rows is None:
         rows = _from_text(raw)
-    return rows
+    return _merge_same_pos(rows)

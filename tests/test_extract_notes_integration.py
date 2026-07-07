@@ -49,6 +49,9 @@ def test_t1025300_inline_bullets_appear_in_notes_not_characteristics(
                               lang_columns=[(800, 1250), (1250, 1700)])
     monkeypatch.setattr("app.pipeline.notes_block.locate_notes_block",
                         lambda image, backend: region)
+    # No top-right legend in this scenario (isolate the VLM notes path).
+    monkeypatch.setattr("app.pipeline.marks_block.locate_marks_block",
+                        lambda image: None)
 
     # The main detector finds three "dimensions" that, in the buggy world, would
     # have been the inline 1/2/3 bullets — but since the locator already masked
@@ -79,86 +82,112 @@ def test_t1025300_inline_bullets_appear_in_notes_not_characteristics(
     assert bogus == []
 
 
-def test_extract_populates_marks_block_alongside_notes(sample_pdf, tmp_path, monkeypatch):
-    """End-to-end: when the marks locator returns a region and the backend
-    transcribes it, result.marks is populated independently of result.notes."""
+def test_top_right_legend_feeds_notes_not_marks(sample_pdf, tmp_path, monkeypatch):
+    """The reliably CV-located top-right Mark/Note legend is a NOTES table: its
+    rows populate result.notes, and result.marks stays None."""
     import app.pipeline.extract as extract_mod
     import app.pipeline.boxes as boxes_mod
     from app.pipeline.marks_block import MarksBlockRegion
     from app.pipeline.ocr.base import OcrResult
 
     monkeypatch.setattr(boxes_mod, "detect_boxes", lambda image: [])
+    # No separate VLM notes table on this drawing.
+    monkeypatch.setattr("app.pipeline.notes_block.locate_notes_block",
+                        lambda image, backend: None)
+    # The CV locator finds the top-right Mark/Note legend.
+    legend = MarksBlockRegion(outer_box=(1500, 50, 1900, 400),
+                              lang_columns=[(1500, 1700), (1700, 1900)])
+    monkeypatch.setattr("app.pipeline.marks_block.locate_marks_block",
+                        lambda image: legend)
+    monkeypatch.setattr(extract_mod, "detect_characteristics",
+                        lambda image, backend, **kw: [])
 
-    # Notes locator returns a region (so the existing notes path still runs).
+    class _Backend:
+        def detect_regions(self, image): return []
+        def read_region(self, image): return OcrResult(text="", confidence=0.0)
+        def read_notes_block(self, image):
+            return OcrResult(text="111\tCONTACT AREA\tKONTAKTBEREICH\n"
+                                  "112\tFREE OF OIL\tOELFREI", confidence=0.9)
+
+    result = extract_mod.extract(sample_pdf, tmp_path, backend=_Backend())
+
+    assert result.marks is None
+    assert result.notes is not None
+    assert [n.pos for n in result.notes.notes] == [111, 112]
+    assert result.notes.notes[0].text_en == "CONTACT AREA"
+    assert result.notes.notes[0].text_de == "KONTAKTBEREICH"
+
+
+def test_legend_and_separate_notes_table_both_feed_notes(sample_pdf, tmp_path, monkeypatch):
+    """A drawing with BOTH the top-right legend and a separate notes table:
+    both contribute rows to result.notes (concatenated)."""
+    import app.pipeline.extract as extract_mod
+    import app.pipeline.boxes as boxes_mod
+    from app.pipeline.marks_block import MarksBlockRegion
+    from app.pipeline.ocr.base import OcrResult
+
+    monkeypatch.setattr(boxes_mod, "detect_boxes", lambda image: [])
     notes_region = NotesBlockRegion(outer_box=(100, 100, 400, 300),
                                     lang_columns=[(100, 250), (250, 400)])
     monkeypatch.setattr("app.pipeline.notes_block.locate_notes_block",
                         lambda image, backend: notes_region)
-
-    # Marks locator returns a top-right region.
-    marks_region = MarksBlockRegion(outer_box=(1500, 50, 1900, 400),
-                                    lang_columns=[(1500, 1700), (1700, 1900)])
+    legend = MarksBlockRegion(outer_box=(1500, 50, 1900, 400),
+                              lang_columns=[(1500, 1700), (1700, 1900)])
     monkeypatch.setattr("app.pipeline.marks_block.locate_marks_block",
-                        lambda image: marks_region)
-
+                        lambda image: legend)
     monkeypatch.setattr(extract_mod, "detect_characteristics",
                         lambda image, backend, **kw: [])
 
     class _Backend:
-        # The same `read_notes_block` method is used for both notes and marks
-        # transcription. The pipeline crops different regions, but our stub
-        # ignores the crop and returns canned text — so we need to return
-        # different text depending on which call this is. We track call count.
-        def __init__(self):
-            self._calls = 0
+        def __init__(self): self._calls = 0
         def detect_regions(self, image): return []
         def read_region(self, image): return OcrResult(text="", confidence=0.0)
         def read_notes_block(self, image):
             self._calls += 1
+            # legend is read first, the separate notes region second
             if self._calls == 1:
-                return OcrResult(text="101\tNote-EN\tNote-DE", confidence=0.9)
-            return OcrResult(text="111\tMark-EN\tMark-DE\n112\tM2-EN\tM2-DE",
-                             confidence=0.9)
+                return OcrResult(text="111\tLEGEND-EN\tLEGEND-DE", confidence=0.9)
+            return OcrResult(text="150\tNOTE-EN\tNOTE-DE", confidence=0.9)
 
     result = extract_mod.extract(sample_pdf, tmp_path, backend=_Backend())
-
+    assert result.marks is None
     assert result.notes is not None
-    assert [n.pos for n in result.notes.notes] == [101]
-
-    assert result.marks is not None
-    assert [m.pos for m in result.marks.marks] == [111, 112]
-    assert result.marks.marks[0].text_en == "Mark-EN"
-    assert result.marks.marks[0].text_de == "Mark-DE"
+    assert sorted(n.pos for n in result.notes.notes) == [111, 150]
 
 
-def test_notes_dropped_when_it_overlaps_marks_region(sample_pdf, tmp_path, monkeypatch):
-    """One physical legend located by BOTH paths: marks (deterministic CV) owns
-    it, and the overlapping notes region is dropped so it is neither double-read
-    nor double-masked."""
+def test_overlapping_legend_and_notes_region_read_once(sample_pdf, tmp_path, monkeypatch):
+    """One physical legend found by BOTH the CV legend locator and the VLM notes
+    locator: the CV legend owns it, the overlapping VLM region is dropped, so it
+    is read exactly once and contributes one set of notes."""
     import app.pipeline.extract as extract_mod
     import app.pipeline.boxes as boxes_mod
     from app.pipeline.marks_block import MarksBlockRegion
+    from app.pipeline.ocr.base import OcrResult
 
     monkeypatch.setattr(boxes_mod, "detect_boxes", lambda image: [])
     box = (1500, 50, 1900, 400)
     notes_region = NotesBlockRegion(outer_box=box, lang_columns=[(1500, 1700), (1700, 1900)])
-    marks_region = MarksBlockRegion(outer_box=box, lang_columns=[(1500, 1700), (1700, 1900)])
+    legend = MarksBlockRegion(outer_box=box, lang_columns=[(1500, 1700), (1700, 1900)])
     monkeypatch.setattr("app.pipeline.notes_block.locate_notes_block",
                         lambda image, backend: notes_region)
     monkeypatch.setattr("app.pipeline.marks_block.locate_marks_block",
-                        lambda image: marks_region)
+                        lambda image: legend)
     monkeypatch.setattr(extract_mod, "detect_characteristics",
                         lambda image, backend, **kw: [])
+
+    calls = {"n": 0}
 
     class _Backend:
         def detect_regions(self, image): return []
         def read_region(self, image): return OcrResult(text="", confidence=0.0)
         def read_notes_block(self, image):
+            calls["n"] += 1
             return OcrResult(text="111\tMark-EN\tMark-DE", confidence=0.9)
 
     result = extract_mod.extract(sample_pdf, tmp_path, backend=_Backend())
-    assert result.marks is not None and [m.pos for m in result.marks.marks] == [111]
-    assert result.notes is None
+    assert result.marks is None
+    assert result.notes is not None and [n.pos for n in result.notes.notes] == [111]
+    assert calls["n"] == 1     # legend read once; overlapping VLM region dropped
 
 
 def test_regions_overlap_helper():
