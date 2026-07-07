@@ -179,6 +179,45 @@ def capture_raw_reads(image: Image.Image, backend) -> dict:
     return out
 
 
+def _downscale(crop: Image.Image, long_edge: int) -> Image.Image:
+    w, h = crop.size
+    scale = long_edge / max(w, h)
+    if scale >= 1.0:
+        return crop
+    return crop.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
+
+
+def probe_legend_read(image: Image.Image, backend) -> dict:
+    """Root-cause probe for the empty legend read: locate the marks legend (CV),
+    then read the SAME crop at a sweep of downscales, capturing any exception
+    directly (the production wrappers swallow it to ''). One VLM run then shows
+    whether the read fails by exception, by empty output, or is rescued by a
+    smaller crop — i.e. whether crop size is the culprit. Never raises."""
+    out: dict = {}
+    try:
+        reg = mb.locate_marks_block(image)
+    except Exception as e:
+        return {"locate_error": repr(e)}
+    if reg is None:
+        return {"located": False}
+    crop = image.crop(reg.outer_box)
+    out["located"] = True
+    out["native_size"] = list(crop.size)
+    variants = []
+    for long_edge in (99999, 2000, 1400, 1000, 700):
+        v = _downscale(crop, long_edge)
+        rec = {"long_edge": long_edge, "size": list(v.size)}
+        try:
+            r = backend.read_notes_block(v)
+            txt = r.text or ""
+            rec.update({"chars": len(txt), "preview": txt[:200]})
+        except Exception as e:
+            rec["error"] = repr(e)
+        variants.append(rec)
+    out["variants"] = variants
+    return out
+
+
 def _annotate(image: Image.Image, result=None) -> Image.Image:
     """Draw located regions and balloon markers for a visual sanity check."""
     vis = image.copy()
@@ -232,6 +271,7 @@ def run(pdf_path: str, dpi: int = 300, out_dir=None, use_vlm: bool = False,
         except Exception as e:
             report["extraction_error"] = repr(e)
         report["raw_reads"] = capture_raw_reads(image, backend)
+        report["legend_probe"] = probe_legend_read(image, backend)
 
     if save_image:
         annotated = _annotate(image, result)
