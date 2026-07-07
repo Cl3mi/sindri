@@ -45,6 +45,10 @@ if [[ "$ENGINE" == "podman" && "$GPU" == nvidia.com/gpu=* && -f "$CDI_OVERLAY" ]
   echo ">> rootless CDI overlay: $CDI_OVERLAY -> $CDI_TARGET"
   exec podman unshare -- bash -c '
     set -euo pipefail
+    # podman reuses a persistent unshare mount namespace, so a previous overlay
+    # can linger (pointing at a since-replaced inode) and make a fresh bind fail
+    # with ENOENT. Clear any stacked binds on the target first, then re-bind.
+    for _ in 1 2 3 4 5; do umount "$2" 2>/dev/null || break; done
     mount --bind "$1" "$2"
     shift 2
     exec "$@"
