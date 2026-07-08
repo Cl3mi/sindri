@@ -116,7 +116,12 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
             progress(step, detail, current, total)
 
     if not hasattr(backend, "detect_regions"):
-        raise RuntimeError("auto-ballooning requires the VLM backend")
+        from app.pipeline.ocr import get_vlm_fallback_reason
+        reason = get_vlm_fallback_reason()
+        msg = "auto-ballooning requires the VLM backend"
+        if reason:
+            msg += f" — {reason}"
+        raise RuntimeError(msg)
 
     emit("render", "Rendering page")
     render = render_page(pdf_path, dpi=dpi, out_dir=work_dir)

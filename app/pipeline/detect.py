@@ -4,9 +4,35 @@ Stage 1 of the pipeline: tile the rendered page, run the VLM as a detector on
 each tile, map tile-local boxes back to page space, then merge and dedupe.
 """
 import json
+import os
 import statistics
 import sys
 from dataclasses import dataclass
+
+# Detection tiling defaults. Smaller tiles zoom the detector in on each callout,
+# giving more precise localization and catching small marks the model skips on a
+# coarse tile; the cost is more VLM calls (slower). Overridable per-run with the
+# VLM_TILE / VLM_TILE_OVERLAP env vars without a code change.
+_DEFAULT_TILE = 1024
+_DEFAULT_OVERLAP = 0.2
+
+
+def _resolve_tiling(tile, overlap, env=None):
+    """Resolve (tile, overlap): explicit args win, then env (VLM_TILE /
+    VLM_TILE_OVERLAP), then the smaller built-in defaults. Malformed env values
+    are ignored rather than fatal."""
+    env = os.environ if env is None else env
+    if tile is None:
+        try:
+            tile = int(env["VLM_TILE"])
+        except (KeyError, ValueError, TypeError):
+            tile = _DEFAULT_TILE
+    if overlap is None:
+        try:
+            overlap = float(env["VLM_TILE_OVERLAP"])
+        except (KeyError, ValueError, TypeError):
+            overlap = _DEFAULT_OVERLAP
+    return tile, overlap
 
 from app.pipeline.geom import _iou, _x_aligned, _y_close, _union
 
@@ -166,10 +192,12 @@ def merge_boxes(vlm_dets, box_dets, iou_thresh: float = 0.5):
     return kept_vlm + kept_cv
 
 
-def detect_characteristics(image, backend, tile: int = 1280, overlap: float = 0.15):
+def detect_characteristics(image, backend, tile: int = None, overlap: float = None):
     """Run the detector over overlapping tiles, map detections to page space,
     then merge stacked callouts and dedupe overlaps. A tile whose detection call
-    fails is logged and skipped — never fatal."""
+    fails is logged and skipped — never fatal. Tile size/overlap default to the
+    smaller grid (env-overridable via VLM_TILE / VLM_TILE_OVERLAP)."""
+    tile, overlap = _resolve_tiling(tile, overlap)
     width, height = image.size
     acc = []
     for (tx0, ty0, tx1, ty1) in tile_grid(width, height, tile, overlap):

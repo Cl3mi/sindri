@@ -36,6 +36,23 @@ def test_extract_requires_detection_capable_backend(sample_pdf, tmp_path):
         extract(sample_pdf, work_dir=tmp_path, dpi=300, backend=ReadOnlyBackend())
 
 
+def test_extract_error_surfaces_vlm_fallback_reason(sample_pdf, tmp_path, monkeypatch):
+    """When the VLM fell back to Tesseract, the auto-balloon error explains WHY
+    (the recorded fallback reason) instead of the bare capability message."""
+    import app.pipeline.ocr as ocr
+    monkeypatch.setattr(ocr, "_fallback_reason",
+                        "VLM failed to load: CUDA out of memory")
+
+    class ReadOnlyBackend:
+        def read_region(self, image):
+            from app.pipeline.ocr.base import OcrResult
+            return OcrResult(text="", confidence=0.0)
+
+    import pytest
+    with pytest.raises(RuntimeError, match="CUDA out of memory"):
+        extract(sample_pdf, work_dir=tmp_path, dpi=300, backend=ReadOnlyBackend())
+
+
 def test_extract_reads_gdt_box_with_gdt_prompt_and_sets_subtype(tmp_path, sample_pdf, monkeypatch):
     from app.pipeline.boxes import BoxDetection
     from app.pipeline.detect import merge_boxes

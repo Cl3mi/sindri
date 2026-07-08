@@ -8,6 +8,34 @@ def test_detection_dataclass_fields():
     assert d.conf == 0.9
 
 
+def test_resolve_tiling_defaults_to_smaller_grid():
+    from app.pipeline.detect import _resolve_tiling
+    tile, overlap = _resolve_tiling(None, None, env={})
+    assert tile == 1024
+    assert overlap == 0.2
+
+
+def test_resolve_tiling_honors_env_override():
+    from app.pipeline.detect import _resolve_tiling
+    tile, overlap = _resolve_tiling(
+        None, None, env={"VLM_TILE": "768", "VLM_TILE_OVERLAP": "0.25"})
+    assert tile == 768
+    assert overlap == 0.25
+
+
+def test_resolve_tiling_explicit_args_win_over_env():
+    from app.pipeline.detect import _resolve_tiling
+    tile, overlap = _resolve_tiling(1280, 0.15, env={"VLM_TILE": "768"})
+    assert tile == 1280
+    assert overlap == 0.15
+
+
+def test_resolve_tiling_ignores_malformed_env():
+    from app.pipeline.detect import _resolve_tiling
+    tile, overlap = _resolve_tiling(None, None, env={"VLM_TILE": "big"})
+    assert tile == 1024      # falls back to the default, not a crash
+
+
 def test_tile_grid_single_tile_when_image_smaller_than_tile():
     boxes = tile_grid(800, 600, tile=1280, overlap=0.15)
     assert boxes == [(0, 0, 800, 600)]
@@ -155,7 +183,7 @@ def test_detect_characteristics_single_tile_passes_box_through():
 def test_detect_characteristics_offsets_per_tile():
     img = Image.new("RGB", (2000, 1000), "white")
     backend = StubVLMBackend(detections=[Detection((0, 0, 30, 30), "note", 0.8)])
-    dets = detect_characteristics(img, backend)
+    dets = detect_characteristics(img, backend, tile=1280, overlap=0.15)
     xs = sorted(d.box[0] for d in dets)
     assert xs == [0, 720]
 
