@@ -14,7 +14,7 @@ from dataclasses import dataclass
 # coarse tile; the cost is more VLM calls (slower). Overridable per-run with the
 # VLM_TILE / VLM_TILE_OVERLAP env vars without a code change.
 _DEFAULT_TILE = 1024
-_DEFAULT_OVERLAP = 0.2
+_DEFAULT_OVERLAP = 0.15
 
 
 def _resolve_tiling(tile, overlap, env=None):

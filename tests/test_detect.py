@@ -12,7 +12,7 @@ def test_resolve_tiling_defaults_to_smaller_grid():
     from app.pipeline.detect import _resolve_tiling
     tile, overlap = _resolve_tiling(None, None, env={})
     assert tile == 1024
-    assert overlap == 0.2
+    assert overlap == 0.15
 
 
 def test_resolve_tiling_honors_env_override():
