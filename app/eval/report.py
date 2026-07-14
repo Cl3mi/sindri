@@ -59,7 +59,10 @@ def compare_runs(a: RunReport, b: RunReport, seed: int = 13,
                  n_boot: int = N_BOOTSTRAP) -> Dict:
     """Paired comparison: delta = b - a per document (negative = b better).
     Returns headline deltas, a bootstrap CI on the mean delta, and regression
-    warnings. Deterministic for fixed seed."""
+    warnings. Deterministic for fixed seed.
+
+    The bootstrap CI is uninformative for very small doc sets (n < ~10): with
+    n=1 any nonzero delta is reported significant."""
     _check_comparable(a, b)
     deltas = [db.review_cost - da.review_cost
               for da, db in zip(a.doc_scores, b.doc_scores)]
