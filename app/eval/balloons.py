@@ -85,6 +85,9 @@ def probe_pdf(pdf_path, page_index: int = 0) -> dict:
         balloons = recover_balloons(pdf_path, page_index)
         numbers = sorted(b.number for b in balloons)
         dupes = sorted({n for n in numbers if numbers.count(n) > 1})
+        num_set = set(numbers)
+        # cap: one garbage number (misread digit) must not build a huge list
+        gap_ceiling = min(max(numbers), 5000) if numbers else 0
         return {
             "pdf": str(Path(pdf_path).name),
             "n_drawings": len(page.get_drawings()),
@@ -94,8 +97,7 @@ def probe_pdf(pdf_path, page_index: int = 0) -> dict:
             "n_balloons": len(balloons),
             "numbers": numbers,
             "duplicate_numbers": dupes,
-            "gaps": [n for n in range(1, max(numbers) + 1)
-                     if n not in numbers] if numbers else [],
+            "gaps": [n for n in range(1, gap_ceiling + 1) if n not in num_set],
         }
     finally:
         doc.close()

@@ -42,3 +42,16 @@ def test_probe_reports_encoding_facts(ballooned_pdf):
     assert p["has_images"] is False
     assert p["numbers"] == [1, 2, 12]
     assert p["duplicate_numbers"] == []
+
+
+def test_probe_gaps_capped_against_garbage_numbers(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=600, height=400)
+    for num, (x, y) in [(1, (100, 100)), (999999, (300, 150))]:
+        page.draw_circle(fitz.Point(x, y), 9.0, color=(0, 0, 1), width=1.5)
+        page.insert_text(fitz.Point(x - 8, y + 4), str(num), fontsize=6)
+    path = tmp_path / "garbage.pdf"
+    doc.save(path)
+    doc.close()
+    p = probe_pdf(path)
+    assert len(p["gaps"]) <= 5000
