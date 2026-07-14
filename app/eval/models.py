@@ -8,7 +8,7 @@ Geometry convention: ALL positions/boxes in these models are PDF points
 """
 import hashlib
 import json
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from pydantic import BaseModel, field_validator
 
