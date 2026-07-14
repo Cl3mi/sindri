@@ -25,7 +25,7 @@ CHAR_TYPE_SYNONYMS: Dict[str, str] = {
     "länge": "Distance",
     "ebenheit": "Flatness",
     "flatness": "Flatness",
-    "position": "Position",
+    "position": "Position",  # parser._gdt_type emits this for ⊕/⌖
     "werkstoff": "Material",
     "material": "Material",
     "note": "Note",
@@ -38,14 +38,18 @@ CHAR_TYPE_SYNONYMS: Dict[str, str] = {
 }
 
 
+# Assumes nominals/tolerances < 1000: locale thousands separators ("1.234,56") are not parsed as numbers.
 def _try_decimal(s: str) -> Optional[Decimal]:
     t = s.strip().replace(",", ".").lstrip("+")
     if not t:
         return None
     try:
-        return Decimal(t)
+        d = Decimal(t)
     except InvalidOperation:
         return None
+    # Infinity/NaN parse as Decimal but are data garbage in this domain
+    # (tolerance sheets); treat them as plain strings, never as numbers.
+    return d if d.is_finite() else None
 
 
 def canon_value(v) -> str:

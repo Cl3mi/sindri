@@ -8,6 +8,8 @@ def test_canon_value_normalizes_decimal_comma_and_trailing_zeros():
     assert canon_value(1.2) == "1.2"          # Excel float cell
     assert canon_value(20) == "20"            # Excel int cell
     assert canon_value(" Ø ") == "ø"          # non-numeric: casefolded, stripped
+    assert canon_value("Infinity") == "infinity"   # non-finite -> string path
+    assert canon_value("NaN") == "nan"             # not IEEE NaN semantics
 
 
 def test_values_equal_numeric_and_string_paths():
