@@ -45,7 +45,11 @@ def _cause(pred, gold) -> str:
 
 def score_doc(dump: PredictionDump, gold: GoldDoc,
               weights: ReviewCostWeights, params: MatchParams) -> DocScore:
+    # Regionless rows can't be matched or counted as false detections; today
+    # every VLM and manual row carries target_region, so nothing is dropped.
     preds = [c for c in dump.result.characteristics if c.target_region is not None]
+    # Cand list below is built from `preds`, NOT this dict — so duplicate pos
+    # values reach match_candidates and fail loudly there. Keep it that way.
     pred_by_pos = {c.pos: c for c in preds}
     gold_by_num = {g.balloon: g for g in gold.characteristics}
 
