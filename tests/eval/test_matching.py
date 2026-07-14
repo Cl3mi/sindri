@@ -37,3 +37,13 @@ def test_one_to_one_and_deterministic():
     for _ in range(5):
         pairs = match_candidates(preds, golds, PAGE_DIAG, P)
         assert pairs == [(1, 7, 0.0)]          # lower key wins the tie, always
+
+
+def test_duplicate_keys_rejected_loudly():
+    import pytest
+    dup = [Cand(key=1, center_pt=(0, 0)), Cand(key=1, center_pt=(9, 9))]
+    ok = [Cand(key=7, center_pt=(0, 0))]
+    with pytest.raises(ValueError, match="duplicate pred keys"):
+        match_candidates(dup, ok, PAGE_DIAG, P)
+    with pytest.raises(ValueError, match="duplicate gold keys"):
+        match_candidates(ok, dup, PAGE_DIAG, P)

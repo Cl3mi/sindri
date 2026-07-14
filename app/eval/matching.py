@@ -27,6 +27,10 @@ def match_candidates(preds: List[Cand], golds: List[Cand],
                      ) -> List[Tuple[int, int, float]]:
     """Return [(pred_key, gold_key, distance_frac)], one-to-one, sorted by
     pred_key. distance_frac = center distance / page diagonal."""
+    if len({c.key for c in preds}) != len(preds):
+        raise ValueError("duplicate pred keys — matching would silently drop one")
+    if len({c.key for c in golds}) != len(golds):
+        raise ValueError("duplicate gold keys — matching would silently drop one")
     scored = []
     for p in preds:
         for g in golds:
