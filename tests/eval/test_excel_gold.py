@@ -51,3 +51,13 @@ def test_dump_headers_reports_detected_row(tmp_path):
     assert info["header_row"] == 1
     assert "Merkmal" in info["headers"]
     assert info["n_rows"] == 1
+
+
+def test_dump_headers_reports_duplicate_pos(tmp_path):
+    path = _sheet(tmp_path, ["Pos.", "Merkmal", "Nennmaß", "O-TOL", "U-TOL"],
+                  [[1, "Diameter", "20", "", ""],
+                   [1, "Distance", "7", "", ""],
+                   [2, "Radius", "2", "", ""]])
+    info = dump_headers(path)
+    assert info["duplicate_pos"] == [1]
+    assert info["n_rows"] == 2

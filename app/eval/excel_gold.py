@@ -86,6 +86,16 @@ def dump_headers(path) -> dict:
     try:
         header_row, cols = _find_header(ws)
         rows = read_gold_excel(path)
+        counts: Dict[int, int] = {}
+        for row in range(header_row + 1, ws.max_row + 1):
+            pos_v = ws.cell(row, cols["pos"]).value
+            if pos_v is None or not str(pos_v).strip():
+                continue
+            try:
+                balloon = int(float(str(pos_v).replace(",", ".")))
+            except ValueError:
+                continue
+            counts[balloon] = counts.get(balloon, 0) + 1
         return {
             "file": str(path),
             "sheet": ws.title,
@@ -95,6 +105,7 @@ def dump_headers(path) -> dict:
                         if ws.cell(header_row, c).value is not None],
             "mapped_fields": sorted(cols),
             "n_rows": len(rows),
+            "duplicate_pos": sorted(n for n, c in counts.items() if c > 1),
         }
     except ValueError as e:
         return {"file": str(path), "sheet": ws.title, "error": str(e)}
