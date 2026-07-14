@@ -13,7 +13,10 @@ from app.eval.models import GoldCharacteristic, GoldDoc
 
 def build_gold_doc(pdf_path, excel_path, doc_id: str,
                    is_variant: bool = False, page_index: int = 0) -> GoldDoc:
-    balloons = {b.number: b for b in recover_balloons(pdf_path, page_index)}
+    recovered = recover_balloons(pdf_path, page_index)
+    nums = [b.number for b in recovered]
+    duplicate_balloons = sorted({n for n in nums if nums.count(n) > 1})
+    balloons = {b.number: b for b in recovered}
     rows = read_gold_excel(excel_path)
 
     doc = fitz.open(pdf_path)
@@ -45,5 +48,6 @@ def build_gold_doc(pdf_path, excel_path, doc_id: str,
             "pdf_only": sorted(set(balloons) - set(rows)),
             "excel_only": sorted(set(rows) - set(balloons)),
             "join_rate": (len(joined) / total) if total else 0.0,
+            "duplicate_balloons": duplicate_balloons,
         },
     )

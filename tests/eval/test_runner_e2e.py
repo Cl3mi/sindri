@@ -2,8 +2,10 @@
 hand-perturbed prediction set via CLI -> compare a run against itself."""
 import json
 
+import pytest
+
 from app.eval.models import (GoldCharacteristic, GoldDoc, PredictionDump,
-                             RunConfig)
+                             RunConfig, ReviewCostWeights)
 from app.eval.dump import save_dump
 from app.eval.runner import main, predict_one
 from app.eval.synthetic import make_synthetic_doc
@@ -106,3 +108,63 @@ def test_predict_one_builds_dump_from_stub_backend(tmp_path):
     assert dump.scale == 300 / 72.0
     assert round(dump.page_rect[2]) == 1191
     assert len(dump.result.characteristics) >= 1
+
+
+def test_score_with_no_gold_dump_overlap_exits_1(tmp_path, capsys):
+    pdfs, excel = _setup_corpus(tmp_path)
+    gold_dir = tmp_path / "gold"
+    assert main(["ingest", "--pdfs", str(pdfs), "--excel", str(excel),
+                 "--out", str(gold_dir)]) == 0
+    empty_run_dir = tmp_path / "runs" / "empty"
+    empty_run_dir.mkdir(parents=True)
+    report_path = tmp_path / "empty.report.json"
+    rc = main(["score", "--run", str(empty_run_dir), "--gold", str(gold_dir),
+              "--name", "empty", "--out", str(report_path)])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "ERROR: no documents scored" in err
+
+
+def test_score_mixed_configs_raises(tmp_path):
+    pdfs, excel = _setup_corpus(tmp_path)
+    gold_dir, run_dir = tmp_path / "gold", tmp_path / "runs" / "mixed"
+    assert main(["ingest", "--pdfs", str(pdfs), "--excel", str(excel),
+                 "--out", str(gold_dir)]) == 0
+    for path in sorted(gold_dir.glob("*.gold.json")):
+        gold = GoldDoc.model_validate_json(path.read_text())
+        dump = _perfect_dump(gold.doc_id, gold)
+        if gold.doc_id == "SYNB":
+            dump = dump.model_copy(
+                update={"config": RunConfig(model_id="other-model")})
+        save_dump(dump, run_dir)
+    report_path = tmp_path / "mixed.report.json"
+    with pytest.raises(ValueError, match="mixed configs"):
+        main(["score", "--run", str(run_dir), "--gold", str(gold_dir),
+             "--name", "mixed", "--out", str(report_path)])
+
+
+def test_compare_incomparable_runs_exits_1(tmp_path, capsys):
+    pdfs, excel = _setup_corpus(tmp_path)
+    gold_dir, run_dir = tmp_path / "gold", tmp_path / "runs" / "base"
+    assert main(["ingest", "--pdfs", str(pdfs), "--excel", str(excel),
+                 "--out", str(gold_dir)]) == 0
+    for path in sorted(gold_dir.glob("*.gold.json")):
+        gold = GoldDoc.model_validate_json(path.read_text())
+        save_dump(_perfect_dump(gold.doc_id, gold), run_dir)
+
+    weights_path = tmp_path / "weights.json"
+    weights_path.write_text(ReviewCostWeights(miss=99).model_dump_json())
+
+    report_a = tmp_path / "a.report.json"
+    report_b = tmp_path / "b.report.json"
+    assert main(["score", "--run", str(run_dir), "--gold", str(gold_dir),
+                 "--name", "a", "--out", str(report_a)]) == 0
+    assert main(["score", "--run", str(run_dir), "--gold", str(gold_dir),
+                 "--name", "b", "--out", str(report_b),
+                 "--weights", str(weights_path)]) == 0
+
+    cmp_path = tmp_path / "cmp.json"
+    rc = main(["compare", str(report_a), str(report_b), "--out", str(cmp_path)])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "NOT COMPARABLE" in err

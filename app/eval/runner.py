@@ -159,8 +159,22 @@ def _cmd_score(args):
     if missing:
         print(f"WARNING: dumps without gold (excluded): {missing}",
               file=sys.stderr)
+    orphan_gold = sorted(set(gold) - set(dumps))
+    if orphan_gold:
+        print(f"WARNING: gold docs without dumps (excluded): {orphan_gold}",
+              file=sys.stderr)
     scores = [score_doc(dumps[d], gold[d], weights, params) for d in doc_ids]
-    config = scores and dumps[doc_ids[0]].config or RunConfig()
+    if len(scores) == 0:
+        print("ERROR: no documents scored (no gold/dump overlap in selected "
+              "split)", file=sys.stderr)
+        return 1
+    configs = {(dumps[d].config.model_id, dumps[d].config.dpi,
+               dumps[d].config.git_sha, dumps[d].config.prompt_sha256)
+              for d in doc_ids}
+    if len(configs) > 1:
+        raise ValueError(f"mixed configs in run dir: {sorted(configs)} — "
+                         f"re-predict the full split with one config")
+    config = dumps[doc_ids[0]].config
     report = aggregate(args.name, config, weights, params, scores,
                        splits_hash=sp_hash, split_used=sp_name)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
@@ -176,7 +190,11 @@ def _cmd_score(args):
 def _cmd_compare(args):
     a = RunReport.model_validate_json(Path(args.report_a).read_text())
     b = RunReport.model_validate_json(Path(args.report_b).read_text())
-    cmp = compare_runs(a, b)
+    try:
+        cmp = compare_runs(a, b)
+    except ValueError as e:
+        print(f"NOT COMPARABLE: {e}", file=sys.stderr)
+        return 1
     out = json.dumps(cmp, indent=1, ensure_ascii=False)
     if args.out:
         Path(args.out).write_text(out, encoding="utf-8")

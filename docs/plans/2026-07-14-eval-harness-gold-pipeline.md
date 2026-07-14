@@ -2381,6 +2381,17 @@ The taxonomy histogram in the baseline report *is* the routing decision from the
 - Dependency chain: 1 → 2 → {3, 5} → 4 → 6 → 7 → 8 → 9 → 10 → 11 → 12 → 13 → 14. Tasks 3 and 5 are independent of each other; everything else is linear.
 - The eval package ships inside the container image (it's under `app/`) but imports the model stack only inside `predict` — the offline/CPU constraint (§8) holds by construction.
 
+## Post-implementation deviations (review fixes, 2026-07-14)
+
+- normalize: non-finite Decimals ("inf"/"NaN") fall through to the string path.
+- balloons: probe_pdf gaps list capped at 5000 against garbage numbers.
+- matching: duplicate pred/gold keys raise ValueError (loud, not silent drop).
+- ingest: provenance surfaces `duplicate_balloons` (same number, two positions).
+- runner score: partial runs warn on gold-without-dumps; zero scored docs exits 1; mixed dump configs raise ValueError.
+- runner compare: incomparable runs print NOT COMPARABLE to stderr and exit 1.
+- report: docstring caveat — bootstrap CI uninformative below ~10 docs.
+- Tests: 45 → 49 (eval suite); plan's "6 tests" note for Task 11 was a typo (5).
+
 
 
 

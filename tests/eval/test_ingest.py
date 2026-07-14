@@ -1,3 +1,5 @@
+import fitz
+
 from app.eval.models import GoldCharacteristic
 from app.eval.synthetic import make_synthetic_doc
 from app.eval.ingest import build_gold_doc
@@ -37,3 +39,18 @@ def test_unjoined_rows_and_balloons_recorded_not_dropped_silently(tmp_path):
     assert gold.provenance["pdf_only"] == []
     assert gold.provenance["join_rate"] < 1.0
     assert {c.balloon for c in gold.characteristics} == {1, 2}
+
+
+def test_duplicate_balloon_numbers_surfaced_in_provenance(tmp_path):
+    pdf, xlsx = make_synthetic_doc(RECORDS, tmp_path, doc_id="SYN3")
+    # drawings repeat balloon "1" at a second position (e.g. a second view)
+    doc = fitz.open(pdf)
+    page = doc[0]
+    x, y = 700.0, 600.0
+    page.draw_circle(fitz.Point(x, y), 9.0, color=(0, 0, 1), width=1.5)
+    page.insert_text(fitz.Point(x - 5, y + 4), "1", fontsize=10, color=(0, 0, 1))
+    doc.saveIncr()
+    doc.close()
+
+    gold = build_gold_doc(pdf, xlsx, doc_id="SYN3")
+    assert gold.provenance["duplicate_balloons"] == [1]
