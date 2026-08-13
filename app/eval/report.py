@@ -37,6 +37,34 @@ def aggregate(run_name: str, config: RunConfig, weights: ReviewCostWeights,
     )
 
 
+def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
+    """Privacy-safe digest of a run: aggregate metrics only, doc ids hashed.
+
+    A RunReport embeds client values — `DocScore.pairs[].field_errors` spells out
+    gold vs predicted (e.g. "nominal: '6,5'!='5,5'"). This function is the only
+    sanctioned way to look at a run: it reads none of that, so the result can be
+    shown to an AI agent, committed, or pasted into a ticket."""
+    worst = sorted(report.doc_scores, key=lambda d: (-d.review_cost, d.doc_id))
+    return {
+        "run": report.run_name,
+        "split": report.split_used,
+        "splits_hash": report.splits_hash,
+        "n_docs": len(report.doc_scores),
+        "n_gold": sum(d.n_gold for d in report.doc_scores),
+        "n_pred": sum(d.n_pred for d in report.doc_scores),
+        "mean_review_cost": report.mean_review_cost,
+        "micro_recall": report.micro_recall,
+        "micro_precision": report.micro_precision,
+        "escaped_rate": report.escaped_rate,
+        "taxonomy": dict(report.taxonomy),
+        "config": report.config.model_dump(),
+        "weights": report.weights.model_dump(),
+        "match_params": report.match_params.model_dump(),
+        "worst_docs": [{"doc": anonymizer(d.doc_id),
+                        "review_cost": d.review_cost} for d in worst[:top]],
+    }
+
+
 def _check_comparable(a: RunReport, b: RunReport) -> None:
     ids_a = [d.doc_id for d in a.doc_scores]
     ids_b = [d.doc_id for d in b.doc_scores]

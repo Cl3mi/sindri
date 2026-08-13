@@ -53,6 +53,48 @@ def test_regression_guard_flags_recall_drop_on_improved_cost():
     assert any("recall" in w for w in cmp["warnings"])
 
 
+def _report_with_client_values():
+    """A report shaped like a real one: pairs carry the actual gold/predicted
+    values in field_errors, and doc_ids are client part numbers."""
+    from app.eval.models import MatchedPair
+    pair = MatchedPair(gold_balloon=2, pred_pos=2, distance_frac=0.001,
+                       fields_correct=False,
+                       field_errors=["nominal: '6,5'!='5,5'"],
+                       flagged=False, taxonomy="escaped_error",
+                       notes=["cause:misread"])
+    d1 = DocScore(doc_id="T1025300_B", gold_hash="g" * 16, n_gold=10, n_pred=10,
+                  pairs=[pair], counts={"correct": 9, "escaped_error": 1},
+                  review_cost=5.0, recall=1.0, precision=1.0, escaped_rate=0.1)
+    d2 = DocScore(doc_id="T1025206_D", gold_hash="g" * 16, n_gold=10, n_pred=10,
+                  counts={"correct": 10}, review_cost=1.0, recall=1.0,
+                  precision=1.0, escaped_rate=0.0)
+    return aggregate("baseline", RunConfig(model_id="stub"), ReviewCostWeights(),
+                     MatchParams(), [d1, d2])
+
+
+def test_summarize_is_value_free_and_anonymized():
+    import json
+    from app.eval.anon import Anonymizer
+    from app.eval.report import summarize
+    s = summarize(_report_with_client_values(), Anonymizer("salt"))
+    blob = json.dumps(s, ensure_ascii=False)
+    for leak in ("field_errors", "raw_text", "6,5", "5,5",
+                 "T1025300_B", "T1025206_D"):
+        assert leak not in blob, f"summary leaked {leak!r}"
+    assert s["n_docs"] == 2
+    assert s["taxonomy"]["escaped_error"] == 1
+    assert s["mean_review_cost"] == 3.0
+    assert s["config"]["model_id"] == "stub"
+
+
+def test_summarize_ranks_worst_docs_by_hashed_id_for_triage():
+    from app.eval.anon import Anonymizer
+    from app.eval.report import summarize
+    a = Anonymizer("salt")
+    s = summarize(_report_with_client_values(), a)
+    assert s["worst_docs"][0] == {"doc": a("T1025300_B"), "review_cost": 5.0}
+
+
 def test_guards_refuse_incomparable_runs():
     a = _run("a", [10.0, 12.0])
     b = _run("b", [10.0])                                   # different doc set

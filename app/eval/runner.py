@@ -24,13 +24,14 @@ from pathlib import Path
 
 import fitz
 
+from app.eval.anon import Anonymizer
 from app.eval.balloons import probe_pdf
 from app.eval.dump import load_dump, save_dump
 from app.eval.excel_gold import dump_headers
 from app.eval.ingest import build_gold_doc
 from app.eval.models import (GoldDoc, MatchParams, PredictionDump,
                              ReviewCostWeights, RunConfig, RunReport)
-from app.eval.report import aggregate, compare_runs
+from app.eval.report import aggregate, compare_runs, summarize
 from app.eval.score import score_doc
 from app.eval.splits import load_splits, make_splits, save_splits, splits_hash
 
@@ -76,15 +77,27 @@ def predict_one(pdf_path, doc_id: str, dpi: int, backend,
                           result=result)
 
 
+def _anon(args) -> Anonymizer:
+    """Every human-readable line goes through this. Default ON: client part
+    numbers must not reach an AI context (--show-ids is for a human terminal)."""
+    return Anonymizer(enabled=not getattr(args, "show_ids", False))
+
+
 def _cmd_probe(args):
+    anon = _anon(args)
     for pdf in sorted(Path(args.dir).glob("*.pdf")):
-        print(json.dumps(probe_pdf(pdf), ensure_ascii=False))
+        rec = probe_pdf(pdf)
+        rec.pop("pdf", None)
+        print(json.dumps({"doc": anon(pdf.stem), **rec}, ensure_ascii=False))
     return 0
 
 
 def _cmd_headers(args):
+    anon = _anon(args)
     for xlsx in sorted(Path(args.dir).glob("*.xlsx")):
-        print(json.dumps(dump_headers(xlsx), ensure_ascii=False))
+        info = dump_headers(xlsx)
+        info.pop("file", None)
+        print(json.dumps({"doc": anon(xlsx.stem), **info}, ensure_ascii=False))
     return 0
 
 
@@ -94,21 +107,28 @@ def _cmd_ingest(args):
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     variants = set(Path(args.variants).read_text().split()) if args.variants else set()
+    anon = _anon(args)
     unpaired = sorted(set(pdfs) ^ set(excels))
     if unpaired:
-        print(f"WARNING: unpaired stems (skipped): {unpaired}", file=sys.stderr)
+        print(f"WARNING: unpaired stems (skipped): {[anon(s) for s in unpaired]}",
+              file=sys.stderr)
     low_join = []
-    for stem in sorted(set(pdfs) & set(excels)):
+    paired = sorted(set(pdfs) & set(excels))
+    for stem in paired:
         gold = build_gold_doc(pdfs[stem], excels[stem], doc_id=stem,
                               is_variant=stem in variants)
         (out / f"{stem}.gold.json").write_text(gold.model_dump_json(indent=1),
                                                encoding="utf-8")
         if gold.provenance["join_rate"] < 0.95:
-            low_join.append((stem, gold.provenance["join_rate"]))
+            low_join.append((anon(stem), gold.provenance["join_rate"]))
+    # Local-only trace file so a human can map a hash back to a drawing. Never
+    # committed (gitignored + blocked by .git/hooks/pre-commit).
+    (out / "doc_id_map.json").write_text(
+        json.dumps(anon.mapping(paired), indent=1), encoding="utf-8")
     if low_join:
         print(f"ATTENTION: join_rate < 0.95 (inspect manually): {low_join}",
               file=sys.stderr)
-    print(f"ingested {len(set(pdfs) & set(excels))} docs -> {out}")
+    print(f"ingested {len(paired)} docs -> {out}")
     return 0
 
 
@@ -137,8 +157,9 @@ def _cmd_predict(args):
         git_sha=_git_sha(), prompt_sha256=_prompt_sha256())
     pdfs = {p.stem: p for p in Path(args.pdfs).glob("*.pdf")}
     doc_ids, _, _ = _select_docs(pdfs, args.splits, args.split)
+    anon = _anon(args)
     for i, doc_id in enumerate(doc_ids, 1):
-        print(f"[{i}/{len(doc_ids)}] {doc_id}", file=sys.stderr)
+        print(f"[{i}/{len(doc_ids)}] {anon(doc_id)}", file=sys.stderr)
         dump = predict_one(pdfs[doc_id], doc_id, args.dpi, backend, config,
                            Path(args.out) / "_work")
         save_dump(dump, args.out)
@@ -155,14 +176,15 @@ def _cmd_score(args):
     params = MatchParams()
     doc_ids, sp_hash, sp_name = _select_docs(
         set(gold) & set(dumps), args.splits, args.split)
+    anon = _anon(args)
     missing = sorted((set(gold) & set(dumps)) ^ set(dumps))
     if missing:
-        print(f"WARNING: dumps without gold (excluded): {missing}",
-              file=sys.stderr)
+        print(f"WARNING: dumps without gold (excluded): "
+              f"{[anon(d) for d in missing]}", file=sys.stderr)
     orphan_gold = sorted(set(gold) - set(dumps))
     if orphan_gold:
-        print(f"WARNING: gold docs without dumps (excluded): {orphan_gold}",
-              file=sys.stderr)
+        print(f"WARNING: gold docs without dumps (excluded): "
+              f"{[anon(d) for d in orphan_gold]}", file=sys.stderr)
     scores = [score_doc(dumps[d], gold[d], weights, params) for d in doc_ids]
     if len(scores) == 0:
         print("ERROR: no documents scored (no gold/dump overlap in selected "
@@ -195,6 +217,8 @@ def _cmd_compare(args):
     except ValueError as e:
         print(f"NOT COMPARABLE: {e}", file=sys.stderr)
         return 1
+    anon = _anon(args)
+    cmp["per_doc_deltas"] = {anon(k): v for k, v in cmp["per_doc_deltas"].items()}
     out = json.dumps(cmp, indent=1, ensure_ascii=False)
     if args.out:
         Path(args.out).write_text(out, encoding="utf-8")
@@ -204,37 +228,63 @@ def _cmd_compare(args):
     return 0
 
 
+def _cmd_summary(args):
+    """The ONLY sanctioned way to look at a run: aggregate metrics, hashed ids,
+    no client values. Safe to show an AI agent, commit, or paste in a ticket."""
+    report = RunReport.model_validate_json(
+        Path(args.report).read_text(encoding="utf-8"))
+    digest = summarize(report, _anon(args))
+    out = json.dumps(digest, indent=1, ensure_ascii=False)
+    if args.out:
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.out).write_text(out, encoding="utf-8")
+    print(out)
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m app.eval.runner")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("probe"); p.add_argument("dir"); p.set_defaults(fn=_cmd_probe)
-    p = sub.add_parser("headers"); p.add_argument("dir"); p.set_defaults(fn=_cmd_headers)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--show-ids", action="store_true",
+                        help="print real part numbers instead of salted "
+                             "hashes; for a human terminal only, never for an "
+                             "AI agent")
 
-    p = sub.add_parser("ingest")
+    p = sub.add_parser("probe", parents=[common])
+    p.add_argument("dir"); p.set_defaults(fn=_cmd_probe)
+    p = sub.add_parser("headers", parents=[common])
+    p.add_argument("dir"); p.set_defaults(fn=_cmd_headers)
+
+    p = sub.add_parser("summary", parents=[common])
+    p.add_argument("report"); p.add_argument("--out", default=None)
+    p.set_defaults(fn=_cmd_summary)
+
+    p = sub.add_parser("ingest", parents=[common])
     p.add_argument("--pdfs", required=True); p.add_argument("--excel", required=True)
     p.add_argument("--out", required=True); p.add_argument("--variants", default=None)
     p.set_defaults(fn=_cmd_ingest)
 
-    p = sub.add_parser("split")
+    p = sub.add_parser("split", parents=[common])
     p.add_argument("--gold", required=True); p.add_argument("--out", required=True)
     p.add_argument("--seed", type=int, default=13)
     p.set_defaults(fn=_cmd_split)
 
-    p = sub.add_parser("predict")
+    p = sub.add_parser("predict", parents=[common])
     p.add_argument("--pdfs", required=True); p.add_argument("--out", required=True)
     p.add_argument("--dpi", type=int, default=300)
     p.add_argument("--splits", default=None); p.add_argument("--split", default="dev")
     p.set_defaults(fn=_cmd_predict)
 
-    p = sub.add_parser("score")
+    p = sub.add_parser("score", parents=[common])
     p.add_argument("--run", required=True); p.add_argument("--gold", required=True)
     p.add_argument("--name", required=True); p.add_argument("--out", required=True)
     p.add_argument("--splits", default=None); p.add_argument("--split", default="dev")
     p.add_argument("--weights", default=None)
     p.set_defaults(fn=_cmd_score)
 
-    p = sub.add_parser("compare")
+    p = sub.add_parser("compare", parents=[common])
     p.add_argument("report_a"); p.add_argument("report_b")
     p.add_argument("--out", default=None)
     p.set_defaults(fn=_cmd_compare)

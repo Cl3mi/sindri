@@ -95,6 +95,53 @@ def test_probe_and_headers_inspection_commands(tmp_path, capsys):
     assert all(l["header_row"] == 1 for l in lines)
 
 
+def test_probe_and_headers_anonymize_doc_ids_by_default(tmp_path, capsys,
+                                                        monkeypatch):
+    monkeypatch.setenv("SINDRI_DOC_SALT", "test-salt")
+    pdfs, excel = _setup_corpus(tmp_path)
+    assert main(["probe", str(pdfs)]) == 0
+    out = capsys.readouterr().out
+    assert "SYNA" not in out and "SYNB" not in out
+    rows = [json.loads(line) for line in out.strip().splitlines()]
+    assert all(len(r["doc"]) == 8 for r in rows)
+
+    assert main(["headers", str(excel)]) == 0
+    out = capsys.readouterr().out
+    assert "SYNA" not in out and "SYNB" not in out
+
+
+def test_show_ids_opts_back_into_real_part_numbers(tmp_path, capsys,
+                                                   monkeypatch):
+    monkeypatch.setenv("SINDRI_DOC_SALT", "test-salt")
+    pdfs, _ = _setup_corpus(tmp_path)
+    assert main(["probe", str(pdfs), "--show-ids"]) == 0
+    assert "SYNA" in capsys.readouterr().out
+
+
+def test_summary_command_emits_value_free_digest(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("SINDRI_DOC_SALT", "test-salt")
+    pdfs, excel = _setup_corpus(tmp_path)
+    gold_dir, run_dir = tmp_path / "gold", tmp_path / "runs" / "base"
+    assert main(["ingest", "--pdfs", str(pdfs), "--excel", str(excel),
+                 "--out", str(gold_dir)]) == 0
+    for path in sorted(gold_dir.glob("*.gold.json")):
+        gold = GoldDoc.model_validate_json(path.read_text())
+        save_dump(_perfect_dump(gold.doc_id, gold,
+                                drop_last=(gold.doc_id == "SYNB")), run_dir)
+    report_path = tmp_path / "base.report.json"
+    assert main(["score", "--run", str(run_dir), "--gold", str(gold_dir),
+                 "--name", "base", "--out", str(report_path)]) == 0
+    capsys.readouterr()
+
+    assert main(["summary", str(report_path)]) == 0
+    out = capsys.readouterr().out
+    assert "SYNA" not in out and "SYNB" not in out
+    digest = json.loads(out)
+    assert digest["n_docs"] == 2
+    assert digest["taxonomy"]["missed"] == 1
+    assert len(digest["worst_docs"][0]["doc"]) == 8
+
+
 def test_predict_one_builds_dump_from_stub_backend(tmp_path):
     from tests.conftest import StubVLMBackend
     from app.pipeline.detect import Detection
