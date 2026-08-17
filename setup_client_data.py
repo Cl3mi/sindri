@@ -67,7 +67,7 @@ def _mean_balloons(drawings: dict, sample: int) -> float:
     return total / len(picks)
 
 
-def detect_roles(incoming: Path, sample: int = 5) -> dict:
+def detect_roles(incoming: Path, sample: int = 5, drawing_order=None) -> dict:
     """Identify the three delivered folders by CONTENT, never by name.
 
     Folder names cannot appear in an agent command (the client-data guard
@@ -86,8 +86,25 @@ def detect_roles(incoming: Path, sample: int = 5) -> dict:
             f"expected 1 spreadsheet folder and 2 drawing folders under "
             f"{incoming}, found {len(sheet_dirs)} and {len(draw_dirs)} — "
             f"pass --originals/--stamped/--excel explicitly instead")
-    ranked = sorted(draw_dirs,
-                    key=lambda d: _mean_balloons(collect(d, DRAWING_EXT), sample))
+    if drawing_order:
+        if sorted(drawing_order) != ["originals", "stamped"]:
+            raise SystemExit("--drawing-order must list exactly "
+                             "'originals' and 'stamped'")
+        by_role = dict(zip(drawing_order, draw_dirs))
+        return {"originals": by_role["originals"],
+                "stamped": by_role["stamped"], "excel": sheet_dirs[0]}
+
+    scored = [(_mean_balloons(collect(d, DRAWING_EXT), sample), d)
+              for d in draw_dirs]
+    if scored[0][0] == scored[1][0]:
+        # Guessing here could point `predict` at the BALLOONED drawings, which
+        # would silently invalidate every downstream number.
+        raise SystemExit(
+            f"cannot tell the drawing folders apart: both yield "
+            f"{scored[0][0]:.1f} balloons/page. Re-run with "
+            f"--drawing-order stamped,originals (or originals,stamped) to "
+            f"assign the alphabetically-sorted folders explicitly.")
+    ranked = [d for _, d in sorted(scored, key=lambda t: t[0])]
     return {"originals": ranked[0], "stamped": ranked[-1],
             "excel": sheet_dirs[0]}
 
@@ -102,6 +119,10 @@ def main(argv=None) -> int:
     ap.add_argument("--originals", default=None, help="clean drawings (pipeline input)")
     ap.add_argument("--stamped", default=None, help="ballooned drawings (gold positions)")
     ap.add_argument("--excel", default=None, help="inspection sheets (gold values)")
+    ap.add_argument("--drawing-order", default=None,
+                    help="comma-separated roles for the alphabetically-sorted "
+                         "drawing folders, e.g. 'stamped,originals'; use when "
+                         "balloon detection cannot discriminate")
     ap.add_argument("--sample", type=int, default=5,
                     help="drawings sampled per folder during role detection")
     ap.add_argument("--show-names", action="store_true",
@@ -110,7 +131,9 @@ def main(argv=None) -> int:
 
     root = Path(args.root).expanduser().resolve()
     if args.incoming:
-        roles = detect_roles(Path(args.incoming).expanduser(), sample=args.sample)
+        order = args.drawing_order.split(",") if args.drawing_order else None
+        roles = detect_roles(Path(args.incoming).expanduser(),
+                             sample=args.sample, drawing_order=order)
     elif args.originals and args.stamped and args.excel:
         roles = {"originals": Path(args.originals).expanduser(),
                  "stamped": Path(args.stamped).expanduser(),

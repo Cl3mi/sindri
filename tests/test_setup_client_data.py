@@ -54,6 +54,32 @@ def test_detects_roles_by_content_not_by_folder_name(tmp_path):
     assert roles["originals"] == expected["originals"]
 
 
+def test_refuses_to_guess_when_balloons_cannot_discriminate(tmp_path):
+    """If neither folder yields balloons, a silent guess could point `predict`
+    at the BALLOONED drawings and invalidate the entire baseline. Refuse."""
+    import pytest
+    incoming = tmp_path / "incoming"
+    for name in ("aaa", "bbb"):
+        (incoming / name).mkdir(parents=True)
+        for i in range(2):
+            _plain_drawing(incoming / name / f"T{i}.pdf")
+    sheets = incoming / "ccc"
+    sheets.mkdir(parents=True)
+    make_synthetic_doc(RECORDS, tmp_path / "raw", doc_id="T0")
+    (tmp_path / "raw" / "T0.xlsx").rename(sheets / "T0.xlsx")
+
+    with pytest.raises(SystemExit, match="cannot tell the drawing folders"):
+        detect_roles(incoming)
+
+
+def test_drawing_order_overrides_detection_without_naming_folders(tmp_path):
+    incoming, expected = _build_delivery(tmp_path)
+    # sorted drawing dirs are [aaa (ballooned), bbb (clean)]
+    roles = detect_roles(incoming, drawing_order=["stamped", "originals"])
+    assert roles["stamped"] == expected["stamped"]
+    assert roles["originals"] == expected["originals"]
+
+
 def test_detection_is_order_independent(tmp_path):
     """Ballooned folder sorts first here; it must still be found by balloons."""
     incoming, expected = _build_delivery(tmp_path)
