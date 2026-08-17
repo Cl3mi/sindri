@@ -221,6 +221,59 @@ def test_read_title_block_survives_backend_error():
     assert read_title_block(img, region, Boom()) == []
 
 
+class _PatchFactorBackend:
+    """Qwen2.5-VL rejects a crop with either side under its 28 px patch factor,
+    exactly as the baseline run's log showed:
+    ValueError('height:22 or width:190 must be larger than factor:28')."""
+
+    FACTOR = 28
+
+    def __init__(self):
+        self.sizes = []
+
+    def read_title_cell(self, image):
+        self.sizes.append(image.size)
+        w, h = image.size
+        if w < self.FACTOR or h < self.FACTOR:
+            raise ValueError(f"height:{h} or width:{w} must be larger than "
+                             f"factor:{self.FACTOR}")
+        return OcrResult(text='{"label": "Sheet / Blatt", "value": "1/1"}',
+                         confidence=0.9)
+
+
+def test_read_title_block_upscales_cells_below_the_models_patch_factor():
+    """Short cells were failing the model's size check and being dropped in
+    silence, so title-block fields went missing on every drawing."""
+    from PIL import Image
+    from app.pipeline.title_block import TitleBlockRegion
+
+    img = Image.new("RGB", (400, 300), "white")
+    region = TitleBlockRegion(outer_box=(10, 10, 200, 32),
+                              cells=[(10, 10, 200, 32)])      # 190 x 22 px
+    backend = _PatchFactorBackend()
+
+    fields = read_title_block(img, region, backend)
+
+    assert [f.value for f in fields] == ["1/1"]
+    assert min(backend.sizes[0]) >= _PatchFactorBackend.FACTOR
+
+
+def test_read_title_block_leaves_comfortably_sized_cells_alone():
+    """Upscaling is a rescue for small cells, not a blanket resample: a cell the
+    model can already read must reach it untouched."""
+    from PIL import Image
+    from app.pipeline.title_block import TitleBlockRegion
+
+    img = Image.new("RGB", (400, 300), "white")
+    region = TitleBlockRegion(outer_box=(10, 10, 200, 90),
+                              cells=[(10, 10, 200, 90)])      # 190 x 80 px
+    backend = _PatchFactorBackend()
+
+    read_title_block(img, region, backend)
+
+    assert backend.sizes == [(190, 80)]
+
+
 from app.pipeline.detect import Detection
 from app.pipeline.title_block import loose_text
 
