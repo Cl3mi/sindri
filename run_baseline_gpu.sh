@@ -28,6 +28,16 @@ GPU="${GPU:-nvidia.com/gpu=all}"
 BRANCH="${BRANCH:-worktree-eval-harness}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
+# Same resolution as sync_client_data.sh, and for the same reason: a tilde in a
+# quoted ssh argument is not expanded remotely.
+RROOT=$(ssh -o BatchMode=yes "$HOST" "eval echo $RROOT") || {
+    echo "cannot resolve remote root on $HOST" >&2; exit 1; }
+case "$RROOT" in
+    /*) ;;
+    *) echo "remote root did not resolve to an absolute path: $RROOT" >&2; exit 1 ;;
+esac
+echo "remote root resolves to: $RROOT"
+
 echo "== 1/5 push drawings =="
 "$HERE/sync_client_data.sh" push "$HOST" "$RROOT"
 
@@ -51,7 +61,7 @@ ssh -o BatchMode=yes "$HOST" "
   RUNCMD=(podman run --rm --device '$GPU'
     -e OCR_BACKEND=vlm -e VLM_MODEL_ID='$MODEL'
     -v sindri-models:/models
-    -v \"\$(eval echo $RROOT)\":/data:Z
+    -v '$RROOT':/data:Z
     sindri-gpu
     python -m app.eval.runner predict
       --pdfs /data/corpus/originals --out /data/runs/$RUN

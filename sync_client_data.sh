@@ -21,6 +21,17 @@ usage() { sed -n '2,16p' "$0" >&2; exit 2; }
 [ $# -ge 3 ] || usage
 ACTION="$1"; HOST="$2"; RROOT="$3"
 
+# Resolve the remote root to an absolute path ONCE. A tilde inside a quoted ssh
+# argument is not expanded by the remote shell, so `mkdir -p '~/x'` silently
+# creates a directory literally named "~" — while rsync DOES expand it and then
+# fails looking for the real path. Resolving here removes the whole class of bug.
+RROOT=$(ssh -o BatchMode=yes "$HOST" "eval echo $RROOT") || {
+    echo "cannot resolve remote root on $HOST" >&2; exit 1; }
+case "$RROOT" in
+    /*) ;;
+    *) echo "remote root did not resolve to an absolute path: $RROOT" >&2; exit 1 ;;
+esac
+
 case "$ACTION" in
 push)
     src_pdfs="$LOCAL_ROOT/corpus/originals"
