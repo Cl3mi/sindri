@@ -390,8 +390,19 @@ def _cmd_split(args):
     variants = [d for d, g in gold.items() if g.is_variant]
     splits = make_splits(sorted(gold), variants, seed=args.seed)
     path = save_splits(splits, args.out)
-    print(f"splits -> {path} (train={len(splits['train'])} "
-          f"dev={len(splits['dev'])} test={len(splits['test'])})")
+    # The hash is the committable proof that a split is frozen: every report
+    # embeds it, and compare refuses runs whose splits differ. The file itself
+    # lists part numbers and stays outside the repo.
+    print(json.dumps({
+        "written_to": str(path),
+        "splits_hash": splits_hash(splits),
+        "seed": splits["seed"],
+        "train": len(splits["train"]),
+        "dev": len(splits["dev"]),
+        "test": len(splits["test"]),
+        "variants": len(splits["variants"]),
+        "variants_all_in_test": set(splits["variants"]) <= set(splits["test"]),
+    }, indent=1))
     return 0
 
 
