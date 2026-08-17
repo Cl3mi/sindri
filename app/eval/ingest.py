@@ -8,7 +8,40 @@ import fitz
 
 from app.eval.balloons import recover_balloons
 from app.eval.excel_gold import read_gold_excel
+from app.eval.normalize import char_type_kind
 from app.eval.models import GoldCharacteristic, GoldDoc
+
+
+def _kind_histogram(rows) -> dict:
+    out = {}
+    for row in rows.values():
+        k = char_type_kind(row.get("char_type"))
+        out[k] = out.get(k, 0) + 1
+    return out
+
+
+def _unlocated_kind_histogram(rows, balloons, page_index) -> dict:
+    """Position coverage that matters: a verbal requirement never had a balloon,
+    so counting it as unlocated understates how well the DIMENSIONS are covered."""
+    out = {}
+    for number, row in rows.items():
+        if number in balloons and balloons[number].page == page_index:
+            continue
+        k = char_type_kind(row.get("char_type"))
+        out[k] = out.get(k, 0) + 1
+    return out
+
+
+def _char_type_histogram(rows, balloons, page_index) -> dict:
+    out = {}
+    for number, row in rows.items():
+        located = (number in balloons
+                   and balloons[number].page == page_index)
+        if located:
+            continue
+        label = (row.get("char_type") or "").strip() or "(blank)"
+        out[label] = out.get(label, 0) + 1
+    return out
 
 
 def build_gold_doc(pdf_path, excel_path, doc_id: str,
@@ -65,6 +98,7 @@ def build_gold_doc(pdf_path, excel_path, doc_id: str,
                  upper_tol=rows[n]["upper_tol"],
                  lower_tol=rows[n]["lower_tol"],
                  raw=rows[n].get("raw", ""),
+                 kind=char_type_kind(rows[n]["char_type"]),
              ) for n in sorted(rows)]
     total = len(set(balloons) | set(rows))
     return GoldDoc(
@@ -86,6 +120,14 @@ def build_gold_doc(pdf_path, excel_path, doc_id: str,
             "on_later_pages": sum(1 for n in rows if n in balloons
                                   and balloons[n].page != page_index),
             "recovered_by_cv": recovered_by_cv,
+            # Are unlocated rows a detection failure, or characteristics that
+            # were never ballooned (material, general notes)? char_type is a
+            # shared category label, so this is safe to aggregate.
+            "kinds": _kind_histogram(rows),
+            "unlocated_kinds": _unlocated_kind_histogram(
+                rows, balloons, page_index),
+            "unlocated_char_types": _char_type_histogram(
+                rows, balloons, page_index),
             "duplicate_balloons": duplicate_balloons,
         },
     )

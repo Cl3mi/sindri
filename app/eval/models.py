@@ -39,6 +39,10 @@ class GoldCharacteristic(BaseModel):
     upper_tol: str = ""
     lower_tol: str = ""
     raw: str = ""                               # optional free-text from Excel
+    # "dimension" (measurable, ballooned) or "note" (verbal requirement, never
+    # ballooned). ~14% of the delivered rows are notes; scoring them as missed
+    # callouts would let note text dominate the review-cost metric.
+    kind: str = "dimension"
 
 
 class GoldDoc(_Versioned):
@@ -99,6 +103,11 @@ class MatchParams(BaseModel):
     # different modes refuse to compare.
     mode: str = "geometry"
     value_sim_min: float = 0.6        # value mode: minimum similarity to pair
+    # Which gold rows the headline metric covers. Verbal requirements were
+    # never ballooned, so charging them as missed callouts would let note text
+    # dominate. Part of the comparability guard — a run scored over a different
+    # scope refuses to compare.
+    score_kinds: Tuple[str, ...] = ("dimension",)
 
 
 class MatchedPair(BaseModel):
@@ -122,6 +131,7 @@ class DocScore(_Versioned):
     missed_balloons: List[int] = []
     false_positions: List[int] = []   # pred.pos of unmatched predictions
     counts: Dict[str, int] = {}       # taxonomy histogram
+    excluded_by_kind: int = 0         # gold rows outside MatchParams.score_kinds
     review_cost: float = 0.0
     recall: float = 0.0
     precision: float = 0.0

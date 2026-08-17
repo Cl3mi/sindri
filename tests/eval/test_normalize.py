@@ -22,6 +22,24 @@ def test_values_equal_numeric_and_string_paths():
     assert values_equal("", None)
 
 
+def test_char_type_kind_separates_measurements_from_verbal_requirements():
+    """The sheets mix dimensional characteristics with verbal requirements that
+    were never ballooned. Scoring the latter as missed callouts would let note
+    text dominate the review-cost metric."""
+    from app.eval.normalize import char_type_kind
+    for dimensional in ("Abstand", "Distance", "Diameter", "Durchmesser",
+                        "Diameter MIN", "Perpendicularity", "Surface shape",
+                        "Sym. 0,05 zu C", "Ebenheit", "Radius"):
+        assert char_type_kind(dimensional) == "dimension", dimensional
+    for verbal in ("STANZGRATSEITE",
+                   "MESSPUNKT FUER SCHICHTDICKE",
+                   "KEINE STREIFENANBINDUNG IN DIESEM BEREICH ZULAESSIG",
+                   "SCHNITTKANTEN BLANK ZULAESSIG",
+                   "BESCHRIFTUNG [NEST-NR.]"):
+        assert char_type_kind(verbal) == "note", verbal
+    assert char_type_kind("") == "unknown"
+
+
 def test_char_type_equal_uses_synonyms_case_insensitively():
     assert char_type_equal("Diameter", "durchmesser")
     assert char_type_equal("Distance", "Maß")

@@ -47,18 +47,25 @@ def score_doc(dump: PredictionDump, gold: GoldDoc,
               weights: ReviewCostWeights, params: MatchParams) -> DocScore:
     # Regionless rows can't be matched or counted as false detections; today
     # every VLM and manual row carries target_region, so nothing is dropped.
+    # Score only the kinds in scope. A verbal requirement was never ballooned,
+    # so it cannot be "missed" by a ballooning pipeline; counting it would swamp
+    # the metric. The excluded count is recorded, never hidden.
+    scored_gold = [g for g in gold.characteristics
+                   if getattr(g, "kind", "dimension") in params.score_kinds]
+    excluded_by_kind = len(gold.characteristics) - len(scored_gold)
+
     preds = [c for c in dump.result.characteristics if c.target_region is not None]
     # Cand list below is built from `preds`, NOT this dict — so duplicate pos
     # values reach match_candidates and fail loudly there. Keep it that way.
     pred_by_pos = {c.pos: c for c in preds}
-    gold_by_num = {g.balloon: g for g in gold.characteristics}
+    gold_by_num = {g.balloon: g for g in scored_gold}
 
     diag = math.dist(gold.page_rect[:2], gold.page_rect[2:])
     pairs_raw = match_candidates(
         [Cand(key=c.pos, center_pt=_center_pt(c, dump), nominal=c.nominal)
          for c in preds],
         [Cand(key=g.balloon, center_pt=g.position_pt, nominal=g.nominal)
-         for g in gold.characteristics],
+         for g in scored_gold],
         diag, params)
 
     pairs, counts = [], {}
@@ -102,6 +109,7 @@ def score_doc(dump: PredictionDump, gold: GoldDoc,
         doc_id=gold.doc_id, gold_hash=gold.gold_hash(),
         n_gold=n_gold, n_pred=n_pred, pairs=pairs,
         missed_balloons=missed, false_positions=false, counts=counts,
+        excluded_by_kind=excluded_by_kind,
         review_cost=cost,
         recall=(len(matched_g) / n_gold) if n_gold else 1.0,
         precision=(len(matched_p) / n_pred) if n_pred else 1.0,

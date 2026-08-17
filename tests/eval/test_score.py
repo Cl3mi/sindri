@@ -80,6 +80,45 @@ def test_misparse_cause_when_raw_text_contains_gold_value():
     assert "cause:misparse" in pair2.notes
 
 
+def test_verbal_requirements_are_excluded_from_the_headline_metric():
+    """1,086 of the 3,594 delivered rows are verbal requirements that were
+    never ballooned. Charging them as missed callouts at the highest weight
+    would let note text dominate the score instead of extraction quality."""
+    gold = GoldDoc(doc_id="D", pdf="d.pdf", excel="d.xlsx", page_rect=RECT,
+                   characteristics=[
+        GoldCharacteristic(balloon=1, position_pt=(100, 100),
+                           char_type="Diameter", nominal="20",
+                           kind="dimension"),
+        GoldCharacteristic(balloon=2, position_pt=None,
+                           char_type="SCHNITTKANTEN BLANK ZULAESSIG",
+                           nominal="", kind="note"),
+    ])
+    empty = PredictionDump(doc_id="D", config=RunConfig(model_id="stub"),
+                           scale=SCALE, page_rect=RECT,
+                           result=ExtractionResult(characteristics=[]))
+    s = score_doc(empty, gold, ReviewCostWeights(), MatchParams())
+    assert s.n_gold == 1                      # the note is not scored
+    assert s.counts == {"missed": 1}
+    assert s.excluded_by_kind == 1
+    assert s.review_cost == 10.0              # one miss, not two
+
+
+def test_scoring_scope_can_include_notes_explicitly():
+    gold = GoldDoc(doc_id="D", pdf="d.pdf", excel="d.xlsx", page_rect=RECT,
+                   characteristics=[
+        GoldCharacteristic(balloon=1, position_pt=(100, 100),
+                           char_type="Diameter", nominal="20", kind="dimension"),
+        GoldCharacteristic(balloon=2, position_pt=None, char_type="NOTE TEXT",
+                           nominal="", kind="note"),
+    ])
+    empty = PredictionDump(doc_id="D", config=RunConfig(model_id="stub"),
+                           scale=SCALE, page_rect=RECT,
+                           result=ExtractionResult(characteristics=[]))
+    params = MatchParams(score_kinds=("dimension", "note"))
+    s = score_doc(empty, gold, ReviewCostWeights(), params)
+    assert s.n_gold == 2 and s.excluded_by_kind == 0
+
+
 def test_flagged_correct_costs_flag_weight_only():
     d = _dump()
     d.result.characteristics[0].needs_review = True     # correct row, flagged

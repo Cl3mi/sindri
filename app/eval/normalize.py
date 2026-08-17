@@ -39,6 +39,39 @@ CHAR_TYPE_SYNONYMS: Dict[str, str] = {
 
 
 # Assumes nominals/tolerances < 1000: locale thousands separators ("1.234,56") are not parsed as numbers.
+# Words that mark a MEASURABLE characteristic. Confirmed against the real
+# corpus (2026-08-17), where sheets mix dimensions with verbal requirements
+# ("SCHNITTKANTEN BLANK ZULAESSIG") that were never ballooned. Scoring the
+# latter as missed callouts would let note text dominate the review-cost metric.
+_DIMENSION_WORDS = frozenset(
+    list(CHAR_TYPE_SYNONYMS) + [
+        "perpendicularity", "parallelism", "concentricity", "cylindricity",
+        "angularity", "circularity", "roundness", "symmetry", "sym", "sym.",
+        "profile", "runout", "rundheit", "rundlauf", "symmetrie", "winkel",
+        "winkligkeit", "parallelität", "parallelitaet", "profil",
+        "surface", "oberfläche", "oberflaeche", "shape", "form",
+        "breite", "höhe", "hoehe", "tiefe", "dicke", "width", "height",
+        "depth", "thickness", "angle", "chamfer", "fase", "gewinde", "thread",
+    ])
+
+
+def char_type_kind(label) -> str:
+    """'dimension' for a measurable characteristic, 'note' for a verbal
+    requirement, 'unknown' for a blank.
+
+    Word-containment rather than exact match, so 'Diameter MIN' and
+    'Sym. 0,05 zu C' classify as dimensions while 'STANZGRATSEITE' does not.
+    Anything unrecognised is a note: an unrecognised label in this corpus is a
+    German requirement sentence, and the tail of them is long."""
+    text = " ".join(str(label or "").split())
+    if not text:
+        return "unknown"
+    words = {w.strip(".,;:()[]").casefold() for w in text.split()}
+    if words & _DIMENSION_WORDS:
+        return "dimension"
+    return "note"
+
+
 def _try_decimal(s: str) -> Optional[Decimal]:
     t = s.strip().replace(",", ".").lstrip("+")
     if not t:

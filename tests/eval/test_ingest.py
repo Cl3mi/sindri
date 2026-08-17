@@ -58,6 +58,21 @@ def test_cv_fallback_fills_positions_the_text_layer_cannot(tmp_path):
     assert len(with_cv.characteristics) == len(RECORDS)
 
 
+def test_provenance_reports_the_kind_of_rows_that_lack_a_balloon(tmp_path):
+    """Decides whether unlocated rows are a detection failure or a data
+    reality: a FAI sheet lists material and general notes that were never
+    ballooned. char_type is a shared category label, not a measurement."""
+    pdf, xlsx = make_synthetic_doc(RECORDS, tmp_path, doc_id="SYN4")
+    from openpyxl import load_workbook
+    wb = load_workbook(xlsx)
+    ws = wb.active
+    ws.cell(4, 1, 9); ws.cell(4, 2, "Material"); ws.cell(4, 3, "S235")
+    wb.save(xlsx)
+
+    gold = build_gold_doc(pdf, xlsx, doc_id="SYN4")
+    assert gold.provenance["unlocated_char_types"] == {"Material": 1}
+
+
 def test_excel_rows_without_a_balloon_stay_in_the_gold(tmp_path):
     """A characteristic whose balloon could not be located is still a
     characteristic. Dropping it would make the eval blind to ever missing it —

@@ -282,6 +282,14 @@ def _cmd_ingest(args):
     return 0
 
 
+def _merge_counts(dicts) -> dict:
+    out = {}
+    for d in dicts:
+        for k, n in (d or {}).items():
+            out[k] = out.get(k, 0) + n
+    return dict(sorted(out.items(), key=lambda kv: -kv[1])[:25])
+
+
 def _ingest_summary(provenance) -> dict:
     """Where the join actually stands: balloons recovered from the drawings
     versus rows in the sheets, and which side each shortfall is on. pdf_only
@@ -302,6 +310,11 @@ def _ingest_summary(provenance) -> dict:
                                     for p in provenance),
         "recovered_by_cv_total": sum(p.get("recovered_by_cv", 0)
                                      for p in provenance),
+        "unlocated_kinds": _merge_counts(p.get("unlocated_kinds", {})
+                                         for p in provenance),
+        "gold_kinds": _merge_counts(p.get("kinds", {}) for p in provenance),
+        "unlocated_char_types": _merge_counts(
+            p.get("unlocated_char_types", {}) for p in provenance),
         "balloons_per_doc": _spread(p["n_balloons"] for p in provenance),
         "excel_rows_per_doc": _spread(p["n_excel_rows"] for p in provenance),
         "pdf_only_per_doc": _spread(len(p["pdf_only"]) for p in provenance),
