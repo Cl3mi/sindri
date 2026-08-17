@@ -410,6 +410,23 @@ def _cmd_split(args):
     return 0
 
 
+def _reusable_dump(path: Path, config: RunConfig):
+    """An already-written dump, but only if THIS config produced it.
+
+    Resume exists so a 20-document run survives an interruption without paying
+    for the documents it already finished. It must not become a way to blend two
+    pipelines into one run: `score` refuses to mix configs, and a dump written
+    before a code change is not the same measurement. An unreadable dump is
+    treated as absent and simply re-predicted."""
+    if not path.exists():
+        return None
+    try:
+        dump = load_dump(path)
+    except Exception:
+        return None
+    return dump if dump.config == config else None
+
+
 def _cmd_predict(args):
     import os
     from app.pipeline.ocr import get_backend
@@ -420,12 +437,44 @@ def _cmd_predict(args):
     pdfs = {p.stem: p for p in Path(args.pdfs).glob(_PDF_GLOB)}
     doc_ids, _, _ = _select_docs(pdfs, args.splits, args.split)
     anon = _anon(args)
+    out = Path(args.out)
+    predicted = skipped = 0
+    failures, effective_dpi = [], {}
     for i, doc_id in enumerate(doc_ids, 1):
-        print(f"[{i}/{len(doc_ids)}] {anon(doc_id)}", file=sys.stderr)
-        dump = predict_one(pdfs[doc_id], doc_id, args.dpi, backend, config,
-                           Path(args.out) / "_work")
-        save_dump(dump, args.out)
-    return 0
+        tag = f"[{i}/{len(doc_ids)}] {anon(doc_id)}"
+        done = _reusable_dump(out / f"{doc_id}.pred.json", config)
+        if done is not None:
+            skipped += 1
+            effective_dpi[doc_id] = done.scale * 72.0
+            print(f"{tag} skipped (already predicted)", file=sys.stderr)
+            continue
+        try:
+            dump = predict_one(pdfs[doc_id], doc_id, args.dpi, backend, config,
+                               out / "_work")
+        except Exception as e:
+            # One unreadable drawing must cost one document, not the run. The
+            # exception CLASS is recorded and its message deliberately dropped:
+            # a message can carry the client's file path, and this log is meant
+            # to stay safe to read.
+            failures.append({"doc": anon(doc_id), "error": type(e).__name__})
+            print(f"{tag} FAILED {type(e).__name__}", file=sys.stderr)
+            continue
+        save_dump(dump, out)
+        predicted += 1
+        effective_dpi[doc_id] = dump.scale * 72.0
+        print(f"{tag} dpi={dump.scale * 72.0:.0f}", file=sys.stderr)
+    # Oversized sheets render below the requested dpi (render.MAX_RENDER_PIXELS).
+    # Naming them keeps "did the misses cluster on the clamped drawings?" an
+    # answerable question rather than a guess.
+    clamped = sorted(anon(d) for d, eff in effective_dpi.items()
+                     if eff < args.dpi - 0.5)
+    print(json.dumps({"n_selected": len(doc_ids), "predicted": predicted,
+                      "skipped": skipped, "failed": len(failures),
+                      "clamped_dpi_docs": clamped, "failures": failures},
+                     indent=1, ensure_ascii=False))
+    # Partial failure still leaves a run worth pulling and scoring, so it exits
+    # 0; a run that produced nothing at all is a failure.
+    return 1 if failures and not (predicted or skipped) else 0
 
 
 def _cmd_score(args):

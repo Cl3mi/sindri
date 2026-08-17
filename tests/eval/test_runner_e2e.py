@@ -357,3 +357,135 @@ def test_compare_incomparable_runs_exits_1(tmp_path, capsys):
     assert rc == 1
     err = capsys.readouterr().err
     assert "NOT COMPARABLE" in err
+
+
+# --- predict: one bad drawing must not kill a 20-document run ----------------
+
+def _no_model(monkeypatch):
+    """_cmd_predict asks for a backend before it looks at any document; these
+    tests exercise the orchestration, not the model stack."""
+    import app.pipeline.ocr as ocr
+    monkeypatch.setattr(ocr, "get_backend", lambda: object())
+
+
+def _stub_dump(doc_id, config, scale=300 / 72.0) -> PredictionDump:
+    return PredictionDump(doc_id=doc_id, config=config, scale=scale,
+                          page_rect=RECT,
+                          result=ExtractionResult(characteristics=[]))
+
+
+def _fake_predict(monkeypatch, fn):
+    import app.eval.runner as runner_mod
+    monkeypatch.setattr(runner_mod, "predict_one", fn)
+
+
+def test_predict_isolates_a_failing_document_and_carries_on(tmp_path, capsys,
+                                                             monkeypatch):
+    """The crash that ended the first baseline run took the other 4 documents
+    with it. A failure must cost one document, not the run."""
+    from PIL import Image
+    monkeypatch.setenv("SINDRI_DOC_SALT", "test-salt")
+    pdfs, _ = _setup_corpus(tmp_path)
+    _no_model(monkeypatch)
+    run_dir = tmp_path / "runs" / "base"
+
+    def fake(pdf_path, doc_id, dpi, backend, config, work_dir):
+        if doc_id == "SYNA":
+            raise Image.DecompressionBombError("Image size (598394358 pixels)")
+        return _stub_dump(doc_id, config)
+
+    _fake_predict(monkeypatch, fake)
+    assert main(["predict", "--pdfs", str(pdfs), "--out", str(run_dir)]) == 0
+    assert (run_dir / "SYNB.pred.json").exists()
+    assert not (run_dir / "SYNA.pred.json").exists()
+
+    digest = json.loads(capsys.readouterr().out)
+    assert digest["predicted"] == 1
+    assert digest["failed"] == 1
+    assert digest["failures"][0]["error"] == "DecompressionBombError"
+    # hashed id, and the exception MESSAGE is dropped: it can carry a file path
+    blob = json.dumps(digest)
+    assert "SYNA" not in blob and "598394358" not in blob
+
+
+def test_predict_exits_1_when_every_document_fails(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("SINDRI_DOC_SALT", "test-salt")
+    pdfs, _ = _setup_corpus(tmp_path)
+    _no_model(monkeypatch)
+
+    def fake(pdf_path, doc_id, dpi, backend, config, work_dir):
+        raise RuntimeError("model did not load")
+
+    _fake_predict(monkeypatch, fake)
+    rc = main(["predict", "--pdfs", str(pdfs), "--out", str(tmp_path / "runs")])
+    assert rc == 1                        # nothing was produced: that is a run
+    digest = json.loads(capsys.readouterr().out)
+    assert digest["predicted"] == 0 and digest["failed"] == 2
+
+
+def test_predict_resumes_instead_of_recomputing_existing_dumps(tmp_path, capsys,
+                                                                monkeypatch):
+    monkeypatch.setenv("SINDRI_DOC_SALT", "test-salt")
+    pdfs, _ = _setup_corpus(tmp_path)
+    _no_model(monkeypatch)
+    run_dir = tmp_path / "runs" / "base"
+    calls = []
+
+    def fake(pdf_path, doc_id, dpi, backend, config, work_dir):
+        calls.append(doc_id)
+        return _stub_dump(doc_id, config)
+
+    _fake_predict(monkeypatch, fake)
+    assert main(["predict", "--pdfs", str(pdfs), "--out", str(run_dir)]) == 0
+    assert sorted(calls) == ["SYNA", "SYNB"]
+    capsys.readouterr()
+
+    calls.clear()
+    assert main(["predict", "--pdfs", str(pdfs), "--out", str(run_dir)]) == 0
+    assert calls == []                    # the whole point: nothing recomputed
+    digest = json.loads(capsys.readouterr().out)
+    assert digest["skipped"] == 2 and digest["predicted"] == 0
+
+
+def test_predict_recomputes_a_dump_left_by_a_different_config(tmp_path, capsys,
+                                                               monkeypatch):
+    """A dump from another config is not resumable work — `score` refuses to
+    mix configs, so reusing it would blend two pipelines into one run."""
+    monkeypatch.setenv("SINDRI_DOC_SALT", "test-salt")
+    pdfs, _ = _setup_corpus(tmp_path)
+    _no_model(monkeypatch)
+    run_dir = tmp_path / "runs" / "base"
+    save_dump(_stub_dump("SYNA", RunConfig(model_id="a-different-model")), run_dir)
+    calls = []
+
+    def fake(pdf_path, doc_id, dpi, backend, config, work_dir):
+        calls.append(doc_id)
+        return _stub_dump(doc_id, config)
+
+    _fake_predict(monkeypatch, fake)
+    assert main(["predict", "--pdfs", str(pdfs), "--out", str(run_dir)]) == 0
+    assert sorted(calls) == ["SYNA", "SYNB"]
+    digest = json.loads(capsys.readouterr().out)
+    assert digest["skipped"] == 0
+
+
+def test_predict_reports_which_documents_had_their_dpi_clamped(tmp_path, capsys,
+                                                                monkeypatch):
+    """So 'did the misses cluster on the clamped drawings?' is answerable from
+    the run log instead of guessed at."""
+    monkeypatch.setenv("SINDRI_DOC_SALT", "test-salt")
+    pdfs, _ = _setup_corpus(tmp_path)
+    _no_model(monkeypatch)
+
+    def fake(pdf_path, doc_id, dpi, backend, config, work_dir):
+        scale = (110 if doc_id == "SYNA" else 300) / 72.0
+        return _stub_dump(doc_id, config, scale=scale)
+
+    _fake_predict(monkeypatch, fake)
+    assert main(["predict", "--pdfs", str(pdfs),
+                 "--out", str(tmp_path / "runs")]) == 0
+    out = capsys.readouterr()
+    assert "dpi=110" in out.err                    # per-document effective dpi
+    digest = json.loads(out.out)
+    assert len(digest["clamped_dpi_docs"]) == 1
+    assert "SYNA" not in json.dumps(digest)
