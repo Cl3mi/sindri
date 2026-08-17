@@ -25,7 +25,7 @@ from pathlib import Path
 import fitz
 
 from app.eval.anon import Anonymizer
-from app.eval.balloons import probe_pdf
+from app.eval.balloons import probe_pdf, shape_report
 from app.eval.dump import load_dump, save_dump
 from app.eval.excel_gold import dump_headers, sheet_vocabulary
 from app.eval.ingest import build_gold_doc
@@ -121,9 +121,36 @@ def _probe_summary(records) -> dict:
     }
 
 
+def _shapes_summary(records) -> dict:
+    """Calibration view: why balloon recovery does or does not fire."""
+    kinds, widths = {}, {}
+    for rec in records:
+        for k, n in rec["item_kinds"].items():
+            kinds[k] = kinds.get(k, 0) + n
+        for k, n in rec["shape_widths"].items():
+            widths[k] = widths.get(k, 0) + n
+    return {
+        "n_docs": len(records),
+        "docs_with_digit_words": sum(1 for r in records if r["digit_words"]),
+        "digit_words_per_doc": _spread(r["digit_words"] for r in records),
+        "digit_words_in_shape_per_doc": _spread(r["digit_words_in_shape"]
+                                                for r in records),
+        "near_square_shapes_per_doc": _spread(r["near_square_shapes"]
+                                              for r in records),
+        "digit_height_median": _spread(r["digit_height_median"]
+                                       for r in records),
+        "item_kinds": dict(sorted(kinds.items(), key=lambda kv: -kv[1])),
+        "shape_widths": dict(sorted(widths.items(), key=lambda kv: -kv[1])),
+    }
+
+
 def _cmd_probe(args):
     anon = _anon(args)
     records = []
+    if args.shapes:
+        reps = [shape_report(f) for f in sorted(Path(args.dir).glob("*.pdf"))]
+        print(json.dumps(_shapes_summary(reps), indent=1, ensure_ascii=False))
+        return 0
     for pdf in sorted(Path(args.dir).glob("*.pdf")):
         rec = probe_pdf(pdf)
         rec.pop("pdf", None)
@@ -206,24 +233,52 @@ def _cmd_ingest(args):
     if unpaired:
         print(f"WARNING: unpaired stems (skipped): {[anon(s) for s in unpaired]}",
               file=sys.stderr)
-    low_join = []
+    low_join, provenance = [], []
     paired = sorted(set(pdfs) & set(excels))
     for stem in paired:
         gold = build_gold_doc(pdfs[stem], excels[stem], doc_id=stem,
                               is_variant=stem in variants)
         (out / f"{stem}.gold.json").write_text(gold.model_dump_json(indent=1),
                                                encoding="utf-8")
+        provenance.append(gold.provenance)
         if gold.provenance["join_rate"] < 0.95:
             low_join.append((anon(stem), gold.provenance["join_rate"]))
     # Local-only trace file so a human can map a hash back to a drawing. Never
     # committed (gitignored + blocked by .git/hooks/pre-commit).
     (out / "doc_id_map.json").write_text(
         json.dumps(anon.mapping(paired), indent=1), encoding="utf-8")
+    if args.summary:
+        print(json.dumps(_ingest_summary(provenance), indent=1,
+                         ensure_ascii=False))
+        return 0
     if low_join:
         print(f"ATTENTION: join_rate < 0.95 (inspect manually): {low_join}",
               file=sys.stderr)
     print(f"ingested {len(paired)} docs -> {out}")
     return 0
+
+
+def _ingest_summary(provenance) -> dict:
+    """Where the join actually stands: balloons recovered from the drawings
+    versus rows in the sheets, and which side each shortfall is on. pdf_only
+    means a recovered number the sheet does not list (over-detection);
+    excel_only means a listed characteristic no balloon was found for."""
+    return {
+        "n_docs": len(provenance),
+        "docs_fully_joined": sum(1 for p in provenance
+                                 if p["join_rate"] >= 0.999),
+        "join_rate": _spread(round(p["join_rate"], 4) for p in provenance),
+        "balloons_total": sum(p["n_balloons"] for p in provenance),
+        "excel_rows_total": sum(p["n_excel_rows"] for p in provenance),
+        "pdf_only_total": sum(len(p["pdf_only"]) for p in provenance),
+        "excel_only_total": sum(len(p["excel_only"]) for p in provenance),
+        "balloons_per_doc": _spread(p["n_balloons"] for p in provenance),
+        "excel_rows_per_doc": _spread(p["n_excel_rows"] for p in provenance),
+        "pdf_only_per_doc": _spread(len(p["pdf_only"]) for p in provenance),
+        "excel_only_per_doc": _spread(len(p["excel_only"]) for p in provenance),
+        "docs_with_duplicate_balloons": sum(
+            1 for p in provenance if p.get("duplicate_balloons")),
+    }
 
 
 def _load_gold_dir(gold_dir):
@@ -350,6 +405,9 @@ def main(argv=None) -> int:
     p.add_argument("dir")
     p.add_argument("--summary", action="store_true",
                    help="one aggregate object instead of one line per document")
+    p.add_argument("--shapes", action="store_true",
+                   help="calibration diagnostic: shape sizes, primitives, and "
+                        "whether digit words land inside a candidate outline")
     p.set_defaults(fn=_cmd_probe)
     p = sub.add_parser("headers", parents=[common])
     p.add_argument("dir")
@@ -367,6 +425,8 @@ def main(argv=None) -> int:
     p.set_defaults(fn=_cmd_summary)
 
     p = sub.add_parser("ingest", parents=[common])
+    p.add_argument("--summary", action="store_true",
+                   help="print join aggregates instead of per-document warnings")
     p.add_argument("--pdfs", required=True); p.add_argument("--excel", required=True)
     p.add_argument("--out", required=True); p.add_argument("--variants", default=None)
     p.set_defaults(fn=_cmd_ingest)

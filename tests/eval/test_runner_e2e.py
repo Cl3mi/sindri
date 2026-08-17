@@ -110,6 +110,19 @@ def test_probe_and_headers_anonymize_doc_ids_by_default(tmp_path, capsys,
     assert "SYNA" not in out and "SYNB" not in out
 
 
+def test_ingest_summary_reports_join_aggregates(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("SINDRI_DOC_SALT", "test-salt")
+    pdfs, excel = _setup_corpus(tmp_path)
+    assert main(["ingest", "--pdfs", str(pdfs), "--excel", str(excel),
+                 "--out", str(tmp_path / "gold"), "--summary"]) == 0
+    digest = json.loads(capsys.readouterr().out)
+    assert digest["n_docs"] == 2
+    assert digest["docs_fully_joined"] == 2
+    assert digest["excel_only_total"] == 0
+    assert digest["pdf_only_total"] == 0
+    assert digest["join_rate"]["min"] == 1.0
+
+
 def test_probe_summary_aggregates_instead_of_per_doc_lines(tmp_path, capsys,
                                                            monkeypatch):
     monkeypatch.setenv("SINDRI_DOC_SALT", "test-salt")
