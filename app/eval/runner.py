@@ -37,6 +37,9 @@ from app.eval.score import score_doc
 from app.eval.splits import load_splits, make_splits, save_splits, splits_hash
 
 
+_PDF_GLOB = "*.pdf"
+
+
 def _git_sha() -> str:
     try:
         return subprocess.check_output(
@@ -172,10 +175,10 @@ def _cmd_probe(args):
                          indent=1, ensure_ascii=False))
         return 0
     if args.shapes:
-        reps = [shape_report(f) for f in sorted(Path(args.dir).glob("*.pdf"))]
+        reps = [shape_report(f) for f in sorted(Path(args.dir).glob(_PDF_GLOB))]
         print(json.dumps(_shapes_summary(reps), indent=1, ensure_ascii=False))
         return 0
-    for pdf in sorted(Path(args.dir).glob("*.pdf")):
+    for pdf in sorted(Path(args.dir).glob(_PDF_GLOB)):
         rec = probe_pdf(pdf)
         rec.pop("pdf", None)
         records.append(rec)
@@ -183,6 +186,58 @@ def _cmd_probe(args):
             print(json.dumps({"doc": anon(pdf.stem), **rec}, ensure_ascii=False))
     if args.summary:
         print(json.dumps(_probe_summary(records), indent=1, ensure_ascii=False))
+    return 0
+
+
+# Structural traits that mark a drawing as atypical for this corpus. Forcing
+# these into the frozen test split is what makes cross-template generalization
+# visible (handoff section 6) — and it is derivable, so no human labels anything.
+def _atypical_traits(rec) -> list:
+    traits = []
+    if rec.get("n_pages", 1) > 1:
+        traits.append("multi_page")
+    if not rec.get("n_words"):
+        traits.append("no_text_layer")
+    if not rec.get("n_drawings"):
+        traits.append("no_vector_content")
+    if rec.get("has_images"):
+        traits.append("raster_content")
+    if rec.get("n_annots"):
+        traits.append("annotated")
+    return traits
+
+
+def _cmd_variants(args):
+    anon = _anon(args)
+    scored, trait_counts = [], {}
+    for pdf in sorted(Path(args.dir if hasattr(args, "dir") else args.pdfs)
+                      .glob(_PDF_GLOB)):
+        rec = probe_pdf(pdf)
+        traits = _atypical_traits(rec)
+        for t in traits:
+            trait_counts[t] = trait_counts.get(t, 0) + 1
+        if traits:
+            scored.append((len(traits), pdf.stem, traits))
+    # most atypical first; doc id breaks ties so the choice is reproducible
+    scored.sort(key=lambda t: (-t[0], t[1]))
+    limit = args.limit if args.limit is not None else max(1, len(scored))
+    chosen = scored[:limit]
+
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("\n".join(stem for _, stem, _ in chosen) + "\n",
+                   encoding="utf-8")
+
+    n_docs = len(list(Path(args.pdfs).glob(_PDF_GLOB)))
+    print(json.dumps({
+        "n_docs": n_docs,
+        "n_atypical": len(scored),
+        "n_variants": len(chosen),
+        "trait_counts": dict(sorted(trait_counts.items(), key=lambda kv: -kv[1])),
+        "variants": [{"doc": anon(stem), "traits": traits}
+                     for _, stem, traits in chosen],
+        "written_to": str(out),
+    }, indent=1, ensure_ascii=False))
     return 0
 
 
@@ -247,7 +302,7 @@ def _cmd_headers(args):
 
 
 def _cmd_ingest(args):
-    pdfs = {p.stem: p for p in Path(args.pdfs).glob("*.pdf")}
+    pdfs = {p.stem: p for p in Path(args.pdfs).glob(_PDF_GLOB)}
     excels = {p.stem: p for p in Path(args.excel).glob("*.xlsx")}
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -347,7 +402,7 @@ def _cmd_predict(args):
     config = RunConfig(
         model_id=os.environ.get("VLM_MODEL_ID", "default"), dpi=args.dpi,
         git_sha=_git_sha(), prompt_sha256=_prompt_sha256())
-    pdfs = {p.stem: p for p in Path(args.pdfs).glob("*.pdf")}
+    pdfs = {p.stem: p for p in Path(args.pdfs).glob(_PDF_GLOB)}
     doc_ids, _, _ = _select_docs(pdfs, args.splits, args.split)
     anon = _anon(args)
     for i, doc_id in enumerate(doc_ids, 1):
@@ -479,6 +534,13 @@ def main(argv=None) -> int:
     p.add_argument("--pdfs", required=True); p.add_argument("--excel", required=True)
     p.add_argument("--out", required=True); p.add_argument("--variants", default=None)
     p.set_defaults(fn=_cmd_ingest)
+
+    p = sub.add_parser("variants", parents=[common])
+    p.add_argument("--pdfs", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--limit", type=int, default=None,
+                   help="keep only the N most atypical drawings")
+    p.set_defaults(fn=_cmd_variants)
 
     p = sub.add_parser("split", parents=[common])
     p.add_argument("--gold", required=True); p.add_argument("--out", required=True)

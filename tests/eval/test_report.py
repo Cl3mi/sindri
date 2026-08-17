@@ -95,6 +95,53 @@ def test_summarize_ranks_worst_docs_by_hashed_id_for_triage():
     assert s["worst_docs"][0] == {"doc": a("T1025300_B"), "review_cost": 5.0}
 
 
+def test_cost_can_be_recomputed_for_other_weights_without_rescoring():
+    """DocScore keeps the taxonomy counts, so any weight vector's cost is
+    derivable. That is what lets the client's real weights arrive late without
+    invalidating a baseline."""
+    from app.eval.report import recompute_cost
+    counts = {"correct": 5, "missed": 2, "escaped_error": 1,
+              "false_detection": 3, "flagged_correct": 4, "flagged_error": 1}
+    assert recompute_cost(counts, ReviewCostWeights()) == (
+        10 * 2 + 5 * 1 + 2 * 3 + 1 * 5)
+    # all-ones: 2 missed + 1 escaped + 3 false + 5 flagged rows
+    assert recompute_cost(counts, ReviewCostWeights(miss=1, escaped=1,
+                                                    false=1, flag=1)) == 11
+
+
+def test_weight_sweep_says_whether_a_win_survives_any_plausible_weights():
+    from app.eval.report import compare_runs
+    better = _run("b", [8.0, 8.0, 8.0, 8.0])
+    worse = _run("a", [10.0, 10.0, 10.0, 10.0])
+    # make the taxonomy differ in the way the cost implies: b misses less
+    for d in worse.doc_scores:
+        d.counts = {"correct": 8, "missed": 1, "escaped_error": 0,
+                    "false_detection": 0}
+    for d in better.doc_scores:
+        d.counts = {"correct": 9, "missed": 0, "escaped_error": 0,
+                    "false_detection": 1}
+    cmp = compare_runs(worse, better, seed=13)
+    sweep = cmp["weight_sensitivity"]
+    assert sweep["n_weight_vectors"] >= 4
+    # fewer misses at the cost of one phantom wins under every sane weighting
+    assert sweep["b_better_fraction"] == 1.0
+    assert sweep["robust"] is True
+
+
+def test_weight_sweep_flags_a_verdict_that_depends_on_the_weights():
+    from app.eval.report import compare_runs
+    a = _run("a", [10.0, 10.0])
+    b = _run("b", [10.0, 10.0])
+    # b trades one miss for many flagged rows: good if misses are costly,
+    # bad if reviewer time per flag dominates
+    for d in a.doc_scores:
+        d.counts = {"missed": 1, "flagged_correct": 0}
+    for d in b.doc_scores:
+        d.counts = {"missed": 0, "flagged_correct": 9}
+    cmp = compare_runs(a, b, seed=13)
+    assert cmp["weight_sensitivity"]["robust"] is False
+
+
 def test_guards_refuse_incomparable_runs():
     a = _run("a", [10.0, 12.0])
     b = _run("b", [10.0])                                   # different doc set

@@ -110,6 +110,47 @@ def test_probe_and_headers_anonymize_doc_ids_by_default(tmp_path, capsys,
     assert "SYNA" not in out and "SYNB" not in out
 
 
+def test_variants_command_ranks_structurally_atypical_drawings(tmp_path, capsys,
+                                                               monkeypatch):
+    """The frozen test split must hold the odd drawings so cross-template
+    generalization stays visible. Atypicality is derivable from structure —
+    no human has to label anything."""
+    import fitz
+    monkeypatch.setenv("SINDRI_DOC_SALT", "test-salt")
+    pdfs = tmp_path / "pdfs"
+    pdfs.mkdir()
+
+    def _plain(path, pages=1, raster=False):
+        doc = fitz.open()
+        for _ in range(pages):
+            page = doc.new_page(width=600, height=400)
+            if raster:
+                pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 40, 40), False)
+                pix.clear_with(200)
+                page.insert_image(fitz.Rect(10, 10, 200, 200), pixmap=pix)
+            else:
+                page.insert_text(fitz.Point(50, 50), "12", fontsize=9)
+                page.draw_line(fitz.Point(10, 10), fitz.Point(80, 80))
+        doc.save(path)
+        doc.close()
+
+    _plain(pdfs / "NORMAL_A.pdf")
+    _plain(pdfs / "NORMAL_B.pdf")
+    _plain(pdfs / "MULTIPAGE.pdf", pages=3)
+    _plain(pdfs / "RASTER.pdf", raster=True)
+
+    out = tmp_path / "variants.txt"
+    assert main(["variants", "--pdfs", str(pdfs), "--out", str(out),
+                 "--limit", "2"]) == 0
+    picked = set(out.read_text().split())
+    assert picked == {"MULTIPAGE", "RASTER"}
+
+    printed = capsys.readouterr().out
+    assert "NORMAL_A" not in printed and "MULTIPAGE" not in printed
+    digest = json.loads(printed)
+    assert digest["n_docs"] == 4 and digest["n_variants"] == 2
+
+
 def test_ingest_summary_reports_join_aggregates(tmp_path, capsys, monkeypatch):
     monkeypatch.setenv("SINDRI_DOC_SALT", "test-salt")
     pdfs, excel = _setup_corpus(tmp_path)

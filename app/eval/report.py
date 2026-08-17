@@ -65,6 +65,54 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
     }
 
 
+def recompute_cost(counts: Dict[str, int], weights: ReviewCostWeights) -> float:
+    """Review cost for any weight vector, straight from the taxonomy counts.
+
+    Scoring already recorded what happened; only the price tag changes. This is
+    what lets the client's real weights arrive late without re-running anything
+    — and lets a verdict be checked against every plausible weighting."""
+    flagged = counts.get("flagged_correct", 0) + counts.get("flagged_error", 0)
+    return (weights.miss * counts.get("missed", 0)
+            + weights.escaped * counts.get("escaped_error", 0)
+            + weights.false * counts.get("false_detection", 0)
+            + weights.flag * flagged)
+
+
+# Plausible reviewer economics, spanning the range the client's real numbers
+# could land in: a miss always costs most, a flag always least, but how much
+# more varies. If a verdict holds across all of these, the exact numbers do not
+# change the decision.
+WEIGHT_GRID = (
+    ReviewCostWeights(miss=10, escaped=5, false=2, flag=1),    # documented default
+    ReviewCostWeights(miss=20, escaped=8, false=2, flag=1),    # misses dominate
+    ReviewCostWeights(miss=5, escaped=4, false=2, flag=1),     # flatter
+    ReviewCostWeights(miss=10, escaped=5, false=4, flag=2),    # phantoms costly
+    ReviewCostWeights(miss=8, escaped=8, false=1, flag=1),     # silent errors as bad
+    ReviewCostWeights(miss=3, escaped=2, false=1, flag=1),     # nearly flat
+)
+
+
+def _weight_sensitivity(a: RunReport, b: RunReport) -> Dict:
+    """How often B beats A across the plausible weightings."""
+    wins, deltas = 0, []
+    for weights in WEIGHT_GRID:
+        cost_a = sum(recompute_cost(d.counts, weights) for d in a.doc_scores)
+        cost_b = sum(recompute_cost(d.counts, weights) for d in b.doc_scores)
+        n = max(1, len(a.doc_scores))
+        deltas.append(round((cost_b - cost_a) / n, 4))
+        if cost_b < cost_a:
+            wins += 1
+    fraction = wins / len(WEIGHT_GRID)
+    return {
+        "n_weight_vectors": len(WEIGHT_GRID),
+        "b_better_fraction": fraction,
+        "mean_delta_per_weighting": deltas,
+        # A verdict that flips with the weights needs the client's real numbers;
+        # one that holds everywhere does not.
+        "robust": fraction in (0.0, 1.0),
+    }
+
+
 def _check_comparable(a: RunReport, b: RunReport) -> None:
     ids_a = [d.doc_id for d in a.doc_scores]
     ids_b = [d.doc_id for d in b.doc_scores]
@@ -133,5 +181,6 @@ def compare_runs(a: RunReport, b: RunReport, seed: int = 13,
                          "recall": b.micro_recall,
                          "escaped_rate": b.escaped_rate},
         },
+        "weight_sensitivity": _weight_sensitivity(a, b),
         "warnings": warnings,
     }
