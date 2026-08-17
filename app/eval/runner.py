@@ -76,7 +76,11 @@ def predict_one(pdf_path, doc_id: str, dpi: int, backend,
     doc = fitz.open(pdf_path)
     rect = doc[0].rect
     doc.close()
-    return PredictionDump(doc_id=doc_id, config=config, scale=dpi / 72.0,
+    # The render clamps its dpi to a pixel budget on large-format sheets, so the
+    # scale that interprets these boxes is the render's, NOT dpi/72. Taking the
+    # requested dpi here would corrupt every coordinate in the dump silently.
+    return PredictionDump(doc_id=doc_id, config=config,
+                          scale=result.render_scale,
                           page_rect=(rect.x0, rect.y0, rect.x1, rect.y1),
                           result=result)
 

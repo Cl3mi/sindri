@@ -236,7 +236,10 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
 
     emit("place", "Placing balloons")
     number_characteristics(results)
-    place_balloons(results, dpi=dpi)
+    # render.dpi, not the requested dpi: the gap is specified in PDF points and
+    # converted to pixels, so a clamped render must use the resolution it was
+    # actually drawn at or every balloon drifts away from its callout.
+    place_balloons(results, dpi=render.dpi)
     # Free text outside the structured blocks (e.g. margin notes). Exclude the
     # notes/marks/title regions AND every region the main detector already
     # captured, so loose_text only adds text nothing else picked up
@@ -248,4 +251,5 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
     exclude += [c.target_region for c in results if c.target_region is not None]
     title_fields += tb.loose_text(image, backend, exclude)
     return ExtractionResult(characteristics=results, notes=notes_obj,
-                            title_block=title_fields, marks=marks_obj)
+                            title_block=title_fields, marks=marks_obj,
+                            render_scale=render.scale)

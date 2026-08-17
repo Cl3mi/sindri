@@ -240,6 +240,65 @@ def test_predict_one_builds_dump_from_stub_backend(tmp_path):
     assert len(dump.result.characteristics) >= 1
 
 
+def test_clamped_render_dump_scale_round_trips_a_known_box(tmp_path, monkeypatch):
+    """The scale trap. When the pixel budget clamps the render, `predict_one`
+    must record the scale actually used. A dump that carries the REQUESTED dpi
+    instead looks perfectly healthy while every coordinate in it is wrong — so
+    assert a known box survives the round trip back to its true PDF points."""
+    import fitz
+    import app.pipeline.extract as extract_mod
+    from app.eval.dump import to_points
+    from app.pipeline.detect import Detection
+    from app.pipeline.ocr.base import OcrResult
+
+    PAGE_W, PAGE_H = 600.0, 400.0
+    INK = (120.0, 90.0, 180.0, 110.0)        # black rectangle, in PDF points
+    pdf = tmp_path / "wide.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=PAGE_W, height=PAGE_H)
+    page.draw_rect(fitz.Rect(*INK), color=(0, 0, 0), fill=(0, 0, 0))
+    doc.save(pdf)
+    doc.close()
+
+    # Make the budget bite without rendering an 80 MP page inside a unit test.
+    real_render = extract_mod.render_page
+    monkeypatch.setattr(extract_mod, "render_page", lambda *a, **kw: real_render(
+        *a, **{**kw, "max_pixels": 300_000}))
+    monkeypatch.setenv("VLM_TILE", "4096")   # one tile: tile-local == page space
+    monkeypatch.setattr("app.pipeline.boxes.detect_boxes", lambda image: [])
+    monkeypatch.setattr("app.pipeline.notes_block.locate_notes_block",
+                        lambda image, backend: None)
+    monkeypatch.setattr("app.pipeline.marks_block.locate_marks_block",
+                        lambda image: None)
+    monkeypatch.setattr("app.pipeline.title_block.locate_title_block",
+                        lambda image: None)
+
+    class InkBackend:
+        """Detects a generous box around the ink, stated as a fraction of the
+        page so the stub itself never assumes a resolution. extract() tightens
+        it to the ink, so the prediction's geometry IS the black rectangle."""
+
+        def detect_regions(self, image):
+            w, h = image.size
+            return [Detection(box=(0.15 * w, 0.175 * h, 0.35 * w, 0.325 * h),
+                              kind="dimension", conf=0.9)]
+
+        def read_region(self, image):
+            return OcrResult(text="20", confidence=0.9)
+
+    dump = predict_one(pdf, "CLAMPED", dpi=300, backend=InkBackend(),
+                       config=RunConfig(model_id="stub", dpi=300),
+                       work_dir=tmp_path / "work")
+
+    assert dump.scale < 300 / 72.0           # the render really was clamped
+    box_pt = to_points(dump.result.characteristics[0].target_region,
+                       dump.scale, dump.page_rect)
+    # the centre is immune to tighten_to_ink's symmetric 3 px pad
+    centre = ((box_pt[0] + box_pt[2]) / 2, (box_pt[1] + box_pt[3]) / 2)
+    assert centre == pytest.approx((150.0, 100.0), abs=2.0)
+    assert box_pt == pytest.approx(INK, abs=4.0)
+
+
 def test_score_with_no_gold_dump_overlap_exits_1(tmp_path, capsys):
     pdfs, excel = _setup_corpus(tmp_path)
     gold_dir = tmp_path / "gold"
