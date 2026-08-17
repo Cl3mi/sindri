@@ -83,9 +83,20 @@ class ReviewCostWeights(BaseModel):
 
 
 class MatchParams(BaseModel):
+    # extra="forbid": a mistyped knob must not be silently dropped — it would
+    # change scoring while still comparing "equal" in the comparability guard.
+    model_config = {"extra": "forbid"}
+
     max_geo_frac: float = 0.10        # match gate: center distance / page diagonal
     value_bonus: float = 0.35         # cost reduction when nominals agree
     misplaced_frac: float = 0.04      # matched farther than this → tagged misplaced
+    # "geometry" needs gold balloon positions. "value" is the fallback for
+    # documents where they could not be recovered: pairs on value similarity
+    # alone, so a misread still scores as one wrong row rather than a miss plus
+    # a false detection. Part of the comparability guard — runs scored with
+    # different modes refuse to compare.
+    mode: str = "geometry"
+    value_sim_min: float = 0.6        # value mode: minimum similarity to pair
 
 
 class MatchedPair(BaseModel):

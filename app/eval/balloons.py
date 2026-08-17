@@ -74,7 +74,7 @@ _MIN_SHAPE_HITS = 1       # fall back only when shape matching finds NOTHING:
                           # one real outline means outlines are readable here
 
 
-def _balloons_from_words(page) -> List[Balloon]:
+def _balloons_from_words(page, expect=None) -> List[Balloon]:
     """Every plausible digit word IS a balloon.
 
     Correct for this corpus because the stamped drawings are flattened prints:
@@ -89,6 +89,8 @@ def _balloons_from_words(page) -> List[Balloon]:
         number = int(text)
         if not (MIN_BALLOON_NO <= number <= MAX_BALLOON_NO):
             continue
+        if expect is not None and number not in expect:
+            continue
         out.append(Balloon(
             number=number,
             center_pt=((w[0] + w[2]) / 2.0, (w[1] + w[3]) / 2.0),
@@ -97,7 +99,7 @@ def _balloons_from_words(page) -> List[Balloon]:
 
 
 def recover_balloons(pdf_path, page_index: int = 0,
-                     strategy: str = "auto") -> List[Balloon]:
+                     strategy: str = "auto", expect=None) -> List[Balloon]:
     """strategy: 'shape' (digit inside a closed outline), 'text' (any plausible
     digit word), or 'auto' — shape first, falling back to text when the
     outlines are not recoverable as closed paths."""
@@ -106,7 +108,7 @@ def recover_balloons(pdf_path, page_index: int = 0,
     if strategy == "text":
         doc = fitz.open(pdf_path)
         try:
-            return _dedupe(_balloons_from_words(doc[page_index]))
+            return _dedupe(_balloons_from_words(doc[page_index], expect))
         finally:
             doc.close()
 
@@ -131,7 +133,7 @@ def recover_balloons(pdf_path, page_index: int = 0,
                                     radius_pt=r.width / 2))
         unique = _dedupe(balloons)
         if strategy == "auto" and len(unique) < _MIN_SHAPE_HITS:
-            return _dedupe(_balloons_from_words(page))
+            return _dedupe(_balloons_from_words(page, expect))
         return unique
     finally:
         doc.close()
@@ -237,6 +239,7 @@ def probe_pdf(pdf_path, page_index: int = 0) -> dict:
         gap_ceiling = min(max(numbers), 5000) if numbers else 0
         return {
             "pdf": str(Path(pdf_path).name),
+            "n_pages": doc.page_count,
             "n_drawings": len(page.get_drawings()),
             "n_circles": len(circles),
             "n_shapes": len(shapes),

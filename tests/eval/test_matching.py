@@ -39,6 +39,46 @@ def test_one_to_one_and_deterministic():
         assert pairs == [(1, 7, 0.0)]          # lower key wins the tie, always
 
 
+V = MatchParams(mode="value")
+
+
+def test_value_mode_pairs_equal_values_ignoring_geometry():
+    """Fallback for documents whose balloon positions cannot be recovered:
+    geometry is unavailable, so values carry the match."""
+    preds = [Cand(key=1, center_pt=(0, 0), nominal="20"),
+             Cand(key=2, center_pt=(0, 0), nominal="5,5")]
+    golds = [Cand(key=7, center_pt=(9999, 9999), nominal="5.5"),
+             Cand(key=8, center_pt=(9999, 9999), nominal="20")]
+    pairs = match_candidates(preds, golds, PAGE_DIAG, V)
+    assert {(p, g) for p, g, _ in pairs} == {(1, 8), (2, 7)}
+
+
+def test_value_mode_still_pairs_a_near_miss_so_it_scores_as_an_error():
+    """A misread must remain ONE matched-but-wrong row. If it failed to pair it
+    would count as a miss AND a false detection — charging 12 instead of 5 and
+    misrepresenting where the error is."""
+    preds = [Cand(key=1, center_pt=(0, 0), nominal="28")]
+    golds = [Cand(key=7, center_pt=(0, 0), nominal="20")]
+    assert match_candidates(preds, golds, PAGE_DIAG, V) == [(1, 7, 0.0)]
+
+
+def test_value_mode_refuses_unrelated_values():
+    preds = [Cand(key=1, center_pt=(0, 0), nominal="20")]
+    golds = [Cand(key=7, center_pt=(0, 0), nominal="137,5")]
+    assert match_candidates(preds, golds, PAGE_DIAG, V) == []
+
+
+def test_value_mode_is_one_to_one_on_repeated_values():
+    """Two Ø20 callouts must consume two gold rows, not match both to one."""
+    preds = [Cand(key=1, center_pt=(0, 0), nominal="20"),
+             Cand(key=2, center_pt=(0, 0), nominal="20")]
+    golds = [Cand(key=7, center_pt=(0, 0), nominal="20"),
+             Cand(key=8, center_pt=(0, 0), nominal="20")]
+    pairs = match_candidates(preds, golds, PAGE_DIAG, V)
+    assert sorted(p for p, _, _ in pairs) == [1, 2]
+    assert sorted(g for _, g, _ in pairs) == [7, 8]
+
+
 def test_duplicate_keys_rejected_loudly():
     import pytest
     dup = [Cand(key=1, center_pt=(0, 0)), Cand(key=1, center_pt=(9, 9))]

@@ -101,6 +101,8 @@ def _probe_summary(records) -> dict:
             annot_types[name] = annot_types.get(name, 0) + n
     return {
         "n_docs": len(records),
+        "multi_page_docs": sum(1 for r in records if r.get("n_pages", 1) > 1),
+        "pages_per_doc": _spread(r.get("n_pages", 1) for r in records),
         "with_balloons": sum(1 for r in records if r["n_balloons"]),
         "with_annotations": sum(1 for r in records if r.get("n_annots")),
         "with_images": sum(1 for r in records if r["has_images"]),

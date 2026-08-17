@@ -135,6 +135,30 @@ def test_text_strategy_ignores_implausible_balloon_numbers(tmp_path):
     assert [b.number for b in recover_balloons(path, strategy="text")] == [7]
 
 
+def test_text_strategy_can_be_limited_to_expected_numbers(tmp_path):
+    """The sheet already lists which balloon numbers exist, so a digit word
+    that is not one of them (a title-block number, a revision index) is not a
+    balloon. This is a filter on candidates, not an invention of positions."""
+    doc = fitz.open()
+    page = doc.new_page(width=600, height=400)
+    page.insert_text(fitz.Point(100, 100), "7", fontsize=9)
+    page.insert_text(fitz.Point(200, 100), "42", fontsize=9)   # title-block noise
+    path = tmp_path / "expect.pdf"
+    doc.save(path)
+    doc.close()
+
+    assert sorted(b.number for b in
+                  recover_balloons(path, strategy="text")) == [7, 42]
+    assert [b.number for b in
+            recover_balloons(path, strategy="text", expect={7})] == [7]
+
+
+def test_probe_reports_page_count(tmp_path, ballooned_pdf):
+    """Recovery only reads page 0; a multi-page drawing would silently lose
+    every balloon after the first page."""
+    assert probe_pdf(ballooned_pdf)["n_pages"] == 1
+
+
 def test_shape_report_measures_why_recovery_fails(diamond_ballooned_pdf):
     """Calibration data: how many digit words exist, how many sit inside a
     small symmetric shape, and what the candidate shapes actually look like."""

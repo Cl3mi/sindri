@@ -13,11 +13,16 @@ from app.eval.models import GoldCharacteristic, GoldDoc
 
 def build_gold_doc(pdf_path, excel_path, doc_id: str,
                    is_variant: bool = False, page_index: int = 0) -> GoldDoc:
-    recovered = recover_balloons(pdf_path, page_index)
+    # Read the sheet FIRST: its Pos column says which balloon numbers exist on
+    # this drawing, which lets recovery reject digit words that are not
+    # balloons (title-block numbers, revision indices).
+    _rows_for_expect = read_gold_excel(excel_path)
+    recovered = recover_balloons(pdf_path, page_index,
+                                 expect=set(_rows_for_expect))
     nums = [b.number for b in recovered]
     duplicate_balloons = sorted({n for n in nums if nums.count(n) > 1})
     balloons = {b.number: b for b in recovered}
-    rows = read_gold_excel(excel_path)
+    rows = _rows_for_expect
 
     doc = fitz.open(pdf_path)
     rect = doc[page_index].rect
