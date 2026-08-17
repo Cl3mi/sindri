@@ -27,7 +27,7 @@ import fitz
 from app.eval.anon import Anonymizer
 from app.eval.balloons import probe_pdf
 from app.eval.dump import load_dump, save_dump
-from app.eval.excel_gold import dump_headers
+from app.eval.excel_gold import dump_headers, sheet_vocabulary
 from app.eval.ingest import build_gold_doc
 from app.eval.models import (GoldDoc, MatchParams, PredictionDump,
                              ReviewCostWeights, RunConfig, RunReport)
@@ -83,21 +83,115 @@ def _anon(args) -> Anonymizer:
     return Anonymizer(enabled=not getattr(args, "show_ids", False))
 
 
+def _spread(values):
+    import statistics
+    vals = sorted(values)
+    if not vals:
+        return {"min": 0, "median": 0, "max": 0, "total": 0}
+    return {"min": vals[0], "median": statistics.median(vals),
+            "max": vals[-1], "total": sum(vals)}
+
+
+def _probe_summary(records) -> dict:
+    """Corpus-level view of the encoding question, so a 100-doc probe costs one
+    object instead of 100 lines."""
+    annot_types = {}
+    for rec in records:
+        for name, n in (rec.get("annot_types") or {}).items():
+            annot_types[name] = annot_types.get(name, 0) + n
+    return {
+        "n_docs": len(records),
+        "with_balloons": sum(1 for r in records if r["n_balloons"]),
+        "with_annotations": sum(1 for r in records if r.get("n_annots")),
+        "with_images": sum(1 for r in records if r["has_images"]),
+        "without_vector_text": sum(1 for r in records if not r["n_words"]),
+        "without_vector_content": sum(1 for r in records if not r["n_drawings"]),
+        "with_duplicate_numbers": sum(1 for r in records
+                                      if r.get("duplicate_numbers")),
+        "with_numeric_annotations": sum(1 for r in records
+                                        if r.get("n_annot_numbers")),
+        "annot_types": annot_types,
+        "balloons_per_doc": _spread(r["n_balloons"] for r in records),
+        "annots_per_doc": _spread(r.get("n_annots", 0) for r in records),
+        "numeric_annots_per_doc": _spread(r.get("n_annot_numbers", 0)
+                                          for r in records),
+        "vector_items_per_doc": _spread(r["n_drawings"] for r in records),
+        "circles_per_doc": _spread(r["n_circles"] for r in records),
+        "words_per_doc": _spread(r["n_words"] for r in records),
+    }
+
+
 def _cmd_probe(args):
     anon = _anon(args)
+    records = []
     for pdf in sorted(Path(args.dir).glob("*.pdf")):
         rec = probe_pdf(pdf)
         rec.pop("pdf", None)
-        print(json.dumps({"doc": anon(pdf.stem), **rec}, ensure_ascii=False))
+        records.append(rec)
+        if not args.summary:
+            print(json.dumps({"doc": anon(pdf.stem), **rec}, ensure_ascii=False))
+    if args.summary:
+        print(json.dumps(_probe_summary(records), indent=1, ensure_ascii=False))
     return 0
+
+
+def _headers_summary(records) -> dict:
+    """Group sheets by their header signature: the answer to 'how many distinct
+    layouts are in this corpus' in one object instead of one line per file."""
+    schemas, header_rows, unmapped = {}, {}, {}
+    ok = [r for r in records if "error" not in r]
+    for rec in ok:
+        key = tuple(rec.get("headers", []))
+        schemas[key] = schemas.get(key, 0) + 1
+        row = str(rec.get("header_row"))
+        header_rows[row] = header_rows.get(row, 0) + 1
+        for field in ("pos", "char_type", "nominal", "upper_tol", "lower_tol"):
+            if field not in rec.get("mapped_fields", []):
+                unmapped[field] = unmapped.get(field, 0) + 1
+    ranked = sorted(schemas.items(), key=lambda kv: -kv[1])
+    # why failures fail: which sheet names exist, and where a pos-header sits
+    sheet_names, deep_hits = {}, {}
+    for rec in records:
+        for name in rec.get("sheet_names", []):
+            sheet_names[name] = sheet_names.get(name, 0) + 1
+        for entry in rec.get("scan", []):
+            if entry.get("pos_row") is not None:
+                key = f"{entry['sheet']}@row{entry['pos_row']}"
+                deep_hits[key] = deep_hits.get(key, 0) + 1
+    return {
+        "n_docs": len(records),
+        "with_error": sum(1 for r in records if "error" in r),
+        "sheet_names": dict(sorted(sheet_names.items(), key=lambda kv: -kv[1])),
+        "pos_header_found_at": dict(sorted(deep_hits.items(),
+                                           key=lambda kv: -kv[1])),
+        "with_duplicate_pos": sum(1 for r in ok if r.get("duplicate_pos")),
+        "header_rows": header_rows,
+        "unmapped_fields": unmapped,
+        "rows_per_doc": _spread(r.get("n_rows", 0) for r in ok),
+        "schemas": [{"docs": n, "headers": list(k)} for k, n in ranked],
+    }
 
 
 def _cmd_headers(args):
     anon = _anon(args)
+    records, vocab_freq = [], {}
     for xlsx in sorted(Path(args.dir).glob("*.xlsx")):
         info = dump_headers(xlsx)
         info.pop("file", None)
-        print(json.dumps({"doc": anon(xlsx.stem), **info}, ensure_ascii=False))
+        records.append(info)
+        if args.summary and args.captions:
+            for text in sheet_vocabulary(xlsx):
+                vocab_freq[text] = vocab_freq.get(text, 0) + 1
+        if not args.summary:
+            print(json.dumps({"doc": anon(xlsx.stem), **info}, ensure_ascii=False))
+    if args.summary:
+        digest = _headers_summary(records)
+        # captions shared by many workbooks; a per-part value cannot repeat here
+        if args.captions:
+            shared = {t: n for t, n in vocab_freq.items() if n >= args.min_docs}
+            digest["shared_captions"] = dict(
+                sorted(shared.items(), key=lambda kv: -kv[1])[:60])
+        print(json.dumps(digest, indent=1, ensure_ascii=False))
     return 0
 
 
@@ -253,9 +347,20 @@ def main(argv=None) -> int:
                              "AI agent")
 
     p = sub.add_parser("probe", parents=[common])
-    p.add_argument("dir"); p.set_defaults(fn=_cmd_probe)
+    p.add_argument("dir")
+    p.add_argument("--summary", action="store_true",
+                   help="one aggregate object instead of one line per document")
+    p.set_defaults(fn=_cmd_probe)
     p = sub.add_parser("headers", parents=[common])
-    p.add_argument("dir"); p.set_defaults(fn=_cmd_headers)
+    p.add_argument("dir")
+    p.add_argument("--summary", action="store_true",
+                   help="group sheets by header signature instead of one line each")
+    p.add_argument("--captions", action="store_true",
+                   help="also report captions shared across workbooks (slow: "
+                        "re-reads every file)")
+    p.add_argument("--min-docs", type=int, default=5,
+                   help="a caption must appear in this many workbooks to be shown")
+    p.set_defaults(fn=_cmd_headers)
 
     p = sub.add_parser("summary", parents=[common])
     p.add_argument("report"); p.add_argument("--out", default=None)

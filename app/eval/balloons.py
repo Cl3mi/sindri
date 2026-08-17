@@ -76,6 +76,28 @@ def recover_balloons(pdf_path, page_index: int = 0) -> List[Balloon]:
         doc.close()
 
 
+def _annot_facts(page) -> dict:
+    """Annotations are invisible to get_drawings()/get_text(): a stamping tool
+    (Bluebeam, Adobe, …) adds balloons as annotation objects, so a page can look
+    empty of balloons while being fully ballooned."""
+    types, numbered = {}, 0
+    try:
+        annots = list(page.annots() or [])
+    except Exception:
+        return {"n_annots": 0, "annot_types": {}, "n_annot_numbers": 0}
+    for a in annots:
+        try:
+            name = a.type[1] if isinstance(a.type, (tuple, list)) else str(a.type)
+        except Exception:
+            name = "unknown"
+        types[name] = types.get(name, 0) + 1
+        content = ((a.info or {}).get("content") or "").strip()
+        if content.isdigit():
+            numbered += 1
+    return {"n_annots": len(annots), "annot_types": types,
+            "n_annot_numbers": numbered}
+
+
 def probe_pdf(pdf_path, page_index: int = 0) -> dict:
     """Day-one encoding inspection for one client PDF. Cheap, no model."""
     doc = fitz.open(pdf_path)
@@ -94,6 +116,7 @@ def probe_pdf(pdf_path, page_index: int = 0) -> dict:
             "n_circles": len(circles),
             "n_words": len(page.get_text("words")),
             "has_images": len(page.get_images()) > 0,
+            **_annot_facts(page),
             "n_balloons": len(balloons),
             "numbers": numbers,
             "duplicate_numbers": dupes,

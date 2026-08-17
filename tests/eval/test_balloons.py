@@ -44,6 +44,32 @@ def test_probe_reports_encoding_facts(ballooned_pdf):
     assert p["duplicate_numbers"] == []
 
 
+def test_probe_reports_annotation_facts(tmp_path):
+    """Stamping tools add balloons as ANNOTATIONS, which get_drawings() and
+    get_text() never see. The probe must surface them or the encoding question
+    cannot be answered."""
+    doc = fitz.open()
+    page = doc.new_page(width=600, height=400)
+    page.add_circle_annot(fitz.Rect(90, 90, 110, 110))
+    page.add_freetext_annot(fitz.Rect(95, 95, 115, 115), "7")
+    page.add_freetext_annot(fitz.Rect(200, 200, 280, 220), "see note")
+    path = tmp_path / "annots.pdf"
+    doc.save(path)
+    doc.close()
+
+    p = probe_pdf(path)
+    assert p["n_annots"] == 3
+    assert p["annot_types"].get("FreeText") == 2
+    assert p["n_annot_numbers"] == 1
+
+
+def test_probe_reports_zero_annotations_on_plain_page(tmp_path, ballooned_pdf):
+    p = probe_pdf(ballooned_pdf)
+    assert p["n_annots"] == 0
+    assert p["annot_types"] == {}
+    assert p["n_annot_numbers"] == 0
+
+
 def test_probe_gaps_capped_against_garbage_numbers(tmp_path):
     doc = fitz.open()
     page = doc.new_page(width=600, height=400)

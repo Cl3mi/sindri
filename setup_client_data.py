@@ -12,9 +12,12 @@ stem-overlap statistics, never filenames (use --show-names if YOU need to see
 mismatches — do not paste those into an AI session).
 
     ./setup_client_data.py ~/sindri-client-data \\
-        --originals "~/sindri-client-data/incoming/Orginalzeichnungen" \\
-        --stamped   "~/sindri-client-data/incoming/Gestempelte Zeichnungen" \\
-        --excel     "~/sindri-client-data/incoming/Berichte"
+        --incoming  ~/sindri-client-data/incoming
+
+The three roles are auto-detected by content (sheets by extension; ballooned vs
+clean drawings by whether balloons are recoverable), so the delivered folder
+names never have to be typed — which matters because the client-data guard
+blocks them. Pass --originals/--stamped/--excel explicitly to override.
 """
 import argparse
 import sys
@@ -48,22 +51,76 @@ def suffix_histogram(mapping: dict) -> dict:
     return dict(Counter(p.suffix.lower() for p in mapping.values()))
 
 
+def _mean_balloons(drawings: dict, sample: int) -> float:
+    """Average recoverable balloons over a sample — the signal that separates
+    the ballooned copies from the clean ones."""
+    from app.eval.balloons import recover_balloons
+    picks = list(drawings.values())[:sample]
+    if not picks:
+        return 0.0
+    total = 0
+    for path in picks:
+        try:
+            total += len(recover_balloons(path))
+        except Exception:
+            pass
+    return total / len(picks)
+
+
+def detect_roles(incoming: Path, sample: int = 5) -> dict:
+    """Identify the three delivered folders by CONTENT, never by name.
+
+    Folder names cannot appear in an agent command (the client-data guard
+    blocks them), and spelling varies ("Orginal..."/"Original..."). Sheets are
+    found by extension; of the two drawing folders, the one whose pages yield
+    balloons is the ballooned set."""
+    subdirs = [d for d in sorted(incoming.iterdir()) if d.is_dir()]
+    sheet_dirs, draw_dirs = [], []
+    for d in subdirs:
+        if collect(d, SHEET_EXT):
+            sheet_dirs.append(d)
+        elif collect(d, DRAWING_EXT):
+            draw_dirs.append(d)
+    if len(sheet_dirs) != 1 or len(draw_dirs) != 2:
+        raise SystemExit(
+            f"expected 1 spreadsheet folder and 2 drawing folders under "
+            f"{incoming}, found {len(sheet_dirs)} and {len(draw_dirs)} — "
+            f"pass --originals/--stamped/--excel explicitly instead")
+    ranked = sorted(draw_dirs,
+                    key=lambda d: _mean_balloons(collect(d, DRAWING_EXT), sample))
+    return {"originals": ranked[0], "stamped": ranked[-1],
+            "excel": sheet_dirs[0]}
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("root", help="protected client-data root")
-    ap.add_argument("--originals", required=True, help="clean drawings (pipeline input)")
-    ap.add_argument("--stamped", required=True, help="ballooned drawings (gold positions)")
-    ap.add_argument("--excel", required=True, help="inspection sheets (gold values)")
+    ap.add_argument("--incoming", default=None,
+                    help="delivery folder; the three roles are auto-detected "
+                         "by content, so folder names are never needed")
+    ap.add_argument("--originals", default=None, help="clean drawings (pipeline input)")
+    ap.add_argument("--stamped", default=None, help="ballooned drawings (gold positions)")
+    ap.add_argument("--excel", default=None, help="inspection sheets (gold values)")
+    ap.add_argument("--sample", type=int, default=5,
+                    help="drawings sampled per folder during role detection")
     ap.add_argument("--show-names", action="store_true",
                     help="print mismatching stems (for your eyes only)")
     args = ap.parse_args(argv)
 
     root = Path(args.root).expanduser().resolve()
+    if args.incoming:
+        roles = detect_roles(Path(args.incoming).expanduser(), sample=args.sample)
+    elif args.originals and args.stamped and args.excel:
+        roles = {"originals": Path(args.originals).expanduser(),
+                 "stamped": Path(args.stamped).expanduser(),
+                 "excel": Path(args.excel).expanduser()}
+    else:
+        ap.error("give --incoming, or all of --originals/--stamped/--excel")
     sources = {
-        "originals": (Path(args.originals).expanduser(), DRAWING_EXT),
-        "stamped": (Path(args.stamped).expanduser(), DRAWING_EXT),
-        "excel": (Path(args.excel).expanduser(), SHEET_EXT),
+        "originals": (roles["originals"], DRAWING_EXT),
+        "stamped": (roles["stamped"], DRAWING_EXT),
+        "excel": (roles["excel"], SHEET_EXT),
     }
 
     collected = {}
@@ -81,6 +138,12 @@ def main(argv=None) -> int:
     for name in ("originals", "stamped", "excel"):
         print(f"  {name:<10} {len(collected[name]):>4} files  "
               f"suffixes={suffix_histogram(collected[name])}")
+    if args.incoming:
+        # evidence for the role assignment, so a wrong guess is visible
+        for name in ("stamped", "originals"):
+            mean = _mean_balloons(collected[name], args.sample)
+            print(f"  detect: {name:<10} {mean:.1f} balloons/page "
+                  f"(sample of {args.sample})")
     print(f"  {'USABLE':<10} {len(common):>4} docs present in all three")
 
     problems = 0

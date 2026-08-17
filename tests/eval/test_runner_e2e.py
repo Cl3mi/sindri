@@ -110,6 +110,35 @@ def test_probe_and_headers_anonymize_doc_ids_by_default(tmp_path, capsys,
     assert "SYNA" not in out and "SYNB" not in out
 
 
+def test_probe_summary_aggregates_instead_of_per_doc_lines(tmp_path, capsys,
+                                                           monkeypatch):
+    monkeypatch.setenv("SINDRI_DOC_SALT", "test-salt")
+    pdfs, _ = _setup_corpus(tmp_path)
+    assert main(["probe", str(pdfs), "--summary"]) == 0
+    digest = json.loads(capsys.readouterr().out)   # one object, not JSONL
+    assert digest["n_docs"] == 2
+    assert digest["with_balloons"] == 2
+    assert digest["with_annotations"] == 0
+    assert digest["with_images"] == 0
+    assert digest["balloons_per_doc"]["max"] == 3
+    assert digest["balloons_per_doc"]["min"] == 2
+    assert digest["with_numeric_annotations"] == 0
+    assert digest["vector_items_per_doc"]["min"] > 0
+
+
+def test_headers_summary_groups_sheets_by_schema(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("SINDRI_DOC_SALT", "test-salt")
+    _, excel = _setup_corpus(tmp_path)
+    assert main(["headers", str(excel), "--summary"]) == 0
+    digest = json.loads(capsys.readouterr().out)
+    assert digest["n_docs"] == 2
+    assert digest["with_error"] == 0
+    assert digest["header_rows"] == {"1": 2}
+    assert len(digest["schemas"]) == 1            # both sheets share a layout
+    assert digest["schemas"][0]["docs"] == 2
+    assert "Merkmal" in digest["schemas"][0]["headers"]
+
+
 def test_show_ids_opts_back_into_real_part_numbers(tmp_path, capsys,
                                                    monkeypatch):
     monkeypatch.setenv("SINDRI_DOC_SALT", "test-salt")
