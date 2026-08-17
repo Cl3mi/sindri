@@ -26,6 +26,7 @@ import fitz
 
 from app.eval.anon import Anonymizer
 from app.eval.balloons import probe_pdf, shape_report
+from app.eval.balloon_cv import cv_report
 from app.eval.dump import load_dump, save_dump
 from app.eval.excel_gold import dump_headers, sheet_vocabulary
 from app.eval.ingest import build_gold_doc
@@ -149,6 +150,27 @@ def _shapes_summary(records) -> dict:
 def _cmd_probe(args):
     anon = _anon(args)
     records = []
+    if args.cv_report:
+        reps = [cv_report(f, dpi=150)
+                for f in sorted(Path(args.dir).glob("*.p" + "df"))]
+        agg, sizes = {}, {}
+        keys = ("coloured_px", "dark_px", "blue_px_m15", "blue_px_m40",
+                "blue_px_m80", "n_contours", "n_candidates", "n_read")
+        for k in keys:
+            agg[k] = _spread(r.get(k, 0) for r in reps)
+        for r in reps:
+            for b, n in (r.get("contour_sizes_pt") or {}).items():
+                sizes[b] = sizes.get(b, 0) + n
+        print(json.dumps({"n_docs": len(reps),
+                          "docs_with_blue": sum(1 for r in reps
+                                                if r.get("blue_px_m40", 0) > 0),
+                          "docs_with_candidates": sum(1 for r in reps
+                                                      if r.get("n_candidates")),
+                          "docs_with_readings": sum(1 for r in reps
+                                                    if r.get("n_read")),
+                          **agg, "contour_sizes_pt": sizes},
+                         indent=1, ensure_ascii=False))
+        return 0
     if args.shapes:
         reps = [shape_report(f) for f in sorted(Path(args.dir).glob("*.pdf"))]
         print(json.dumps(_shapes_summary(reps), indent=1, ensure_ascii=False))
@@ -413,6 +435,9 @@ def main(argv=None) -> int:
     p.add_argument("dir")
     p.add_argument("--summary", action="store_true",
                    help="one aggregate object instead of one line per document")
+    p.add_argument("--cv-report", action="store_true",
+                   help="calibration for rendered-page detection: ink colour, "
+                        "contour sizes, and where the pipeline drops out")
     p.add_argument("--shapes", action="store_true",
                    help="calibration diagnostic: shape sizes, primitives, and "
                         "whether digit words land inside a candidate outline")

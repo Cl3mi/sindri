@@ -128,6 +128,67 @@ def _read_number(image: Image.Image, expect: Optional[set],
     return best
 
 
+def cv_report(pdf_path, page_index: int = 0,
+              dpi: int = _DEFAULT_DPI) -> dict:
+    """Where rendered-page detection succeeds or fails, stage by stage.
+
+    Distinguishes the three ways it can come up empty: the balloon ink is not
+    blue (blue_px ~ 0 while dark_px is large), the outlines fail the size or
+    symmetry filter (n_contours large, n_candidates ~ 0), or OCR cannot read
+    the interiors (n_candidates large, n_read ~ 0). Counts only — no content."""
+    with tempfile.TemporaryDirectory() as tmp:
+        render = render_page(pdf_path, dpi=dpi, out_dir=tmp,
+                             page_index=page_index)
+        bgr = cv2.imread(str(render.png_path))
+    if bgr is None:
+        return {"unreadable": True}
+
+    blue = bgr[:, :, 0].astype(np.int16)
+    green = bgr[:, :, 1].astype(np.int16)
+    red = bgr[:, :, 2].astype(np.int16)
+    hi = np.maximum(np.maximum(blue, green), red)
+    lo = np.minimum(np.minimum(blue, green), red)
+    out = {
+        "coloured_px": int((((hi - lo) > 30) & (lo < 200)).sum()),
+        "dark_px": int((hi < 128).sum()),
+    }
+    for margin in (15, 40, 80):
+        out[f"blue_px_m{margin}"] = int((blue_ink_mask(bgr, margin) > 0).sum())
+
+    scale = dpi / 72.0
+    mask = blue_ink_mask(bgr)
+    closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE,
+                              np.ones((5, 5), np.uint8), iterations=2)
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_SIMPLE)
+    out["n_contours"] = len(contours)
+    sizes = {}
+    for contour in contours:
+        _, _, w, h = cv2.boundingRect(contour)
+        sizes[_bucket_pt(max(w, h) / scale)] = \
+            sizes.get(_bucket_pt(max(w, h) / scale), 0) + 1
+    out["contour_sizes_pt"] = sizes
+
+    candidates = _candidate_regions(mask, scale)
+    out["n_candidates"] = len(candidates)
+    out["n_read"] = sum(
+        1 for box in candidates
+        if (lambda img: img is not None
+            and _read_number(img, None, _MIN_CONF) is not None)(
+                _prepare_crop(mask, box)))
+    return out
+
+
+_SIZE_EDGES = (4, 8, 16, 24, 40, 80, 160)
+
+
+def _bucket_pt(value: float) -> str:
+    for edge in _SIZE_EDGES:
+        if value < edge:
+            return f"<{edge}"
+    return f">={_SIZE_EDGES[-1]}"
+
+
 def detect_balloons_cv(pdf_path, page_index: int = 0, dpi: int = _DEFAULT_DPI,
                        expect: Optional[set] = None,
                        min_conf: float = _MIN_CONF) -> List[Balloon]:

@@ -106,6 +106,36 @@ def test_reads_a_three_digit_balloon(tmp_path):
     assert [b.number for b in detect_balloons_cv(path, dpi=300)] == [125]
 
 
+def test_cv_report_measures_each_filter_stage(blue_balloon_pdf):
+    """Calibration: if the detector finds nothing, this says whether the ink is
+    the wrong colour, the shapes the wrong size, or the OCR the problem."""
+    from app.eval.balloon_cv import cv_report
+    rep = cv_report(blue_balloon_pdf, dpi=200)
+    assert rep["blue_px_m40"] > 0
+    assert rep["coloured_px"] > 0
+    assert rep["dark_px"] > 0                 # the black dimension text
+    assert rep["n_candidates"] == 3
+    assert rep["n_read"] == 3
+
+
+def test_cv_report_shows_when_ink_is_not_blue(tmp_path):
+    doc = fitz.open()
+    page = doc.new_page(width=600, height=400)
+    x, y, r = 300.0, 200.0, 17.0
+    page.draw_polyline([fitz.Point(x, y - r), fitz.Point(x + r, y),
+                        fitz.Point(x, y + r), fitz.Point(x - r, y),
+                        fitz.Point(x, y - r)], color=(0, 0, 0), width=1.5)
+    page.insert_text(fitz.Point(x - 7, y + 5), "9", fontsize=15, color=(0, 0, 0))
+    path = tmp_path / "black.pdf"
+    doc.save(path)
+    doc.close()
+
+    from app.eval.balloon_cv import cv_report
+    rep = cv_report(path, dpi=200)
+    assert rep["blue_px_m40"] == 0            # colour premise fails here
+    assert rep["dark_px"] > 0                 # but there IS ink to find
+
+
 def test_coordinates_are_pdf_points_not_pixels(blue_balloon_pdf):
     """A 600x400pt page rendered at 300dpi is 2500x1667px; a centre reported in
     pixels would land far outside the page rectangle."""
