@@ -239,7 +239,7 @@ def _cmd_ingest(args):
     paired = sorted(set(pdfs) & set(excels))
     for stem in paired:
         gold = build_gold_doc(pdfs[stem], excels[stem], doc_id=stem,
-                              is_variant=stem in variants)
+                              is_variant=stem in variants, use_cv=args.cv)
         (out / f"{stem}.gold.json").write_text(gold.model_dump_json(indent=1),
                                                encoding="utf-8")
         provenance.append(gold.provenance)
@@ -278,6 +278,8 @@ def _ingest_summary(provenance) -> dict:
                                       for p in provenance),
         "on_later_pages_total": sum(p.get("on_later_pages", 0)
                                     for p in provenance),
+        "recovered_by_cv_total": sum(p.get("recovered_by_cv", 0)
+                                     for p in provenance),
         "balloons_per_doc": _spread(p["n_balloons"] for p in provenance),
         "excel_rows_per_doc": _spread(p["n_excel_rows"] for p in provenance),
         "pdf_only_per_doc": _spread(len(p["pdf_only"]) for p in provenance),
@@ -433,6 +435,9 @@ def main(argv=None) -> int:
     p = sub.add_parser("ingest", parents=[common])
     p.add_argument("--summary", action="store_true",
                    help="print join aggregates instead of per-document warnings")
+    p.add_argument("--cv", action="store_true",
+                   help="read balloons off the rendered page for rows the text "
+                        "layer cannot locate (slower: renders + OCRs each page)")
     p.add_argument("--pdfs", required=True); p.add_argument("--excel", required=True)
     p.add_argument("--out", required=True); p.add_argument("--variants", default=None)
     p.set_defaults(fn=_cmd_ingest)

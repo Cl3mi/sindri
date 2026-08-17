@@ -12,7 +12,8 @@ from app.eval.models import GoldCharacteristic, GoldDoc
 
 
 def build_gold_doc(pdf_path, excel_path, doc_id: str,
-                   is_variant: bool = False, page_index: int = 0) -> GoldDoc:
+                   is_variant: bool = False, page_index: int = 0,
+                   use_cv: bool = False) -> GoldDoc:
     # Read the sheet FIRST: its Pos column says which balloon numbers exist on
     # this drawing, which lets recovery reject digit words that are not
     # balloons (title-block numbers, revision indices).
@@ -27,6 +28,22 @@ def build_gold_doc(pdf_path, excel_path, doc_id: str,
     duplicate_balloons = sorted({n for n in nums if nums.count(n) > 1})
     balloons = {b.number: b for b in recovered}
     rows = _rows_for_expect
+
+    # Whatever the text layer could not give us, read off the rendered page.
+    # Restricted to the numbers still missing, so OCR can only ever LOCATE a
+    # characteristic the sheet already lists — never invent one.
+    recovered_by_cv = 0
+    if use_cv:
+        missing = {n for n in rows
+                   if n not in balloons or balloons[n].page != page_index}
+        if missing:
+            from app.eval.balloon_cv import detect_balloons_cv
+            for found in detect_balloons_cv(pdf_path, page_index,
+                                            expect=missing):
+                current = balloons.get(found.number)
+                if current is None or current.page != page_index:
+                    balloons[found.number] = found
+                    recovered_by_cv += 1
 
     doc = fitz.open(pdf_path)
     rect = doc[page_index].rect
@@ -68,6 +85,7 @@ def build_gold_doc(pdf_path, excel_path, doc_id: str,
                 if n not in balloons or balloons[n].page != page_index),
             "on_later_pages": sum(1 for n in rows if n in balloons
                                   and balloons[n].page != page_index),
+            "recovered_by_cv": recovered_by_cv,
             "duplicate_balloons": duplicate_balloons,
         },
     )

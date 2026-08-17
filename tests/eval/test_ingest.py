@@ -26,6 +26,38 @@ def test_join_recovers_positions_and_values(tmp_path):
     assert gold.provenance["join_rate"] == 1.0
 
 
+def _flatten(src, dst, dpi=200):
+    """Raster-only copy: no text layer survives, matching the delivered
+    drawings whose balloon numbers defeat text recovery."""
+    import fitz
+    doc = fitz.open(src)
+    rect = doc[0].rect
+    pix = doc[0].get_pixmap(matrix=fitz.Matrix(dpi / 72, dpi / 72))
+    doc.close()
+    out = fitz.open()
+    page = out.new_page(width=rect.width, height=rect.height)
+    page.insert_image(page.rect, pixmap=pix)
+    out.save(dst)
+    out.close()
+    return dst
+
+
+def test_cv_fallback_fills_positions_the_text_layer_cannot(tmp_path):
+    pdf, xlsx = make_synthetic_doc(RECORDS, tmp_path, doc_id="SYNCV")
+    flat = _flatten(pdf, tmp_path / "flat.pdf")
+
+    plain = build_gold_doc(flat, xlsx, doc_id="SYNCV")
+    assert all(c.position_pt is None for c in plain.characteristics)
+    assert plain.provenance["without_position"] == len(RECORDS)
+
+    with_cv = build_gold_doc(flat, xlsx, doc_id="SYNCV", use_cv=True)
+    located = [c for c in with_cv.characteristics if c.position_pt is not None]
+    assert located, "CV fallback recovered no positions"
+    assert with_cv.provenance["recovered_by_cv"] == len(located)
+    # every row is still gold either way
+    assert len(with_cv.characteristics) == len(RECORDS)
+
+
 def test_excel_rows_without_a_balloon_stay_in_the_gold(tmp_path):
     """A characteristic whose balloon could not be located is still a
     characteristic. Dropping it would make the eval blind to ever missing it —
