@@ -16,22 +16,71 @@ Everything below is enforced mechanically and verified, not by convention.
 Outside the repository, under one protected root:
 
 ```
-<protected-root>/            # e.g. ~/sindri-client-data — NOT in any git tree
-  Orginalzeichnungen/        # clean drawings  -> pipeline input (predict)
-  Gestempelte Zeichnungen/   # ballooned       -> gold balloon positions
-  Berichte/                  # Excel sheets    -> gold values
-  gold/                      # <doc>.gold.json + doc_id_map.json
-  runs/<name>/               # <doc>.pred.json
-  reports/                   # <name>.report.json
+<protected-root>/              # e.g. ~/sindri-client-data — NOT in any git tree
+├── incoming/                  # exactly as delivered, never modified
+│   ├── <clean drawings>/      # "Orginalzeichnungen"
+│   ├── <ballooned drawings>/  # "Gestempelte Zeichnungen"
+│   ├── <inspection sheets>/   # "Berichte"
+│   └── INFO.txt
+├── corpus/                    # harness-facing view — symlinks, no copies
+│   ├── originals/             # predict --pdfs   (what production sees)
+│   ├── stamped/               # ingest  --pdfs   (gold balloon positions)
+│   └── excel/                 # ingest  --excel  (gold values)
+├── gold/                      # ingest  --out    (*.gold.json + id map)
+├── runs/<config-name>/        # predict --out    (*.pred.json + _work/ renders)
+├── reports/                   # score   --out    (*.report.json)
+└── meta/                      # splits.json, variants.txt, notes
 ```
 
 Because the root sits outside every git working tree, a git leak is
 structurally impossible rather than merely blocked.
 
-> **Note on the delivery:** clean *and* ballooned copies of each drawing were
-> supplied. That is better than the plan assumed — `predict` runs on the clean
-> `Orginalzeichnungen`, exactly what production sees, while gold balloon
-> positions come from `Gestempelte Zeichnungen`. No balloon-stripping needed.
+Build `corpus/` with `./setup_client_data.py` (repo root). It symlinks rather
+than copies, so the delivery stays pristine, and prints only counts and
+stem-overlap statistics — never filenames.
+
+**Why this shape — three hard constraints from the code:**
+
+1. **Flat directories.** Every CLI glob is non-recursive (`Path(dir).glob("*.pdf")`),
+   so nested per-drawing folders are invisible.
+2. **Stems must match across all three folders.** `ingest` pairs a drawing with
+   its sheet by `p.stem`, and `score` joins a prediction to its gold by the same
+   stem. `T1025300_B.pdf` + `T1025300_B.xlsx` works; `T1025300_B_gestempelt.pdf`
+   does not.
+3. **Lowercase extensions.** The globs are case-sensitive: a `.PDF` file is
+   silently skipped. The setup script normalizes this in the symlink name.
+
+> **The delivery is better than the plan assumed:** clean *and* ballooned copies
+> of each drawing were supplied, so `predict` runs on `corpus/originals` —
+> exactly what production sees — while gold balloon positions come from
+> `corpus/stamped`. No balloon-stripping needed, and no risk of the model
+> reading the client's own balloons as if they were callouts.
+
+### What must NOT be committed (amends the Rung-0 plan)
+
+The plan predates the decision to treat part numbers as confidential. Three
+artifacts it wanted in git contain them:
+
+| Artifact | Plan said | Do instead |
+|---|---|---|
+| `splits.json` | commit to `docs/eval/` | keep at `<root>/meta/splits.json` |
+| `variants.txt` | repo | `<root>/meta/variants.txt` |
+| `baseline-report.json` | commit stripped report | commit `docs/eval/baseline-summary.json` from `runner summary` |
+
+Freezing the split is still guaranteed without committing it: every report and
+summary embeds `splits_hash`, and `compare` refuses runs whose hashes differ.
+
+`docs/eval/weights.json` (four review-cost numbers) carries no client data and
+should be committed — it is part of the comparability contract.
+
+Note `runs/<name>/_work/<doc>/page.png` holds full-resolution renders of the
+drawings. That is why `runs/` belongs under the protected root, not in `/tmp`.
+
+### INFO.txt
+
+Anything inside the root is unreadable by an agent, `.txt` included. If you want
+Claude to read the delivery notes, keep a copy outside the root (e.g.
+`~/sindri-delivery-notes.txt`) or paste the contents into the session.
 
 ## Registering the root (the one manual step)
 
