@@ -166,6 +166,25 @@ at `~/.claude/sindri-doc-salt` (mode 0600, outside the repo).
   which emits aggregate metrics, taxonomy, config fingerprint and hashed
   worst-doc ids — safe to show an agent, commit, or paste into a ticket.
 
+## Corpus-scale inspection commands
+
+A 100-document corpus must never be inspected one line per file — that is both
+expensive and a needless exposure. Every inspection command aggregates:
+
+| Command | Answers |
+|---|---|
+| `probe <dir> --summary` | page counts, balloon coverage, annotations, raster vs vector |
+| `probe <dir> --shapes` | calibration: digit-word counts, outline primitives, size buckets |
+| `headers <dir> --summary` | how many distinct sheet layouts, where each header row sits |
+| `headers <dir> --captions` | strings shared across many workbooks (slow: re-reads every file) |
+| `ingest ... --summary` | join aggregates: balloons vs rows, and which side each shortfall is on |
+| `ingest ... --cv` | read balloons off the rendered page where the text layer cannot |
+| `summary <report.json>` | the only sanctioned way to look at a scored run |
+
+`--captions` is safe by construction: it reports only strings appearing in many
+*different* workbooks. A caption repeats; a measured value does not. Numerics
+are dropped outright. This is what identified the bilingual header cells.
+
 ## What an agent may see
 
 Allowed: file counts, join rates, balloon-count statistics, Excel column
