@@ -87,9 +87,26 @@ Two further problems visible in the same log:
 
 ### A. Pixel budget in `render_page` (blocking)
 
-Clamp the effective dpi so `width * height` stays under a documented budget
-(~80–120 MP keeps clear of PIL's warning and error thresholds), and set
-`Image.MAX_IMAGE_PIXELS` deliberately rather than relying on the default.
+**Decided: 80 MP.** Clamp the effective dpi so `width * height` never exceeds
+80,000,000 pixels. That sits below PIL's *warning* threshold (89.5 MP), not just
+its error threshold (178.9 MP), so `Image.MAX_IMAGE_PIXELS` does not need
+touching at all — no warnings, no errors, no global PIL state changed.
+
+Consequence, and it is real: oversized drawings render at reduced resolution.
+For the three documents this corpus is known to contain,
+
+| pixels at 300 dpi | effective dpi under the 80 MP budget |
+|---|---|
+| 598.4 M | ~110 |
+| 163.6 M | ~210 |
+| 139.5 M | ~227 |
+
+so the largest drawing is rendered at roughly a third of the requested
+resolution. Expect those documents to extract worse, and expect the taxonomy to
+say so. That is the honest outcome — the alternative was crashing — but when
+reading the baseline, check whether misses cluster on the clamped documents
+before concluding anything about the model. Worth logging the effective dpi per
+document so that is answerable rather than guessed at.
 
 **Watch the scale, or you will silently corrupt every coordinate.**
 `RenderResult.scale` is what the eval uses to convert pixels to PDF points. If

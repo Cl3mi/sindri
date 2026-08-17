@@ -59,6 +59,18 @@ python -m app.eval.runner summary $R/reports/baseline-dev.report.json \
 Run each as its own command: the client-data guard rejects piped or chained
 invocations, and the summary is the only artifact safe to commit or paste.
 
+## Large-format drawings render at reduced resolution
+
+Rendering is capped at **80 MP** per page, because this corpus contains
+drawings that reach ~600 MP at 300 dpi (roughly 2.5 m × 1.7 m of paper) and PIL
+refuses anything past 178.9 MP. The cap keeps the pipeline below PIL's warning
+threshold entirely.
+
+The cost is that the largest drawings render at ~110 dpi rather than 300, so
+they will extract worse. Before drawing conclusions from the taxonomy, check
+whether misses cluster on those documents — a recall problem caused by
+resolution is a different problem from one caused by the model.
+
 ## What the result means
 
 The headline covers **dimensional characteristics only** — a verbal requirement
