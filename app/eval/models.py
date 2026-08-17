@@ -8,7 +8,7 @@ Geometry convention: ALL positions/boxes in these models are PDF points
 """
 import hashlib
 import json
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, field_validator
 
@@ -31,7 +31,9 @@ class _Versioned(BaseModel):
 
 class GoldCharacteristic(BaseModel):
     balloon: int                                # client's balloon number
-    position_pt: Tuple[float, float]            # balloon center, PDF points
+    # None when the balloon could not be located on the page. The row is still
+    # gold — it is matched on value instead of geometry (see MatchParams.mode).
+    position_pt: Optional[Tuple[float, float]] = None
     char_type: str = ""
     nominal: str = ""
     upper_tol: str = ""

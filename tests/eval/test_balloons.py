@@ -153,6 +153,24 @@ def test_text_strategy_can_be_limited_to_expected_numbers(tmp_path):
             recover_balloons(path, strategy="text", expect={7})] == [7]
 
 
+def test_recovers_balloons_from_later_pages_when_asked(tmp_path):
+    """9 of the 100 delivered drawings run to 2-4 pages. Reading only page 0
+    loses every balloon after the first sheet."""
+    doc = fitz.open()
+    first = doc.new_page(width=600, height=400)
+    first.insert_text(fitz.Point(100, 100), "1", fontsize=9)
+    second = doc.new_page(width=600, height=400)
+    second.insert_text(fitz.Point(120, 120), "2", fontsize=9)
+    path = tmp_path / "multipage.pdf"
+    doc.save(path)
+    doc.close()
+
+    assert [b.number for b in recover_balloons(path, strategy="text")] == [1]
+    every = recover_balloons(path, strategy="text", all_pages=True)
+    assert sorted(b.number for b in every) == [1, 2]
+    assert {b.page for b in every} == {0, 1}
+
+
 def test_probe_reports_page_count(tmp_path, ballooned_pdf):
     """Recovery only reads page 0; a multi-page drawing would silently lose
     every balloon after the first page."""

@@ -274,6 +274,10 @@ def _ingest_summary(provenance) -> dict:
         "excel_rows_total": sum(p["n_excel_rows"] for p in provenance),
         "pdf_only_total": sum(len(p["pdf_only"]) for p in provenance),
         "excel_only_total": sum(len(p["excel_only"]) for p in provenance),
+        "without_position_total": sum(p.get("without_position", 0)
+                                      for p in provenance),
+        "on_later_pages_total": sum(p.get("on_later_pages", 0)
+                                    for p in provenance),
         "balloons_per_doc": _spread(p["n_balloons"] for p in provenance),
         "excel_rows_per_doc": _spread(p["n_excel_rows"] for p in provenance),
         "pdf_only_per_doc": _spread(len(p["pdf_only"]) for p in provenance),

@@ -41,7 +41,7 @@ def _value_similarity(a: str, b: str) -> float:
 @dataclass(frozen=True)
 class Cand:
     key: int              # pred.pos or gold.balloon
-    center_pt: tuple      # PDF points
+    center_pt: tuple      # PDF points; None when the balloon was not located
     nominal: str = ""
 
 
@@ -65,6 +65,16 @@ def match_candidates(preds: List[Cand], golds: List[Cand],
     elif params.mode == "geometry":
         for p in preds:
             for g in golds:
+                if g.center_pt is None or p.center_pt is None:
+                    # Hybrid: this characteristic is real gold but its balloon
+                    # could not be located, so geometry is unavailable for this
+                    # pair only. Fall back to value similarity rather than
+                    # letting it read as a guaranteed miss.
+                    sim = _value_similarity(p.nominal, g.nominal)
+                    if sim < params.value_sim_min:
+                        continue
+                    scored.append((1.0 - sim, p.key, g.key, 0.0))
+                    continue
                 d = math.dist(p.center_pt, g.center_pt) / page_diag_pt
                 if d > params.max_geo_frac:
                     continue

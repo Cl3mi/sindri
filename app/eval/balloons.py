@@ -24,8 +24,9 @@ MAX_R_PT = 24.0
 @dataclass(frozen=True)
 class Balloon:
     number: int
-    center_pt: tuple      # (x, y) in PDF points
+    center_pt: tuple      # (x, y) in PDF points, in ITS page's coordinates
     radius_pt: float
+    page: int = 0         # 9 of the 100 delivered drawings run to 2-4 pages
 
 
 def _shape_rects(page, curves_only: bool = False) -> List[fitz.Rect]:
@@ -74,7 +75,7 @@ _MIN_SHAPE_HITS = 1       # fall back only when shape matching finds NOTHING:
                           # one real outline means outlines are readable here
 
 
-def _balloons_from_words(page, expect=None) -> List[Balloon]:
+def _balloons_from_words(page, expect=None, page_no: int = 0) -> List[Balloon]:
     """Every plausible digit word IS a balloon.
 
     Correct for this corpus because the stamped drawings are flattened prints:
@@ -94,21 +95,35 @@ def _balloons_from_words(page, expect=None) -> List[Balloon]:
         out.append(Balloon(
             number=number,
             center_pt=((w[0] + w[2]) / 2.0, (w[1] + w[3]) / 2.0),
-            radius_pt=max(w[2] - w[0], w[3] - w[1]) / 2.0))
+            radius_pt=max(w[2] - w[0], w[3] - w[1]) / 2.0,
+            page=page_no))
     return out
 
 
-def recover_balloons(pdf_path, page_index: int = 0,
-                     strategy: str = "auto", expect=None) -> List[Balloon]:
+def recover_balloons(pdf_path, page_index: int = 0, strategy: str = "auto",
+                     expect=None, all_pages: bool = False) -> List[Balloon]:
     """strategy: 'shape' (digit inside a closed outline), 'text' (any plausible
     digit word), or 'auto' — shape first, falling back to text when the
-    outlines are not recoverable as closed paths."""
+    outlines are not recoverable as closed paths.
+
+    `all_pages` sweeps every page; each balloon reports the page it sits on.
+    Positions from different pages are NOT comparable to each other."""
     if strategy not in ("auto", "shape", "text"):
         raise ValueError(f"unknown balloon strategy {strategy!r}")
+    if all_pages:
+        doc = fitz.open(pdf_path)
+        try:
+            found = []
+            for n in range(doc.page_count):
+                found.extend(_page_balloons(doc[n], strategy, expect, n))
+            return _dedupe(found)
+        finally:
+            doc.close()
     if strategy == "text":
         doc = fitz.open(pdf_path)
         try:
-            return _dedupe(_balloons_from_words(doc[page_index], expect))
+            return _dedupe(_balloons_from_words(doc[page_index], expect,
+                                                page_index))
         finally:
             doc.close()
 
@@ -133,17 +148,42 @@ def recover_balloons(pdf_path, page_index: int = 0,
                                     radius_pt=r.width / 2))
         unique = _dedupe(balloons)
         if strategy == "auto" and len(unique) < _MIN_SHAPE_HITS:
-            return _dedupe(_balloons_from_words(page, expect))
+            return _dedupe(_balloons_from_words(page, expect, page_index))
         return unique
     finally:
         doc.close()
+
+
+def _page_balloons(page, strategy, expect, page_no) -> List[Balloon]:
+    """One page's balloons, honouring the same strategy rules."""
+    if strategy == "text":
+        return _balloons_from_words(page, expect, page_no)
+    words = page.get_text("words")
+    found = []
+    for r in _shape_rects(page):
+        inside = [w for w in words
+                  if w[4].strip().isdigit()
+                  and r.contains(fitz.Point((w[0] + w[2]) / 2,
+                                            (w[1] + w[3]) / 2))]
+        if not inside:
+            continue
+        inside.sort(key=lambda w: w[0])
+        number = int("".join(w[4].strip() for w in inside))
+        if expect is not None and number not in expect:
+            continue
+        found.append(Balloon(number=number,
+                             center_pt=((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2),
+                             radius_pt=r.width / 2, page=page_no))
+    if strategy == "auto" and len(found) < _MIN_SHAPE_HITS:
+        return _balloons_from_words(page, expect, page_no)
+    return found
 
 
 def _dedupe(balloons: List[Balloon]) -> List[Balloon]:
     """Drop repeats from doubled vector strokes / overlapping text runs."""
     seen, unique = set(), []
     for b in balloons:
-        key = (b.number, round(b.center_pt[0]), round(b.center_pt[1]))
+        key = (b.number, b.page, round(b.center_pt[0]), round(b.center_pt[1]))
         if key not in seen:
             seen.add(key)
             unique.append(b)

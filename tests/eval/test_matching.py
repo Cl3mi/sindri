@@ -79,6 +79,25 @@ def test_value_mode_is_one_to_one_on_repeated_values():
     assert sorted(g for _, g, _ in pairs) == [7, 8]
 
 
+def test_geometry_mode_falls_back_to_value_for_positionless_gold():
+    """Hybrid: gold rows whose balloon was located match on geometry; rows
+    without a position still match, on value alone. Otherwise a located
+    characteristic and an unlocated one would be scored by different rules —
+    or the unlocated one would always read as a miss."""
+    preds = [Cand(key=1, center_pt=(100, 100), nominal="20"),
+             Cand(key=2, center_pt=(700, 700), nominal="5,5")]
+    golds = [Cand(key=7, center_pt=(105, 100), nominal="20"),
+             Cand(key=8, center_pt=None, nominal="5.5")]
+    pairs = match_candidates(preds, golds, PAGE_DIAG, P)
+    assert {(p, g) for p, g, _ in pairs} == {(1, 7), (2, 8)}
+
+
+def test_positionless_gold_still_refuses_an_unrelated_value():
+    preds = [Cand(key=1, center_pt=(100, 100), nominal="20")]
+    golds = [Cand(key=8, center_pt=None, nominal="137,5")]
+    assert match_candidates(preds, golds, PAGE_DIAG, P) == []
+
+
 def test_duplicate_keys_rejected_loudly():
     import pytest
     dup = [Cand(key=1, center_pt=(0, 0)), Cand(key=1, center_pt=(9, 9))]

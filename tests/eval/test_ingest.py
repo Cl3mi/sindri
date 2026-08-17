@@ -26,6 +26,25 @@ def test_join_recovers_positions_and_values(tmp_path):
     assert gold.provenance["join_rate"] == 1.0
 
 
+def test_excel_rows_without_a_balloon_stay_in_the_gold(tmp_path):
+    """A characteristic whose balloon could not be located is still a
+    characteristic. Dropping it would make the eval blind to ever missing it —
+    on the real corpus that silently discarded 17% of the ground truth."""
+    pdf, xlsx = make_synthetic_doc(RECORDS, tmp_path, doc_id="SYN3")
+    from openpyxl import load_workbook
+    wb = load_workbook(xlsx)
+    ws = wb.active
+    ws.cell(4, 1, 9); ws.cell(4, 2, "Distance"); ws.cell(4, 3, "7")
+    wb.save(xlsx)
+
+    gold = build_gold_doc(pdf, xlsx, doc_id="SYN3")
+    by_num = {c.balloon: c for c in gold.characteristics}
+    assert set(by_num) == {1, 2, 9}              # row 9 retained
+    assert by_num[9].position_pt is None         # but with no position
+    assert by_num[1].position_pt is not None
+    assert gold.provenance["without_position"] == 1
+
+
 def test_unjoined_rows_and_balloons_recorded_not_dropped_silently(tmp_path):
     pdf, xlsx = make_synthetic_doc(RECORDS, tmp_path, doc_id="SYN2")
     # Excel has a row 9 with no balloon on the page
@@ -38,7 +57,10 @@ def test_unjoined_rows_and_balloons_recorded_not_dropped_silently(tmp_path):
     assert gold.provenance["excel_only"] == [9]
     assert gold.provenance["pdf_only"] == []
     assert gold.provenance["join_rate"] < 1.0
-    assert {c.balloon for c in gold.characteristics} == {1, 2}
+    # The unlocated row is kept as gold; only its POSITION is missing.
+    assert {c.balloon for c in gold.characteristics} == {1, 2, 9}
+    assert {c.balloon for c in gold.characteristics
+            if c.position_pt is not None} == {1, 2}
 
 
 def test_duplicate_balloon_numbers_surfaced_in_provenance(tmp_path):
