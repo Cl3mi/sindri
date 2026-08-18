@@ -4,7 +4,9 @@
 
 **Goal:** Make the Rung-0 baseline readable — surface the `cause:` split, the clamped-document comparison, and the prediction-kind breakdown as NDA-safe aggregates, so the handoff's §6 routing decision rests on numbers instead of inference.
 
-**Architecture:** Three additive read-only views over data the harness already computes, plus one guard against a trap that has already cost a diagnostic. `score_doc` gains three recorded facts per document (effective dpi, predictions by kind, false detections by kind); `summarize()` gains four aggregations (error causes, misplaced matches, clamped-vs-unclamped split, kind breakdown). No scoring semantics change, no metric is redefined, and `SCHEMA_VERSION` stays at 1 — every new field carries a default so the existing report and all 20 dumps keep parsing.
+**Architecture:** Three additive read-only views over data the harness already computes, plus one guard against a trap that has already cost a diagnostic. `score_doc` gains three recorded facts per document (effective dpi, predictions by kind, false detections by kind); `summarize()` gains six keys via three pure helpers (`_note_counts`, `_clamp_split`, `_kind_totals`). No scoring semantics change, no metric is redefined, and `SCHEMA_VERSION` stays at 1 — every new field carries a default so the existing report and all 20 dumps keep parsing.
+
+Every aggregate is required to reconcile against a number that already exists: the cause counts must sum to the matched-but-wrong rows, the kind counts to `n_pred` and to `false_detection`, and the dpi buckets must partition the corpus. Those identities are the Definition of Done (see the last section), not decoration — an interpretability view that cannot be cross-checked is just another number to trust.
 
 **Tech Stack:** Python 3.14, pydantic v2, pytest. Package `app/eval/` (harness) and `app/pipeline/` (product). No new dependencies.
 
@@ -28,7 +30,9 @@ blocks every agent from reading them, on this machine, in every session.
   `*.pred.json`, `*.report.json`, `doc_id_map*`.
 * Sanctioned: `python -m app.eval.runner <probe|headers|ingest|split|predict|
   score|compare|summary|variants>`, plus `setup_client_data.py` and
-  `sync_client_data.sh`.
+  `sync_client_data.sh`. The guard's pattern is `python3?`, so `python` and
+  `python3` are both accepted — Task 5 uses `python3` to match
+  `run_baseline_gpu.sh`. Do not "correct" one to the other.
 * Verify the guard with `bash ~/.claude/hooks/test-sindri-guard.sh` (32 cases).
   Re-run it after ANY edit to the guard.
 * Document ids are salted hashes in all output. Never use `--show-ids`. Never
@@ -65,7 +69,8 @@ Fix A's predicted effective-dpi table (110/210/227) matched reality (109/208/225
 
 ### 0.3 The baseline number, and what it decomposes into
 
-From `runner summary` on `baseline-dev`:
+From `docs/eval/baseline-summary.json` (the committed digest, written by
+`runner summary` on `baseline-dev`), condensed:
 
 ```
 n_docs=20  n_gold=477  n_pred=830
@@ -73,6 +78,13 @@ mean_review_cost=245.30  recall=0.350  precision=0.201  escaped_rate=0.182
 taxonomy: missed=310  false_detection=663  escaped_error=87
           flagged_error=29  flagged_correct=16  correct=35
 ```
+
+That block is a rendering, not literal output — mind the two naming gaps or you
+will go looking for keys that do not exist. In the JSON the recall/precision keys
+are `micro_recall` (0.350104821802935) and `micro_precision`
+(0.20120481927710843); there is no `recall` or `precision` key. And `_cmd_score`'s
+one-line stdout prints `docs= mean_review_cost= recall= escaped_rate=` only — it
+never prints precision.
 
 The taxonomy reconciles exactly — 310+87+29+16+35 = 477 = `n_gold`, and
 830−663 = 477−310 = 167 matched on both sides. Cost decomposition (weights
@@ -99,9 +111,16 @@ Three of those inputs are currently unavailable:
 
 1. **`cause:` is never aggregated.** `app/eval/score.py:84` writes
    `cause:misparse` / `cause:misread` into `MatchedPair.notes`, but
-   `app/eval/report.py:40 summarize()` never reads it. That split is the whole
-   parser-vs-perception decision, and it lives only inside `*.report.json`,
-   which is guard-blocked. **This is the highest-value gap.**
+   `app/eval/report.py:40 summarize()` never reads it, and it lives only inside
+   `*.report.json`, which is guard-blocked. **This is the highest-value gap.**
+
+   Be precise about its reach: `score.py:83-84` appends the tag only when
+   `_compare_fields` returned errors, so it covers exactly the rows the pipeline
+   **found and got wrong** — 116 of 477 (`flagged_error` 29 + `escaped_error`
+   87). It says nothing about the 310 misses that carry 63% of the cost. So it
+   decides where *reading* work goes (parser vs perception); it does not decide
+   whether reading work outranks detection work. Task 5 Step 5 items 1 and 4
+   report it under exactly that framing.
 
 2. **The clamped-document list is unjoinable.** `run_baseline_gpu.sh` does not
    pass `SINDRI_DOC_SALT` into the container and `~/.claude/sindri-doc-salt`
@@ -148,7 +167,7 @@ with this baseline. Produce the number, then stop and ask.
 |---|---|---|
 | `app/eval/models.py` | Modify (`DocScore`, ~line 125) | Add `effective_dpi`, `pred_kinds`, `false_kinds` — per-document facts scoring already knows but discards |
 | `app/eval/score.py` | Modify (`score_doc`, ~line 100-117) | Record those three facts |
-| `app/eval/report.py` | Modify (`summarize`, line 40) | Four new aggregations; stays values-blind |
+| `app/eval/report.py` | Modify (`summarize`, line 40) | Three helpers → six new keys; stays values-blind |
 | `app/eval/anon.py` | Modify (after `ensure_salt`, line 35) | Add `salt_is_persistent()` |
 | `app/eval/runner.py` | Modify (`_cmd_predict`) | Warn when doc ids are throwaway |
 | `run_baseline_gpu.sh` | Modify (comment near line 58) | Document why container ids are not joinable |
@@ -156,6 +175,26 @@ with this baseline. Produce the number, then stop and ask.
 | `tests/eval/test_score.py` | Modify | Tasks 2, 3 per-document recording tests |
 | `tests/eval/test_anon.py` | Modify | Task 4 |
 | `tests/eval/test_runner_e2e.py` | Modify | Task 4 warning test |
+
+### Task order, and what is readable when
+
+Task 1 reads a field the existing report already carries, so it works on the
+current `baseline-dev.report.json` with no re-score. Tasks 2 and 3 add fields to
+`DocScore`, which the existing report does **not** have — so between Task 2 and
+Task 5 the new views are structurally present but empty:
+
+| after | `error_causes` / `misplaced_matches` | `clamped_*` | `pred_kinds` / `false_detections_by_kind` |
+|---|---|---|---|
+| Task 1 | real | absent | absent |
+| Task 2 | real | `clamped_docs: []`, all 20 docs in `unknown_dpi` | absent |
+| Task 3 | real | same | `{}` |
+| Task 5 | real | real | real |
+
+**Do not read an intermediate summary as a result.** Empty is the correct output
+for a stale report, and `unknown_dpi.n > 0` is the machine-readable way to say
+"re-score before believing this block" — that is why the dpi split has an unknown
+bucket instead of folding those documents into `unclamped`. Task 5 Step 3 asserts
+the views are non-empty before anything is committed or reported.
 
 ---
 
@@ -167,6 +206,15 @@ the causes are already inside the existing report.
 **Files:**
 - Modify: `app/eval/report.py:40` (`summarize`)
 - Test: `tests/eval/test_report.py`
+
+**Done when:**
+
+| indicator | how it is measured | passes at |
+|---|---|---|
+| both tests were watched failing before the implementation existed | Step 2 output | `KeyError: 'error_causes'` |
+| `python -m pytest tests/eval/test_report.py -q` | exit code + count | 12 passed (10 existing + 2) |
+| the digest stays values-blind | `test_summary_cause_aggregation_never_reads_client_values` | no `6,5` / `5,5` / `nominal` in the JSON |
+| `summarize` reads no new report field | `git diff app/eval/models.py` | empty — Task 1 touches no schema |
 
 - [ ] **Step 1: Write the failing test**
 
@@ -320,6 +368,17 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - Modify: `app/eval/report.py` (`summarize`)
 - Test: `tests/eval/test_score.py`, `tests/eval/test_report.py`
 
+**Done when:**
+
+| indicator | how it is measured | passes at |
+|---|---|---|
+| all five tests were watched failing first | Steps 2 and 6 output | `AttributeError: ... 'effective_dpi'`, then `KeyError: 'clamped_docs'` |
+| `python -m pytest tests/eval/test_report.py tests/eval/test_score.py -q` | count | 23 passed (15 report + 8 score) |
+| the dpi buckets partition the corpus | `clamped.n + unclamped.n + unknown_dpi.n == n_docs` in every test report | exact equality |
+| a doc with no recorded dpi is never called "unclamped" | `test_summary_puts_documents_without_a_recorded_dpi_in_their_own_bucket` | 0.0-dpi docs land in `unknown_dpi` |
+| clamping is scored, not mis-scored | `test_doc_score_records_a_clamped_dpi_and_still_matches` | box at 109 dpi still matches gold balloon 1 |
+| the list cap is not the worst-docs knob | `grep -n "CLAMP_LIST_MAX" app/eval/report.py` | 2 hits (constant + `_clamp_split` default); `_clamp_split` takes `limit`, never `top` |
+
 - [ ] **Step 1: Write the failing test for the per-document field**
 
 Append to `tests/eval/test_score.py` (it already defines `SCALE`, `RECT`,
@@ -423,13 +482,21 @@ def test_summary_separates_clamped_documents_from_the_rest():
                        ReviewCostWeights(), MatchParams(), docs)
 
     digest = summarize(report, lambda d: f"hash-{d}")
+    split = digest["clamped_vs_unclamped"]
 
     assert [c["doc"] for c in digest["clamped_docs"]] == ["hash-D3", "hash-D4"]
     assert digest["clamped_docs"][0]["effective_dpi"] == 109
-    assert digest["clamped_vs_unclamped"]["clamped"]["n"] == 2
-    assert digest["clamped_vs_unclamped"]["unclamped"]["n"] == 2
-    assert digest["clamped_vs_unclamped"]["clamped"]["mean_recall"] == 0.25
-    assert digest["clamped_vs_unclamped"]["unclamped"]["mean_recall"] == 0.55
+    assert split["clamped"]["n"] == 2
+    assert split["unclamped"]["n"] == 2
+    assert split["unknown_dpi"]["n"] == 0
+    # Macro means: unweighted over documents. NOT comparable to the headline
+    # micro_recall, which pools rows — hence the name.
+    assert split["clamped"]["macro_mean_recall"] == 0.25
+    assert split["unclamped"]["macro_mean_recall"] == 0.55
+    # The three buckets partition the corpus, so nothing can be double-counted
+    # or silently dropped.
+    assert (split["clamped"]["n"] + split["unclamped"]["n"]
+            + split["unknown_dpi"]["n"]) == digest["n_docs"]
 
 
 def test_summary_reports_no_clamped_documents_when_none_were_clamped():
@@ -441,40 +508,84 @@ def test_summary_reports_no_clamped_documents_when_none_were_clamped():
 
     assert digest["clamped_docs"] == []
     assert digest["clamped_vs_unclamped"]["clamped"]["n"] == 0
-    assert digest["clamped_vs_unclamped"]["clamped"]["mean_recall"] is None
+    assert digest["clamped_vs_unclamped"]["clamped"]["macro_mean_recall"] is None
+
+
+def test_summary_puts_documents_without_a_recorded_dpi_in_their_own_bucket():
+    """effective_dpi is 0.0 in every DocScore written before the field existed —
+    i.e. in the report this plan exists to interpret, until Task 5 re-scores it.
+    Calling those "unclamped" would report "nothing was clamped" for a run where
+    four documents were, which is worse than reporting nothing. So: third bucket,
+    and clamped/unclamped stay empty until the run is actually re-scored."""
+    docs = [_dpi_doc("D1", 0.0, 0.60, 100.0), _dpi_doc("D2", 0.0, 0.50, 140.0)]
+    report = aggregate("r", RunConfig(model_id="stub", dpi=300),
+                       ReviewCostWeights(), MatchParams(), docs)
+
+    digest = summarize(report, lambda d: f"hash-{d}")
+    split = digest["clamped_vs_unclamped"]
+
+    assert digest["clamped_docs"] == []
+    assert split["unknown_dpi"]["n"] == 2
+    assert split["clamped"]["n"] == 0
+    assert split["unclamped"]["n"] == 0          # NOT 2 — this is the whole point
+    assert split["unclamped"]["macro_mean_recall"] is None
 ```
 
 - [ ] **Step 6: Run test to verify it fails**
 
-Run: `python -m pytest tests/eval/test_report.py -k clamped -v`
+Run: `python -m pytest tests/eval/test_report.py -k "clamped or recorded_dpi" -v`
 
 Expected: FAIL with `KeyError: 'clamped_docs'`.
 
 - [ ] **Step 7: Write minimal implementation**
 
-In `app/eval/report.py`, insert above `def summarize`:
+In `app/eval/report.py`, add a module constant next to `N_BOOTSTRAP` (line 11):
 
 ```python
-def _clamp_split(report: RunReport, anonymizer, top: int = 10) -> Tuple[List, Dict]:
-    """Clamped documents, and clamped-vs-unclamped means.
+# How many clamped documents `summarize` lists in detail. Deliberately NOT
+# summarize()'s `top`, which sizes the worst-docs triage list: a diagnostic list
+# must not shorten because someone retuned an unrelated knob. The true count is
+# always clamped_vs_unclamped.clamped.n, so truncation is visible by comparing
+# len(clamped_docs) against it.
+CLAMP_LIST_MAX = 25
+```
+
+Then insert above `def summarize`:
+
+```python
+def _clamp_split(report: RunReport, anonymizer,
+                 limit: int = CLAMP_LIST_MAX) -> Tuple[List, Dict]:
+    """Clamped documents, and clamped-vs-unclamped macro means.
 
     render.py reduces dpi on sheets that would exceed the 80 MP budget, so those
     documents are extracted at up to a third of the requested resolution. Before
     anyone reads a low recall as a statement about the model, this says whether
     the misses concentrate there. Ids come from the local salt, so they join to
-    worst_docs — unlike the predict log's, which are minted per container."""
+    worst_docs — unlike the predict log's, which are minted per container.
+
+    THREE buckets, not two. effective_dpi is 0.0 in any DocScore written before
+    the field existed, and folding those into "unclamped" would report "nothing
+    was clamped" for a run where four documents were — a confident wrong answer
+    from a view whose entire job is interpretability. Unknown gets its own
+    bucket, so `unknown_dpi.n > 0` reads as "re-score before believing this"."""
     requested = report.config.dpi
-    clamped = sorted((d for d in report.doc_scores
-                      if d.effective_dpi and d.effective_dpi < requested - 0.5),
+    known = [d for d in report.doc_scores if d.effective_dpi > 0.0]
+    unknown = [d for d in report.doc_scores if d.effective_dpi <= 0.0]
+    clamped = sorted((d for d in known if d.effective_dpi < requested - 0.5),
                      key=lambda d: d.effective_dpi)
     clamped_ids = {d.doc_id for d in clamped}
-    rest = [d for d in report.doc_scores if d.doc_id not in clamped_ids]
+    rest = [d for d in known if d.doc_id not in clamped_ids]
 
     def block(docs):
         n = len(docs)
         return {
             "n": n,
-            "mean_recall": round(sum(d.recall for d in docs) / n, 4) if n else None,
+            # MACRO: unweighted mean over documents. The headline micro_recall
+            # pools rows across the run, so the two are different statistics —
+            # the name says so, because an unlabelled "mean_recall" next to a
+            # micro headline is exactly the mis-read this plan exists to prevent.
+            "macro_mean_recall": (round(sum(d.recall for d in docs) / n, 4)
+                                  if n else None),
             "mean_review_cost": (round(sum(d.review_cost for d in docs) / n, 2)
                                  if n else None),
         }
@@ -482,14 +593,15 @@ def _clamp_split(report: RunReport, anonymizer, top: int = 10) -> Tuple[List, Di
     listed = [{"doc": anonymizer(d.doc_id),
                "effective_dpi": round(d.effective_dpi),
                "recall": round(d.recall, 4),
-               "review_cost": d.review_cost} for d in clamped[:top]]
-    return listed, {"clamped": block(clamped), "unclamped": block(rest)}
+               "review_cost": d.review_cost} for d in clamped[:limit]]
+    return listed, {"clamped": block(clamped), "unclamped": block(rest),
+                    "unknown_dpi": block(unknown)}
 ```
 
 Inside `summarize`, add after the `causes, misplaced = ...` line:
 
 ```python
-    clamped_docs, clamp_split = _clamp_split(report, anonymizer, top)
+    clamped_docs, clamp_split = _clamp_split(report, anonymizer)
 ```
 
 and add to the returned dict, directly after `"misplaced_matches"`:
@@ -521,11 +633,25 @@ answerable.
 
 The dumps carry the real scale, so recover it locally instead: DocScore records
 the effective dpi, and summarize() lists the clamped documents under the LOCAL
-salt (so they join to worst_docs) alongside clamped-vs-unclamped mean recall and
-review cost. \"Did the misses cluster on the clamped drawings?\" is now a number.
+salt (so they join to worst_docs) alongside clamped-vs-unclamped macro mean
+recall and review cost. \"Did the misses cluster on the clamped drawings?\" is
+now a number.
 
-DocScore.effective_dpi defaults to 0.0 and SCHEMA_VERSION is unchanged, so the
-existing report and all 20 dumps keep parsing.
+Three buckets, not two. effective_dpi defaults to 0.0, so every DocScore written
+before this commit has no recorded dpi -- folding those into \"unclamped\" would
+make a stale report answer \"nothing was clamped\" for the very run where four
+documents were. unknown_dpi carries them instead, and a non-zero count there
+reads as \"re-score before believing this block\". The three counts sum to
+n_docs, so the split cannot silently drop or double-count a document.
+
+The recall figure is named macro_mean_recall because it is an unweighted mean
+over documents while the headline micro_recall pools rows; an unlabelled
+\"mean_recall\" sitting next to a micro headline invites exactly the mis-read
+this change exists to prevent. The detail list is capped by its own
+CLAMP_LIST_MAX, not by summarize()'s worst-docs `top`.
+
+SCHEMA_VERSION is unchanged and effective_dpi defaults to 0.0, so the existing
+report and all 20 dumps keep parsing.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
@@ -541,6 +667,23 @@ Measurement only. Do not change what is scored.
 - Modify: `app/eval/score.py` (`score_doc`)
 - Modify: `app/eval/report.py` (`summarize`)
 - Test: `tests/eval/test_score.py`, `tests/eval/test_report.py`
+
+The instrument works because `app/pipeline/extract.py:225` sets `c.kind = kind`
+from the `Detection`, so production characteristics carry a real kind. The
+`or "unset"` fallback below exists because `Characteristic.kind` defaults to `""`
+(`app/models.py:14`) — if `unset` ever dominates the breakdown, the detector
+stopped labelling and the number means nothing. That is a signal, not noise.
+
+**Done when:**
+
+| indicator | how it is measured | passes at |
+|---|---|---|
+| both tests were watched failing first | Steps 2 and 6 output | `AttributeError: ... 'pred_kinds'`, then `KeyError: 'pred_kinds'` |
+| `python -m pytest tests/eval/test_report.py tests/eval/test_score.py -q` | count | 25 passed (16 report + 9 score) |
+| kinds account for every prediction | `sum(pred_kinds.values()) == n_pred`, asserted in both new tests | exact equality |
+| false kinds account for every false detection | `sum(false_kinds.values()) == counts["false_detection"]` | exact equality |
+| scoring is unchanged | `python -m pytest tests/eval/test_score.py -q` | the 6 pre-existing tests still pass untouched |
+| the metric was not redefined | `git diff -U0 app/eval/models.py app/eval/score.py \| grep -c "score_kinds\|max_geo_frac\|value_bonus\|misplaced_frac\|value_sim_min"` | `0` — no match-param or gold-filter line touched |
 
 - [ ] **Step 1: Write the failing test**
 
@@ -579,6 +722,10 @@ def test_doc_score_breaks_predictions_and_false_detections_down_by_kind():
     assert s.pred_kinds == {"dimension": 2, "surface": 1, "note": 1}
     assert s.false_kinds == {"surface": 1, "note": 1}
     assert s.counts["false_detection"] == 2
+    # Conservation: the breakdown must account for every prediction and every
+    # false detection, or "N of 663" is quoting an unverified denominator.
+    assert sum(s.pred_kinds.values()) == s.n_pred
+    assert sum(s.false_kinds.values()) == s.counts["false_detection"]
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -641,8 +788,13 @@ Append to `tests/eval/test_report.py`:
 ```python
 def test_summary_aggregates_prediction_kinds_across_documents():
     def doc(doc_id, pred_kinds, false_kinds):
+        # counts is derived from false_kinds, never stated independently: a
+        # fixture that contradicts its own taxonomy cannot test a conservation
+        # identity.
         return DocScore(doc_id=doc_id, gold_hash="g" + "0" * 15, n_gold=5,
-                        n_pred=sum(pred_kinds.values()), counts={"correct": 5},
+                        n_pred=sum(pred_kinds.values()),
+                        counts={"correct": 5,
+                                "false_detection": sum(false_kinds.values())},
                         review_cost=10.0, recall=1.0, precision=1.0,
                         escaped_rate=0.0, pred_kinds=pred_kinds,
                         false_kinds=false_kinds)
@@ -658,6 +810,12 @@ def test_summary_aggregates_prediction_kinds_across_documents():
     assert digest["pred_kinds"] == {"dimension": 38, "note": 5, "surface": 3}
     assert digest["false_detections_by_kind"] == {"note": 5, "surface": 3,
                                                   "dimension": 2}
+    # Same conservation identity at run level. Task 5 reports "N of 663 false
+    # detections are kinds the metric removed from gold"; this is what makes 663
+    # a checked denominator rather than a quoted one.
+    assert sum(digest["pred_kinds"].values()) == digest["n_pred"]
+    assert (sum(digest["false_detections_by_kind"].values())
+            == digest["taxonomy"]["false_detection"])
 ```
 
 - [ ] **Step 6: Run test to verify it fails**
@@ -738,6 +896,17 @@ a salt transfer.
 - Modify: `app/eval/runner.py` (`_cmd_predict`)
 - Modify: `run_baseline_gpu.sh` (comment near line 58)
 - Test: `tests/eval/test_anon.py`, `tests/eval/test_runner_e2e.py`
+
+**Done when:**
+
+| indicator | how it is measured | passes at |
+|---|---|---|
+| all five tests were watched failing first | Steps 2 and 6 output | `ImportError: cannot import name 'salt_is_persistent'`, then the missing-warning assert |
+| `python -m pytest tests/eval/test_anon.py tests/eval/test_runner_e2e.py -q` | count | 29 passed (8 anon + 21 e2e) |
+| the probe never creates what it is probing for | `salt_is_persistent` body contains no `write_text` / `urandom`, and the call sits above `anon = _anon(args)` | `grep -n "salt_is_persistent\|_anon(args)" app/eval/runner.py` shows the check first |
+| the developer's real salt is untouched by the suite | `sha256sum ~/.claude/sindri-doc-salt` before and after `python -m pytest -q` | identical digest |
+| the warning is actionable, not just alarming | `test_predict_warns_when_the_doc_ids_are_throwaway` | stderr names both `throwaway` and `runner summary` |
+| no salt is shipped to the GPU host | `grep -c -- "-e SINDRI_DOC_SALT" run_baseline_gpu.sh` | `0` — the fix is a warning, not a transfer (Step 9's comment mentions the var by name, so grep for the `-e` flag, not the bare string) |
 
 - [ ] **Step 1: Write the failing test**
 
@@ -911,15 +1080,36 @@ No GPU is involved. The 20 dumps and the gold are already on this machine, so
 scoring is local and takes seconds.
 
 **Files:**
-- Modify: `docs/eval/baseline-summary.json` (regenerated; untracked today, and
-  `.gitignore` blocks only `*.report.json`, so this one is committable)
+- Modify: `docs/eval/baseline-summary.json` (regenerated; untracked today)
+
+  It is committable, and all three gates were checked: `.gitignore` blocks
+  `*.gold.json`, `*.pred.json`, `*.report.json` and `doc_id_map*.json` — this
+  name matches none of them; `.git/hooks/pre-commit`'s `blocked_name` cases do
+  not match it either; and that hook's JSON **content** scan greps staged JSON
+  for `"(field_errors|raw_text|characteristics|position_pt|upper_tol|lower_tol)"`,
+  none of which any of the six new keys or their values can produce. If a commit
+  is ever rejected here, the digest leaked something — investigate, do not reach
+  for `SINDRI_ALLOW_DATA_COMMIT=1`.
+
+**Done when:**
+
+| indicator | how it is measured | passes at |
+|---|---|---|
+| the headline did not move | Step 2 stdout vs §0.3 | `docs=20 mean_review_cost=245.30 recall=0.350 escaped_rate=0.182` |
+| every new view carries signal | Step 3's invariant command | exits 0, prints `interpretability DoD OK` |
+| the routing decision is answerable without opening a report | Step 5 | all four items answered from `docs/eval/baseline-summary.json` alone |
+| nothing value-bearing was committed | `git show --stat HEAD` | one file: `docs/eval/baseline-summary.json` |
 
 - [ ] **Step 1: Verify the whole suite and the guard**
 
 Run: `python -m pytest -q`
-Expected: `404 passed, 2 skipped` — 391 before this plan plus the 13 tests it
-adds (2 in Task 1, 4 in Task 2, 2 in Task 3, 5 in Task 4). The 2 skips are
+Expected: `405 passed, 2 skipped` — 391 before this plan plus the 14 tests it
+adds (2 in Task 1, 5 in Task 2, 2 in Task 3, 5 in Task 4). The 2 skips are
 `tests/test_detect_gpu.py` and are expected off a GPU host. Zero failures.
+
+A count below 405 with zero failures means tests were skipped or never written,
+not that the plan is done — check the per-file counts in each task's "Done when"
+table (report 16, score 9, anon 8, e2e 21).
 
 Run: `bash ~/.claude/hooks/test-sindri-guard.sh`
 Expected: `guard: 32 passed, 0 failed`.
@@ -953,6 +1143,22 @@ Expected: the previous digest plus `error_causes`, `misplaced_matches`,
 `false_detections_by_kind`. `clamped_docs` should contain **4** entries at
 roughly 109, 208, 225 and 225 dpi.
 
+Then prove it rather than eyeball it. This command names no protected path, so
+the guard is not involved; it reads only the committed values-blind digest:
+
+```bash
+python3 -c "import json; s=json.load(open('docs/eval/baseline-summary.json')); t=s['taxonomy']; c=s['clamped_vs_unclamped']; assert sum(s['pred_kinds'].values()) == s['n_pred'], 'pred_kinds does not sum to n_pred'; assert sum(s['false_detections_by_kind'].values()) == t['false_detection'], 'false kinds do not sum to false_detection'; assert sum(s['error_causes'].values()) == t['flagged_error'] + t['escaped_error'], 'causes do not cover the matched-but-wrong rows'; assert c['clamped']['n'] + c['unclamped']['n'] + c['unknown_dpi']['n'] == s['n_docs'], 'dpi buckets do not partition the corpus'; assert c['unknown_dpi']['n'] == 0, 'some documents have no recorded dpi -- re-score before reading the split'; assert len(s['clamped_docs']) == c['clamped']['n'] == 4, 'expected exactly 4 clamped documents'; assert s['pred_kinds'].get('unset', 0) == 0, 'detector stopped labelling kinds -- the breakdown is meaningless'; print('interpretability DoD OK')"
+```
+
+Expected: `interpretability DoD OK`. Every assertion ties a new view to a number
+that already existed, so a view that is empty, double-counted, or quoting a
+denominator it cannot reproduce fails here instead of in a routing decision.
+
+If `unknown_dpi` is non-zero, Step 2 did not actually re-score with the Task 2
+code — re-run it. If `unset` is non-zero, `app/pipeline/extract.py` stopped
+setting `Characteristic.kind`; stop and report that, because Task 3's whole
+measurement depends on it.
+
 - [ ] **Step 4: Commit the artifact**
 
 ```bash
@@ -975,18 +1181,24 @@ Report these four things to the user, in this order, and stop:
    dominant → Rung 2 prompts, then Rung 3 LoRA. Note that this splits only the
    116 matched-but-wrong rows, not the 310 misses, so it decides where *reading*
    work goes — not whether reading work outranks detection work.
-2. **`clamped_vs_unclamped`.** If clamped mean recall is far below unclamped,
-   part of the 63% miss cost is the render budget rather than the model, and
-   Rung 1 should consider tiled rendering for oversized sheets before touching
-   detection thresholds. With n=4 vs n=16 this is a signal, not a result — say
-   so.
+2. **`clamped_vs_unclamped`.** If clamped `macro_mean_recall` is far below the
+   unclamped one, part of the 63% miss cost is the render budget rather than the
+   model, and Rung 1 should consider tiled rendering for oversized sheets before
+   touching detection thresholds. Two constraints on how you say it: with n=4 vs
+   n=16 this is a signal, not a result; and compare the two blocks **to each
+   other only** — both are macro means over documents, while the 0.350 headline
+   is `micro_recall` over rows, so "clamped recall is X vs the 0.350 baseline" is
+   a category error. State the `unknown_dpi` count as 0 to show the split is
+   based on real recorded dpi.
 3. **`false_detections_by_kind`.** The non-`dimension` share is the measurement
    artefact from §0.4 gap 3. Report it as "N of 663 false detections are kinds
-   the metric removed from gold" and present the options — filter predictions to
-   `score_kinds`, or admit verbal gold under the existing value-matching mode —
-   **without picking one**. Both change `MatchParams`, which is the
-   comparability guard, so either one makes this baseline incomparable with
-   everything scored after it. That is the user's decision.
+   the metric removed from gold" — and only after Step 3's invariant command
+   confirmed the bucket sums to 663, so 663 is a checked denominator rather than
+   a quoted one. Then present the options — filter predictions to `score_kinds`,
+   or admit verbal gold under the existing value-matching mode — **without
+   picking one**. Both change `MatchParams`, which is the comparability guard, so
+   either one makes this baseline incomparable with everything scored after it.
+   That is the user's decision.
 4. **The standing read.** `missed` carries 63% of the review cost, which points
    at Rung 1 detection under handoff §6. Field accuracy on matched rows is
    30.5%, so perception work will matter regardless of what the cause split
@@ -995,18 +1207,93 @@ Report these four things to the user, in this order, and stop:
 
 ---
 
-## Verification Checklist
+## Definition of Done
 
-- [ ] Every new function has a test that was watched failing first
-- [ ] `python -m pytest -q` → 395+ passed, 2 skipped, 0 failed
-- [ ] `bash ~/.claude/hooks/test-sindri-guard.sh` → 32 passed, 0 failed
-- [ ] `SCHEMA_VERSION` is still `1`
-- [ ] `summarize()` still reads no `field_errors` — the values-blind test in
-      Task 1 covers this
-- [ ] Headline metrics after re-scoring are identical to §0.3
-- [ ] No `*.report.json`, `splits.json`, `variants.txt` or `doc_id_map.json`
-      staged — `git status --short` before every commit
-- [ ] Four commits from Tasks 1–4, one from Task 5
+Each row is a pass/fail check with the command that decides it. No row is
+satisfied by inspection, and none is satisfied by "the tests pass" — the point of
+this plan is a *readable* baseline, so the bar includes whether the output can be
+cross-checked and whether the routing decision is actually answerable at the end.
+
+### A. Gates — must all pass before Task 5 Step 4 commits
+
+- [ ] **Suite green at the exact count.** `python -m pytest -q` →
+      `405 passed, 2 skipped, 0 failed`. Not "≥ 391": an exact count is what
+      catches tests that were planned and never written. Per-file: report 16,
+      score 9, anon 8, e2e 21.
+- [ ] **Guard intact.** `bash ~/.claude/hooks/test-sindri-guard.sh` →
+      `guard: 32 passed, 0 failed`. Re-run after any guard edit (there should be
+      none).
+- [ ] **Schema frozen.** `grep -n "^SCHEMA_VERSION" app/eval/models.py` → `= 1`.
+- [ ] **Old artifacts still parse.** Two separate guarantees, both checked:
+      `PredictionDump` is untouched by this plan, so Task 5 Step 2 loading all 20
+      dumps without a validation error proves the dump side. For the report side,
+      every added `DocScore` field carries a default — demonstrated by the tests
+      that build `DocScore` without them (`_doc`, `_pair`'s doc,
+      `_report_with_client_values`) and still pass through `summarize`.
+- [ ] **Headline unmoved.** Step 2 stdout is character-identical to
+      `baseline-dev: docs=20 mean_review_cost=245.30 recall=0.350 escaped_rate=0.182`.
+      Any drift means scoring semantics changed — stop and investigate.
+- [ ] **Commit shape.** `git log --oneline -5` → four commits from Tasks 1–4,
+      one from Task 5, each with a body explaining *why* and the `Co-Authored-By`
+      trailer.
+
+### B. Conservation — every new number reconciles against an old one
+
+Verified in one shot by Task 5 Step 3's command (`interpretability DoD OK`):
+
+- [ ] `sum(pred_kinds.values()) == n_pred` → 830
+- [ ] `sum(false_detections_by_kind.values()) == taxonomy.false_detection` → 663
+- [ ] `sum(error_causes.values()) == flagged_error + escaped_error` → 116
+- [ ] `clamped.n + unclamped.n + unknown_dpi.n == n_docs` → 20
+- [ ] `len(clamped_docs) == clamped.n` → 4 (equal means nothing was truncated)
+
+An aggregate that cannot be tied back to a pre-existing count is not a finding;
+it is a number asking to be trusted. That is the failure mode this section exists
+to prevent.
+
+### C. Non-degeneracy — the views carry signal, not just structure
+
+- [ ] `unknown_dpi.n == 0` — the split rests on recorded dpi, not on the 0.0
+      default. Non-zero means the report was not re-scored.
+- [ ] `pred_kinds["unset"]` absent or 0 — the detector is still labelling kinds.
+      A large `unset` bucket makes Task 3's entire measurement meaningless and
+      must be reported, not worked around.
+- [ ] `error_causes` has at least one non-zero key, and its total is 116 — not
+      an empty dict from a stale report.
+- [ ] `clamped_docs` has 4 entries at roughly 109 / 208 / 225 / 225 dpi,
+      matching §0.2's observed clamps.
+
+### D. Safety — nothing about this plan widens data exposure
+
+- [ ] **Digest is values-blind.**
+      `grep -cE '"(field_errors|raw_text|characteristics|position_pt|upper_tol|lower_tol)"' docs/eval/baseline-summary.json`
+      → `0`. This is the same expression `.git/hooks/pre-commit` uses, so a pass
+      here predicts a clean commit.
+- [ ] **No client values in the new code paths.** `_note_counts` reads only the
+      `cause:` / `misplaced` vocabulary and `_kind_totals` only detector kind
+      names — neither touches `field_errors`. Covered by
+      `test_summary_cause_aggregation_never_reads_client_values`.
+- [ ] **Guard not widened.** `git diff --stat` names no file under
+      `~/.claude/hooks/`.
+- [ ] **No salt left the machine.** `grep -c -- "-e SINDRI_DOC_SALT" run_baseline_gpu.sh` → `0`.
+- [ ] **Real salt untouched.** `sha256sum ~/.claude/sindri-doc-salt` is identical
+      before and after the full suite run.
+- [ ] **Nothing value-bearing staged.** `git status --short` before every commit;
+      `git show --stat HEAD` after Task 5 names exactly one file,
+      `docs/eval/baseline-summary.json`.
+
+### E. Decision readiness — the actual deliverable
+
+- [ ] All four items in Task 5 Step 5 are answerable from
+      `docs/eval/baseline-summary.json` **alone**, with no `*.report.json` opened
+      at any point. That is the whole purpose: handoff §6's routing rule stops
+      resting on inference.
+- [ ] The `cause:` split is reported with its scope stated — 116 of 477 rows,
+      deciding parser-vs-perception, **not** reading-vs-detection.
+- [ ] The clamped comparison is reported as a signal at n=4 vs n=16, and its
+      macro means are not compared to the micro headline.
+- [ ] The `false_detection` options are presented without a recommendation, and
+      the plan stops. No Rung 1 work begins.
 
 ---
 
@@ -1040,12 +1327,21 @@ unmeasured number of correctly-detected non-dimension callouts. Section 0.4 has
 the root-cause evidence for all three.
 
 Implement Tasks 1-5 in order. Task 1 is the one that unblocks the routing
-decision and needs no re-score. Task 3 measures the false-detection asymmetry
-but must NOT change what is scored — MatchParams is the comparability guard.
+decision and needs no re-score. Tasks 2 and 3 add DocScore fields, so their
+views stay empty until Task 5 re-scores — do not read an intermediate summary as
+a result. Task 3 measures the false-detection asymmetry but must NOT change what
+is scored: MatchParams is the comparability guard.
 
-Full suite must stay green (391 tests today, 404 after this plan) plus
-`bash ~/.claude/hooks/test-sindri-guard.sh` (32 cases). Do not bump
-SCHEMA_VERSION — it would invalidate the report and all 20 dumps.
+Every task has a "Done when" table, and the plan ends with a Definition of Done
+in five parts (gates, conservation, non-degeneracy, safety, decision readiness).
+Treat those as the acceptance bar, not the checkbox list. In particular each new
+aggregate must reconcile against a count that already exists — Task 5 Step 3 has
+a single command that checks all five identities and prints
+`interpretability DoD OK`.
+
+Full suite must stay green (391 tests today, 405 after this plan — an exact
+count, not a floor) plus `bash ~/.claude/hooks/test-sindri-guard.sh` (32 cases).
+Do not bump SCHEMA_VERSION — it would invalidate the report and all 20 dumps.
 
 Task 5 re-scores locally (no GPU needed — the dumps are already here), then
 report the routing read from section Task 5 step 5 and stop. Do not start Rung 1
