@@ -123,6 +123,16 @@ def score_doc(dump: PredictionDump, gold: GoldDoc,
     # it does not influence a single pairing. A gold row with no recovered
     # position can never be matched by any detection change, so it is separated
     # from the two that a detection knob could actually move.
+    # Do the two page frames even agree? Reported, not enforced: raising here
+    # would refuse to score runs the harness has been scoring all along, and the
+    # size of the disagreement is the diagnostic. Expressed as fractions of the
+    # diagonal so they carry no page dimensions.
+    g, d = gold.page_rect, dump.page_rect
+    frame_origin = max(abs(g[0] - d[0]), abs(g[1] - d[1])) / diag if diag else 0.0
+    frame_extent = (max(abs((g[2] - g[0]) - (d[2] - d[0])),
+                        abs((g[3] - g[1]) - (d[3] - d[1]))) / diag
+                    if diag else 0.0)
+
     pred_centers = [_center_pt(c, dump) for c in preds]
     contended = isolated = unlocated = 0
     for b in missed:
@@ -146,6 +156,8 @@ def score_doc(dump: PredictionDump, gold: GoldDoc,
         matched_kinds=matched_kinds,
         missed_contended=contended, missed_isolated=isolated,
         missed_unlocated=unlocated,
+        frame_origin_frac=round(frame_origin, 6),
+        frame_extent_frac=round(frame_extent, 6),
         review_cost=cost,
         recall=(len(matched_g) / n_gold) if n_gold else 1.0,
         precision=(len(matched_p) / n_pred) if n_pred else 1.0,

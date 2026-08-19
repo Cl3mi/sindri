@@ -162,6 +162,24 @@ class DocScore(_Versioned):
     missed_contended: int = 0
     missed_isolated: int = 0
     missed_unlocated: int = 0
+    # Disagreement between gold.page_rect and dump.page_rect, as a fraction of the
+    # gold page diagonal. score_doc places predictions with the dump's frame and
+    # the match gate with the gold's, and gold geometry is CV-recovered from the
+    # ballooned drawing while predictions come from the clean original, so the two
+    # can genuinely differ. Split because they bite by different mechanisms and
+    # both are damaging:
+    #   origin: to_points offsets every prediction by page_rect[:2], so a
+    #           disagreement translates all of them bodily out of the gate
+    #   extent: to_points ignores width/height, but a different page SIZE means
+    #           gold points and prediction points span different coordinate
+    #           ranges -- the same feature lands at a different number
+    # None = NOT MEASURED, which is what any DocScore written before these fields
+    # existed carries. Defaulting them to 0.0 would make a stale report answer
+    # "every frame agrees" for a run where 14 of 20 disagree -- the same confident
+    # wrong answer that effective_dpi's unknown_dpi bucket exists to prevent, and
+    # it fooled this author once already. 0.0 means measured and agreeing.
+    frame_origin_frac: Optional[float] = None
+    frame_extent_frac: Optional[float] = None
     review_cost: float = 0.0
     recall: float = 0.0
     precision: float = 0.0

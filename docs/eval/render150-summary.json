@@ -81,6 +81,100 @@
   "surface": 4,
   "gdt": 17
  },
+ "frame_mismatch": {
+  "n_docs_affected": 14,
+  "n_docs_frames_agree": 6,
+  "n_docs_not_measured": 0,
+  "max_frac": 4.136216,
+  "micro_recall_frames_agree": 0.7376,
+  "micro_recall_frames_differ": 0.1845,
+  "docs": [
+   {
+    "doc": "7bd2fd06",
+    "origin": 0.0,
+    "extent": 4.136216,
+    "recall": 0.0377
+   },
+   {
+    "doc": "d01660e4",
+    "origin": 0.0,
+    "extent": 3.007549,
+    "recall": 0.0
+   },
+   {
+    "doc": "a7994023",
+    "origin": 0.0,
+    "extent": 2.576072,
+    "recall": 0.0
+   },
+   {
+    "doc": "c32e79eb",
+    "origin": 0.0,
+    "extent": 2.452137,
+    "recall": 0.0
+   },
+   {
+    "doc": "514ec627",
+    "origin": 0.0,
+    "extent": 1.590563,
+    "recall": 0.6154
+   },
+   {
+    "doc": "caf2afd1",
+    "origin": 0.0,
+    "extent": 1.590503,
+    "recall": 0.1389
+   },
+   {
+    "doc": "6095d6ec",
+    "origin": 0.0,
+    "extent": 1.495462,
+    "recall": 0.037
+   },
+   {
+    "doc": "c3aa6a9e",
+    "origin": 0.0,
+    "extent": 1.495462,
+    "recall": 0.0556
+   },
+   {
+    "doc": "961693d9",
+    "origin": 0.0,
+    "extent": 1.495462,
+    "recall": 0.4444
+   },
+   {
+    "doc": "c9395a33",
+    "origin": 0.0,
+    "extent": 0.816459,
+    "recall": 0.375
+   },
+   {
+    "doc": "8e5fb4d8",
+    "origin": 0.0,
+    "extent": 0.816442,
+    "recall": 0.3429
+   },
+   {
+    "doc": "3a75ba3d",
+    "origin": 0.0,
+    "extent": 0.816442,
+    "recall": 0.4167
+   },
+   {
+    "doc": "28b2c522",
+    "origin": 0.0,
+    "extent": 0.816442,
+    "recall": 0.3
+   },
+   {
+    "doc": "acb2b8bc",
+    "origin": 0.0,
+    "extent": 0.338294,
+    "recall": 0.5455
+   }
+  ]
+ },
  "missed_diagnosis": {
   "contended": 48,
   "isolated": 252,

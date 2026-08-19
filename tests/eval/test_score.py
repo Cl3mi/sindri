@@ -293,3 +293,70 @@ def test_doc_score_diagnoses_why_each_gold_row_was_missed():
     # Conservation: the three buckets partition the misses exactly.
     assert (s.missed_contended + s.missed_isolated + s.missed_unlocated
             == s.counts["missed"])
+
+
+def test_a_page_rect_origin_mismatch_destroys_matching_silently():
+    """score_doc reads TWO page frames and validates neither: predictions are
+    converted to points with dump.page_rect, while gold positions and the match
+    gate's diagonal come from gold.page_rect. Gold geometry is CV-recovered from
+    the ballooned drawing; predictions come from the clean original.
+
+    to_points applies only page_rect's ORIGIN, so it is an origin disagreement
+    that translates every prediction out of the gate. The failure is silent:
+    predictions still exist, recall just goes to zero."""
+    dump = _dump()
+    dump.page_rect = (0.0, 400.0, 1191.0, 1242.0)    # same size, origin +400pt in y
+
+    s = score_doc(dump, _gold(), ReviewCostWeights(), MatchParams())
+
+    assert s.frame_origin_frac == pytest.approx(400 / 1458.7, abs=1e-3)
+    assert s.frame_extent_frac == 0.0    # the extents agree; only the origin moved
+    assert s.n_pred == 4              # predictions were produced ...
+    assert s.recall == 0.0            # ... and not one of them matched
+    assert s.missed_isolated == 4     # which reads as "detected nothing there"
+
+
+def _extent_mismatch_pair():
+    """A gold page and a dump page of DIFFERENT EXTENT, kept internally
+    consistent -- which is what real data looks like. The dump's page is twice
+    the gold's, so the same physical callout sits at twice the point coordinate
+    and its render is twice as many pixels across. Nothing here is contradictory;
+    the two files simply describe the drawing on different-sized sheets."""
+    gold = GoldDoc(doc_id="D", pdf="d.pdf", excel="d.xlsx", page_rect=RECT,
+                   characteristics=[
+        GoldCharacteristic(balloon=1, position_pt=(1000, 700),
+                           char_type="Diameter", nominal="20"),
+    ])
+    big = (0.0, 0.0, 2382.0, 1684.0)
+    chars = [Characteristic(pos=1, char_type="Diameter", nominal="20",
+                            raw_text="Ø20", kind="dimension",
+                            target_region=(SCALE * 1985, SCALE * 1395,
+                                           SCALE * 2015, SCALE * 1405))]
+    dump = PredictionDump(doc_id="D", config=RunConfig(model_id="stub", dpi=300),
+                          scale=SCALE, page_rect=big,
+                          result=ExtractionResult(characteristics=chars))
+    return dump, gold
+
+
+def test_a_page_rect_extent_mismatch_also_destroys_matching():
+    """The second, independent way the seam bites. to_points ignores page_rect's
+    width and height, so it is tempting to call an extent difference harmless --
+    but it is not, because gold positions and prediction points then live in
+    coordinate spaces of different size. The callout at 84% across a 2382pt page
+    is at 2000pt; its gold balloon at 84% across a 1191pt page is at 1000pt. Same
+    feature, 1000pt apart, against a 145.9pt gate."""
+    dump, gold = _extent_mismatch_pair()
+
+    s = score_doc(dump, gold, ReviewCostWeights(), MatchParams())
+
+    assert s.frame_origin_frac == 0.0            # origins agree ...
+    assert s.frame_extent_frac > 0.5             # ... extents do not
+    assert s.n_pred == 1
+    assert s.recall == 0.0
+
+
+def test_doc_score_reports_no_frame_mismatch_when_the_rects_agree():
+    s = score_doc(_dump(), _gold(), ReviewCostWeights(), MatchParams())
+    assert s.frame_origin_frac == 0.0
+    assert s.frame_extent_frac == 0.0
+    assert s.recall == 0.75          # the normal case still scores normally

@@ -371,6 +371,78 @@ def test_summary_aggregates_why_the_misses_happened():
     assert sum(diag.values()) == digest["taxonomy"]["missed"]
 
 
+def test_summary_names_documents_whose_gold_and_dump_frames_disagree():
+    """An unguarded seam: predictions are placed with dump.page_rect, the match
+    gate with gold.page_rect, and nothing compares them. A document scoring
+    recall 0.0 while still emitting predictions is the signature, so the digest
+    has to be able to say whether the frames are the cause."""
+    def doc(doc_id, origin, extent, n_gold, missed):
+        return DocScore(doc_id=doc_id, gold_hash="g" + "0" * 15, n_gold=n_gold,
+                        n_pred=10, counts={"missed": missed}, review_cost=100.0,
+                        recall=round((n_gold - missed) / n_gold, 4), precision=0.0,
+                        escaped_rate=0.0, frame_origin_frac=origin,
+                        frame_extent_frac=extent)
+
+    docs = [
+        doc("D1", 0.0, 0.0, 10, 2),          # frames agree: 8/10
+        doc("D2", 0.2742, 0.0, 10, 10),      # origin differs: 0/10
+        doc("D3", 0.0, 4e-05, 10, 2),        # float noise only -> counts as AGREE
+        doc("D4", 0.0, 1.5, 40, 36),         # extent differs: 4/40
+        doc("D5", 0.0, 3.0, 1, 0),           # one-row doc at recall 1.0
+    ]
+    report = aggregate("r", RunConfig(model_id="stub"), ReviewCostWeights(),
+                       MatchParams(), docs)
+
+    digest = summarize(report, lambda d: f"hash-{d}")
+    fm = digest["frame_mismatch"]
+
+    assert fm["n_docs_affected"] == 3        # D2, D4, D5 -- NOT the 4e-05 one
+    assert fm["n_docs_frames_agree"] == 2
+    assert fm["max_frac"] == 3.0
+    # Micro, so the single-row D5 cannot outvote the 40-row D4:
+    # agree 16/20 = 0.8 ; differ (0 + 4 + 1)/(10 + 40 + 1) = 5/51
+    assert fm["micro_recall_frames_agree"] == 0.8
+    assert fm["micro_recall_frames_differ"] == round(5 / 51, 4)
+    assert fm["docs"][0] == {"doc": "hash-D5", "origin": 0.0, "extent": 3.0,
+                             "recall": 1.0}
+
+
+def test_summary_reports_no_frame_mismatch_when_every_frame_agrees():
+    docs = [DocScore(doc_id="D1", gold_hash="g" + "0" * 15, n_gold=5, n_pred=5,
+                     counts={"correct": 5}, review_cost=0.0, recall=1.0,
+                     precision=1.0, escaped_rate=0.0,
+                     frame_origin_frac=0.0, frame_extent_frac=0.0)]
+    report = aggregate("r", RunConfig(model_id="stub"), ReviewCostWeights(),
+                       MatchParams(), docs)
+
+    fm = summarize(report, lambda d: "hashed")["frame_mismatch"]
+
+    assert fm == {"n_docs_affected": 0, "n_docs_frames_agree": 1,
+                  "n_docs_not_measured": 0, "max_frac": 0.0,
+                  "micro_recall_frames_agree": 1.0,
+                  "micro_recall_frames_differ": None, "docs": []}
+
+
+def test_summary_never_calls_an_unmeasured_frame_an_agreeing_one():
+    """A DocScore written before these fields existed carries None, not 0.0.
+    Reporting it as "agrees" gave this author a clean bill of health for a run
+    where 14 of 20 documents disagreed -- read off a report that had simply been
+    summarised without being re-scored. n_docs_not_measured is the tell, exactly
+    as unknown_dpi is for the clamp split."""
+    stale = DocScore(doc_id="D1", gold_hash="g" + "0" * 15, n_gold=5, n_pred=5,
+                     counts={"correct": 5}, review_cost=0.0, recall=1.0,
+                     precision=1.0, escaped_rate=0.0)       # fields absent
+    report = aggregate("r", RunConfig(model_id="stub"), ReviewCostWeights(),
+                       MatchParams(), [stale])
+
+    fm = summarize(report, lambda d: "hashed")["frame_mismatch"]
+
+    assert fm["n_docs_not_measured"] == 1
+    assert fm["n_docs_frames_agree"] == 0        # NOT 1 -- the whole point
+    assert fm["n_docs_affected"] == 0
+    assert fm["micro_recall_frames_agree"] is None
+
+
 def test_summary_says_whether_undetected_misses_sit_on_the_clamped_sheets():
     """Decides WHICH coverage fix: if the isolated misses concentrate on the
     documents whose render dpi was clamped, the answer is tiled rendering for

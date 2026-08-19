@@ -139,6 +139,66 @@ def _kind_totals(report: RunReport) -> Tuple[Dict[str, int], Dict[str, int],
     return preds, false, matched
 
 
+# 1% of the page diagonal. NOT an epsilon on float noise: PDF rects round-trip
+# with deviations around 1e-5 of the diagonal (a few thousandths of a point),
+# which is physically nothing. A 1e-6 threshold put 19 of 20 documents in the
+# "mismatched" bucket and left n=1 in the comparison group, making the contrast
+# meaningless. 0.01 of the diagonal is the smallest difference that could move a
+# callout appreciably against a 0.10 match gate.
+FRAME_MISMATCH_EPS = 0.01
+
+
+def _frame_mismatch(report: RunReport, anonymizer) -> Dict:
+    """Documents whose gold and dump page frames disagree.
+
+    score_doc converts predictions to points with dump.page_rect but scales the
+    match gate by gold.page_rect's diagonal, and nothing validates the two. Gold
+    geometry is CV-recovered from the ballooned drawing while predictions come
+    from the clean original, so the two files can disagree. Only an ORIGIN
+    disagreement actually translates predictions -- to_points ignores width and
+    height -- so a large frac here is a lead to confirm, not a proven fault."""
+    def worst(d):
+        return max(d.frame_origin_frac, d.frame_extent_frac)
+
+    # THREE groups, for the same reason the dpi split has three: a report written
+    # before these fields existed measured nothing, and calling that "agrees"
+    # reports a clean bill of health for a run with 14 mismatched documents.
+    measured = [d for d in report.doc_scores
+                if d.frame_origin_frac is not None
+                and d.frame_extent_frac is not None]
+    unmeasured = [d for d in report.doc_scores if d not in measured]
+    bad = sorted((d for d in measured if worst(d) > FRAME_MISMATCH_EPS),
+                 key=lambda d: -worst(d))
+    ok = [d for d in measured if worst(d) <= FRAME_MISMATCH_EPS]
+
+    def micro_recall(docs):
+        """MICRO, pooling rows -- deliberately not the macro mean used elsewhere.
+        A document with a single gold row scored recall 1.0 while carrying the
+        second-largest extent mismatch, and under a macro mean that one row
+        outweighed a 67-row sheet. Pooling rows stops one-row documents from
+        dominating the very comparison they cannot inform."""
+        g = sum(d.n_gold for d in docs)
+        m = sum(d.n_gold - d.counts.get("missed", 0) for d in docs)
+        return round(m / g, 4) if g else None
+
+    return {
+        "n_docs_affected": len(bad),
+        "n_docs_frames_agree": len(ok),
+        # Non-zero means re-score before believing this block.
+        "n_docs_not_measured": len(unmeasured),
+        "max_frac": max((worst(d) for d in bad), default=0.0),
+        # The comparison that says whether this matters: recall on the documents
+        # whose frames agree vs the ones where they do not.
+        "micro_recall_frames_agree": micro_recall(ok),
+        "micro_recall_frames_differ": micro_recall(bad),
+        # recall alongside each doc, because a frame fault shows up as recall ~0
+        # with predictions still present -- the pairing is the evidence.
+        "docs": [{"doc": anonymizer(d.doc_id),
+                  "origin": d.frame_origin_frac, "extent": d.frame_extent_frac,
+                  "recall": round(d.recall, 4)} for d in bad],
+    }
+
+
 def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
     """Privacy-safe digest of a run: aggregate metrics only, doc ids hashed.
 
@@ -185,6 +245,7 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
         # nothing was detected there (tile size, overlap, confidence);
         # unlocated means the gold row has no balloon position, so no detection
         # change can reach it. They sum to taxonomy.missed.
+        "frame_mismatch": _frame_mismatch(report, anonymizer),
         "missed_diagnosis": {
             "contended": sum(d.missed_contended for d in report.doc_scores),
             "isolated": sum(d.missed_isolated for d in report.doc_scores),
