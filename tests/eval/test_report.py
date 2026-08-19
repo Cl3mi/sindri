@@ -148,9 +148,13 @@ def test_comparability_errors_never_name_a_real_document():
     """The gold-differs guard interpolated the raw doc_id, so `runner compare`
     printed a client part number to the terminal -- the one thing every other
     line in this module routes through an Anonymizer first. Found by running a
-    legitimate compare across two golds; the message read "gold differs for
-    IPB_21-0010". The id is genuinely useful for triage, so hash it rather than
-    drop it."""
+    legitimate compare across two golds: the message read "gold differs for
+    <a real part number from the live corpus>". The id is genuinely useful for
+    triage, so hash it rather than drop it.
+
+    The real id is deliberately NOT quoted here. Writing it into a test docstring
+    would commit to the repository exactly what this test exists to keep out of
+    it -- which is what the first version of this docstring did."""
     a = _run("a", [10.0, 12.0])
     b = _run("b", [10.0, 12.0])
     for d in (a.doc_scores[0], b.doc_scores[0]):
