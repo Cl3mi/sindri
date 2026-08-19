@@ -150,6 +150,18 @@ class DocScore(_Versioned):
     # from a false detection (w=2). pred_kinds[k] == matched_kinds[k] +
     # false_kinds[k] for every k, which is what makes this checkable.
     matched_kinds: Dict[str, int] = {}
+    # Why each gold row was missed. "missed" alone cannot distinguish detection
+    # finding nothing from detection finding something the matcher spent on a
+    # neighbour, and those route to different Rung 1 knobs. The three partition
+    # counts["missed"] exactly.
+    #   contended: a prediction sits inside max_geo_frac but paired elsewhere
+    #              -> merge_adjacent / dedupe collapsed sibling callouts
+    #   isolated:  no prediction inside the gate -> tile size / overlap / conf
+    #   unlocated: gold row has no recovered balloon position, so no detection
+    #              change can ever match it -> balloon recovery, not detection
+    missed_contended: int = 0
+    missed_isolated: int = 0
+    missed_unlocated: int = 0
     review_cost: float = 0.0
     recall: float = 0.0
     precision: float = 0.0

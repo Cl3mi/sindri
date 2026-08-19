@@ -119,6 +119,22 @@ def score_doc(dump: PredictionDump, gold: GoldDoc,
         k = _kind(pred_by_pos[pk])
         matched_kinds[k] = matched_kinds.get(k, 0) + 1
 
+    # Why the misses happened. Read-only over geometry already computed above;
+    # it does not influence a single pairing. A gold row with no recovered
+    # position can never be matched by any detection change, so it is separated
+    # from the two that a detection knob could actually move.
+    pred_centers = [_center_pt(c, dump) for c in preds]
+    contended = isolated = unlocated = 0
+    for b in missed:
+        pos = gold_by_num[b].position_pt
+        if pos is None:
+            unlocated += 1
+        elif any(math.dist(pos, pc) / diag <= params.max_geo_frac
+                 for pc in pred_centers):
+            contended += 1
+        else:
+            isolated += 1
+
     n_gold, n_pred = len(gold_by_num), len(pred_by_pos)
     return DocScore(
         doc_id=gold.doc_id, gold_hash=gold.gold_hash(),
@@ -128,6 +144,8 @@ def score_doc(dump: PredictionDump, gold: GoldDoc,
         effective_dpi=dump.scale * 72.0,
         pred_kinds=pred_kinds, false_kinds=false_kinds,
         matched_kinds=matched_kinds,
+        missed_contended=contended, missed_isolated=isolated,
+        missed_unlocated=unlocated,
         review_cost=cost,
         recall=(len(matched_g) / n_gold) if n_gold else 1.0,
         precision=(len(matched_p) / n_pred) if n_pred else 1.0,

@@ -244,3 +244,52 @@ def test_doc_score_records_which_kinds_matched_in_scope_gold():
         assert total == s.matched_kinds.get(k, 0) + s.false_kinds.get(k, 0)
     # and the matched total is the run's matched-gold count
     assert sum(s.matched_kinds.values()) == s.n_gold - s.counts["missed"]
+
+
+def _contention_gold():
+    """b1 and b2 sit 50pt apart — well inside the 145.9pt match gate (0.10 of
+    the 1458.7pt page diagonal). b3 is far from everything. b4 has no recovered
+    balloon position at all."""
+    return GoldDoc(doc_id="D", pdf="d.pdf", excel="d.xlsx", page_rect=RECT,
+                   characteristics=[
+        GoldCharacteristic(balloon=1, position_pt=(100, 100),
+                           char_type="Diameter", nominal="20"),
+        GoldCharacteristic(balloon=2, position_pt=(150, 100),
+                           char_type="Diameter", nominal="21"),
+        GoldCharacteristic(balloon=3, position_pt=(900, 500),
+                           char_type="Distance", nominal="8"),
+        GoldCharacteristic(balloon=4, position_pt=None,
+                           char_type="Distance", nominal="9"),
+    ])
+
+
+def _single_pred_dump():
+    """One prediction, landing on b1 (its nominal agrees, so value_bonus wins it
+    that pair). b2 is then missed even though a detection sits inside its gate."""
+    chars = [Characteristic(pos=1, char_type="Diameter", nominal="20",
+                            raw_text="Ø20", kind="dimension",
+                            target_region=_pt_box(100, 100))]
+    return PredictionDump(doc_id="D", config=RunConfig(model_id="stub", dpi=300),
+                          scale=SCALE, page_rect=RECT,
+                          result=ExtractionResult(characteristics=chars))
+
+
+def test_doc_score_diagnoses_why_each_gold_row_was_missed():
+    """missed=310 carries 63% of the review cost, but "missed" does not say
+    whether detection found nothing there or found something the matcher gave to
+    a neighbour. Those route to different Rung 1 knobs -- tile size/overlap vs
+    merge_adjacent/dedupe -- and a third bucket routes away from detection
+    entirely, to gold balloon recovery."""
+    s = score_doc(_single_pred_dump(), _contention_gold(), ReviewCostWeights(),
+                  MatchParams())
+
+    assert s.counts["missed"] == 3
+    # b2: a detection sits inside its gate, but the matcher spent it on b1
+    assert s.missed_contended == 1
+    # b3: nothing detected anywhere near it
+    assert s.missed_isolated == 1
+    # b4: no gold position, so no detection knob can ever fix it
+    assert s.missed_unlocated == 1
+    # Conservation: the three buckets partition the misses exactly.
+    assert (s.missed_contended + s.missed_isolated + s.missed_unlocated
+            == s.counts["missed"])

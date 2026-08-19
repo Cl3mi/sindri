@@ -339,3 +339,59 @@ def test_summary_crosstabs_which_kinds_matched_in_scope_gold():
                          + digest["false_detections_by_kind"].get(k, 0))
     assert (sum(digest["matched_by_pred_kind"].values())
             == digest["n_gold"] - digest["taxonomy"]["missed"])
+
+
+def test_summary_aggregates_why_the_misses_happened():
+    """missed=310 is 63% of the review cost and the single biggest Rung 1 target,
+    but the three causes route to different work: contended -> merge/dedupe,
+    isolated -> tile size and overlap, unlocated -> balloon recovery, which is
+    not a detection problem at all."""
+    def doc(doc_id, contended, isolated, unlocated):
+        total = contended + isolated + unlocated
+        return DocScore(doc_id=doc_id, gold_hash="g" + "0" * 15,
+                        n_gold=total + 5, n_pred=5,
+                        counts={"correct": 5, "missed": total},
+                        review_cost=10.0 * total, recall=0.5, precision=1.0,
+                        escaped_rate=0.0, missed_contended=contended,
+                        missed_isolated=isolated, missed_unlocated=unlocated)
+
+    docs = [doc("D1", 3, 7, 1), doc("D2", 2, 4, 0)]
+    report = aggregate("r", RunConfig(model_id="stub"), ReviewCostWeights(),
+                       MatchParams(), docs)
+
+    digest = summarize(report, lambda d: "hashed")
+    diag = digest["missed_diagnosis"]
+
+    assert diag == {"contended": 5, "isolated": 11, "unlocated": 1}
+    # The three buckets partition the misses, so no cause is double-counted and
+    # none is silently dropped.
+    assert sum(diag.values()) == digest["taxonomy"]["missed"]
+
+
+def test_summary_says_whether_undetected_misses_sit_on_the_clamped_sheets():
+    """Decides WHICH coverage fix: if the isolated misses concentrate on the
+    documents whose render dpi was clamped, the answer is tiled rendering for
+    oversized sheets. If they are spread evenly, the detector is under-covering
+    at full resolution and the answer is tile size / overlap."""
+    def doc(doc_id, dpi, isolated):
+        return DocScore(doc_id=doc_id, gold_hash="g" + "0" * 15, n_gold=20,
+                        n_pred=10, counts={"correct": 10, "missed": isolated},
+                        review_cost=10.0 * isolated, recall=0.5, precision=1.0,
+                        escaped_rate=0.0, effective_dpi=dpi,
+                        missed_isolated=isolated)
+
+    docs = [doc("D1", 300.0, 2), doc("D2", 300.0, 3),
+            doc("D3", 109.0, 40), doc("D4", 225.0, 30)]
+    report = aggregate("r", RunConfig(model_id="stub", dpi=300),
+                       ReviewCostWeights(), MatchParams(), docs)
+
+    split = summarize(report, lambda d: f"hash-{d}")["clamped_vs_unclamped"]
+
+    assert split["clamped"]["missed_isolated"] == 70
+    assert split["unclamped"]["missed_isolated"] == 5
+    # Still reconciles: the buckets partition the corpus, so their isolated
+    # counts must add up to the run total.
+    assert (split["clamped"]["missed_isolated"]
+            + split["unclamped"]["missed_isolated"]
+            + split["unknown_dpi"]["missed_isolated"]
+            == summarize(report, lambda d: "h")["missed_diagnosis"]["isolated"])

@@ -52,17 +52,20 @@
   "clamped": {
    "n": 4,
    "macro_mean_recall": 0.2594,
-   "mean_review_cost": 394.75
+   "mean_review_cost": 394.75,
+   "missed_isolated": 118
   },
   "unclamped": {
    "n": 16,
    "macro_mean_recall": 0.4701,
-   "mean_review_cost": 207.94
+   "mean_review_cost": 207.94,
+   "missed_isolated": 133
   },
   "unknown_dpi": {
    "n": 0,
    "macro_mean_recall": null,
-   "mean_review_cost": null
+   "mean_review_cost": null,
+   "missed_isolated": 0
   }
  },
  "pred_kinds": {
@@ -87,6 +90,11 @@
   "theoretical": 4,
   "surface": 4,
   "gdt": 17
+ },
+ "missed_diagnosis": {
+  "contended": 48,
+  "isolated": 251,
+  "unlocated": 11
  },
  "config": {
   "model_id": "Qwen/Qwen2.5-VL-72B-Instruct-AWQ",

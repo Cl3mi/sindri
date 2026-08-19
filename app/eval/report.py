@@ -98,6 +98,10 @@ def _clamp_split(report: RunReport, anonymizer,
                                   if n else None),
             "mean_review_cost": (round(sum(d.review_cost for d in docs) / n, 2)
                                  if n else None),
+            # A SUM, not a mean: it answers "how much of the undetected-miss
+            # mass sits in this bucket?", which is what decides between tiled
+            # rendering for oversized sheets and detector tile-size work.
+            "missed_isolated": sum(d.missed_isolated for d in docs),
         }
 
     listed = [{"doc": anonymizer(d.doc_id),
@@ -171,6 +175,17 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
         # a w=2 false detection into a w=10 miss — so this is the number that
         # says whether that filter helps or hurts.
         "matched_by_pred_kind": matched_kinds,
+        # Which Rung 1 knob the misses actually point at. contended means a
+        # detection was inside the match gate but the matcher spent it on a
+        # neighbour (merge_adjacent/dedupe collapsed siblings); isolated means
+        # nothing was detected there (tile size, overlap, confidence);
+        # unlocated means the gold row has no balloon position, so no detection
+        # change can reach it. They sum to taxonomy.missed.
+        "missed_diagnosis": {
+            "contended": sum(d.missed_contended for d in report.doc_scores),
+            "isolated": sum(d.missed_isolated for d in report.doc_scores),
+            "unlocated": sum(d.missed_unlocated for d in report.doc_scores),
+        },
         "config": report.config.model_dump(),
         "weights": report.weights.model_dump(),
         "match_params": report.match_params.model_dump(),
