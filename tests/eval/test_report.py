@@ -144,6 +144,33 @@ def test_weight_sweep_flags_a_verdict_that_depends_on_the_weights():
     assert cmp["weight_sensitivity"]["robust"] is False
 
 
+def test_comparability_errors_never_name_a_real_document():
+    """The gold-differs guard interpolated the raw doc_id, so `runner compare`
+    printed a client part number to the terminal -- the one thing every other
+    line in this module routes through an Anonymizer first. Found by running a
+    legitimate compare across two golds; the message read "gold differs for
+    IPB_21-0010". The id is genuinely useful for triage, so hash it rather than
+    drop it."""
+    a = _run("a", [10.0, 12.0])
+    b = _run("b", [10.0, 12.0])
+    for d in (a.doc_scores[0], b.doc_scores[0]):
+        d.doc_id = "T1025300_B"
+    b.doc_scores[0].gold_hash = "f" * 16
+
+    with pytest.raises(ValueError) as err:
+        compare_runs(a, b)
+    assert "T1025300_B" not in str(err.value), "comparability error leaked a part number"
+    assert "gold differs" in str(err.value)
+
+    # and with an anonymizer supplied it still identifies WHICH document
+    from app.eval.anon import Anonymizer
+    anon = Anonymizer("salt")
+    with pytest.raises(ValueError) as err2:
+        compare_runs(a, b, anonymizer=anon)
+    assert anon("T1025300_B") in str(err2.value)
+    assert "T1025300_B" not in str(err2.value)
+
+
 def test_guards_refuse_incomparable_runs():
     a = _run("a", [10.0, 12.0])
     b = _run("b", [10.0])                                   # different doc set

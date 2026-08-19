@@ -307,16 +307,24 @@ def _weight_sensitivity(a: RunReport, b: RunReport) -> Dict:
     }
 
 
-def _check_comparable(a: RunReport, b: RunReport) -> None:
+def _check_comparable(a: RunReport, b: RunReport, anonymizer=None) -> None:
+    """Raises on any incomparability. Messages must not name a real document:
+    this is an exception path, so it reaches a terminal and a log without passing
+    through the digest that normally does the hashing. Without an anonymizer it
+    identifies the document by position instead of by id -- never by part
+    number."""
+    def where(doc_id, i):
+        return anonymizer(doc_id) if anonymizer else f"document #{i} (of {len(a.doc_scores)})"
+
     ids_a = [d.doc_id for d in a.doc_scores]
     ids_b = [d.doc_id for d in b.doc_scores]
     if ids_a != ids_b:
         raise ValueError(f"doc set differs: {len(ids_a)} vs {len(ids_b)} docs "
                          f"(runs are only comparable on the identical corpus)")
-    for da, db in zip(a.doc_scores, b.doc_scores):
+    for i, (da, db) in enumerate(zip(a.doc_scores, b.doc_scores), 1):
         if da.gold_hash != db.gold_hash:
-            raise ValueError(f"gold differs for {da.doc_id}: scored against "
-                             f"different gold data — re-score both runs")
+            raise ValueError(f"gold differs for {where(da.doc_id, i)}: scored "
+                             f"against different gold data — re-score both runs")
     if a.weights != b.weights:
         raise ValueError("weights differ between runs — re-score with one set")
     if a.match_params != b.match_params:
@@ -326,14 +334,14 @@ def _check_comparable(a: RunReport, b: RunReport) -> None:
 
 
 def compare_runs(a: RunReport, b: RunReport, seed: int = 13,
-                 n_boot: int = N_BOOTSTRAP) -> Dict:
+                 n_boot: int = N_BOOTSTRAP, anonymizer=None) -> Dict:
     """Paired comparison: delta = b - a per document (negative = b better).
     Returns headline deltas, a bootstrap CI on the mean delta, and regression
     warnings. Deterministic for fixed seed.
 
     The bootstrap CI is uninformative for very small doc sets (n < ~10): with
     n=1 any nonzero delta is reported significant."""
-    _check_comparable(a, b)
+    _check_comparable(a, b, anonymizer)
     deltas = [db.review_cost - da.review_cost
               for da, db in zip(a.doc_scores, b.doc_scores)]
     n = len(deltas)

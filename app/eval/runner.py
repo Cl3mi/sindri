@@ -551,12 +551,14 @@ def _cmd_score(args):
 def _cmd_compare(args):
     a = RunReport.model_validate_json(Path(args.report_a).read_text())
     b = RunReport.model_validate_json(Path(args.report_b).read_text())
+    # Built BEFORE the comparison: compare_runs raises on incomparability, and
+    # that message used to interpolate the raw doc_id straight to the terminal.
+    anon = _anon(args)
     try:
-        cmp = compare_runs(a, b)
+        cmp = compare_runs(a, b, anonymizer=anon)
     except ValueError as e:
         print(f"NOT COMPARABLE: {e}", file=sys.stderr)
         return 1
-    anon = _anon(args)
     cmp["per_doc_deltas"] = {anon(k): v for k, v in cmp["per_doc_deltas"].items()}
     out = json.dumps(cmp, indent=1, ensure_ascii=False)
     if args.out:
