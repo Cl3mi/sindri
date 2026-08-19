@@ -26,6 +26,67 @@ def test_join_recovers_positions_and_values(tmp_path):
     assert gold.provenance["join_rate"] == 1.0
 
 
+def _resized_copy(src, dst, factor):
+    """The same drawing on a sheet `factor` times the size, content scaled to
+    fit -- which is the relationship measured between the delivered stamped
+    exports and the clean originals."""
+    doc = fitz.open(src)
+    rect = doc[0].rect
+    out = fitz.open()
+    page = out.new_page(width=rect.width * factor, height=rect.height * factor)
+    page.show_pdf_page(page.rect, doc, 0)
+    doc.close()
+    out.save(dst)
+    out.close()
+    return dst
+
+
+def test_gold_positions_land_in_the_originals_page_space(tmp_path):
+    """Balloons only exist on the STAMPED drawing, but the pipeline reads the
+    CLEAN original -- and on 14 of 20 dev documents those two sheets have
+    different extents, which put every gold position in a coordinate space the
+    predictions never occupy. Recovery still happens on the stamped sheet;
+    positions and page_rect are reported in the original's space."""
+    stamped, xlsx = make_synthetic_doc(RECORDS, tmp_path, doc_id="SYN1")
+    original = _resized_copy(stamped, tmp_path / "SYN1_orig.pdf", 2.0)
+
+    gold = build_gold_doc(stamped, xlsx, doc_id="SYN1", target_pdf=original)
+
+    # page_rect is the ORIGINAL's, so scoring compares like with like
+    assert round(gold.page_rect[2]) == round(1191 * 2)
+    # and every balloon moved with it: (340, 200) on the stamped sheet is
+    # (680, 400) on a sheet twice the size
+    by_num = {c.balloon: c for c in gold.characteristics}
+    x, y = by_num[2].position_pt
+    assert abs(x - 680.0) < 6 and abs(y - 400.0) < 6
+    # traceable, but in provenance so it stays out of gold_hash
+    assert gold.provenance["target_scale"] == [2.0, 2.0]
+
+
+def test_gold_is_unchanged_when_no_originals_are_given(tmp_path):
+    """Default off: omitting target_pdf must reproduce byte-identical gold, so
+    adding this cannot silently move an existing corpus."""
+    stamped, xlsx = make_synthetic_doc(RECORDS, tmp_path, doc_id="SYN1")
+
+    plain = build_gold_doc(stamped, xlsx, doc_id="SYN1")
+    explicit_none = build_gold_doc(stamped, xlsx, doc_id="SYN1", target_pdf=None)
+
+    assert plain.gold_hash() == explicit_none.gold_hash()
+    assert round(plain.page_rect[2]) == 1191
+
+
+def test_same_sized_originals_leave_gold_hash_untouched(tmp_path):
+    """The 6 documents whose sheets already agree must not move at all -- a
+    same-size target is an identity transform, not a no-op-shaped rewrite."""
+    stamped, xlsx = make_synthetic_doc(RECORDS, tmp_path, doc_id="SYN1")
+    same = _resized_copy(stamped, tmp_path / "SYN1_same.pdf", 1.0)
+
+    plain = build_gold_doc(stamped, xlsx, doc_id="SYN1")
+    targeted = build_gold_doc(stamped, xlsx, doc_id="SYN1", target_pdf=same)
+
+    assert plain.gold_hash() == targeted.gold_hash()
+
+
 def _flatten(src, dst, dpi=200):
     """Raster-only copy: no text layer survives, matching the delivered
     drawings whose balloon numbers defeat text recovery."""

@@ -318,9 +318,20 @@ def _cmd_ingest(args):
               file=sys.stderr)
     low_join, provenance = [], []
     paired = sorted(set(pdfs) & set(excels))
+    originals = ({p.stem: p for p in Path(args.originals).glob(_PDF_GLOB)}
+                 if getattr(args, "originals", None) else {})
+    if originals:
+        no_original = sorted(set(paired) - set(originals))
+        if no_original:
+            # Loud, because silently leaving these in the stamped sheet's space
+            # is the exact fault --originals exists to remove.
+            print(f"WARNING: no original for (gold stays in the stamped sheet's "
+                  f"coordinate space): {[anon(s) for s in no_original]}",
+                  file=sys.stderr)
     for stem in paired:
         gold = build_gold_doc(pdfs[stem], excels[stem], doc_id=stem,
-                              is_variant=stem in variants, use_cv=args.cv)
+                              is_variant=stem in variants, use_cv=args.cv,
+                              target_pdf=originals.get(stem))
         (out / f"{stem}.gold.json").write_text(gold.model_dump_json(indent=1),
                                                encoding="utf-8")
         provenance.append(gold.provenance)
@@ -614,6 +625,13 @@ def main(argv=None) -> int:
                         "layer cannot locate (slower: renders + OCRs each page)")
     p.add_argument("--pdfs", required=True); p.add_argument("--excel", required=True)
     p.add_argument("--out", required=True); p.add_argument("--variants", default=None)
+    p.add_argument("--originals", default=None,
+                   help="clean drawings the PIPELINE reads. --pdfs must be the "
+                        "STAMPED set (only it carries balloons); pass this and "
+                        "recovered positions are mapped into the originals' page "
+                        "space. Without it gold geometry stays in the stamped "
+                        "sheet's space, which cost the Rung-0 baseline 141 "
+                        "matches. Changes gold_hash, so re-score any report.")
     p.set_defaults(fn=_cmd_ingest)
 
     p = sub.add_parser("variants", parents=[common])

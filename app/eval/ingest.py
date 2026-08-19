@@ -46,7 +46,17 @@ def _char_type_histogram(rows, balloons, page_index) -> dict:
 
 def build_gold_doc(pdf_path, excel_path, doc_id: str,
                    is_variant: bool = False, page_index: int = 0,
-                   use_cv: bool = False) -> GoldDoc:
+                   use_cv: bool = False, target_pdf=None) -> GoldDoc:
+    """`pdf_path` is the STAMPED drawing -- the only one carrying balloons.
+
+    `target_pdf` is the CLEAN original the pipeline actually reads. Pass it and
+    recovered positions are mapped into that sheet's coordinate space, and
+    page_rect reports it. Without it, gold geometry stays in the stamped sheet's
+    space, which is what produced the Rung-0 fault: on 14 of 20 dev documents the
+    two sheets have different extents, so gold balloons and predictions occupied
+    coordinate spaces that never overlapped and 141 real matches were scored as a
+    miss plus a false detection each. Reconciling recovered recall 0.350 -> 0.646
+    on the same dumps; this puts the correction at the source instead."""
     # Read the sheet FIRST: its Pos column says which balloon numbers exist on
     # this drawing, which lets recovery reject digit words that are not
     # balloons (title-block numbers, revision indices).
@@ -80,8 +90,28 @@ def build_gold_doc(pdf_path, excel_path, doc_id: str,
 
     doc = fitz.open(pdf_path)
     rect = doc[page_index].rect
-    page_rect = (rect.x0, rect.y0, rect.x1, rect.y1)
+    src_rect = (rect.x0, rect.y0, rect.x1, rect.y1)
     doc.close()
+
+    # Map the stamped sheet's geometry onto the sheet the pipeline reads. Scaling
+    # per axis rather than uniformly: an export can letterbox, and "scale" beat
+    # "center" 0.646 vs 0.570 when the two candidate transforms were measured.
+    page_rect, sx, sy = src_rect, 1.0, 1.0
+    if target_pdf is not None:
+        tdoc = fitz.open(target_pdf)
+        trect = tdoc[page_index].rect
+        page_rect = (trect.x0, trect.y0, trect.x1, trect.y1)
+        tdoc.close()
+        sw, sh = src_rect[2] - src_rect[0], src_rect[3] - src_rect[1]
+        if sw > 0 and sh > 0:
+            sx = (page_rect[2] - page_rect[0]) / sw
+            sy = (page_rect[3] - page_rect[1]) / sh
+
+    def _to_target(pos):
+        if pos is None or (sx == 1.0 and sy == 1.0 and page_rect == src_rect):
+            return pos
+        return (page_rect[0] + (pos[0] - src_rect[0]) * sx,
+                page_rect[1] + (pos[1] - src_rect[1]) * sy)
 
     joined = sorted(set(balloons) & set(rows))
     # EVERY sheet row is gold. A characteristic whose balloon could not be
@@ -90,9 +120,10 @@ def build_gold_doc(pdf_path, excel_path, doc_id: str,
     # Rows without a position carry position_pt=None and are matched on value.
     chars = [GoldCharacteristic(
                  balloon=n,
-                 position_pt=(balloons[n].center_pt
-                              if n in balloons and balloons[n].page == page_index
-                              else None),
+                 position_pt=_to_target(
+                     balloons[n].center_pt
+                     if n in balloons and balloons[n].page == page_index
+                     else None),
                  char_type=rows[n]["char_type"],
                  nominal=rows[n]["nominal"],
                  upper_tol=rows[n]["upper_tol"],
@@ -129,5 +160,11 @@ def build_gold_doc(pdf_path, excel_path, doc_id: str,
             "unlocated_char_types": _char_type_histogram(
                 rows, balloons, page_index),
             "duplicate_balloons": duplicate_balloons,
+            # Which sheet the balloons were measured on and what was applied to
+            # bring them into the pipeline's space. In provenance, which
+            # gold_hash excludes, so recording the transform cannot itself
+            # invalidate a corpus. [1.0, 1.0] means no remapping was needed.
+            "source_page_rect": list(src_rect),
+            "target_scale": [round(sx, 9), round(sy, 9)],
         },
     )
