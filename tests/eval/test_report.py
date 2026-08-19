@@ -229,6 +229,9 @@ def test_summary_separates_clamped_documents_from_the_rest():
 
     assert [c["doc"] for c in digest["clamped_docs"]] == ["hash-D3", "hash-D4"]
     assert digest["clamped_docs"][0]["effective_dpi"] == 109
+    # Per-document undetected-miss count: sizes a per-sheet fix (raise the
+    # budget vs true tiling) instead of averaging the four sheets together.
+    assert "missed_isolated" in digest["clamped_docs"][0]
     assert split["clamped"]["n"] == 2
     assert split["unclamped"]["n"] == 2
     assert split["unknown_dpi"]["n"] == 0

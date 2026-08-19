@@ -27,25 +27,29 @@
    "doc": "7bd2fd06",
    "effective_dpi": 109,
    "recall": 0.0377,
-   "review_cost": 576.0
+   "review_cost": 576.0,
+   "missed_isolated": 42
   },
   {
    "doc": "d01660e4",
    "effective_dpi": 208,
    "recall": 1.0,
-   "review_cost": 117.0
+   "review_cost": 117.0,
+   "missed_isolated": 0
   },
   {
    "doc": "a7994023",
    "effective_dpi": 225,
    "recall": 0.0,
-   "review_cost": 758.0
+   "review_cost": 758.0,
+   "missed_isolated": 67
   },
   {
    "doc": "c32e79eb",
    "effective_dpi": 225,
    "recall": 0.0,
-   "review_cost": 128.0
+   "review_cost": 128.0,
+   "missed_isolated": 9
   }
  ],
  "clamped_vs_unclamped": {

@@ -107,7 +107,11 @@ def _clamp_split(report: RunReport, anonymizer,
     listed = [{"doc": anonymizer(d.doc_id),
                "effective_dpi": round(d.effective_dpi),
                "recall": round(d.recall, 4),
-               "review_cost": d.review_cost} for d in clamped[:limit]]
+               "review_cost": d.review_cost,
+               # Per sheet, because the fix is per sheet: a page that merely
+               # overshot the budget can be un-clamped by raising it, while a
+               # 598 MP sheet needs true tiling. Averaging the two hides that.
+               "missed_isolated": d.missed_isolated} for d in clamped[:limit]]
     return listed, {"clamped": block(clamped), "unclamped": block(rest),
                     "unknown_dpi": block(unknown)}
 
