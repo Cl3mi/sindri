@@ -3,15 +3,40 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 import fitz  # PyMuPDF
+from PIL import Image
 
 # Large-format drawings (2.5 m x 1.7 m sheets exist in this corpus) reach
-# hundreds of megapixels at 300 dpi, past PIL's DecompressionBombError limit of
-# 178.9 MP. Budget the pixel count instead: 80 MP is below PIL's *warning*
-# threshold (89.5 MP), so no global PIL state has to be touched and oversized
-# pages simply render at a reduced effective dpi. RenderResult.scale always
-# reports the resolution actually used — callers must convert pixels to points
-# with that, never with the requested dpi.
-MAX_RENDER_PIXELS = 80_000_000
+# hundreds of megapixels at 300 dpi. Budget the pixel count so oversized pages
+# render at a reduced effective dpi instead of exhausting memory.
+# RenderResult.scale always reports the resolution actually used — callers must
+# convert pixels to points with that, never with the requested dpi.
+#
+# This was 80 MP, chosen to sit under PIL's *warning* threshold (89.5 MP) so no
+# global PIL state had to be touched. The Rung-0 baseline measured what that
+# cost: two sheets clamped to 225 dpi carried 76 of the 118 undetected misses on
+# clamped documents (a7994023 alone had 67 and was the most expensive document in
+# the run), while a third clamped only to 208 dpi had zero. Those two need
+# 142 MP to render at the full 300 dpi, so the budget was the binding constraint
+# on more than half of that miss mass.
+#
+# 150 MP clears 142 MP with headroom and stays under PIL's ERROR ceiling
+# (2 x 89.5 = 178.9 MP). Above the warning threshold, though — so PIL's own limit
+# is lifted just past the budget below, rather than disabled, keeping the bomb
+# guard armed for genuinely absurd input.
+#
+# Cost of this: extract.py holds the page plus a masked copy, and mask_region
+# copies the whole image (up to three times), so peak RSS scales with the budget
+# — roughly 1.3 GB of live bitmap at 150 MP against 0.7 GB at 80 MP. Predict
+# isolates failures per document (1ac165a), so an OOM costs one drawing, not the
+# run.
+MAX_RENDER_PIXELS = 150_000_000
+
+# Our own renders are deliberately above PIL's stock 89.5 MP warning threshold;
+# without this every oversized sheet logs a DecompressionBombWarning. Lift the
+# limit to just past the budget instead of setting it to None: anything larger
+# than we can ourselves produce is still someone else's malformed input.
+if Image.MAX_IMAGE_PIXELS is not None:
+    Image.MAX_IMAGE_PIXELS = max(Image.MAX_IMAGE_PIXELS, MAX_RENDER_PIXELS + 1)
 
 
 @dataclass
