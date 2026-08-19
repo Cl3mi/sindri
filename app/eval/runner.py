@@ -491,7 +491,17 @@ def _cmd_score(args):
     weights = (ReviewCostWeights.model_validate_json(
                    Path(args.weights).read_text()) if args.weights
                else ReviewCostWeights())
-    params = MatchParams()
+    # Default "none", so an ordinary score run is byte-identical to before. A
+    # reconciled run records the mode in match_params, which makes compare_runs
+    # refuse it against an unreconciled baseline instead of crediting the
+    # difference as an improvement.
+    params = MatchParams(reconcile_frames=getattr(args, "reconcile_frames",
+                                                  "none"))
+    if params.reconcile_frames != "none":
+        print(f"NOTE: scoring with reconcile_frames={params.reconcile_frames} — "
+              f"gold positions are mapped into each dump's page space. This is a "
+              f"DIAGNOSTIC scoring mode; the result is not comparable to a run "
+              f"scored without it.", file=sys.stderr)
     doc_ids, sp_hash, sp_name = _select_docs(
         set(gold) & set(dumps), args.splits, args.split)
     anon = _anon(args)
@@ -629,6 +639,14 @@ def main(argv=None) -> int:
     p.add_argument("--name", required=True); p.add_argument("--out", required=True)
     p.add_argument("--splits", default=None); p.add_argument("--split", default="dev")
     p.add_argument("--weights", default=None)
+    p.add_argument("--reconcile-frames", choices=("none", "scale", "center"),
+                   default="none",
+                   help="DIAGNOSTIC: map gold balloon positions into each dump's "
+                        "page space before matching. Gold geometry comes from the "
+                        "stamped drawings and predictions from the clean "
+                        "originals; where those pages differ in extent the two "
+                        "are not comparable. Recorded in match_params, so a "
+                        "reconciled report refuses to compare against a plain one.")
     p.set_defaults(fn=_cmd_score)
 
     p = sub.add_parser("compare", parents=[common])

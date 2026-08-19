@@ -355,6 +355,46 @@ def test_a_page_rect_extent_mismatch_also_destroys_matching():
     assert s.recall == 0.0
 
 
+def test_reconciling_the_frame_recovers_an_extent_mismatched_document():
+    """The causation test. Same dumps, same gold, same detector -- the ONLY change
+    is mapping gold positions out of the gold page's coordinate space into the
+    dump's before matching. If that alone turns 0.0 recall into a match, the
+    misses were a frame fault and not a detection fault."""
+    dump, gold = _extent_mismatch_pair()
+
+    before = score_doc(dump, gold, ReviewCostWeights(), MatchParams())
+    after = score_doc(dump, gold, ReviewCostWeights(),
+                      MatchParams(reconcile_frames="scale"))
+
+    assert before.recall == 0.0
+    assert after.recall == 1.0
+    assert after.counts.get("correct") == 1
+
+
+def test_reconciling_is_off_by_default_and_changes_nothing_when_frames_agree():
+    """Off by default, so no committed report moves. And a no-op where the frames
+    already agree, so turning it on cannot silently rewrite good documents."""
+    assert MatchParams().reconcile_frames == "none"
+    plain = score_doc(_dump(), _gold(), ReviewCostWeights(), MatchParams())
+    recon = score_doc(_dump(), _gold(), ReviewCostWeights(),
+                      MatchParams(reconcile_frames="scale"))
+    assert plain.recall == recon.recall == 0.75
+    assert plain.counts == recon.counts
+
+
+def test_reconciliation_mode_is_part_of_the_comparability_guard():
+    """It changes what matching means, so a reconciled run must refuse to compare
+    against an unreconciled one rather than quietly report a huge improvement."""
+    from app.eval.report import aggregate, compare_runs
+    doc = score_doc(_dump(), _gold(), ReviewCostWeights(), MatchParams())
+    a = aggregate("a", RunConfig(model_id="s"), ReviewCostWeights(),
+                  MatchParams(), [doc])
+    b = aggregate("b", RunConfig(model_id="s"), ReviewCostWeights(),
+                  MatchParams(reconcile_frames="scale"), [doc])
+    with pytest.raises(ValueError, match="match params"):
+        compare_runs(a, b)
+
+
 def test_doc_score_reports_no_frame_mismatch_when_the_rects_agree():
     s = score_doc(_dump(), _gold(), ReviewCostWeights(), MatchParams())
     assert s.frame_origin_frac == 0.0

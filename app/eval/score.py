@@ -43,6 +43,30 @@ def _cause(pred, gold) -> str:
     return "misparse" if gold_nom and gold_nom in raw_nums else "misread"
 
 
+def _reconcile_pos(pos, gold_rect, dump_rect, mode: str):
+    """Map a gold balloon position from the gold page's space into the dump's.
+
+    Gold geometry comes from the stamped drawing, predictions from the clean
+    original, and nothing has ever reconciled the two. "scale" treats the stamped
+    sheet as a scaled-to-fit export of the same drawing; "center" treats it as the
+    same drawing with different margins. Which one recovers recall is the evidence
+    for which relationship actually holds."""
+    if mode == "none" or pos is None:
+        return pos
+    gw, gh = gold_rect[2] - gold_rect[0], gold_rect[3] - gold_rect[1]
+    dw, dh = dump_rect[2] - dump_rect[0], dump_rect[3] - dump_rect[1]
+    if gw <= 0 or gh <= 0:
+        return pos
+    if mode == "scale":
+        return (dump_rect[0] + (pos[0] - gold_rect[0]) * dw / gw,
+                dump_rect[1] + (pos[1] - gold_rect[1]) * dh / gh)
+    if mode == "center":
+        return (pos[0] + (dump_rect[0] - gold_rect[0]) + (dw - gw) / 2.0,
+                pos[1] + (dump_rect[1] - gold_rect[1]) + (dh - gh) / 2.0)
+    raise ValueError(f"unknown reconcile_frames mode {mode!r} "
+                     f"(expected none|scale|center)")
+
+
 def score_doc(dump: PredictionDump, gold: GoldDoc,
               weights: ReviewCostWeights, params: MatchParams) -> DocScore:
     # Regionless rows can't be matched or counted as false detections; today
@@ -60,11 +84,20 @@ def score_doc(dump: PredictionDump, gold: GoldDoc,
     pred_by_pos = {c.pos: c for c in preds}
     gold_by_num = {g.balloon: g for g in scored_gold}
 
-    diag = math.dist(gold.page_rect[:2], gold.page_rect[2:])
+    def gold_pos(g):
+        return _reconcile_pos(g.position_pt, gold.page_rect, dump.page_rect,
+                              params.reconcile_frames)
+
+    # When gold has been mapped into the dump's page space, the gate has to be
+    # normalised by THAT page's diagonal too -- everything is in the dump's frame
+    # now. Unreconciled scoring keeps the gold diagonal it has always used.
+    rect_for_diag = (gold.page_rect if params.reconcile_frames == "none"
+                     else dump.page_rect)
+    diag = math.dist(rect_for_diag[:2], rect_for_diag[2:])
     pairs_raw = match_candidates(
         [Cand(key=c.pos, center_pt=_center_pt(c, dump), nominal=c.nominal)
          for c in preds],
-        [Cand(key=g.balloon, center_pt=g.position_pt, nominal=g.nominal)
+        [Cand(key=g.balloon, center_pt=gold_pos(g), nominal=g.nominal)
          for g in scored_gold],
         diag, params)
 
@@ -136,7 +169,7 @@ def score_doc(dump: PredictionDump, gold: GoldDoc,
     pred_centers = [_center_pt(c, dump) for c in preds]
     contended = isolated = unlocated = 0
     for b in missed:
-        pos = gold_by_num[b].position_pt
+        pos = gold_pos(gold_by_num[b])
         if pos is None:
             unlocated += 1
         elif any(math.dist(pos, pc) / diag <= params.max_geo_frac

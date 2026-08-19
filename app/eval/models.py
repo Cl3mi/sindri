@@ -108,6 +108,17 @@ class MatchParams(BaseModel):
     # dominate. Part of the comparability guard — a run scored over a different
     # scope refuses to compare.
     score_kinds: Tuple[str, ...] = ("dimension",)
+    # Gold balloon positions are CV-recovered from the STAMPED drawings while
+    # predictions come from the CLEAN originals, and on 14 of 20 dev documents
+    # those two pages have different extents. This maps gold positions into the
+    # dump's page space before matching:
+    #   "none"   leave gold as-is (the default; every existing report is this)
+    #   "scale"  affine, as if the stamped sheet is a scaled-to-fit export
+    #   "center" translate, as if the stamped sheet only adds margin
+    # It lives in MatchParams deliberately: it changes what a match MEANS, so the
+    # comparability guard must refuse a reconciled run against an unreconciled
+    # one instead of reporting the difference as an improvement.
+    reconcile_frames: str = "none"
 
 
 class MatchedPair(BaseModel):
