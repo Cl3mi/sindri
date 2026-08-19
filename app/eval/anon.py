@@ -35,6 +35,20 @@ def ensure_salt(path=None) -> str:
     return salt
 
 
+def salt_is_persistent(path=None) -> bool:
+    """Whether a salt already exists, without creating one.
+
+    False means the next ensure_salt() call mints a throwaway. That is what
+    happens inside the GPU container: no SINDRI_DOC_SALT is passed in and
+    ~/.claude/sindri-doc-salt is not present, so the ids in a predict log are
+    hashed under a salt that dies with the container and cannot be joined to a
+    locally-scored report."""
+    if os.environ.get(SALT_ENV):
+        return True
+    path = Path(path) if path is not None else DEFAULT_SALT_FILE
+    return path.exists()
+
+
 def doc_hash(doc_id: str, salt: str) -> str:
     blob = f"{salt}:{doc_id}".encode("utf-8")
     return hashlib.sha256(blob).hexdigest()[:_HASH_LEN]

@@ -55,6 +55,14 @@ ssh -o BatchMode=yes "$HOST" "
 echo "== 3/5 predict on dev split (model=$MODEL) =="
 # Mirrors run-gpu.sh: rootless CDI overlay when a corrected spec exists,
 # otherwise straight through.
+#
+# The container gets no SINDRI_DOC_SALT and has no ~/.claude/sindri-doc-salt, so
+# the doc ids in this step's log are hashed under a salt it mints and then
+# destroys. They are readable, but they join to NOTHING — not to the report from
+# step 5, not to a previous run. Per-document facts come from `runner summary`,
+# which hashes under the local salt (see summary.clamped_docs). Passing the salt
+# in would make the logs joinable at the cost of putting it on the GPU host and
+# in that host's process list; that is the user's call, not a default.
 ssh -o BatchMode=yes "$HOST" "
   set -euo pipefail
   cd ~/sindri

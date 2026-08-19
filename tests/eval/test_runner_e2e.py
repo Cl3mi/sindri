@@ -489,3 +489,37 @@ def test_predict_reports_which_documents_had_their_dpi_clamped(tmp_path, capsys,
     digest = json.loads(out.out)
     assert len(digest["clamped_dpi_docs"]) == 1
     assert "SYNA" not in json.dumps(digest)
+
+
+def test_predict_warns_when_the_doc_ids_are_throwaway(tmp_path, capsys,
+                                                      monkeypatch):
+    """The GPU container has no persistent salt, so its hashed ids join to
+    nothing. Say so in the log instead of letting them look authoritative."""
+    import app.eval.anon as anon_mod
+    monkeypatch.delenv("SINDRI_DOC_SALT", raising=False)
+    monkeypatch.setattr(anon_mod, "DEFAULT_SALT_FILE", tmp_path / "absent-salt")
+    pdfs, _ = _setup_corpus(tmp_path)
+    _no_model(monkeypatch)
+    _fake_predict(monkeypatch, lambda pdf_path, doc_id, dpi, backend, config,
+                  work_dir: _stub_dump(doc_id, config))
+
+    assert main(["predict", "--pdfs", str(pdfs),
+                 "--out", str(tmp_path / "runs" / "base")]) == 0
+
+    err = capsys.readouterr().err
+    assert "throwaway" in err.lower()
+    assert "runner summary" in err
+
+
+def test_predict_is_quiet_when_the_salt_is_persistent(tmp_path, capsys,
+                                                      monkeypatch):
+    monkeypatch.setenv("SINDRI_DOC_SALT", "test-salt")
+    pdfs, _ = _setup_corpus(tmp_path)
+    _no_model(monkeypatch)
+    _fake_predict(monkeypatch, lambda pdf_path, doc_id, dpi, backend, config,
+                  work_dir: _stub_dump(doc_id, config))
+
+    assert main(["predict", "--pdfs", str(pdfs),
+                 "--out", str(tmp_path / "runs" / "base")]) == 0
+
+    assert "throwaway" not in capsys.readouterr().err.lower()

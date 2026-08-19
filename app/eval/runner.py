@@ -24,7 +24,7 @@ from pathlib import Path
 
 import fitz
 
-from app.eval.anon import Anonymizer
+from app.eval.anon import Anonymizer, salt_is_persistent
 from app.eval.balloons import probe_pdf, shape_report
 from app.eval.balloon_cv import cv_report
 from app.eval.dump import load_dump, save_dump
@@ -436,6 +436,13 @@ def _cmd_predict(args):
         git_sha=_git_sha(), prompt_sha256=_prompt_sha256())
     pdfs = {p.stem: p for p in Path(args.pdfs).glob(_PDF_GLOB)}
     doc_ids, _, _ = _select_docs(pdfs, args.splits, args.split)
+    # Must precede _anon(): constructing an Anonymizer mints the salt.
+    if not getattr(args, "show_ids", False) and not salt_is_persistent():
+        print("WARNING: no persistent doc-id salt (SINDRI_DOC_SALT unset, "
+              "~/.claude/sindri-doc-salt absent) — the hashed ids below are "
+              "throwaway and cannot be joined to a locally-scored report. "
+              "Read per-document facts from `runner summary` instead.",
+              file=sys.stderr)
     anon = _anon(args)
     out = Path(args.out)
     predicted = skipped = 0
