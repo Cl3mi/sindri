@@ -304,3 +304,38 @@ def test_summary_aggregates_prediction_kinds_across_documents():
     assert sum(digest["pred_kinds"].values()) == digest["n_pred"]
     assert (sum(digest["false_detections_by_kind"].values())
             == digest["taxonomy"]["false_detection"])
+
+
+def test_summary_crosstabs_which_kinds_matched_in_scope_gold():
+    """Settles the false_detection question without changing the metric: a
+    non-"dimension" kind under matched_by_pred_kind is a prediction that
+    filtering to score_kinds would demote from a match to a miss."""
+    def doc(doc_id, matched, false):
+        pred = {k: matched.get(k, 0) + false.get(k, 0)
+                for k in set(matched) | set(false)}
+        return DocScore(doc_id=doc_id, gold_hash="g" + "0" * 15,
+                        n_gold=sum(matched.values()) + 2,
+                        n_pred=sum(pred.values()),
+                        counts={"correct": sum(matched.values()), "missed": 2,
+                                "false_detection": sum(false.values())},
+                        review_cost=10.0, recall=1.0, precision=1.0,
+                        escaped_rate=0.0, pred_kinds=pred,
+                        false_kinds=false, matched_kinds=matched)
+
+    docs = [doc("D1", {"dimension": 12, "gdt": 3}, {"theoretical": 7}),
+            doc("D2", {"dimension": 9, "surface": 2}, {"theoretical": 4,
+                                                       "gdt": 1})]
+    report = aggregate("r", RunConfig(model_id="stub"), ReviewCostWeights(),
+                       MatchParams(), docs)
+
+    digest = summarize(report, lambda d: "hashed")
+
+    assert digest["matched_by_pred_kind"] == {"dimension": 21, "gdt": 3,
+                                             "surface": 2}
+    # Per-kind conservation against two aggregates that already exist. This is
+    # the identity that makes "filtering would cost N matches" a checked claim.
+    for k, total in digest["pred_kinds"].items():
+        assert total == (digest["matched_by_pred_kind"].get(k, 0)
+                         + digest["false_detections_by_kind"].get(k, 0))
+    assert (sum(digest["matched_by_pred_kind"].values())
+            == digest["n_gold"] - digest["taxonomy"]["missed"])

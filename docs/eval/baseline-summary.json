@@ -81,6 +81,13 @@
   "surface": 17,
   "material": 7
  },
+ "matched_by_pred_kind": {
+  "dimension": 133,
+  "note": 9,
+  "theoretical": 4,
+  "surface": 4,
+  "gdt": 17
+ },
  "config": {
   "model_id": "Qwen/Qwen2.5-VL-72B-Instruct-AWQ",
   "dpi": 300,

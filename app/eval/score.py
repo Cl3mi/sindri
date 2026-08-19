@@ -114,6 +114,10 @@ def score_doc(dump: PredictionDump, gold: GoldDoc,
     for pk in false:
         k = _kind(pred_by_pos[pk])
         false_kinds[k] = false_kinds.get(k, 0) + 1
+    matched_kinds: Dict[str, int] = {}
+    for pk in matched_p:
+        k = _kind(pred_by_pos[pk])
+        matched_kinds[k] = matched_kinds.get(k, 0) + 1
 
     n_gold, n_pred = len(gold_by_num), len(pred_by_pos)
     return DocScore(
@@ -123,6 +127,7 @@ def score_doc(dump: PredictionDump, gold: GoldDoc,
         excluded_by_kind=excluded_by_kind,
         effective_dpi=dump.scale * 72.0,
         pred_kinds=pred_kinds, false_kinds=false_kinds,
+        matched_kinds=matched_kinds,
         review_cost=cost,
         recall=(len(matched_g) / n_gold) if n_gold else 1.0,
         precision=(len(matched_p) / n_pred) if n_pred else 1.0,

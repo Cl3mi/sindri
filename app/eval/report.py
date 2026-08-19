@@ -108,17 +108,27 @@ def _clamp_split(report: RunReport, anonymizer,
                     "unknown_dpi": block(unknown)}
 
 
-def _kind_totals(report: RunReport) -> Tuple[Dict[str, int], Dict[str, int]]:
-    """Predictions and unmatched predictions by detector kind, summed over the
-    run. Kind names are a fixed detector vocabulary, never client text."""
+def _kind_totals(report: RunReport) -> Tuple[Dict[str, int], Dict[str, int],
+                                             Dict[str, int]]:
+    """Predictions, unmatched predictions, and MATCHED predictions by detector
+    kind, summed over the run. Kind names are a fixed detector vocabulary, never
+    client text.
+
+    The three reconcile per kind: preds[k] == matched[k] + false[k], because a
+    prediction either paired with in-scope gold or it did not. That identity is
+    what turns "N false detections are out-of-scope kinds" from a quoted number
+    into a checked one."""
     preds: Dict[str, int] = {}
     false: Dict[str, int] = {}
+    matched: Dict[str, int] = {}
     for d in report.doc_scores:
         for k, v in d.pred_kinds.items():
             preds[k] = preds.get(k, 0) + v
         for k, v in d.false_kinds.items():
             false[k] = false.get(k, 0) + v
-    return preds, false
+        for k, v in d.matched_kinds.items():
+            matched[k] = matched.get(k, 0) + v
+    return preds, false, matched
 
 
 def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
@@ -130,7 +140,7 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
     shown to an AI agent, committed, or pasted into a ticket."""
     causes, misplaced = _note_counts(report)
     clamped_docs, clamp_split = _clamp_split(report, anonymizer)
-    pred_kinds, false_kinds = _kind_totals(report)
+    pred_kinds, false_kinds, matched_kinds = _kind_totals(report)
     worst = sorted(report.doc_scores, key=lambda d: (-d.review_cost, d.doc_id))
     return {
         "run": report.run_name,
@@ -156,6 +166,11 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
         # non-dimension kind here is a detection the metric cannot credit.
         "pred_kinds": pred_kinds,
         "false_detections_by_kind": false_kinds,
+        # Kinds that DID match in-scope gold. A non-"dimension" entry here is a
+        # match that filtering predictions to score_kinds would destroy, turning
+        # a w=2 false detection into a w=10 miss — so this is the number that
+        # says whether that filter helps or hurts.
+        "matched_by_pred_kind": matched_kinds,
         "config": report.config.model_dump(),
         "weights": report.weights.model_dump(),
         "match_params": report.match_params.model_dump(),

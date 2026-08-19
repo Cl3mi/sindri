@@ -143,6 +143,13 @@ class DocScore(_Versioned):
     # make that inflation measurable instead of assumed.
     pred_kinds: Dict[str, int] = {}
     false_kinds: Dict[str, int] = {}
+    # Of the predictions that DID match in-scope gold, their detector kinds.
+    # normalize._DIMENSION_WORDS keeps GD&T and surface characteristics inside
+    # score_kinds on the gold side, so a non-"dimension" kind appearing here is
+    # a prediction that filtering to score_kinds would turn into a miss (w=10)
+    # from a false detection (w=2). pred_kinds[k] == matched_kinds[k] +
+    # false_kinds[k] for every k, which is what makes this checkable.
+    matched_kinds: Dict[str, int] = {}
     review_cost: float = 0.0
     recall: float = 0.0
     precision: float = 0.0

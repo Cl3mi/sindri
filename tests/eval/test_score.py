@@ -198,3 +198,49 @@ def test_doc_score_breaks_predictions_and_false_detections_down_by_kind():
     # false detection, or "N of 663" is quoting an unverified denominator.
     assert sum(s.pred_kinds.values()) == s.n_pred
     assert sum(s.false_kinds.values()) == s.counts["false_detection"]
+
+
+def _crosstab_dump():
+    """A gdt and a surface prediction sitting ON in-scope gold balloons.
+
+    normalize._DIMENSION_WORDS lists 'symmetry', 'runout', 'surface',
+    'oberflaeche' and friends, so char_type_kind() classifies a GD&T or
+    surface-finish row as kind="dimension" — i.e. IN scope. The detector splits
+    those same callouts into kind="gdt"/"surface". So a non-dimension prediction
+    kind CAN legitimately match in-scope gold, and this fixture is that case."""
+    chars = [
+        Characteristic(pos=1, char_type="Diameter", nominal="20", upper_tol="0,1",
+                       lower_tol="-0,1", raw_text="Ø20 +0,1 -0,1", kind="dimension",
+                       target_region=_pt_box(100, 100)),
+        # gold balloon 2 is char_type "Distance" here, but the DETECTOR called
+        # this box a gdt frame. It still matches: geometry decides the pair.
+        Characteristic(pos=2, char_type="Symmetry", nominal="5,5", raw_text="5,5",
+                       kind="gdt", target_region=_pt_box(400, 200)),
+        # a theoretical (basic, untoleranced) box far from any gold: no gold
+        # counterpart can exist for it, so it is a pure artefact
+        Characteristic(pos=8, char_type="Theoretical", nominal="30",
+                       raw_text="30", kind="theoretical",
+                       target_region=_pt_box(250, 650)),
+    ]
+    return PredictionDump(doc_id="D", config=RunConfig(model_id="stub", dpi=300),
+                          scale=SCALE, page_rect=RECT,
+                          result=ExtractionResult(characteristics=chars))
+
+
+def test_doc_score_records_which_kinds_matched_in_scope_gold():
+    """The measurement that decides the false_detection question: if a gdt or
+    surface prediction matches in-scope gold, then filtering predictions to
+    score_kinds=("dimension",) would convert that match into a MISS (w=10) from
+    a false detection (w=2) — making the metric worse, not cleaner."""
+    s = score_doc(_crosstab_dump(), _gold(), ReviewCostWeights(), MatchParams())
+
+    # a gdt prediction matched an in-scope gold row: the whole point
+    assert s.matched_kinds == {"dimension": 1, "gdt": 1}
+    assert s.false_kinds == {"theoretical": 1}
+    # Double conservation, per kind: every prediction of kind k either matched
+    # or did not. This is what ties the new view to two numbers that already
+    # exist instead of asking to be trusted.
+    for k, total in s.pred_kinds.items():
+        assert total == s.matched_kinds.get(k, 0) + s.false_kinds.get(k, 0)
+    # and the matched total is the run's matched-gold count
+    assert sum(s.matched_kinds.values()) == s.n_gold - s.counts["missed"]
