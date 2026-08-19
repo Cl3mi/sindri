@@ -95,10 +95,14 @@ python3 -m app.eval.runner score \
     --weights "$HERE/docs/eval/weights.json" \
     --name "$RUN-dev" --out "$LOCAL_ROOT/reports/$RUN-dev.report.json"
 
+# Named after the run, NOT hardcoded to baseline-summary.json. Every other path
+# here is parameterised by $RUN; this one was not, so `./run_baseline_gpu.sh host
+# root some-experiment` used to overwrite the committed Rung-0 digest with the
+# experiment's numbers -- destroying the very baseline it would be compared to.
 python3 -m app.eval.runner summary \
     "$LOCAL_ROOT/reports/$RUN-dev.report.json" \
-    --out "$HERE/docs/eval/baseline-summary.json"
+    --out "$HERE/docs/eval/$RUN-summary.json"
 
 echo
-echo "Summary written to docs/eval/baseline-summary.json (safe to share)."
+echo "Summary written to docs/eval/$RUN-summary.json (safe to share)."
 echo "The full report stays at $LOCAL_ROOT/reports/ — it embeds gold values."
