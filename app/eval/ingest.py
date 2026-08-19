@@ -46,7 +46,8 @@ def _char_type_histogram(rows, balloons, page_index) -> dict:
 
 def build_gold_doc(pdf_path, excel_path, doc_id: str,
                    is_variant: bool = False, page_index: int = 0,
-                   use_cv: bool = False, target_pdf=None) -> GoldDoc:
+                   use_cv: bool = False, target_pdf=None,
+                   require_target: bool = False) -> GoldDoc:
     """`pdf_path` is the STAMPED drawing -- the only one carrying balloons.
 
     `target_pdf` is the CLEAN original the pipeline actually reads. Pass it and
@@ -96,7 +97,14 @@ def build_gold_doc(pdf_path, excel_path, doc_id: str,
     # Map the stamped sheet's geometry onto the sheet the pipeline reads. Scaling
     # per axis rather than uniformly: an export can letterbox, and "scale" beat
     # "center" 0.646 vs 0.570 when the two candidate transforms were measured.
+    # require_target says the caller IS working in originals space but has no
+    # original for this drawing. Keeping the stamped coordinates would quietly
+    # reinstate the fault --originals removes, and charge the pipeline for
+    # callouts at coordinates it never saw. Drop the positions instead: the rows
+    # stay gold, fall back to value matching, and count as unlocated -- which is
+    # the honest label, since no detection change can reach them.
     page_rect, sx, sy = src_rect, 1.0, 1.0
+    target_missing = require_target and target_pdf is None
     if target_pdf is not None:
         tdoc = fitz.open(target_pdf)
         trect = tdoc[page_index].rect
@@ -108,6 +116,8 @@ def build_gold_doc(pdf_path, excel_path, doc_id: str,
             sy = (page_rect[3] - page_rect[1]) / sh
 
     def _to_target(pos):
+        if target_missing:
+            return None
         if pos is None or (sx == 1.0 and sy == 1.0 and page_rect == src_rect):
             return pos
         return (page_rect[0] + (pos[0] - src_rect[0]) * sx,
@@ -166,5 +176,8 @@ def build_gold_doc(pdf_path, excel_path, doc_id: str,
             # invalidate a corpus. [1.0, 1.0] means no remapping was needed.
             "source_page_rect": list(src_rect),
             "target_scale": [round(sx, 9), round(sy, 9)],
+            # True when originals were in use but this drawing had none, so its
+            # positions were dropped rather than left in the wrong space.
+            "target_missing": target_missing,
         },
     )

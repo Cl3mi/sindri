@@ -63,6 +63,24 @@ def test_gold_positions_land_in_the_originals_page_space(tmp_path):
     assert gold.provenance["target_scale"] == [2.0, 2.0]
 
 
+def test_a_document_with_no_original_drops_its_positions(tmp_path):
+    """One drawing in the corpus (976d3c0d) has no clean original. Keeping its
+    balloons in the stamped sheet's coordinate space silently reintroduces the
+    exact fault --originals exists to remove, and charges the pipeline for
+    "missing" callouts at coordinates it was never shown. A row with no position
+    is matched on value instead and counts as unlocated -- which is the truth:
+    no detection change can ever fix it."""
+    stamped, xlsx = make_synthetic_doc(RECORDS, tmp_path, doc_id="SYN1")
+
+    gold = build_gold_doc(stamped, xlsx, doc_id="SYN1", target_pdf=None,
+                          require_target=True)
+
+    assert all(c.position_pt is None for c in gold.characteristics)
+    assert gold.provenance["target_missing"] is True
+    # and it is still real gold -- the rows are not dropped
+    assert {c.balloon for c in gold.characteristics} == {1, 2}
+
+
 def test_gold_is_unchanged_when_no_originals_are_given(tmp_path):
     """Default off: omitting target_pdf must reproduce byte-identical gold, so
     adding this cannot silently move an existing corpus."""

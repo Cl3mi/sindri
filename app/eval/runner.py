@@ -323,15 +323,18 @@ def _cmd_ingest(args):
     if originals:
         no_original = sorted(set(paired) - set(originals))
         if no_original:
-            # Loud, because silently leaving these in the stamped sheet's space
-            # is the exact fault --originals exists to remove.
-            print(f"WARNING: no original for (gold stays in the stamped sheet's "
-                  f"coordinate space): {[anon(s) for s in no_original]}",
+            # Loud, because these documents lose their geometry entirely: keeping
+            # stamped-space coordinates would reinstate the fault --originals
+            # exists to remove, so the positions are dropped and the rows fall
+            # back to value matching.
+            print(f"WARNING: no original for (positions dropped, rows matched on "
+                  f"value and counted as unlocated): {[anon(s) for s in no_original]}",
                   file=sys.stderr)
     for stem in paired:
         gold = build_gold_doc(pdfs[stem], excels[stem], doc_id=stem,
                               is_variant=stem in variants, use_cv=args.cv,
-                              target_pdf=originals.get(stem))
+                              target_pdf=originals.get(stem),
+                              require_target=bool(originals))
         (out / f"{stem}.gold.json").write_text(gold.model_dump_json(indent=1),
                                                encoding="utf-8")
         provenance.append(gold.provenance)
@@ -507,7 +510,12 @@ def _cmd_score(args):
     # refuse it against an unreconciled baseline instead of crediting the
     # difference as an improvement.
     params = MatchParams(reconcile_frames=getattr(args, "reconcile_frames",
-                                                  "none"))
+                                                  "none"),
+                         assignment=getattr(args, "assignment", "greedy"))
+    if params.assignment != "greedy":
+        print(f"NOTE: scoring with assignment={params.assignment} — pairs are "
+              f"augmented to maximum cardinality. Recorded in match_params; not "
+              f"comparable to a greedy-scored run.", file=sys.stderr)
     if params.reconcile_frames != "none":
         print(f"NOTE: scoring with reconcile_frames={params.reconcile_frames} — "
               f"gold positions are mapped into each dump's page space. This is a "
@@ -667,6 +675,15 @@ def main(argv=None) -> int:
                         "originals; where those pages differ in extent the two "
                         "are not comparable. Recorded in match_params, so a "
                         "reconciled report refuses to compare against a plain one.")
+    p.add_argument("--assignment", choices=("greedy", "max_cardinality"), default="greedy",
+                   help="DIAGNOSTIC. greedy (default) is what every report has "
+                        "used; it strands a gold row whenever its only in-gate "
+                        "prediction is nearest a different row. max_cardinality "
+                        "augments those back, but measured on dev it recovered 26 "
+                        "misses by destroying 27 correct pairings and cut field "
+                        "accuracy on matched rows from 36.4%% to 25.4%% -- it "
+                        "maximises pairings, not true ones. Recorded in "
+                        "match_params.")
     p.set_defaults(fn=_cmd_score)
 
     p = sub.add_parser("compare", parents=[common])

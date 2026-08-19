@@ -119,6 +119,26 @@ class MatchParams(BaseModel):
     # comparability guard must refuse a reconciled run against an unreconciled
     # one instead of reporting the difference as an improvement.
     reconcile_frames: str = "none"
+    # How prediction/gold pairs are assigned once candidate costs are known.
+    #   "greedy"           consume cheapest pairs in order (the default, and what
+    #                      every report has ever used)
+    #   "max_cardinality"  greedy, then augment so no gold row is stranded merely
+    #                      because its only in-gate prediction went to a neighbour
+    #
+    # Greedy is genuinely not maximum-cardinality and does strand rows. But
+    # max_cardinality is a DIAGNOSTIC, not an upgrade: measured on the dev split it
+    # recovered 26 misses while destroying 27 correct pairings, dropped field
+    # accuracy on matched rows from 36.4% to 25.4%, and raised misplaced pairs from
+    # 80 to 126. It maximises pairings, not TRUE pairings, so recall rises
+    # mechanically. Its value is what that proves: if stealing a prediction from
+    # one gold row to give its neighbour breaks a correct pair, then the contended
+    # misses are one detection covering two callouts -- a merge_adjacent problem no
+    # matcher can fix.
+    #
+    # Recorded here because switching changes every score while leaving no other
+    # trace in the file; an old report would otherwise look worse for no stated
+    # reason.
+    assignment: str = "greedy"
 
 
 class MatchedPair(BaseModel):

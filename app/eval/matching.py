@@ -92,4 +92,50 @@ def match_candidates(preds: List[Cand], golds: List[Cand],
         used_p.add(pk)
         used_g.add(gk)
         out.append((pk, gk, d))
+
+    if params.assignment == "max_cardinality":
+        out = _augment(out, scored)
+    elif params.assignment != "greedy":
+        raise ValueError(f"unknown assignment {params.assignment!r} "
+                         f"(expected greedy|max_cardinality)")
     return sorted(out)
+
+
+def _augment(matched, scored):
+    """Raise greedy's matching to maximum cardinality (Kuhn's algorithm).
+
+    Greedy consumes the cheapest pair first, which strands any gold row whose
+    only in-gate prediction was nearest to a different row -- exactly the
+    `contended` miss. Augmenting reassigns along alternating paths, so a match is
+    only ever added, never lost, and every pair stays one that passed the gate:
+    the candidate list is the same `scored` greedy used.
+
+    Deterministic: candidates are iterated in the sorted (cost, pred, gold) order
+    already established, which comparability depends on. Written out rather than
+    delegated to scipy.optimize.linear_sum_assignment because the harness declares
+    no numeric dependency and score() must run anywhere the repo does."""
+    # gold -> its in-gate predictions, cheapest first (scored is already sorted)
+    cands, dist = {}, {}
+    for _cost, pk, gk, d in scored:
+        cands.setdefault(gk, []).append(pk)
+        dist[(pk, gk)] = d
+    pred_of_gold = {gk: pk for pk, gk, _ in matched}
+    gold_of_pred = {pk: gk for pk, gk, _ in matched}
+
+    def try_assign(gk, seen):
+        for pk in cands.get(gk, ()):
+            if pk in seen:
+                continue
+            seen.add(pk)
+            holder = gold_of_pred.get(pk)
+            # free, or its current gold can step aside onto another candidate
+            if holder is None or try_assign(holder, seen):
+                pred_of_gold[gk] = pk
+                gold_of_pred[pk] = gk
+                return True
+        return False
+
+    for gk in sorted(cands):
+        if gk not in pred_of_gold:
+            try_assign(gk, set())
+    return [(pk, gk, dist[(pk, gk)]) for gk, pk in pred_of_gold.items()]
