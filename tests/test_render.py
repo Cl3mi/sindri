@@ -2,7 +2,7 @@ import fitz
 import pytest
 from PIL import Image
 
-from app.pipeline.render import MAX_RENDER_PIXELS, _budget_scale, render_page
+from app.pipeline.render import MAX_RENDER_PIXELS, render_page
 
 
 def test_render_page_returns_image_and_scale(sample_pdf, tmp_path):
@@ -51,32 +51,8 @@ def test_render_page_logs_the_effective_dpi_when_it_clamps(tmp_path, capsys):
     assert "300" in err and "dpi" in err.lower()
 
 
-def test_pixel_budget_admits_a_full_300_dpi_render_of_the_clamped_sheets(tmp_path):
-    """The Rung-0 baseline clamped two sheets to 225 dpi, and they carried 76 of
-    the 118 undetected misses on clamped documents. 4050x2023 pt is that sheet's
-    shape: it needs 142 MP at 300 dpi, so an 80 MP budget forced it to 225.
-
-    The second assertion pins what the old budget did, so this stays a
-    regression test for the specific drawing rather than a bare constant."""
-    full = 300 / 72.0
-    assert _budget_scale(4050, 2023, full, MAX_RENDER_PIXELS) == pytest.approx(full)
-    # What the old budget did to this sheet. Banded, not exact: the 0.99 shrink
-    # step overshoots by up to 1% of scale, so the landing dpi is not a clean
-    # function of the budget. The corpus showed 225; this lands in that band.
-    old_dpi = _budget_scale(4050, 2023, full, 80_000_000) * 72
-    assert 215 < old_dpi < 230, f"old budget clamped this sheet to {old_dpi:.0f} dpi"
-
-
-def test_pixel_budget_stays_below_pils_decompression_bomb_error(tmp_path):
-    """The budget may exceed PIL's *warning* threshold now -- that is the point,
-    142 MP sits above it -- but it must stay under the ERROR threshold (2x), or
-    Image.open would raise on a render the pipeline deliberately produced."""
-    assert MAX_RENDER_PIXELS < 2 * 89_478_485      # PIL's stock error ceiling
-
-
-def test_render_lifts_pils_own_limit_above_the_budget_so_it_does_not_warn():
-    """Raising the budget past 89.5 MP means PIL warns on every oversized sheet
-    unless its limit is lifted too. Lift it to just above our own budget rather
-    than disabling it (None), so a genuinely absurd input is still caught."""
-    assert Image.MAX_IMAGE_PIXELS is not None, "the bomb guard must stay armed"
-    assert Image.MAX_IMAGE_PIXELS > MAX_RENDER_PIXELS
+def test_pixel_budget_sits_below_pils_decompression_bomb_warning(tmp_path):
+    """80 MP: under PIL's *warning* threshold, so no global PIL state has to be
+    touched and no oversized drawing produces a warning or an error."""
+    assert MAX_RENDER_PIXELS == 80_000_000
+    assert MAX_RENDER_PIXELS < Image.MAX_IMAGE_PIXELS
