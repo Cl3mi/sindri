@@ -445,9 +445,17 @@ def _cmd_predict(args):
     import os
     from app.pipeline.ocr import get_backend
     backend = get_backend()
+    from app.pipeline.detect import active_knobs
+    # extra carries the detection knobs actually in effect. Without them two
+    # experiment arms yield indistinguishable reports, and _reusable_dump —
+    # which compares the whole RunConfig — would skip a document as "already
+    # predicted" after a knob change. git_sha is always "unknown" in the
+    # container (.git is dockerignored), so this is the only thing that tells
+    # one arm's dumps from another's.
     config = RunConfig(
         model_id=os.environ.get("VLM_MODEL_ID", "default"), dpi=args.dpi,
-        git_sha=_git_sha(), prompt_sha256=_prompt_sha256())
+        git_sha=_git_sha(), prompt_sha256=_prompt_sha256(),
+        extra=active_knobs())
     pdfs = {p.stem: p for p in Path(args.pdfs).glob(_PDF_GLOB)}
     doc_ids, _, _ = _select_docs(pdfs, args.splits, args.split)
     # Must precede _anon(): constructing an Anonymizer mints the salt.
