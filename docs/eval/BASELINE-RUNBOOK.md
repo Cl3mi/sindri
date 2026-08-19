@@ -66,10 +66,14 @@ drawings that reach ~600 MP at 300 dpi (roughly 2.5 m × 1.7 m of paper) and PIL
 refuses anything past 178.9 MP. The cap keeps the pipeline below PIL's warning
 threshold entirely.
 
-The cost is that the largest drawings render at ~110 dpi rather than 300, so
-they will extract worse. Before drawing conclusions from the taxonomy, check
-whether misses cluster on those documents — a recall problem caused by
-resolution is a different problem from one caused by the model.
+The cost is that the largest drawings render at ~110 dpi rather than 300, so it
+is natural to assume they extract worse. **That was measured, and they do not.**
+Raising the cap to 150 MP un-clamped two sheets to a full 300 dpi and recovered
+zero misses — corpus `missed_isolated` went 251 → 252, review cost got *worse*
+under all six weightings, and one sheet at +37% linear resolution scored
+bit-identically. It was reverted. `summary.clamped_vs_unclamped` still reports
+the split so the question stays answerable, but do not spend a GPU run on
+resolution again; see `docs/plans/2026-08-20-session-handoff.md` §2.1.
 
 ## What the result means
 
@@ -89,10 +93,26 @@ The taxonomy histogram is the routing decision for everything after Rung 0:
 
 | dominant term | what it means | next rung |
 |---|---|---|
-| `missed` | callouts never detected | Rung 1: detection recall knobs |
+| `missed` | see below — **do not read this as "detection" without splitting it** |
 | `cause:misparse` | glyphs read, parsing lost them | Rung 1: parser hardening |
 | `cause:misread` | perception failure | Rung 2 prompts/few-shot, then Rung 3 LoRA |
 | `flagged_correct` large | over-flagging wastes review time | Rung 1: review-flag calibration |
+
+`missed` on its own is not a routing signal — it conflates three causes that go
+to different work, and reading it as "detection recall" once sent this project
+after the wrong lever entirely. Split it with `summary.missed_diagnosis`:
+
+| bucket | meaning | where the work goes |
+|---|---|---|
+| `contended` | a prediction was inside the gate but the matcher gave it to a neighbour | `merge_adjacent` in `app/pipeline/detect.py` — one detection covering two callouts. **Not** the matcher: maximum-cardinality assignment was measured and recovers misses only by destroying correct pairings |
+| `isolated` | nothing was detected there at all | detector coverage: tile size, overlap, confidence |
+| `unlocated` | the gold row has no recovered balloon position | balloon recovery in ingest — no detection change can reach these |
+
+Also check `summary.frame_mismatch` before believing any `missed` count. If
+`n_docs_affected` is non-zero, gold was ingested without `--originals` and its
+positions are in the stamped sheet's coordinate space, not the pipeline's — that
+alone accounted for 141 phantom misses. If `n_docs_not_measured` is non-zero the
+report was re-summarised without being re-scored, and the block is meaningless.
 
 A large `missed` count on the **variant** documents specifically means a
 template-generalization problem rather than a general recall problem — that is
