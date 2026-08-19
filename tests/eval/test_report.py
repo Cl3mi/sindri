@@ -1,8 +1,10 @@
+import json
+
 import pytest
 
-from app.eval.models import (DocScore, MatchParams, ReviewCostWeights,
-                             RunConfig)
-from app.eval.report import aggregate, compare_runs
+from app.eval.models import (DocScore, MatchedPair, MatchParams,
+                             ReviewCostWeights, RunConfig)
+from app.eval.report import aggregate, compare_runs, summarize
 
 
 def _doc(doc_id, cost, recall=1.0, escaped=0, gold_hash="g" + "0" * 15,
@@ -157,3 +159,49 @@ def test_guards_refuse_incomparable_runs():
     d.doc_scores[0].gold_hash = "f" * 16                    # different gold
     with pytest.raises(ValueError, match="gold"):
         compare_runs(a, d)
+
+
+def _pair(balloon, taxonomy, notes, correct=False, flagged=False):
+    return MatchedPair(gold_balloon=balloon, pred_pos=balloon,
+                       distance_frac=0.01, fields_correct=correct,
+                       flagged=flagged, taxonomy=taxonomy, notes=notes)
+
+
+def test_summary_aggregates_error_causes_and_misplaced_matches():
+    """Handoff §6 routes on the cause split: misparse -> parser hardening,
+    misread -> Rung 2/3 perception. It is written into MatchedPair.notes and was
+    never aggregated, so the decision had no number behind it."""
+    pairs = [
+        _pair(1, "escaped_error", ["cause:misread"]),
+        _pair(2, "flagged_error", ["misplaced", "cause:misparse"], flagged=True),
+        _pair(3, "escaped_error", ["cause:misread"]),
+        _pair(4, "correct", [], correct=True),
+    ]
+    doc = DocScore(doc_id="D1", gold_hash="g" + "0" * 15, n_gold=4, n_pred=4,
+                   pairs=pairs, counts={"escaped_error": 2, "flagged_error": 1,
+                                        "correct": 1},
+                   review_cost=11.0, recall=1.0, precision=1.0, escaped_rate=0.5)
+    report = aggregate("r", RunConfig(model_id="stub"), ReviewCostWeights(),
+                       MatchParams(), [doc])
+
+    digest = summarize(report, lambda d: "hashed")
+
+    assert digest["error_causes"] == {"misread": 2, "misparse": 1}
+    assert digest["misplaced_matches"] == 1
+
+
+def test_summary_cause_aggregation_never_reads_client_values():
+    """field_errors spells out gold vs predicted ("nominal: '6,5'!='5,5'").
+    summarize() is the one sanctioned view of a run; it must stay values-blind."""
+    pairs = [_pair(1, "escaped_error", ["cause:misread"])]
+    pairs[0].field_errors = ["nominal: '6,5'!='5,5'"]
+    doc = DocScore(doc_id="D1", gold_hash="g" + "0" * 15, n_gold=1, n_pred=1,
+                   pairs=pairs, counts={"escaped_error": 1}, review_cost=5.0,
+                   recall=1.0, precision=1.0, escaped_rate=1.0)
+    report = aggregate("r", RunConfig(model_id="stub"), ReviewCostWeights(),
+                       MatchParams(), [doc])
+
+    blob = json.dumps(summarize(report, lambda d: "hashed"))
+
+    assert "6,5" not in blob and "5,5" not in blob
+    assert "nominal" not in blob

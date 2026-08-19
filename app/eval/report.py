@@ -3,7 +3,7 @@ per-document deltas + bootstrap CIs. compare_runs is the comparability
 gatekeeper: it RAISES on any mismatch (doc set, per-doc gold hash, weights,
 match params) instead of producing a quietly meaningless number."""
 import random
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from app.eval.models import (DocScore, MatchParams, ReviewCostWeights,
                              RunConfig, RunReport, SCHEMA_VERSION)
@@ -37,6 +37,25 @@ def aggregate(run_name: str, config: RunConfig, weights: ReviewCostWeights,
     )
 
 
+def _note_counts(report: RunReport) -> Tuple[Dict[str, int], int]:
+    """Aggregate the tags scoring left on matched pairs.
+
+    Reads ONLY the `cause:` and `misplaced` tokens — a fixed vocabulary written
+    by score._cause. It never touches `field_errors`, which spells out client
+    values, so the digest stays safe to commit and to show an agent."""
+    causes: Dict[str, int] = {}
+    misplaced = 0
+    for d in report.doc_scores:
+        for p in d.pairs:
+            for note in p.notes:
+                if note.startswith("cause:"):
+                    key = note.split(":", 1)[1]
+                    causes[key] = causes.get(key, 0) + 1
+                elif note == "misplaced":
+                    misplaced += 1
+    return causes, misplaced
+
+
 def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
     """Privacy-safe digest of a run: aggregate metrics only, doc ids hashed.
 
@@ -44,6 +63,7 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
     gold vs predicted (e.g. "nominal: '6,5'!='5,5'"). This function is the only
     sanctioned way to look at a run: it reads none of that, so the result can be
     shown to an AI agent, committed, or pasted into a ticket."""
+    causes, misplaced = _note_counts(report)
     worst = sorted(report.doc_scores, key=lambda d: (-d.review_cost, d.doc_id))
     return {
         "run": report.run_name,
@@ -57,6 +77,12 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
         "micro_precision": report.micro_precision,
         "escaped_rate": report.escaped_rate,
         "taxonomy": dict(report.taxonomy),
+        # Handoff §6 routing: misparse -> parser hardening (Rung 1),
+        # misread -> prompts (Rung 2) then LoRA (Rung 3).
+        "error_causes": causes,
+        # Matched, but further from its gold balloon than misplaced_frac — a
+        # geometry-quality signal that is not an error in its own right.
+        "misplaced_matches": misplaced,
         "config": report.config.model_dump(),
         "weights": report.weights.model_dump(),
         "match_params": report.match_params.model_dump(),
