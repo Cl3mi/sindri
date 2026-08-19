@@ -132,6 +132,11 @@ class DocScore(_Versioned):
     false_positions: List[int] = []   # pred.pos of unmatched predictions
     counts: Dict[str, int] = {}       # taxonomy histogram
     excluded_by_kind: int = 0         # gold rows outside MatchParams.score_kinds
+    # Resolution this document was actually rendered at. render.py clamps dpi
+    # to an 80 MP budget on large-format sheets, so this can sit below
+    # config.dpi — and "did the misses cluster on the clamped drawings?" cannot
+    # be answered without it. 0.0 in reports written before this field existed.
+    effective_dpi: float = 0.0
     review_cost: float = 0.0
     recall: float = 0.0
     precision: float = 0.0

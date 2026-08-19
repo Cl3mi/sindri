@@ -205,3 +205,70 @@ def test_summary_cause_aggregation_never_reads_client_values():
 
     assert "6,5" not in blob and "5,5" not in blob
     assert "nominal" not in blob
+
+
+def _dpi_doc(doc_id, dpi, recall, cost):
+    return DocScore(doc_id=doc_id, gold_hash="g" + "0" * 15, n_gold=10, n_pred=10,
+                    counts={"correct": 10}, review_cost=cost, recall=recall,
+                    precision=1.0, escaped_rate=0.0, effective_dpi=dpi)
+
+
+def test_summary_separates_clamped_documents_from_the_rest():
+    """The run log's clamped ids came from a throwaway container salt and cannot
+    be joined to a locally-scored report. The dumps carry the real scale, so the
+    comparison is recoverable here — with local-salt ids that DO join."""
+    docs = [_dpi_doc("D1", 300.0, 0.60, 100.0),
+            _dpi_doc("D2", 300.0, 0.50, 140.0),
+            _dpi_doc("D3", 109.0, 0.20, 400.0),
+            _dpi_doc("D4", 225.0, 0.30, 300.0)]
+    report = aggregate("r", RunConfig(model_id="stub", dpi=300),
+                       ReviewCostWeights(), MatchParams(), docs)
+
+    digest = summarize(report, lambda d: f"hash-{d}")
+    split = digest["clamped_vs_unclamped"]
+
+    assert [c["doc"] for c in digest["clamped_docs"]] == ["hash-D3", "hash-D4"]
+    assert digest["clamped_docs"][0]["effective_dpi"] == 109
+    assert split["clamped"]["n"] == 2
+    assert split["unclamped"]["n"] == 2
+    assert split["unknown_dpi"]["n"] == 0
+    # Macro means: unweighted over documents. NOT comparable to the headline
+    # micro_recall, which pools rows — hence the name.
+    assert split["clamped"]["macro_mean_recall"] == 0.25
+    assert split["unclamped"]["macro_mean_recall"] == 0.55
+    # The three buckets partition the corpus, so nothing can be double-counted
+    # or silently dropped.
+    assert (split["clamped"]["n"] + split["unclamped"]["n"]
+            + split["unknown_dpi"]["n"]) == digest["n_docs"]
+
+
+def test_summary_reports_no_clamped_documents_when_none_were_clamped():
+    docs = [_dpi_doc("D1", 300.0, 0.6, 100.0), _dpi_doc("D2", 300.0, 0.5, 140.0)]
+    report = aggregate("r", RunConfig(model_id="stub", dpi=300),
+                       ReviewCostWeights(), MatchParams(), docs)
+
+    digest = summarize(report, lambda d: f"hash-{d}")
+
+    assert digest["clamped_docs"] == []
+    assert digest["clamped_vs_unclamped"]["clamped"]["n"] == 0
+    assert digest["clamped_vs_unclamped"]["clamped"]["macro_mean_recall"] is None
+
+
+def test_summary_puts_documents_without_a_recorded_dpi_in_their_own_bucket():
+    """effective_dpi is 0.0 in every DocScore written before the field existed —
+    i.e. in the report this plan exists to interpret, until Task 5 re-scores it.
+    Calling those "unclamped" would report "nothing was clamped" for a run where
+    four documents were, which is worse than reporting nothing. So: third bucket,
+    and clamped/unclamped stay empty until the run is actually re-scored."""
+    docs = [_dpi_doc("D1", 0.0, 0.60, 100.0), _dpi_doc("D2", 0.0, 0.50, 140.0)]
+    report = aggregate("r", RunConfig(model_id="stub", dpi=300),
+                       ReviewCostWeights(), MatchParams(), docs)
+
+    digest = summarize(report, lambda d: f"hash-{d}")
+    split = digest["clamped_vs_unclamped"]
+
+    assert digest["clamped_docs"] == []
+    assert split["unknown_dpi"]["n"] == 2
+    assert split["clamped"]["n"] == 0
+    assert split["unclamped"]["n"] == 0          # NOT 2 — this is the whole point
+    assert split["unclamped"]["macro_mean_recall"] is None

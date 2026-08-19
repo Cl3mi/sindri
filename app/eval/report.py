@@ -10,6 +10,13 @@ from app.eval.models import (DocScore, MatchParams, ReviewCostWeights,
 
 N_BOOTSTRAP = 10_000
 
+# How many clamped documents `summarize` lists in detail. Deliberately NOT
+# summarize()'s `top`, which sizes the worst-docs triage list: a diagnostic list
+# must not shorten because someone retuned an unrelated knob. The true count is
+# always clamped_vs_unclamped.clamped.n, so truncation is visible by comparing
+# len(clamped_docs) against it.
+CLAMP_LIST_MAX = 25
+
 
 def aggregate(run_name: str, config: RunConfig, weights: ReviewCostWeights,
               match_params: MatchParams, doc_scores: List[DocScore],
@@ -56,6 +63,51 @@ def _note_counts(report: RunReport) -> Tuple[Dict[str, int], int]:
     return causes, misplaced
 
 
+def _clamp_split(report: RunReport, anonymizer,
+                 limit: int = CLAMP_LIST_MAX) -> Tuple[List, Dict]:
+    """Clamped documents, and clamped-vs-unclamped macro means.
+
+    render.py reduces dpi on sheets that would exceed the 80 MP budget, so those
+    documents are extracted at up to a third of the requested resolution. Before
+    anyone reads a low recall as a statement about the model, this says whether
+    the misses concentrate there. Ids come from the local salt, so they join to
+    worst_docs — unlike the predict log's, which are minted per container.
+
+    THREE buckets, not two. effective_dpi is 0.0 in any DocScore written before
+    the field existed, and folding those into "unclamped" would report "nothing
+    was clamped" for a run where four documents were — a confident wrong answer
+    from a view whose entire job is interpretability. Unknown gets its own
+    bucket, so `unknown_dpi.n > 0` reads as "re-score before believing this"."""
+    requested = report.config.dpi
+    known = [d for d in report.doc_scores if d.effective_dpi > 0.0]
+    unknown = [d for d in report.doc_scores if d.effective_dpi <= 0.0]
+    clamped = sorted((d for d in known if d.effective_dpi < requested - 0.5),
+                     key=lambda d: d.effective_dpi)
+    clamped_ids = {d.doc_id for d in clamped}
+    rest = [d for d in known if d.doc_id not in clamped_ids]
+
+    def block(docs):
+        n = len(docs)
+        return {
+            "n": n,
+            # MACRO: unweighted mean over documents. The headline micro_recall
+            # pools rows across the run, so the two are different statistics —
+            # the name says so, because an unlabelled "mean_recall" next to a
+            # micro headline is exactly the mis-read this plan exists to prevent.
+            "macro_mean_recall": (round(sum(d.recall for d in docs) / n, 4)
+                                  if n else None),
+            "mean_review_cost": (round(sum(d.review_cost for d in docs) / n, 2)
+                                 if n else None),
+        }
+
+    listed = [{"doc": anonymizer(d.doc_id),
+               "effective_dpi": round(d.effective_dpi),
+               "recall": round(d.recall, 4),
+               "review_cost": d.review_cost} for d in clamped[:limit]]
+    return listed, {"clamped": block(clamped), "unclamped": block(rest),
+                    "unknown_dpi": block(unknown)}
+
+
 def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
     """Privacy-safe digest of a run: aggregate metrics only, doc ids hashed.
 
@@ -64,6 +116,7 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
     sanctioned way to look at a run: it reads none of that, so the result can be
     shown to an AI agent, committed, or pasted into a ticket."""
     causes, misplaced = _note_counts(report)
+    clamped_docs, clamp_split = _clamp_split(report, anonymizer)
     worst = sorted(report.doc_scores, key=lambda d: (-d.review_cost, d.doc_id))
     return {
         "run": report.run_name,
@@ -83,6 +136,8 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
         # Matched, but further from its gold balloon than misplaced_frac — a
         # geometry-quality signal that is not an error in its own right.
         "misplaced_matches": misplaced,
+        "clamped_docs": clamped_docs,
+        "clamped_vs_unclamped": clamp_split,
         "config": report.config.model_dump(),
         "weights": report.weights.model_dump(),
         "match_params": report.match_params.model_dump(),

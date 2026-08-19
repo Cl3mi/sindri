@@ -1,3 +1,5 @@
+import pytest
+
 from app.eval.models import (GoldCharacteristic, GoldDoc, MatchParams,
                              PredictionDump, ReviewCostWeights, RunConfig)
 from app.eval.score import score_doc
@@ -126,3 +128,35 @@ def test_flagged_correct_costs_flag_weight_only():
     assert s.counts["flagged_correct"] == 1
     # cost = 10 + 5 + 2 + 1(pos3) + 1(pos1) = 19
     assert s.review_cost == 19.0
+
+
+def _clamped_dump():
+    """The same page rendered under the 80 MP budget. Boxes are in the CLAMPED
+    render's pixels, which is what the pipeline actually produces after
+    b266367 — so the geometry must still round-trip through dump.scale."""
+    clamped_scale = 109 / 72.0                 # the 598 MP sheet's real dpi
+
+    def box(x, y):
+        return (clamped_scale * (x - 15), clamped_scale * (y - 5),
+                clamped_scale * (x + 15), clamped_scale * (y + 5))
+
+    chars = [Characteristic(pos=1, char_type="Diameter", nominal="20",
+                            upper_tol="0,1", lower_tol="-0,1",
+                            raw_text="Ø20 +0,1 -0,1", kind="dimension",
+                            target_region=box(100, 100))]
+    return PredictionDump(doc_id="D", config=RunConfig(model_id="stub", dpi=300),
+                          scale=clamped_scale, page_rect=RECT,
+                          result=ExtractionResult(characteristics=chars))
+
+
+def test_doc_score_records_the_effective_render_dpi():
+    s = score_doc(_dump(), _gold(), ReviewCostWeights(), MatchParams())
+    assert s.effective_dpi == pytest.approx(300.0)
+
+
+def test_doc_score_records_a_clamped_dpi_and_still_matches():
+    """A clamped document is scored at reduced resolution, not scored wrongly:
+    the box still lands on gold balloon 1."""
+    s = score_doc(_clamped_dump(), _gold(), ReviewCostWeights(), MatchParams())
+    assert s.effective_dpi == pytest.approx(109.0)
+    assert s.counts.get("correct") == 1
