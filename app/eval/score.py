@@ -3,7 +3,7 @@ the error taxonomy, and price the result in expected review effort (§4 of the
 handoff). Pure CPU; imports nothing from the model stack."""
 import math
 import re
-from typing import List
+from typing import Dict, List
 
 from app.eval.dump import to_points
 from app.eval.matching import Cand, match_candidates
@@ -104,6 +104,17 @@ def score_doc(dump: PredictionDump, gold: GoldDoc,
     cost = (weights.miss * len(missed) + weights.escaped * escaped
             + weights.false * len(false) + weights.flag * flagged_rows)
 
+    def _kind(c) -> str:
+        return c.kind or "unset"
+
+    pred_kinds: Dict[str, int] = {}
+    for c in preds:
+        pred_kinds[_kind(c)] = pred_kinds.get(_kind(c), 0) + 1
+    false_kinds: Dict[str, int] = {}
+    for pk in false:
+        k = _kind(pred_by_pos[pk])
+        false_kinds[k] = false_kinds.get(k, 0) + 1
+
     n_gold, n_pred = len(gold_by_num), len(pred_by_pos)
     return DocScore(
         doc_id=gold.doc_id, gold_hash=gold.gold_hash(),
@@ -111,6 +122,7 @@ def score_doc(dump: PredictionDump, gold: GoldDoc,
         missed_balloons=missed, false_positions=false, counts=counts,
         excluded_by_kind=excluded_by_kind,
         effective_dpi=dump.scale * 72.0,
+        pred_kinds=pred_kinds, false_kinds=false_kinds,
         review_cost=cost,
         recall=(len(matched_g) / n_gold) if n_gold else 1.0,
         precision=(len(matched_p) / n_pred) if n_pred else 1.0,

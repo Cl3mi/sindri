@@ -272,3 +272,35 @@ def test_summary_puts_documents_without_a_recorded_dpi_in_their_own_bucket():
     assert split["clamped"]["n"] == 0
     assert split["unclamped"]["n"] == 0          # NOT 2 — this is the whole point
     assert split["unclamped"]["macro_mean_recall"] is None
+
+
+def test_summary_aggregates_prediction_kinds_across_documents():
+    def doc(doc_id, pred_kinds, false_kinds):
+        # counts is derived from false_kinds, never stated independently: a
+        # fixture that contradicts its own taxonomy cannot test a conservation
+        # identity.
+        return DocScore(doc_id=doc_id, gold_hash="g" + "0" * 15, n_gold=5,
+                        n_pred=sum(pred_kinds.values()),
+                        counts={"correct": 5,
+                                "false_detection": sum(false_kinds.values())},
+                        review_cost=10.0, recall=1.0, precision=1.0,
+                        escaped_rate=0.0, pred_kinds=pred_kinds,
+                        false_kinds=false_kinds)
+
+    docs = [doc("D1", {"dimension": 20, "note": 5}, {"note": 5}),
+            doc("D2", {"dimension": 18, "surface": 3}, {"surface": 3,
+                                                        "dimension": 2})]
+    report = aggregate("r", RunConfig(model_id="stub"), ReviewCostWeights(),
+                       MatchParams(), docs)
+
+    digest = summarize(report, lambda d: "hashed")
+
+    assert digest["pred_kinds"] == {"dimension": 38, "note": 5, "surface": 3}
+    assert digest["false_detections_by_kind"] == {"note": 5, "surface": 3,
+                                                  "dimension": 2}
+    # Same conservation identity at run level. Task 5 reports "N of 663 false
+    # detections are kinds the metric removed from gold"; this is what makes 663
+    # a checked denominator rather than a quoted one.
+    assert sum(digest["pred_kinds"].values()) == digest["n_pred"]
+    assert (sum(digest["false_detections_by_kind"].values())
+            == digest["taxonomy"]["false_detection"])

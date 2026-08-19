@@ -160,3 +160,41 @@ def test_doc_score_records_a_clamped_dpi_and_still_matches():
     s = score_doc(_clamped_dump(), _gold(), ReviewCostWeights(), MatchParams())
     assert s.effective_dpi == pytest.approx(109.0)
     assert s.counts.get("correct") == 1
+
+
+def _kinded_dump():
+    """Two in-scope dimensions plus two predictions of kinds the metric removed
+    from gold — the asymmetry this test exists to measure."""
+    chars = [
+        Characteristic(pos=1, char_type="Diameter", nominal="20", upper_tol="0,1",
+                       lower_tol="-0,1", raw_text="Ø20 +0,1 -0,1", kind="dimension",
+                       target_region=_pt_box(100, 100)),
+        Characteristic(pos=2, char_type="Distance", nominal="5,5", raw_text="5,5",
+                       kind="dimension", target_region=_pt_box(400, 200)),
+        # a surface-finish callout and a note: correctly detected, but gold was
+        # filtered to score_kinds=("dimension",), so neither can ever match
+        Characteristic(pos=6, char_type="Surface", nominal="Ra1,6",
+                       raw_text="Ra 1,6", kind="surface",
+                       target_region=_pt_box(250, 650)),
+        Characteristic(pos=7, char_type="Note", nominal="", raw_text="see note 3",
+                       kind="note", target_region=_pt_box(600, 700)),
+    ]
+    return PredictionDump(doc_id="D", config=RunConfig(model_id="stub", dpi=300),
+                          scale=SCALE, page_rect=RECT,
+                          result=ExtractionResult(characteristics=chars))
+
+
+def test_doc_score_breaks_predictions_and_false_detections_down_by_kind():
+    """score_doc filters GOLD to score_kinds but never filters PREDICTIONS, so
+    every correctly-detected surface/note/gdt callout lands in false_detection.
+    Record the breakdown so that inflation can be measured before anyone reads
+    precision as a statement about the model."""
+    s = score_doc(_kinded_dump(), _gold(), ReviewCostWeights(), MatchParams())
+
+    assert s.pred_kinds == {"dimension": 2, "surface": 1, "note": 1}
+    assert s.false_kinds == {"surface": 1, "note": 1}
+    assert s.counts["false_detection"] == 2
+    # Conservation: the breakdown must account for every prediction and every
+    # false detection, or "N of 663" is quoting an unverified denominator.
+    assert sum(s.pred_kinds.values()) == s.n_pred
+    assert sum(s.false_kinds.values()) == s.counts["false_detection"]

@@ -137,6 +137,12 @@ class DocScore(_Versioned):
     # config.dpi — and "did the misses cluster on the clamped drawings?" cannot
     # be answered without it. 0.0 in reports written before this field existed.
     effective_dpi: float = 0.0
+    # Predictions by detector kind, and which of them went unmatched. Gold is
+    # filtered to MatchParams.score_kinds; predictions are not, so a correctly
+    # detected surface finish or note is charged as a false detection. These two
+    # make that inflation measurable instead of assumed.
+    pred_kinds: Dict[str, int] = {}
+    false_kinds: Dict[str, int] = {}
     review_cost: float = 0.0
     recall: float = 0.0
     precision: float = 0.0

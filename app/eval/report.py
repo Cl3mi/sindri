@@ -108,6 +108,19 @@ def _clamp_split(report: RunReport, anonymizer,
                     "unknown_dpi": block(unknown)}
 
 
+def _kind_totals(report: RunReport) -> Tuple[Dict[str, int], Dict[str, int]]:
+    """Predictions and unmatched predictions by detector kind, summed over the
+    run. Kind names are a fixed detector vocabulary, never client text."""
+    preds: Dict[str, int] = {}
+    false: Dict[str, int] = {}
+    for d in report.doc_scores:
+        for k, v in d.pred_kinds.items():
+            preds[k] = preds.get(k, 0) + v
+        for k, v in d.false_kinds.items():
+            false[k] = false.get(k, 0) + v
+    return preds, false
+
+
 def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
     """Privacy-safe digest of a run: aggregate metrics only, doc ids hashed.
 
@@ -117,6 +130,7 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
     shown to an AI agent, committed, or pasted into a ticket."""
     causes, misplaced = _note_counts(report)
     clamped_docs, clamp_split = _clamp_split(report, anonymizer)
+    pred_kinds, false_kinds = _kind_totals(report)
     worst = sorted(report.doc_scores, key=lambda d: (-d.review_cost, d.doc_id))
     return {
         "run": report.run_name,
@@ -138,6 +152,10 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
         "misplaced_matches": misplaced,
         "clamped_docs": clamped_docs,
         "clamped_vs_unclamped": clamp_split,
+        # Gold is filtered to match_params.score_kinds; predictions are not. A
+        # non-dimension kind here is a detection the metric cannot credit.
+        "pred_kinds": pred_kinds,
+        "false_detections_by_kind": false_kinds,
         "config": report.config.model_dump(),
         "weights": report.weights.model_dump(),
         "match_params": report.match_params.model_dump(),
