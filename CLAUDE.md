@@ -47,9 +47,16 @@ An older `245.30 / 0.350` appears in git history and in `docs/eval/render150-*`.
 That number was measuring a coordinate bug, not the model. Do not quote it as the
 baseline.
 
-**Next action:** `docs/plans/2026-08-19-gpu-direction-run.md` — a four-arm GPU run,
-already built and tested. Deep context and every measured result:
-`docs/plans/2026-08-20-session-handoff.md`.
+The four-arm GPU direction run is **done** (`660f462`). Every detection lever
+tested lost, so the defaults above are locally optimal and the next lever is
+Rung 2 prompts. Full metrics, interpretation, and the operational gotchas:
+`docs/plans/2026-08-21-direction-run-findings.md` — **read this before proposing
+any detection change.** Earlier context: `docs/plans/2026-08-20-session-handoff.md`
+(its §2.2 inference about the contended bucket is superseded; see findings §6).
+
+**Next action:** Rung 2 prompts. The remaining problem is reading, not finding:
+196 matched-but-wrong rows vs 169 missed, `misread` 144 vs `misparse` 52, and
+field accuracy on matched rows is only 0.3636.
 
 ## 3. Measured dead ends — do not retry these
 
@@ -67,6 +74,18 @@ GPU days.
 * **Filtering predictions to `score_kinds`.** Would delete 61 of 308 matches that
   non-`dimension` kinds legitimately make, because gold's `dimension` bucket
   includes GD&T and surface callouts (`normalize._DIMENSION_WORDS`).
+* **The `merge_adjacent` knobs, in either direction.** Break-even is 5.0 false
+  detections per recovered miss (`miss=10`, `false=2`). Measured 6.50 at
+  `merge_y_gap` 20→8 and 8.75 at `merge_max_lines` 2→1 — above break-even at both
+  doses and *worsening* as merging is reduced, so no intermediate setting wins.
+  Also: only 8 of 82 contended misses are merge artefacts, and `isolated` is
+  provably untouched by merge knobs (74 in all three arms).
+* **Detect tile size (`VLM_TILE=768`).** Found nothing (`n_pred` 830→833, `missed`
+  *up* 2, recall *down*), moved 16 gold rows contended→isolated, and cost
+  −0.0662 field accuracy on matched rows plus +0.0336 `escaped_rate` — the worst
+  arm measured. Damage concentrates 12× on the render-clamped sheets. This is a
+  *different* lever from the render pixel budget above; both ends of the
+  resolution family are now closed.
 
 ## 4. Conventions — match these, they are load-bearing
 
