@@ -1,0 +1,186 @@
+{
+ "run": "exp-nomerge-dev",
+ "split": "dev",
+ "splits_hash": "6d174d5e4f1b9228",
+ "n_docs": 20,
+ "n_gold": 477,
+ "n_pred": 908,
+ "mean_review_cost": 179.9,
+ "micro_recall": 0.6624737945492662,
+ "micro_precision": 0.34801762114537443,
+ "escaped_rate": 0.2914046121593291,
+ "taxonomy": {
+  "escaped_error": 139,
+  "correct": 68,
+  "flagged_correct": 43,
+  "flagged_error": 66,
+  "missed": 161,
+  "false_detection": 592
+ },
+ "error_causes": {
+  "misparse": 54,
+  "misread": 151
+ },
+ "misplaced_matches": 84,
+ "clamped_docs": [
+  {
+   "doc": "7bd2fd06",
+   "effective_dpi": 109,
+   "recall": 0.3208,
+   "review_cost": 469.0,
+   "missed_isolated": 0
+  },
+  {
+   "doc": "d01660e4",
+   "effective_dpi": 208,
+   "recall": 0.0,
+   "review_cost": 142.0,
+   "missed_isolated": 1
+  },
+  {
+   "doc": "a7994023",
+   "effective_dpi": 225,
+   "recall": 0.4776,
+   "review_cost": 455.0,
+   "missed_isolated": 13
+  },
+  {
+   "doc": "c32e79eb",
+   "effective_dpi": 225,
+   "recall": 0.7778,
+   "review_cost": 78.0,
+   "missed_isolated": 2
+  }
+ ],
+ "clamped_vs_unclamped": {
+  "clamped": {
+   "n": 4,
+   "macro_mean_recall": 0.394,
+   "mean_review_cost": 286.0,
+   "missed_isolated": 16
+  },
+  "unclamped": {
+   "n": 16,
+   "macro_mean_recall": 0.7367,
+   "mean_review_cost": 153.38,
+   "missed_isolated": 58
+  },
+  "unknown_dpi": {
+   "n": 0,
+   "macro_mean_recall": null,
+   "mean_review_cost": null,
+   "missed_isolated": 0
+  }
+ },
+ "pred_kinds": {
+  "dimension": 649,
+  "gdt": 60,
+  "note": 62,
+  "theoretical": 109,
+  "surface": 22,
+  "material": 6
+ },
+ "false_detections_by_kind": {
+  "dimension": 394,
+  "gdt": 28,
+  "theoretical": 92,
+  "note": 57,
+  "surface": 16,
+  "material": 5
+ },
+ "matched_by_pred_kind": {
+  "dimension": 255,
+  "gdt": 32,
+  "theoretical": 17,
+  "surface": 6,
+  "note": 5,
+  "material": 1
+ },
+ "frame_mismatch": {
+  "n_docs_affected": 0,
+  "n_docs_frames_agree": 20,
+  "n_docs_not_measured": 0,
+  "max_frac": 0.0,
+  "micro_recall_frames_agree": 0.6625,
+  "micro_recall_frames_differ": null,
+  "docs": []
+ },
+ "missed_diagnosis": {
+  "contended": 74,
+  "isolated": 74,
+  "unlocated": 13
+ },
+ "config": {
+  "model_id": "Qwen/Qwen2.5-VL-72B-Instruct-AWQ",
+  "dpi": 300,
+  "git_sha": "unknown",
+  "prompt_sha256": "aa7659f1929184ea",
+  "extra": {
+   "tile": 1024,
+   "tile_overlap": 0.15,
+   "merge_x_tol": 20,
+   "merge_y_gap": 20,
+   "merge_max_lines": 1
+  }
+ },
+ "weights": {
+  "miss": 10.0,
+  "escaped": 5.0,
+  "false": 2.0,
+  "flag": 1.0
+ },
+ "match_params": {
+  "max_geo_frac": 0.1,
+  "value_bonus": 0.35,
+  "misplaced_frac": 0.04,
+  "mode": "geometry",
+  "value_sim_min": 0.6,
+  "score_kinds": [
+   "dimension"
+  ],
+  "reconcile_frames": "none",
+  "assignment": "greedy"
+ },
+ "worst_docs": [
+  {
+   "doc": "7bd2fd06",
+   "review_cost": 469.0
+  },
+  {
+   "doc": "a7994023",
+   "review_cost": 455.0
+  },
+  {
+   "doc": "caf2afd1",
+   "review_cost": 440.0
+  },
+  {
+   "doc": "961693d9",
+   "review_cost": 310.0
+  },
+  {
+   "doc": "1a007bc4",
+   "review_cost": 248.0
+  },
+  {
+   "doc": "514ec627",
+   "review_cost": 195.0
+  },
+  {
+   "doc": "01806166",
+   "review_cost": 153.0
+  },
+  {
+   "doc": "53c2a083",
+   "review_cost": 149.0
+  },
+  {
+   "doc": "c3aa6a9e",
+   "review_cost": 144.0
+  },
+  {
+   "doc": "d01660e4",
+   "review_cost": 142.0
+  }
+ ]
+}
