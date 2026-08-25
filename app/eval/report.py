@@ -105,6 +105,34 @@ def _field_failure_counts(report: RunReport) -> Tuple[Dict[str, int],
     return per_field, signatures
 
 
+def _cause_crosstab(report: RunReport) -> Dict[str, Dict[str, int]]:
+    """cause × misplaced × silent-or-flagged, for every matched-but-wrong row.
+
+    `misread` is routinely read as "perception failure", but a pair matched
+    further from its balloon than misplaced_frac may have read a DIFFERENT
+    callout perfectly. Those are pairing failures, and no prompt edit can move
+    them — so the share of misread that is misplaced is the number that decides
+    whether a read-prompt arm is worth a card at all. Both tags were already on
+    every pair (score_doc writes them); only the join was missing.
+
+    Reads the same fixed note vocabulary as _note_counts, plus the taxonomy
+    string, so it carries no client text."""
+    out: Dict[str, Dict[str, int]] = {}
+    for d in report.doc_scores:
+        for p in d.pairs:
+            cause = next((n.split(":", 1)[1] for n in p.notes
+                          if n.startswith("cause:")), None)
+            if cause is None:
+                continue
+            row = out.setdefault(cause, {"total": 0, "misplaced": 0,
+                                         "on_target": 0, "escaped": 0,
+                                         "flagged": 0})
+            row["total"] += 1
+            row["misplaced" if "misplaced" in p.notes else "on_target"] += 1
+            row["escaped" if p.taxonomy == "escaped_error" else "flagged"] += 1
+    return out
+
+
 def _clamp_split(report: RunReport, anonymizer,
                  limit: int = CLAMP_LIST_MAX) -> Tuple[List, Dict]:
     """Clamped documents, and clamped-vs-unclamped macro means.
@@ -268,6 +296,10 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
         # Handoff §6 routing: misparse -> parser hardening (Rung 1),
         # misread -> prompts (Rung 2) then LoRA (Rung 3).
         "error_causes": causes,
+        # The same rows, split by whether the pair is even on the right callout.
+        # misplaced+on_target == total == escaped+flagged for every cause, and
+        # the totals reproduce error_causes above.
+        "error_cause_crosstab": _cause_crosstab(report),
         # Matched, but further from its gold balloon than misplaced_frac — a
         # geometry-quality signal that is not an error in its own right.
         "misplaced_matches": misplaced,

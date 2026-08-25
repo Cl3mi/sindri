@@ -565,3 +565,58 @@ def test_unrecognised_field_name_is_bucketed_rather_than_passed_through():
                        lambda d: "hashed")
     assert digest["field_failures"] == {"other": 1}
     assert "SOMETHING_NEW" not in json.dumps(digest)
+
+
+def _crosstab_report(rows):
+    """rows: (cause, misplaced, taxonomy) triples, one matched-but-wrong pair
+    each, all on one document."""
+    pairs = []
+    for i, (cause, misplaced, taxonomy) in enumerate(rows, start=1):
+        notes = [f"cause:{cause}"] + (["misplaced"] if misplaced else [])
+        pairs.append(MatchedPair(
+            gold_balloon=i, pred_pos=i, distance_frac=0.09 if misplaced else 0.001,
+            fields_correct=False, field_errors=["nominal: '1'!='2'"],
+            flagged=taxonomy.startswith("flagged"), taxonomy=taxonomy,
+            notes=notes))
+    counts = {}
+    for _, _, taxonomy in rows:
+        counts[taxonomy] = counts.get(taxonomy, 0) + 1
+    d = DocScore(doc_id="T1025300_B", gold_hash="g" * 16, n_gold=len(rows),
+                 n_pred=len(rows), pairs=pairs, counts=counts,
+                 review_cost=float(len(rows)), recall=1.0, precision=1.0,
+                 escaped_rate=0.0)
+    return aggregate("diag", RunConfig(model_id="stub"), ReviewCostWeights(),
+                     MatchParams(), [d])
+
+
+def test_crosstab_splits_misread_by_whether_the_pair_was_misplaced():
+    """A misplaced pair may have read a DIFFERENT callout correctly. No prompt
+    edit can move those, so they must be separable before an arm is costed."""
+    digest = summarize(_crosstab_report([
+        ("misread", True, "escaped_error"),
+        ("misread", False, "escaped_error"),
+        ("misparse", False, "flagged_error"),
+    ]), lambda d: "hashed")
+    ct = digest["error_cause_crosstab"]
+    assert ct["misread"]["misplaced"] == 1
+    assert ct["misread"]["on_target"] == 1
+    assert ct["misparse"]["misplaced"] == 0
+
+
+def test_crosstab_rows_reconcile_on_both_axes():
+    digest = summarize(_crosstab_report([
+        ("misread", True, "escaped_error"),
+        ("misread", False, "flagged_error"),
+    ]), lambda d: "hashed")
+    row = digest["error_cause_crosstab"]["misread"]
+    assert row["misplaced"] + row["on_target"] == row["total"]
+    assert row["escaped"] + row["flagged"] == row["total"]
+
+
+def test_crosstab_totals_match_the_existing_error_causes_histogram():
+    digest = summarize(_crosstab_report([
+        ("misread", True, "escaped_error"),
+        ("misparse", False, "escaped_error"),
+    ]), lambda d: "hashed")
+    ct = digest["error_cause_crosstab"]
+    assert {k: v["total"] for k, v in ct.items()} == digest["error_causes"]
