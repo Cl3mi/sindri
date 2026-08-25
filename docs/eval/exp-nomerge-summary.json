@@ -21,7 +21,45 @@
   "misparse": 54,
   "misread": 151
  },
+ "error_cause_crosstab": {
+  "misparse": {
+   "total": 54,
+   "misplaced": 7,
+   "on_target": 47,
+   "escaped": 34,
+   "flagged": 20
+  },
+  "misread": {
+   "total": 151,
+   "misplaced": 67,
+   "on_target": 84,
+   "escaped": 105,
+   "flagged": 46
+  }
+ },
  "misplaced_matches": 84,
+ "field_failures": {
+  "field:lower_tol": 141,
+  "field:upper_tol": 132,
+  "field:nominal": 125,
+  "field:char_type": 116
+ },
+ "field_failure_signatures": {
+  "fields:lower_tol": 12,
+  "fields:nominal+upper_tol+lower_tol": 39,
+  "fields:char_type+nominal": 10,
+  "fields:upper_tol+lower_tol": 18,
+  "fields:char_type": 22,
+  "fields:nominal": 16,
+  "fields:char_type+nominal+upper_tol+lower_tol": 50,
+  "fields:upper_tol": 2,
+  "fields:char_type+upper_tol+lower_tol": 9,
+  "fields:char_type+nominal+lower_tol": 6,
+  "fields:char_type+nominal+upper_tol": 2,
+  "fields:char_type+lower_tol": 5,
+  "fields:char_type+upper_tol": 12,
+  "fields:nominal+lower_tol": 2
+ },
  "clamped_docs": [
   {
    "doc": "7bd2fd06",

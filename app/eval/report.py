@@ -86,7 +86,22 @@ def _field_failure_counts(report: RunReport) -> Tuple[Dict[str, int],
     Two aggregates, because they answer different questions. The per-field
     histogram sizes each field's contribution; the signature histogram says
     whether failures co-occur, which is what separates "the reader omits
-    tolerances" from "the reader misreads whole callouts"."""
+    tolerances" from "the reader misreads whole callouts".
+
+    BOTH key spaces are namespaced (`field:<name>`, `fields:<a>+<b>`) rather
+    than bare. The pre-commit hook blocks any staged .json containing
+    `"upper_tol"` or `"lower_tol"` as a quoted token, because that is the shape
+    of a gold record and it cannot tell a COUNT keyed by a field name from a
+    VALUE stored under one. Digests are committed, so a bare key would make
+    every future digest need the SINDRI_ALLOW_DATA_COMMIT bypass — weakening a
+    data guard permanently to save six characters.
+
+    The signature space needs the prefix for a reason that is easy to miss: a
+    multi-field key like `char_type+nominal+upper_tol+lower_tol` is already
+    safe, because the token is not quote-delimited there. It is the SINGLE-field
+    signature — a row where only `upper_tol` was wrong — that emits a bare
+    `"upper_tol"` key. Prefixing the whole space removes the special case
+    instead of relying on nobody rediscovering it."""
     per_field: Dict[str, int] = {}
     signatures: Dict[str, int] = {}
     for d in report.doc_scores:
@@ -98,9 +113,10 @@ def _field_failure_counts(report: RunReport) -> Tuple[Dict[str, int],
                 name = err.split(":", 1)[0].strip()
                 names.add(name if name in _FIELD_NAMES else "other")
             for n in names:
-                per_field[n] = per_field.get(n, 0) + 1
+                per_field[f"field:{n}"] = per_field.get(f"field:{n}", 0) + 1
             # Fixed order, so the same combination always produces the same key.
-            key = "+".join(n for n in _FIELD_NAMES + ("other",) if n in names)
+            key = "fields:" + "+".join(n for n in _FIELD_NAMES + ("other",)
+                                       if n in names)
             signatures[key] = signatures.get(key, 0) + 1
     return per_field, signatures
 

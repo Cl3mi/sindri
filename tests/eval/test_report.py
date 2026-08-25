@@ -245,7 +245,7 @@ def test_summary_cause_aggregation_never_reads_client_values():
     # conjunction cannot be aimed at a prompt. Anything outside that vocabulary
     # is bucketed as "other" -- see
     # test_unrecognised_field_name_is_bucketed_rather_than_passed_through.
-    assert json.loads(blob)["field_failures"] == {"nominal": 1}
+    assert json.loads(blob)["field_failures"] == {"field:nominal": 1}
 
 
 def _dpi_doc(doc_id, dpi, recall, cost):
@@ -530,7 +530,7 @@ def _wrong_row_report(field_errors, taxonomy="escaped_error", notes=None):
 def test_field_failures_name_the_field_and_never_the_value():
     digest = summarize(_wrong_row_report(["nominal: '6,5'!='5,5'"]),
                        lambda d: "hashed")
-    assert digest["field_failures"] == {"nominal": 1}
+    assert digest["field_failures"] == {"field:nominal": 1}
     blob = json.dumps(digest, ensure_ascii=False)
     for leak in ("6,5", "5,5"):
         assert leak not in blob, f"field-failure aggregate leaked {leak!r}"
@@ -542,8 +542,10 @@ def test_field_failure_signature_records_the_combination_not_just_the_count():
     digest = summarize(_wrong_row_report(
         ["upper_tol: '0,1'!='0,2'", "lower_tol: ''!='-0,2'"]),
         lambda d: "hashed")
-    assert digest["field_failure_signatures"] == {"upper_tol+lower_tol": 1}
-    assert digest["field_failures"] == {"upper_tol": 1, "lower_tol": 1}
+    assert digest["field_failure_signatures"] == {
+        "fields:upper_tol+lower_tol": 1}
+    assert digest["field_failures"] == {"field:upper_tol": 1,
+                                       "field:lower_tol": 1}
 
 
 def test_field_failure_signatures_reconcile_with_the_error_taxonomy():
@@ -563,7 +565,7 @@ def test_unrecognised_field_name_is_bucketed_rather_than_passed_through():
     'other' rather than forward an unvetted string into a values-blind file."""
     digest = summarize(_wrong_row_report(["SOMETHING_NEW: 'a'!='b'"]),
                        lambda d: "hashed")
-    assert digest["field_failures"] == {"other": 1}
+    assert digest["field_failures"] == {"field:other": 1}
     assert "SOMETHING_NEW" not in json.dumps(digest)
 
 
@@ -620,3 +622,39 @@ def test_crosstab_totals_match_the_existing_error_causes_histogram():
     ]), lambda d: "hashed")
     ct = digest["error_cause_crosstab"]
     assert {k: v["total"] for k, v in ct.items()} == digest["error_causes"]
+
+
+def test_digest_never_contains_the_tokens_the_commit_hook_screens_for():
+    """.git/hooks/pre-commit blocks any staged .json carrying "field_errors",
+    "raw_text", "characteristics", "position_pt", "upper_tol" or "lower_tol" as
+    a quoted token, because that is the shape of a gold record or a prediction
+    dump — it cannot tell a COUNT keyed by a field name from a VALUE stored
+    under one.
+
+    Digests ARE committed, so an aggregate that keys on a bare field name makes
+    every future digest commit need the SINDRI_ALLOW_DATA_COMMIT bypass. That
+    trades a permanent hole in a data guard for six characters of key naming,
+    which is why both field_failures and field_failure_signatures namespace
+    their keys. This test fails the moment an aggregate reintroduces one."""
+    for field_errors in (
+            # every field wrong: the multi-field signature key
+            ["upper_tol: '0,1'!='0,2'", "lower_tol: ''!='-0,2'",
+             "nominal: '6,5'!='5,5'", "char_type: 'Radius'!='Distance'"],
+            # ONE field wrong: the signature key is that field alone, which
+            # is the shape that emitted a bare "upper_tol" and slipped past
+            # the first version of this test
+            ["upper_tol: '0,1'!='0,2'"],
+            ["lower_tol: ''!='-0,2'"]):
+        _assert_no_blocked_tokens(summarize(
+            _wrong_row_report(field_errors,
+                              notes=["cause:misread", "misplaced"]),
+            lambda d: "hashed"))
+
+
+def _assert_no_blocked_tokens(digest):
+    blob = json.dumps(digest, ensure_ascii=False)
+    for token in ("field_errors", "raw_text", "characteristics", "position_pt",
+                  "upper_tol", "lower_tol"):
+        assert f'"{token}"' not in blob, (
+            f'digest carries the quoted token "{token}", which the pre-commit '
+            f"client-data guard blocks")
