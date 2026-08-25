@@ -63,6 +63,48 @@ def _note_counts(report: RunReport) -> Tuple[Dict[str, int], int]:
     return causes, misplaced
 
 
+# The field names score._compare_fields can report, in digest order. A closed
+# vocabulary is what makes reading the left-hand side of a field_errors entry
+# safe: anything else is bucketed as "other" instead of forwarded.
+_FIELD_NAMES = ("char_type", "nominal", "upper_tol", "lower_tol")
+
+
+def _field_failure_counts(report: RunReport) -> Tuple[Dict[str, int],
+                                                      Dict[str, int]]:
+    """Which FIELD each matched-but-wrong row got wrong, and in what combination.
+
+    field_acc collapses a four-way conjunction — _compare_fields requires
+    char_type, nominal, upper_tol and lower_tol to agree — so "196 wrong rows"
+    says nothing about which of the four moved. A tolerance the reader dropped
+    and a nominal it hallucinated need different prompt text, and nothing in the
+    digest distinguished them.
+
+    Reads ONLY the field NAME: the text left of the first ":" in each entry,
+    which score._compare_fields writes from the tuple above. The value text to
+    the right is never touched, so this is as values-blind as _note_counts.
+
+    Two aggregates, because they answer different questions. The per-field
+    histogram sizes each field's contribution; the signature histogram says
+    whether failures co-occur, which is what separates "the reader omits
+    tolerances" from "the reader misreads whole callouts"."""
+    per_field: Dict[str, int] = {}
+    signatures: Dict[str, int] = {}
+    for d in report.doc_scores:
+        for p in d.pairs:
+            if not p.field_errors:
+                continue
+            names = set()
+            for err in p.field_errors:
+                name = err.split(":", 1)[0].strip()
+                names.add(name if name in _FIELD_NAMES else "other")
+            for n in names:
+                per_field[n] = per_field.get(n, 0) + 1
+            # Fixed order, so the same combination always produces the same key.
+            key = "+".join(n for n in _FIELD_NAMES + ("other",) if n in names)
+            signatures[key] = signatures.get(key, 0) + 1
+    return per_field, signatures
+
+
 def _clamp_split(report: RunReport, anonymizer,
                  limit: int = CLAMP_LIST_MAX) -> Tuple[List, Dict]:
     """Clamped documents, and clamped-vs-unclamped macro means.
@@ -207,6 +249,7 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
     sanctioned way to look at a run: it reads none of that, so the result can be
     shown to an AI agent, committed, or pasted into a ticket."""
     causes, misplaced = _note_counts(report)
+    field_failures, field_signatures = _field_failure_counts(report)
     clamped_docs, clamp_split = _clamp_split(report, anonymizer)
     pred_kinds, false_kinds, matched_kinds = _kind_totals(report)
     worst = sorted(report.doc_scores, key=lambda d: (-d.review_cost, d.doc_id))
@@ -228,6 +271,11 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
         # Matched, but further from its gold balloon than misplaced_frac — a
         # geometry-quality signal that is not an error in its own right.
         "misplaced_matches": misplaced,
+        # Which FIELD the matched-but-wrong rows got wrong. field_acc is a
+        # four-way conjunction, so without this a read-prompt arm cannot be
+        # aimed. Signatures sum to escaped_error + flagged_error.
+        "field_failures": field_failures,
+        "field_failure_signatures": field_signatures,
         "clamped_docs": clamped_docs,
         "clamped_vs_unclamped": clamp_split,
         # Gold is filtered to match_params.score_kinds; predictions are not. A

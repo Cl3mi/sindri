@@ -235,7 +235,17 @@ def test_summary_cause_aggregation_never_reads_client_values():
     blob = json.dumps(summarize(report, lambda d: "hashed"))
 
     assert "6,5" not in blob and "5,5" not in blob
-    assert "nominal" not in blob
+    # The whole entry, not just a value fragment: nothing may forward the text
+    # score._compare_fields wrote.
+    assert "nominal: " not in blob
+    assert "!=" not in blob
+    # The bare field NAME is allowed, and _field_failure_counts deliberately
+    # reports it: it comes from a closed vocabulary (_FIELD_NAMES) written by
+    # this repo, not from client data, and without it field_acc's four-way
+    # conjunction cannot be aimed at a prompt. Anything outside that vocabulary
+    # is bucketed as "other" -- see
+    # test_unrecognised_field_name_is_bucketed_rather_than_passed_through.
+    assert json.loads(blob)["field_failures"] == {"nominal": 1}
 
 
 def _dpi_doc(doc_id, dpi, recall, cost):
@@ -501,3 +511,57 @@ def test_summary_says_whether_undetected_misses_sit_on_the_clamped_sheets():
             + split["unclamped"]["missed_isolated"]
             + split["unknown_dpi"]["missed_isolated"]
             == summarize(report, lambda d: "h")["missed_diagnosis"]["isolated"])
+
+
+def _wrong_row_report(field_errors, taxonomy="escaped_error", notes=None):
+    """One matched-but-wrong pair carrying real-looking client values, so every
+    aggregate over it can be checked for leakage as well as for arithmetic."""
+    pair = MatchedPair(gold_balloon=1, pred_pos=1, distance_frac=0.001,
+                       fields_correct=False, field_errors=field_errors,
+                       flagged=taxonomy.startswith("flagged"),
+                       taxonomy=taxonomy, notes=notes or [])
+    d = DocScore(doc_id="T1025300_B", gold_hash="g" * 16, n_gold=1, n_pred=1,
+                 pairs=[pair], counts={taxonomy: 1}, review_cost=5.0,
+                 recall=1.0, precision=1.0, escaped_rate=1.0)
+    return aggregate("diag", RunConfig(model_id="stub"), ReviewCostWeights(),
+                     MatchParams(), [d])
+
+
+def test_field_failures_name_the_field_and_never_the_value():
+    digest = summarize(_wrong_row_report(["nominal: '6,5'!='5,5'"]),
+                       lambda d: "hashed")
+    assert digest["field_failures"] == {"nominal": 1}
+    blob = json.dumps(digest, ensure_ascii=False)
+    for leak in ("6,5", "5,5"):
+        assert leak not in blob, f"field-failure aggregate leaked {leak!r}"
+
+
+def test_field_failure_signature_records_the_combination_not_just_the_count():
+    """'both tolerances wrong' and 'nominal wrong' are different fixes, and a
+    per-field histogram alone cannot tell them apart."""
+    digest = summarize(_wrong_row_report(
+        ["upper_tol: '0,1'!='0,2'", "lower_tol: ''!='-0,2'"]),
+        lambda d: "hashed")
+    assert digest["field_failure_signatures"] == {"upper_tol+lower_tol": 1}
+    assert digest["field_failures"] == {"upper_tol": 1, "lower_tol": 1}
+
+
+def test_field_failure_signatures_reconcile_with_the_error_taxonomy():
+    """House rule: every aggregate must cross-check against a count that already
+    exists. Each wrong row contributes exactly one signature, so the signatures
+    must sum to escaped_error + flagged_error."""
+    digest = summarize(_wrong_row_report(["nominal: '1'!='2'"],
+                                         taxonomy="flagged_error"),
+                       lambda d: "hashed")
+    t = digest["taxonomy"]
+    assert sum(digest["field_failure_signatures"].values()) == (
+        t.get("escaped_error", 0) + t.get("flagged_error", 0))
+
+
+def test_unrecognised_field_name_is_bucketed_rather_than_passed_through():
+    """If score._compare_fields ever changes format, the digest must degrade to
+    'other' rather than forward an unvetted string into a values-blind file."""
+    digest = summarize(_wrong_row_report(["SOMETHING_NEW: 'a'!='b'"]),
+                       lambda d: "hashed")
+    assert digest["field_failures"] == {"other": 1}
+    assert "SOMETHING_NEW" not in json.dumps(digest)
