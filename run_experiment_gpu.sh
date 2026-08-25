@@ -152,29 +152,22 @@ for arm in "${ARMS[@]}"; do
             "$CONTROL_REPORT" "$LOCAL_ROOT/reports/$run-$SPLIT.report.json" \
             --out "$HERE/docs/eval/$run-vs-control.json" >/dev/null \
             || echo "NOTE: not comparable — see stderr above" >&2
-        # REPRODUCTION GATE. The control arm changes no knob, and scoring is
-        # deterministic on this corpus, so every per-document delta must be
-        # exactly 0.0. Anything else means the predict path drifted since the
-        # committed baseline and no treatment arm can be trusted until that is
-        # explained. (The dumps are not byte-identical -- the old ones predate
-        # RunConfig.extra -- but the SCORES must be.)
-        if [ "$arm" = "control" ]; then
-            python3 - "$HERE/docs/eval/$run-vs-control.json" <<'PYGATE'
-import json, sys
-cmp = json.load(open(sys.argv[1]))
-bad = {d: v for d, v in cmp["per_doc_deltas"].items() if v != 0.0}
-if bad:
-    print(f"REPRODUCTION GATE FAILED: {len(bad)} document(s) drifted: {bad}",
-          file=sys.stderr)
-    print("Do NOT interpret the treatment arms. The predict path changed since "
-          "the committed baseline; find out why first.", file=sys.stderr)
-    raise SystemExit(1)
-print("reproduction gate OK: all per-document deltas are exactly 0.0")
-PYGATE
-            if [ $? -ne 0 ]; then
-                echo "ABORTING: control did not reproduce" >&2
-                FAILED+=("control-reproduction"); break
-            fi
+    else
+        echo "NOTE: no control report at $CONTROL_REPORT — nothing to compare" >&2
+    fi
+
+    # REPRODUCTION GATE, deliberately OUTSIDE the existence test above. The
+    # control arm changes no knob and scoring is deterministic on this corpus,
+    # so every per-document delta must be exactly 0.0. A missing comparison
+    # point must FAIL this arm rather than silently skip the gate, which is what
+    # the previous nested version did (findings §8.1). app/eval/gate.py treats
+    # an absent file as a failure, so no `-f` test belongs here. (The dumps are
+    # not byte-identical -- the old ones predate RunConfig.extra -- but the
+    # SCORES must be.)
+    if [ "$arm" = "control" ]; then
+        if ! python3 -m app.eval.gate "$HERE/docs/eval/$run-vs-control.json"; then
+            echo "ABORTING: control did not reproduce" >&2
+            FAILED+=("control-reproduction"); break
         fi
     fi
     echo "arm $arm done: docs/eval/$run-summary.json"
