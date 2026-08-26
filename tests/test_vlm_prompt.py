@@ -81,3 +81,30 @@ def test_selecting_a_variant_changes_the_effective_prompt_hash(monkeypatch):
     other = hashlib.sha256("\n".join(vlm_backend.effective_prompts(
         env={"SINDRI_READ_PROMPT": "probe"})).encode()).hexdigest()[:16]
     assert base != other
+
+
+def test_center_variant_names_the_centre_callout_and_leaves_base_alone():
+    """The arm's hypothesis, pinned as text. Phase A: 64 of 144 misread rows sit
+    on misplaced pairs and 87.5% of misplaced pairs are wrong, which is the
+    signature of transcribing a neighbouring callout correctly. The base prompt
+    says "ONLY the dimension" for a crop that may hold several, and never says
+    which one."""
+    from app.eval.runner import _prompt_sha256
+    p = vlm_backend._READ_VARIANTS["center"]
+    assert "centre" in p.lower() or "center" in p.lower()
+    assert "neighbour" in p.lower() or "neighbouring" in p.lower()
+    assert p != vlm_backend._READ_VARIANTS["base"]
+    # base untouched: it is the comparison point for every committed report
+    assert _prompt_sha256() == "aa7659f1929184ea"
+
+
+def test_center_variant_is_selectable_and_moves_the_hash():
+    from app.eval.runner import _prompt_sha256
+    assert (vlm_backend.read_prompt(env={"SINDRI_READ_PROMPT": "center"})
+            == vlm_backend._READ_VARIANTS["center"])
+    assert vlm_backend.active_prompts(
+        env={"SINDRI_READ_PROMPT": "center"})["read_prompt"] == "center"
+    import hashlib
+    h = hashlib.sha256("\n".join(vlm_backend.effective_prompts(
+        env={"SINDRI_READ_PROMPT": "center"})).encode()).hexdigest()[:16]
+    assert h != _prompt_sha256()

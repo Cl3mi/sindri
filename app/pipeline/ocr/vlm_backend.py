@@ -98,7 +98,25 @@ _MAX_READ_LONG_EDGE = 1600
 # "base" must stay byte-identical to the constants above: it is what every
 # report from the Rung-0 baseline onward was produced with, and
 # tests/test_vlm_prompt.py pins the resulting hash at aa7659f1929184ea.
-_READ_VARIANTS = {"base": _PROMPT}
+# Arm `readcenter`. Hypothesis from the Phase A cross-tab: 64 of 144 misread
+# rows sit on MISPLACED pairs, and 70 of the 80 misplaced pairs are wrong (87.5%)
+# — the signature of transcribing a neighbouring callout correctly and being
+# scored as a perception failure. The base prompt says "ONLY the dimension" for a
+# crop that may hold parts of several, and never says which one to read. Targets
+# error_cause_crosstab.misread.misplaced.
+_PROMPT_CENTER = (
+    "This image is a crop from a mechanical engineering drawing containing one "
+    "dimension callout at its centre, and possibly parts of neighbouring "
+    "callouts near the edges. Transcribe ONLY the callout closest to the "
+    "centre of the image, as plain text on one line, e.g. '1,2 +0,1 -0,1' or "
+    "'Ø7 +0,1 -0,1' or 'R0,5 MAX'. Ignore any other callout, even a complete "
+    "one, and never merge two callouts into one line. Use a comma as the "
+    "decimal separator. Preserve the symbols Ø, R and ±. Ignore leader lines, "
+    "dimension lines and arrowheads. If there is no dimension text at the "
+    "centre, output nothing. No explanation."
+)
+
+_READ_VARIANTS = {"base": _PROMPT, "center": _PROMPT_CENTER}
 _DETECT_VARIANTS = {"base": _DETECT_PROMPT}
 
 
