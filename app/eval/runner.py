@@ -52,8 +52,11 @@ def _git_sha() -> str:
 def _prompt_sha256() -> str:
     try:
         from app.pipeline.ocr import vlm_backend as vb
-        blob = "\n".join([vb._PROMPT, vb._DETECT_PROMPT, vb._GDT_PROMPT,
-                          vb._NOTES_PROMPT, vb._TITLE_PROMPT])
+        # The EFFECTIVE prompts, not the module constants: a variant selected by
+        # environment variable has to move this hash, or two arms would be
+        # indistinguishable in every report they produce. With no variant set
+        # this is byte-identical to the old five-constant join.
+        blob = "\n".join(vb.effective_prompts())
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
     except Exception:
         return "unavailable"
@@ -446,6 +449,7 @@ def _cmd_predict(args):
     from app.pipeline.ocr import get_backend
     backend = get_backend()
     from app.pipeline.detect import active_knobs
+    from app.pipeline.ocr.vlm_backend import active_prompts
     # extra carries the detection knobs actually in effect. Without them two
     # experiment arms yield indistinguishable reports, and _reusable_dump —
     # which compares the whole RunConfig — would skip a document as "already
@@ -455,7 +459,7 @@ def _cmd_predict(args):
     config = RunConfig(
         model_id=os.environ.get("VLM_MODEL_ID", "default"), dpi=args.dpi,
         git_sha=_git_sha(), prompt_sha256=_prompt_sha256(),
-        extra=active_knobs())
+        extra={**active_knobs(), **active_prompts()})
     pdfs = {p.stem: p for p in Path(args.pdfs).glob(_PDF_GLOB)}
     doc_ids, _, _ = _select_docs(pdfs, args.splits, args.split)
     # Must precede _anon(): constructing an Anonymizer mints the salt.

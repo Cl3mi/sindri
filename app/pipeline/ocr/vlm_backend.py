@@ -86,6 +86,61 @@ _TITLE_PROMPT = (
 _MAX_READ_LONG_EDGE = 1600
 
 
+# Prompt variants, selected per run by environment variable. Registries rather
+# than edited constants for three reasons, each one paid for:
+#   * two arms whose only difference is a source constant cannot run
+#     concurrently — run_experiment_gpu.sh keeps one checkout on the GPU host,
+#     so a code-level prompt edit serialises the campaign at ~9 h per arm.
+#   * `prompt_sha256` proves that A prompt changed, never WHICH. The variant
+#     name reaches RunConfig.extra, so the digest says so out loud.
+#   * an unknown name raises instead of falling back, so a typo loses the arm
+#     rather than producing a control run wearing a treatment arm's run name.
+# "base" must stay byte-identical to the constants above: it is what every
+# report from the Rung-0 baseline onward was produced with, and
+# tests/test_vlm_prompt.py pins the resulting hash at aa7659f1929184ea.
+_READ_VARIANTS = {"base": _PROMPT}
+_DETECT_VARIANTS = {"base": _DETECT_PROMPT}
+
+
+def _select(variants, env_key, env):
+    name = (os.environ if env is None else env).get(env_key, "base")
+    if name not in variants:
+        raise ValueError(
+            f"{env_key}={name!r} is not a known prompt variant "
+            f"(have: {sorted(variants)}). Refusing to fall back to 'base': a "
+            f"silent fallback turns a treatment arm into a control arm wearing "
+            f"a treatment arm's run name.")
+    return name
+
+
+def read_prompt(env=None) -> str:
+    """The per-callout read prompt in effect for this run."""
+    return _READ_VARIANTS[_select(_READ_VARIANTS, "SINDRI_READ_PROMPT", env)]
+
+
+def detect_prompt(env=None) -> str:
+    """The tile detection prompt in effect for this run."""
+    return _DETECT_VARIANTS[_select(_DETECT_VARIANTS, "SINDRI_DETECT_PROMPT",
+                                    env)]
+
+
+def active_prompts(env=None) -> dict:
+    """Variant names in effect, for RunConfig.extra — the same role
+    detect.active_knobs plays for the detection knobs."""
+    return {"read_prompt": _select(_READ_VARIANTS, "SINDRI_READ_PROMPT", env),
+            "detect_prompt": _select(_DETECT_VARIANTS, "SINDRI_DETECT_PROMPT",
+                                     env)}
+
+
+def effective_prompts(env=None) -> list:
+    """The five prompts this run will actually send, in the order
+    runner._prompt_sha256 hashes them. With no variant selected this is exactly
+    [_PROMPT, _DETECT_PROMPT, _GDT_PROMPT, _NOTES_PROMPT, _TITLE_PROMPT], so the
+    default hash is unchanged."""
+    return [read_prompt(env), detect_prompt(env), _GDT_PROMPT, _NOTES_PROMPT,
+            _TITLE_PROMPT]
+
+
 def _cap_long_edge(image: Image.Image, max_long_edge: int = _MAX_READ_LONG_EDGE) -> Image.Image:
     """Downscale `image` so its longest side is at most `max_long_edge`, keeping
     aspect ratio. Returns the image unchanged when already within bounds."""
@@ -150,7 +205,8 @@ class VLMBackend:
         return text, conf
 
     def read_region(self, image: Image.Image) -> OcrResult:
-        text, conf = self._generate_text(_PROMPT, image, self.max_new_tokens)
+        text, conf = self._generate_text(read_prompt(), image,
+                                         self.max_new_tokens)
         return OcrResult(text=text, confidence=conf)
 
     def read_region_gdt(self, image: Image.Image) -> OcrResult:
@@ -169,7 +225,7 @@ class VLMBackend:
         from app.pipeline.detect import parse_detections
         messages = [{"role": "user", "content": [
             {"type": "image", "image": image.convert("RGB")},
-            {"type": "text", "text": _DETECT_PROMPT},
+            {"type": "text", "text": detect_prompt()},
         ]}]
         inputs = self.processor.apply_chat_template(
             messages, add_generation_prompt=True, tokenize=True,

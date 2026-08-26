@@ -1,3 +1,4 @@
+import pytest
 from PIL import Image
 
 from app.pipeline.ocr import vlm_backend
@@ -43,3 +44,40 @@ def test_title_prompt_requests_json_label_value():
     assert '"label"' in p and '"value"' in p
     # caption can be above OR below the value (the two-layout requirement)
     assert "above" in p.lower() and "below" in p.lower()
+
+
+def test_prompt_sha256_is_unchanged_by_the_registry():
+    """The comparability proof. Every report from the Rung-0 baseline through the
+    four direction-run arms carries prompt_sha256 aa7659f1929184ea; if the
+    refactor moves it, no prompt arm can be compared against any of them."""
+    from app.eval.runner import _prompt_sha256
+    assert _prompt_sha256() == "aa7659f1929184ea"
+
+
+def test_read_and_detect_prompts_default_to_base():
+    assert vlm_backend.read_prompt(env={}) == vlm_backend._PROMPT
+    assert vlm_backend.detect_prompt(env={}) == vlm_backend._DETECT_PROMPT
+
+
+def test_unknown_variant_name_fails_loudly_instead_of_using_base():
+    """A typo in an arm's env must lose the arm, not silently produce a control
+    run wearing a treatment arm's name."""
+    with pytest.raises(ValueError, match="SINDRI_READ_PROMPT"):
+        vlm_backend.read_prompt(env={"SINDRI_READ_PROMPT": "typo"})
+
+
+def test_active_prompts_names_the_variant_for_run_config_extra():
+    assert vlm_backend.active_prompts(env={}) == {"read_prompt": "base",
+                                                  "detect_prompt": "base"}
+
+
+def test_selecting_a_variant_changes_the_effective_prompt_hash(monkeypatch):
+    """What makes a prompt arm attributable: the hash must move with the variant,
+    not with the file."""
+    import hashlib
+    monkeypatch.setitem(vlm_backend._READ_VARIANTS, "probe", "a different prompt")
+    base = hashlib.sha256("\n".join(
+        vlm_backend.effective_prompts(env={})).encode()).hexdigest()[:16]
+    other = hashlib.sha256("\n".join(vlm_backend.effective_prompts(
+        env={"SINDRI_READ_PROMPT": "probe"})).encode()).hexdigest()[:16]
+    assert base != other
