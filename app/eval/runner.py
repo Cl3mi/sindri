@@ -561,6 +561,12 @@ def _cmd_score(args):
           f"mean_review_cost={report.mean_review_cost:.2f} "
           f"recall={report.micro_recall:.3f} "
           f"escaped_rate={report.escaped_rate:.3f}")
+    # A DIAGNOSTIC that deliberately does not touch the written report: it
+    # re-parses raw_text with today's parser and prices a hypothetical parser
+    # change, so the report stays exactly as comparable as it was.
+    if getattr(args, "reparse_check", False):
+        from app.eval.reparse import reparse_report
+        print(json.dumps(reparse_report(dumps, gold, scores), indent=1))
     return 0
 
 
@@ -692,6 +698,13 @@ def main(argv=None) -> int:
                         "accuracy on matched rows from 36.4%% to 25.4%% -- it "
                         "maximises pairings, not true ones. Recorded in "
                         "match_params.")
+    p.add_argument("--reparse-check", action="store_true",
+                   help="DIAGNOSTIC: re-parse each matched pair's raw_text with "
+                        "today's parser and print how many rows a parser change "
+                        "would fix or break. Counts only, no values. Does not "
+                        "alter the written report. On an unmodified parser "
+                        "identical must equal n_pairs -- anything else means the "
+                        "hint reconstruction is wrong, not the parser.")
     p.set_defaults(fn=_cmd_score)
 
     p = sub.add_parser("compare", parents=[common])
