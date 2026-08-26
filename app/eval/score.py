@@ -34,6 +34,40 @@ def _compare_fields(pred, gold) -> List[str]:
     return errors
 
 
+def _failure_modes(pred, gold) -> List[str]:
+    """Values-blind tags saying HOW each wrong field is wrong.
+
+    `missing:<field>`  the pipeline produced nothing and gold has a value;
+    `wrong:<field>`    both are non-empty and disagree;
+    `spurious:<field>` the pipeline invented a value gold does not have.
+
+    This is the routing decision for a read-prompt arm. A dropped tolerance is
+    an instruction problem — the prompt never says "transcribe every number
+    printed, including a zero" — while a disagreeing one is a perception
+    problem, and they need different prompt text. field_errors already records
+    which field, but the digest cannot read its values, so the distinction had
+    nowhere to live.
+
+    Only emptiness is inspected, never the value itself, which is what makes
+    these safe for the values-blind digest. The predicates are exactly
+    _compare_fields', so the two can never disagree on WHICH fields are wrong."""
+    modes = []
+    if gold.char_type and not char_type_equal(pred.char_type, gold.char_type):
+        empty = not str(pred.char_type or "").strip()
+        modes.append(f"{'missing' if empty else 'wrong'}:char_type")
+    for f in _FIELDS:
+        pv, gv = getattr(pred, f), getattr(gold, f)
+        if values_equal(pv, gv):
+            continue
+        if not canon_value(pv):
+            modes.append(f"missing:{f}")
+        elif not canon_value(gv):
+            modes.append(f"spurious:{f}")
+        else:
+            modes.append(f"wrong:{f}")
+    return modes
+
+
 def _cause(pred, gold) -> str:
     """misparse: the raw transcription contains the gold nominal (reader saw the
     right glyphs; parsing/structuring lost them). misread otherwise. A heuristic
@@ -115,6 +149,7 @@ def score_doc(dump: PredictionDump, gold: GoldDoc,
         if errors:
             taxonomy = "flagged_error" if p.needs_review else "escaped_error"
             notes.append(f"cause:{_cause(p, g)}")
+            notes.extend(_failure_modes(p, g))
         else:
             taxonomy = "flagged_correct" if p.needs_review else "correct"
         bump(taxonomy)

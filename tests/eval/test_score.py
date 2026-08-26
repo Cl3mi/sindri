@@ -400,3 +400,64 @@ def test_doc_score_reports_no_frame_mismatch_when_the_rects_agree():
     assert s.frame_origin_frac == 0.0
     assert s.frame_extent_frac == 0.0
     assert s.recall == 0.75          # the normal case still scores normally
+
+
+def _one_pair(pred_kwargs, gold_kwargs):
+    """One gold row and one prediction on top of it, so a single pair's tags can
+    be inspected without the four-row fixture's other rows interfering."""
+    gold = GoldDoc(doc_id="D", pdf="d.pdf", excel="d.xlsx", page_rect=RECT,
+                   characteristics=[GoldCharacteristic(
+                       balloon=1, position_pt=(100, 100), **gold_kwargs)])
+    dump = PredictionDump(
+        doc_id="D", config=RunConfig(model_id="stub", dpi=300), scale=SCALE,
+        page_rect=RECT, result=ExtractionResult(characteristics=[
+            Characteristic(pos=1, target_region=_pt_box(100, 100),
+                           **pred_kwargs)]))
+    s = score_doc(dump, gold, ReviewCostWeights(), MatchParams())
+    return s.pairs[0]
+
+
+def test_missing_tag_when_the_pipeline_produced_nothing_for_the_field():
+    """A dropped tolerance is an instruction problem ('transcribe every number
+    printed'); a disagreeing one is a perception problem. Same field, different
+    prompt text, so the two must not share a bucket."""
+    pair = _one_pair(
+        dict(char_type="Distance", nominal="20", raw_text="20"),
+        dict(char_type="Distance", nominal="20", upper_tol="0,1"))
+    assert "missing:upper_tol" in pair.notes
+    assert not any(n.startswith("wrong:") for n in pair.notes)
+
+
+def test_wrong_tag_when_both_sides_have_a_value_and_they_disagree():
+    pair = _one_pair(
+        dict(char_type="Distance", nominal="21", raw_text="21"),
+        dict(char_type="Distance", nominal="20"))
+    assert "wrong:nominal" in pair.notes
+
+
+def test_spurious_tag_when_the_pipeline_invented_a_value_gold_lacks():
+    pair = _one_pair(
+        dict(char_type="Distance", nominal="20", upper_tol="0,1",
+             raw_text="20 +0,1"),
+        dict(char_type="Distance", nominal="20"))
+    assert "spurious:upper_tol" in pair.notes
+
+
+def test_one_failure_mode_per_field_error_so_the_two_cannot_disagree():
+    """The modes and field_errors are computed from the same predicates; if the
+    counts ever diverge, one of the two aggregates is lying."""
+    pair = _one_pair(
+        dict(char_type="Radius", nominal="21", raw_text="R21"),
+        dict(char_type="Distance", nominal="20", upper_tol="0,1"))
+    modes = [n for n in pair.notes
+             if n.split(":", 1)[0] in ("missing", "wrong", "spurious")]
+    assert len(modes) == len(pair.field_errors)
+
+
+def test_correct_rows_carry_no_failure_mode_tag():
+    pair = _one_pair(
+        dict(char_type="Distance", nominal="20", raw_text="20"),
+        dict(char_type="Distance", nominal="20"))
+    assert pair.fields_correct
+    assert not any(n.split(":", 1)[0] in ("missing", "wrong", "spurious")
+                   for n in pair.notes)
