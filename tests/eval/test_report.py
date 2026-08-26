@@ -690,3 +690,50 @@ def test_a_report_written_before_the_tags_existed_says_not_measured():
                        lambda d: "hashed")
     assert digest["field_failure_modes"] == {}
     assert digest["field_failure_modes_not_measured"] == 1
+
+
+def _conf_report(rows):
+    """rows: (conf_bucket, taxonomy) pairs, one matched pair each."""
+    pairs, counts = [], {}
+    for i, (bucket, taxonomy) in enumerate(rows, start=1):
+        wrong = taxonomy.endswith("error")
+        pairs.append(MatchedPair(
+            gold_balloon=i, pred_pos=i, distance_frac=0.001,
+            fields_correct=not wrong,
+            field_errors=["nominal: '1'!='2'"] if wrong else [],
+            flagged=taxonomy.startswith("flagged"), taxonomy=taxonomy,
+            notes=[f"conf:{bucket}"]))
+        counts[taxonomy] = counts.get(taxonomy, 0) + 1
+    d = DocScore(doc_id="T1025300_B", gold_hash="g" * 16, n_gold=len(rows),
+                 n_pred=len(rows), pairs=pairs, counts=counts,
+                 review_cost=float(len(rows)), recall=1.0, precision=1.0,
+                 escaped_rate=0.0)
+    return aggregate("diag", RunConfig(model_id="stub"), ReviewCostWeights(),
+                     MatchParams(), [d])
+
+
+def test_confidence_is_crossed_with_taxonomy_so_a_threshold_move_is_priceable():
+    digest = summarize(_conf_report([("0.6-0.8", "escaped_error"),
+                                     ("0.6-0.8", "correct"),
+                                     (">=0.8", "correct")]),
+                       lambda d: "hashed")
+    assert digest["confidence_by_taxonomy"]["0.6-0.8"] == {"escaped_error": 1,
+                                                           "correct": 1}
+    assert digest["confidence_by_taxonomy"][">=0.8"] == {"correct": 1}
+
+
+def test_confidence_histogram_covers_every_matched_pair():
+    digest = summarize(_conf_report([("<0.2", "flagged_error"),
+                                     (">=0.8", "correct")]),
+                       lambda d: "hashed")
+    total = sum(sum(v.values())
+                for v in digest["confidence_by_taxonomy"].values())
+    assert total == digest["n_gold"] - digest["taxonomy"].get("missed", 0)
+    assert digest["confidence_not_measured"] == 0
+
+
+def test_a_report_written_before_the_conf_tag_says_not_measured():
+    report = _wrong_row_report(["nominal: '1'!='2'"], notes=["cause:misread"])
+    digest = summarize(report, lambda d: "hashed")
+    assert digest["confidence_by_taxonomy"] == {}
+    assert digest["confidence_not_measured"] == 1

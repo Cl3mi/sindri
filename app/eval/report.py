@@ -154,6 +154,35 @@ def _failure_mode_counts(report: RunReport) -> Tuple[Dict[str, int], int]:
     return counts, not_measured
 
 
+def _confidence_by_taxonomy(report: RunReport) -> Tuple[Dict[str, Dict[str, int]],
+                                                        int]:
+    """Read-confidence band × taxonomy over matched pairs, plus the pairs with
+    no band recorded.
+
+    This is the price list for a review-flag threshold move: rows below a
+    candidate threshold become flagged (w=1), and whether that is a win depends
+    entirely on how many of them were wrong (w=5 if they escape). It also sizes
+    the confound in every prompt arm — a prompt edit changes token confidences,
+    so some of an arm's cost delta is threshold churn rather than reading.
+
+    Bands are the fixed labels score._conf_bucket writes; not_measured counts
+    pairs from reports that predate the tag, for the same reason
+    field_failure_modes_not_measured exists."""
+    out: Dict[str, Dict[str, int]] = {}
+    not_measured = 0
+    for d in report.doc_scores:
+        for p in d.pairs:
+            band = next((n.split(":", 1)[1] for n in p.notes
+                         if n.startswith("conf:")), None)
+            if band is None:
+                not_measured += 1
+                continue
+            row = out.setdefault(band, {})
+            key = p.taxonomy or "unset"
+            row[key] = row.get(key, 0) + 1
+    return out, not_measured
+
+
 def _cause_crosstab(report: RunReport) -> Dict[str, Dict[str, int]]:
     """cause × misplaced × silent-or-flagged, for every matched-but-wrong row.
 
@@ -328,6 +357,7 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
     causes, misplaced = _note_counts(report)
     field_failures, field_signatures = _field_failure_counts(report)
     failure_modes, modes_not_measured = _failure_mode_counts(report)
+    conf_taxonomy, conf_not_measured = _confidence_by_taxonomy(report)
     clamped_docs, clamp_split = _clamp_split(report, anonymizer)
     pred_kinds, false_kinds, matched_kinds = _kind_totals(report)
     worst = sorted(report.doc_scores, key=lambda d: (-d.review_cost, d.doc_id))
@@ -363,6 +393,10 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
         # predates the tags — re-score, do not read the histogram as complete.
         "field_failure_modes": failure_modes,
         "field_failure_modes_not_measured": modes_not_measured,
+        # The price list for a review-flag threshold move, and the size of the
+        # threshold-churn confound in any prompt arm. Covers every matched pair.
+        "confidence_by_taxonomy": conf_taxonomy,
+        "confidence_not_measured": conf_not_measured,
         "clamped_docs": clamped_docs,
         "clamped_vs_unclamped": clamp_split,
         # Gold is filtered to match_params.score_kinds; predictions are not. A
