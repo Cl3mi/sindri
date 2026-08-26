@@ -17,6 +17,25 @@ _NUM_RE = re.compile(r"[+\-±]?\d+(?:[.,]\d+)?")
 
 _FIELDS = ("nominal", "upper_tol", "lower_tol")
 
+# Read-confidence buckets. 0.6 is a boundary on purpose: it is
+# app.pipeline.review.LOW_CONF, the threshold that decides needs_review, so the
+# joint histogram of bucket x taxonomy answers "how many rows would a threshold
+# move flag, and how many of those are actually wrong?" without a GPU re-run.
+# Duplicated rather than imported: eval must not import the pipeline module
+# whose constant is under review, and a drifting copy would change only this
+# diagnostic's bucket labels, not any scored result.
+_CONF_EDGES = (0.2, 0.4, 0.6, 0.8)
+
+
+def _conf_bucket(conf: float) -> str:
+    """Label for the confidence band `conf` falls in, lower edge inclusive."""
+    lo = 0.0
+    for edge in _CONF_EDGES:
+        if conf < edge:
+            return f"<{edge:.1f}" if lo == 0.0 else f"{lo:.1f}-{edge:.1f}"
+        lo = edge
+    return f">={_CONF_EDGES[-1]:.1f}"
+
 
 def _center_pt(char, dump):
     box = to_points(char.target_region, dump.scale, dump.page_rect)
@@ -143,7 +162,7 @@ def score_doc(dump: PredictionDump, gold: GoldDoc,
     for pk, gk, dist in pairs_raw:
         p, g = pred_by_pos[pk], gold_by_num[gk]
         errors = _compare_fields(p, g)
-        notes = []
+        notes = [f"conf:{_conf_bucket(p.confidence)}"]
         if dist > params.misplaced_frac:
             notes.append("misplaced")
         if errors:

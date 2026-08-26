@@ -461,3 +461,27 @@ def test_correct_rows_carry_no_failure_mode_tag():
     assert pair.fields_correct
     assert not any(n.split(":", 1)[0] in ("missing", "wrong", "spurious")
                    for n in pair.notes)
+
+
+def test_confidence_bucket_boundary_sits_on_the_review_threshold():
+    """review.LOW_CONF is 0.6, so 0.6 must open a bucket rather than close one:
+    the whole point is reading off how many rows a threshold move would flag."""
+    from app.eval.score import _conf_bucket
+    assert _conf_bucket(0.59) == "0.4-0.6"
+    assert _conf_bucket(0.6) == "0.6-0.8"
+
+
+def test_confidence_bucket_covers_the_extremes():
+    from app.eval.score import _conf_bucket
+    assert _conf_bucket(0.0) == "<0.2"
+    assert _conf_bucket(1.0) == ">=0.8"
+
+
+def test_every_matched_pair_carries_a_confidence_bucket_including_correct_ones():
+    """The escaped/flagged trade needs the confidence of the rows that are
+    RIGHT too -- flagging them is what a lower threshold costs."""
+    pair = _one_pair(
+        dict(char_type="Distance", nominal="20", raw_text="20", confidence=0.95),
+        dict(char_type="Distance", nominal="20"))
+    assert pair.fields_correct
+    assert "conf:>=0.8" in pair.notes
