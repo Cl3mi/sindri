@@ -33,6 +33,15 @@ MODEL="${VLM_MODEL_ID:-Qwen/Qwen2.5-VL-72B-Instruct-AWQ}"
 GPU="${GPU:-nvidia.com/gpu=1}"
 BRANCH="${BRANCH:-worktree-eval-harness}"
 SPLIT="${SPLIT:-dev}"
+# Two arms can run concurrently on the two H100s, but they share one checkout
+# and one corpus copy on the GPU host. The second invocation sets both of these
+# so it neither re-pushes the drawings under the first arm nor rebuilds the
+# image while the first arm's container is running from it. Safe only because
+# concurrent PROMPT arms run the same commit and differ by environment alone --
+# which is what the variant registry in vlm_backend.py bought. Do NOT use these
+# to run two arms that need different code.
+SKIP_PUSH="${SKIP_PUSH:-0}"
+SKIP_BUILD="${SKIP_BUILD:-0}"
 CONTROL_REPORT="${CONTROL_REPORT:-$LOCAL_ROOT/reports/baseline-dev.report.json}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
@@ -45,14 +54,18 @@ declare -A ARM_ENV=(
   [nomerge]="-e SINDRI_MERGE_MAX_LINES=1"
   [tightmerge]="-e SINDRI_MERGE_Y_GAP=8"
   [finetiles]="-e VLM_TILE=768"
+  [readcenter]="-e SINDRI_READ_PROMPT=center"
+  [detectbox]="-e SINDRI_DETECT_PROMPT=box"
 )
 declare -A ARM_WHY=(
   [control]="reproduction check: must match the committed baseline's metrics"
   [nomerge]="82 contended misses: is merge_adjacent collapsing sibling callouts?"
   [tightmerge]="same hypothesis, softer — merge less rather than not at all"
   [finetiles]="74 isolated misses: does a finer grid find undetected callouts?"
+  [readcenter]="64 of 144 misread rows sit on MISPLACED pairs — is the reader transcribing a neighbouring callout? must move error_cause_crosstab.misread.misplaced"
+  [detectbox]="49 rows (25%) have ALL FOUR fields wrong — is the box cutting the callout? must move fields:char_type+nominal+upper_tol+lower_tol"
 )
-ARM_ORDER=(control nomerge tightmerge finetiles)
+ARM_ORDER=(control nomerge tightmerge finetiles readcenter detectbox)
 
 ARMS=("$@")
 [ ${#ARMS[@]} -eq 0 ] && ARMS=("${ARM_ORDER[@]}")
@@ -79,19 +92,31 @@ FREE=$(ssh -o BatchMode=yes "$HOST" \
 echo "GPU memory in use on $HOST:"; echo "$FREE"
 echo
 
-echo "== push drawings =="
-"$HERE/sync_client_data.sh" push "$HOST" "$RROOT" || exit 1
+if [ "$SKIP_PUSH" = "1" ]; then
+    echo "== push drawings: SKIPPED (SKIP_PUSH=1) =="
+else
+    echo "== push drawings =="
+    "$HERE/sync_client_data.sh" push "$HOST" "$RROOT" || exit 1
+fi
 
-echo "== sync code + build image on $HOST =="
-ssh -o BatchMode=yes "$HOST" "
-  set -euo pipefail
-  cd ~/sindri
-  git fetch -q origin '$BRANCH'
-  git checkout -q -B '$BRANCH' 'origin/$BRANCH'
-  echo \"code at \$(git rev-parse --short HEAD)\"
-  podman build -q -f Dockerfile.gpu -t sindri-gpu . >/dev/null
-  echo 'image built'
-" || exit 1
+if [ "$SKIP_BUILD" = "1" ]; then
+    echo "== sync code + build image: SKIPPED (SKIP_BUILD=1) =="
+    # Still report the commit the first arm left checked out: a concurrent arm
+    # runs whatever THAT is, so it has to appear in this arm's log too.
+    ssh -o BatchMode=yes "$HOST" "cd ~/sindri && git rev-parse --short HEAD" \
+        || exit 1
+else
+    echo "== sync code + build image on $HOST =="
+    ssh -o BatchMode=yes "$HOST" "
+      set -euo pipefail
+      cd ~/sindri
+      git fetch -q origin '$BRANCH'
+      git checkout -q -B '$BRANCH' 'origin/$BRANCH'
+      echo \"code at \$(git rev-parse --short HEAD)\"
+      podman build -q -f Dockerfile.gpu -t sindri-gpu . >/dev/null
+      echo 'image built'
+    " || exit 1
+fi
 
 FAILED=()
 for arm in "${ARMS[@]}"; do
