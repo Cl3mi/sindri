@@ -121,6 +121,39 @@ def _field_failure_counts(report: RunReport) -> Tuple[Dict[str, int],
     return per_field, signatures
 
 
+# The three ways score._failure_modes can describe a wrong field.
+_FAILURE_MODES = ("missing", "wrong", "spurious")
+
+
+def _failure_mode_counts(report: RunReport) -> Tuple[Dict[str, int], int]:
+    """`<mode>:<field>` histogram over matched-but-wrong rows, plus the number
+    of wrong rows that carry no mode tag at all.
+
+    The second number is not decoration. A report scored before
+    score._failure_modes existed carries no tags, and an empty histogram would
+    read as "no field failed" — the same confident wrong answer that
+    DocScore.frame_origin_frac's None default exists to prevent, which fooled
+    this author once already. A non-zero not_measured means: re-score before
+    believing this block.
+
+    These keys need no `field:` prefix — the pre-commit guard screens for a
+    quote-delimited `"upper_tol"`, and `"missing:upper_tol"` is not that."""
+    counts: Dict[str, int] = {}
+    not_measured = 0
+    for d in report.doc_scores:
+        for p in d.pairs:
+            if not p.field_errors:
+                continue
+            tags = [n for n in p.notes
+                    if n.split(":", 1)[0] in _FAILURE_MODES]
+            if not tags:
+                not_measured += 1
+                continue
+            for t in tags:
+                counts[t] = counts.get(t, 0) + 1
+    return counts, not_measured
+
+
 def _cause_crosstab(report: RunReport) -> Dict[str, Dict[str, int]]:
     """cause × misplaced × silent-or-flagged, for every matched-but-wrong row.
 
@@ -294,6 +327,7 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
     shown to an AI agent, committed, or pasted into a ticket."""
     causes, misplaced = _note_counts(report)
     field_failures, field_signatures = _field_failure_counts(report)
+    failure_modes, modes_not_measured = _failure_mode_counts(report)
     clamped_docs, clamp_split = _clamp_split(report, anonymizer)
     pred_kinds, false_kinds, matched_kinds = _kind_totals(report)
     worst = sorted(report.doc_scores, key=lambda d: (-d.review_cost, d.doc_id))
@@ -324,6 +358,11 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
         # aimed. Signatures sum to escaped_error + flagged_error.
         "field_failures": field_failures,
         "field_failure_signatures": field_signatures,
+        # HOW each wrong field failed: omitted, disagreeing, or invented. Sums
+        # to the same total as field_failures. not_measured > 0 means the report
+        # predates the tags — re-score, do not read the histogram as complete.
+        "field_failure_modes": failure_modes,
+        "field_failure_modes_not_measured": modes_not_measured,
         "clamped_docs": clamped_docs,
         "clamped_vs_unclamped": clamp_split,
         # Gold is filtered to match_params.score_kinds; predictions are not. A

@@ -658,3 +658,35 @@ def _assert_no_blocked_tokens(digest):
         assert f'"{token}"' not in blob, (
             f'digest carries the quoted token "{token}", which the pre-commit '
             f"client-data guard blocks")
+
+
+def test_failure_modes_are_aggregated_by_mode_and_field():
+    digest = summarize(_wrong_row_report(
+        ["upper_tol: ''!='0,1'", "nominal: '21'!='20'"],
+        notes=["cause:misread", "missing:upper_tol", "wrong:nominal"]),
+        lambda d: "hashed")
+    assert digest["field_failure_modes"] == {"missing:upper_tol": 1,
+                                            "wrong:nominal": 1}
+
+
+def test_failure_modes_reconcile_against_the_per_field_histogram():
+    """Both count one entry per wrong field per pair, so their totals must
+    agree. A mismatch means one of the two is reading the report wrongly."""
+    digest = summarize(_wrong_row_report(
+        ["upper_tol: ''!='0,1'", "lower_tol: ''!='-0,1'"],
+        notes=["cause:misread", "missing:upper_tol", "missing:lower_tol"]),
+        lambda d: "hashed")
+    assert (sum(digest["field_failure_modes"].values())
+            == sum(digest["field_failures"].values()))
+    assert digest["field_failure_modes_not_measured"] == 0
+
+
+def test_a_report_written_before_the_tags_existed_says_not_measured():
+    """An empty dict would read as 'no failures'. A stale report once reported
+    'all 20 frames agree' for a run where 14 disagreed and cost a full analysis
+    cycle; the same mistake is not available here."""
+    digest = summarize(_wrong_row_report(["nominal: '21'!='20'"],
+                                         notes=["cause:misread"]),
+                       lambda d: "hashed")
+    assert digest["field_failure_modes"] == {}
+    assert digest["field_failure_modes_not_measured"] == 1
