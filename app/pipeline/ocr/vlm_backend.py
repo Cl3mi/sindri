@@ -116,8 +116,34 @@ _PROMPT_CENTER = (
     "centre, output nothing. No explanation."
 )
 
+# Arm `detectbox`. Hypothesis from the Phase A signatures: 49 rows (25% of the
+# 196 wrong rows) have ALL FOUR fields wrong and 42% have the whole value wrong.
+# A box that clips the tolerance off a callout, or swallows a neighbour, produces
+# exactly that — every field wrong at once — because the read crop is derived
+# from it. The base prompt says to find callouts but never says what the box must
+# enclose. Targets fields:char_type+nominal+upper_tol+lower_tol.
+#
+# Riskiest arm in the campaign: it changes the crop for every downstream read,
+# which is how finetiles did its damage (-0.0662 field_acc). The kind vocabulary
+# is unchanged on purpose — parse_detections validates against detect._KINDS, so
+# renaming a kind here would silently discard detections rather than improve
+# them.
+_DETECT_PROMPT_BOX = (
+    "This image is a tile cropped from a mechanical engineering drawing. Find "
+    "EVERY inspection callout: linear/diameter/radius dimensions with their "
+    "tolerances, GD&T feature-control frames, surface-finish symbols, numbered "
+    "notes, and material/process specifications. Each box must enclose the "
+    "COMPLETE callout — the nominal value together with its tolerance text, "
+    "prefix symbol (Ø, R, ±) and any MAX/MIN qualifier — and nothing else: do "
+    "not include a neighbouring callout, and do not cut a tolerance off. Give "
+    "one box per callout, not one per line of text. Return ONLY a JSON array, "
+    "no prose. Each element: {\"box\":[x0,y0,x1,y1],\"kind\":\"dimension|gdt|"
+    "surface|note|material\"}. box is pixel coordinates within this image. If "
+    "there are no callouts, return []."
+)
+
 _READ_VARIANTS = {"base": _PROMPT, "center": _PROMPT_CENTER}
-_DETECT_VARIANTS = {"base": _DETECT_PROMPT}
+_DETECT_VARIANTS = {"base": _DETECT_PROMPT, "box": _DETECT_PROMPT_BOX}
 
 
 def _select(variants, env_key, env):

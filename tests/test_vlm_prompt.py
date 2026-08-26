@@ -108,3 +108,50 @@ def test_center_variant_is_selectable_and_moves_the_hash():
     h = hashlib.sha256("\n".join(vlm_backend.effective_prompts(
         env={"SINDRI_READ_PROMPT": "center"})).encode()).hexdigest()[:16]
     assert h != _prompt_sha256()
+
+
+def test_box_variant_demands_a_complete_tight_box_and_leaves_base_alone():
+    """The arm's hypothesis, pinned as text. Phase A: 49 rows (25% of the wrong
+    rows) have ALL FOUR fields wrong and 42% have the whole value wrong, which
+    is what a box cutting through or overrunning the callout produces. The base
+    detect prompt never states what the box must enclose."""
+    from app.eval.runner import _prompt_sha256
+    p = vlm_backend._DETECT_VARIANTS["box"]
+    assert "tolerance" in p.lower()
+    assert "JSON array" in p          # still structured output, parser unchanged
+    assert '"box"' in p and '"kind"' in p
+    assert p != vlm_backend._DETECT_VARIANTS["base"]
+    assert _prompt_sha256() == "aa7659f1929184ea"
+
+
+def test_box_variant_offers_the_same_kind_vocabulary_as_base():
+    """parse_detections validates kind against detect._KINDS and drops anything
+    else, so a variant that renames or omits one of the kinds the VLM is asked
+    for would silently discard detections rather than improve them.
+
+    Compared against BASE, not against _KINDS: `theoretical` is in _KINDS but is
+    assigned by the CV box detector (boxes._box_kind), never by the VLM, so the
+    base prompt does not offer it either. The invariant is "the variant asks for
+    the same set base asks for"."""
+    import re
+
+    def kinds(prompt):
+        m = re.search(r'"kind":"([a-z|]+)"', prompt)
+        assert m, f"no kind alternation found in {prompt[:60]!r}"
+        return set(m.group(1).split("|"))
+
+    base = kinds(vlm_backend._DETECT_VARIANTS["base"])
+    assert kinds(vlm_backend._DETECT_VARIANTS["box"]) == base
+    # and every kind it does offer must be one parse_detections accepts
+    from app.pipeline.detect import _KINDS
+    assert base <= _KINDS
+
+
+def test_box_variant_is_selectable_and_moves_the_hash():
+    from app.eval.runner import _prompt_sha256
+    assert vlm_backend.active_prompts(
+        env={"SINDRI_DETECT_PROMPT": "box"})["detect_prompt"] == "box"
+    import hashlib
+    h = hashlib.sha256("\n".join(vlm_backend.effective_prompts(
+        env={"SINDRI_DETECT_PROMPT": "box"})).encode()).hexdigest()[:16]
+    assert h != _prompt_sha256()
