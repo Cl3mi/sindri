@@ -4,6 +4,12 @@
 > (recommended) or superpowers:executing-plans to implement this plan task-by-task.
 > Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Phase A is complete (Tasks 1–10).** Its results are in
+> [§ Phase A results](#phase-a-results) at the end of this document, and they
+> **overturn the read-prompt hypothesis this plan was written around**. Read that
+> section before Phase C: `readtol` is dead, the two arms are `readcenter` and
+> `detectbox`, and two of the cheapest wins found need no GPU at all.
+
 **Goal:** Find out *which* part of the read stage is wrong, using measurements
 that cost no GPU, and then spend exactly two GPU arms on the read prompt the
 evidence points at.
@@ -2435,3 +2441,179 @@ Expected suite counts: 441 at start → 450 (T1) → 454 (T2) → 457 (T3) → 4
 * Not judge any arm on review cost alone. That has been wrong twice on this
   corpus: max-cardinality matching, and `finetiles` ranking cheaper than
   `nomerge` while being far worse.
+
+---
+
+# Phase A results
+
+Tasks 1–10, executed 2026-08-26. All local, no GPU. Every number below is from
+`docs/eval/baseline-diag-summary.json` (re-scored, reproduction-gated at 20/20
+per-document deltas exactly 0.0 against the frozen baseline) or from
+`docs/eval/baseline-summary.json` (re-summarised, every pre-existing key
+byte-equal).
+
+**The headline: the read prompt is the wrong lever, and the plan's own
+`readtol` arm is dead.** The failures are not tolerance-shaped and they are not
+mostly perception — they look like the pipeline reading the *wrong callout*.
+
+## A.1 Which field fails — diffuse, not tolerance-shaped
+
+Of the 196 matched-but-wrong rows (`escaped_error` 129 + `flagged_error` 67):
+
+| field | rows | share of 196 |
+|---|---|---|
+| `lower_tol` | 133 | 67.9% |
+| `upper_tol` | 122 | 62.2% |
+| `nominal` | 119 | 60.7% |
+| `char_type` | 115 | 58.7% |
+
+All four fail on roughly three fifths of wrong rows. Signatures, biggest first:
+
+| rows | share | signature |
+|---|---|---|
+| **49** | **25.0%** | `char_type+nominal+upper_tol+lower_tol` — *everything* wrong |
+| 33 | 16.8% | `nominal+upper_tol+lower_tol` |
+| 23 | 11.7% | `char_type` alone |
+| 16 | 8.2% | `upper_tol+lower_tol` |
+| 15 | 7.7% | `nominal` alone |
+| 11 | 5.6% | `lower_tol` alone |
+| 11 | 5.6% | `char_type+nominal` |
+| 10 | 5.1% | `char_type+upper_tol+lower_tol` |
+| 10 | 5.1% | `char_type+upper_tol` |
+| 21 | 10.7% | seven smaller combinations |
+
+Sums to 196 ✓ (= `escaped_error` + `flagged_error`).
+
+**42% of wrong rows have the entire value wrong** (all four, or nominal plus both
+tolerances). A row scores correct only if all four fields match, so the
+addressable ceiling of any single-field fix is its *sole-failure* signature, not
+its per-field count:
+
+| candidate fix | rows it could convert | ceiling |
+|---|---|---|
+| tolerances only (`upper_tol`/`lower_tol` sole failures) | 11 + 2 + 16 = **29** (14.8%) | ~−5.8 cost |
+| `char_type` only | **23** (11.7%) | ~−4.6 cost |
+
+That kills `readtol`: a prompt that perfects tolerance transcription and nothing
+else can reach at most 29 of 196 rows.
+
+## A.2 How each field fails
+
+`wrong` 314 instances, `missing` 142, `spurious` 33 (one per wrong field per row;
+totals to 489, matching the per-field histogram ✓).
+
+| mode | instances | share of 196 rows |
+|---|---|---|
+| `wrong:char_type` | 115 | 58.7% |
+| `wrong:nominal` | 102 | 52.0% |
+| `missing:lower_tol` | 76 | 38.8% |
+| `missing:upper_tol` | 58 | 29.6% |
+| `wrong:upper_tol` | 50 | 25.5% |
+| `wrong:lower_tol` | 47 | 24.0% |
+| `spurious:upper_tol` | 14 | 7.1% |
+| `spurious:lower_tol` | 10 | 5.1% |
+| `spurious:nominal` | 9 | 4.6% |
+| `missing:nominal` | 8 | 4.1% |
+
+The dominant modes are `wrong:`, not `missing:` — the pipeline produces a value
+and it is a *different* value. `char_type` is never missing, only wrong. Dropped
+tolerances are common as a co-occurring symptom (134 instances) but rarely a
+row's only problem (29 rows).
+
+## A.3 Nearly half of "perception failure" is a mispairing
+
+| cause | total | misplaced | on_target | escaped | flagged |
+|---|---|---|---|---|---|
+| `misread` | 144 | **64 (44.4%)** | 80 | 98 | 46 |
+| `misparse` | 52 | 6 (11.5%) | 46 | 31 | 21 |
+
+Reconciles both ways per cause, and the totals reproduce `error_causes` ✓.
+
+**70 of the 80 misplaced pairs are wrong rows (87.5%).** A pair matched more than
+4% of the page diagonal from its balloon, getting every field wrong, is the
+signature of transcribing a *neighbouring callout correctly* and being scored as
+a perception failure. No amount of transcription guidance fixes that.
+
+Combined with A.1: the 49 all-four-wrong rows and the 64 misplaced-misread rows
+tell the same story from two directions. **The crop is wrong, not the reading.**
+
+## A.4 Confidence is saturated, and `LOW_CONF` is miscalibrated
+
+| band | pairs | errors | error rate |
+|---|---|---|---|
+| `<0.2` | 3 | 3 | 100% |
+| `0.2–0.4` | 1 | 1 | 100% |
+| `0.4–0.6` | 2 | 2 | 100% |
+| `0.6–0.8` | 18 | 18 | **100%** |
+| `≥0.8` | 284 | 172 | 60.6% |
+
+Covers all 308 matched pairs ✓. Two consequences:
+
+1. **The threshold-churn confound in a prompt arm is small.** 92% of pairs sit at
+   ≥0.8, so an arm's cost delta is mostly real, not flag movement. Judging on
+   `field_acc` as well as cost remains right, but the confound is not large.
+2. **`review.LOW_CONF = 0.6` is set below where the signal separates.** Every one
+   of the 24 pairs under 0.8 is wrong. Raising it to 0.8 flags the 15 rows in
+   `0.6–0.8` that currently escape and flags **zero** correct rows:
+
+   ```
+   cost         174.30 -> 171.30   (-3.00, i.e. 15 rows x (5-1))
+   escaped_rate 0.2704 -> 0.2390
+   field_acc    0.3636 -> 0.3636   (unchanged)
+   ```
+
+   Unlike flag-everything (decision 3), this is not degenerate — it is a
+   calibrated threshold on a band with a 100% observed error rate. Caveat: n=24
+   is small, so the *rate* is uncertain even though the −3.00 is exact for these
+   dumps. It is a `review.py` change, so it must NOT ship before the prompt arms
+   (it would confound them); it is either its own arm or it lands afterwards.
+
+## A.5 The parser is not silently losing anything
+
+`--reparse-check` on the real corpus: `n_pairs 308, identical 308, would_fix 0,
+would_break 0, still_wrong 196, still_correct 112`.
+
+`identical == n_pairs` is the gate, and it passes: the hint reconstruction is
+correct for every pair, so the diagnostic is calibrated and any `would_fix` from
+a candidate parser edit is attributable to that edit. Note what this does *not*
+say — it does not prove the parser is optimal, only that it is deterministic and
+faithfully re-runnable. The 52 `misparse` rows (gold nominal present in the raw
+text) remain the bucket a parser change could address, now priceable in a CPU
+second instead of a 9 h arm.
+
+## A.6 The two arms
+
+Applying the plan's selection rule: "failures are diffuse across all four
+fields" → `detectbox`; "`misread.misplaced` is a large share of `misread`" →
+`readcenter`. `readtol` is not selected (14.8% ceiling). `char_type` is large but
+not *dominant alone*, and its fix is CPU-only, so it does not take a card.
+
+| arm | prompt | targets | bucket that must move | addressable rows |
+|---|---|---|---|---|
+| **`readcenter`** | `_PROMPT` — "transcribe the ONE callout nearest the image centre; ignore neighbours" | the reader transcribing a neighbouring callout | `error_cause_crosstab.misread.misplaced` 64 ↓ | 64 (32.7%) |
+| **`detectbox`** | `_DETECT_PROMPT` — "the box must enclose the complete callout including its tolerances, and nothing else" | crop quality, and the 30%-of-cost false-detection term | `fields:char_type+nominal+upper_tol+lower_tol` 49 ↓ | 49 + up to 522 false detections |
+
+Both are one prompt each, so both stay attributable, and with the Task 12
+variant registry they run concurrently on the two H100s from one commit.
+
+`detectbox` carries the larger risk: it changes crops for every downstream read,
+which is exactly how `finetiles` did its damage (−0.0662 `field_acc`). Its
+verdict must therefore lean on `field_acc` and `escaped_rate`, not on the false
+detection count falling.
+
+## A.7 Two GPU-free wins to bank after the arms
+
+Neither may ship before or alongside the arms — both sit in the predict path, and
+either one would make an arm's dumps differ from the frozen baseline in two ways
+at once.
+
+| fix | where | ceiling | measurable without GPU? |
+|---|---|---|---|
+| `LOW_CONF` 0.6 → 0.8 | `app/pipeline/review.py:16` | −3.00 cost, `escaped_rate` −0.031, `field_acc` flat | yes — exactly, from stored confidences (A.4) |
+| `char_type` sole failures | `app/eval/normalize.py` `CHAR_TYPE_SYNONYMS` / `app/pipeline/parser.py` | 23 rows, ~−4.6 cost | partly — `--reparse-check` prices the parser side |
+
+A caution on the second: `CHAR_TYPE_SYNONYMS` is *scoring* policy, not pipeline
+behaviour. Changing it changes what "correct" means, and `compare_runs` does not
+guard it — `MatchParams` is the only comparability fingerprint and a synonym-map
+change leaves no trace in it. Any change there must re-score both sides and say
+so loudly, or it will silently credit itself.
