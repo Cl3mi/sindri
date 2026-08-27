@@ -41,3 +41,39 @@ def test_prompt_arms_are_registered_with_the_prompt_variant_env():
     text = SCRIPT.read_text(encoding="utf-8")
     assert "SINDRI_READ_PROMPT" in text
     assert "SINDRI_DETECT_PROMPT" in text
+
+
+def _predict_failure_block(text):
+    """The text between the predict invocation's `then` and its closing `fi`."""
+    start = text.index('ARM FAILED (predict)')
+    # walk back to the `; then` that opens the failure branch
+    open_at = text.rindex('"; then', 0, start)
+    return text[open_at:text.index("\n    fi\n", start)]
+
+
+def test_a_dead_ssh_is_not_reported_as_a_dead_arm():
+    """detectbox's driver died at document 17 of 20 on a host at load 204. The
+    container was Up 7 hours and finished the run, but the script printed
+    ARM FAILED (predict). The container is started by the remote shell and
+    outlives it, so predict returning non-zero does not mean the arm died --
+    the host has to be asked."""
+    block = _predict_failure_block(SCRIPT.read_text(encoding="utf-8"))
+    assert "python3 -m app.eval.orphan" in block
+
+
+def test_an_orphaned_container_stops_the_run_rather_than_freeing_the_next_arm_onto_its_card():
+    """The safety-critical branch. `continue` would send the next queued arm
+    onto the same pinned GPU while the orphan still holds 65 GB of it, so the
+    72B AWQ load fails, get_backend falls back to Tesseract, and every document
+    of that arm is worthless. The orphan branch must break."""
+    block = _predict_failure_block(SCRIPT.read_text(encoding="utf-8"))
+    after_orphan = block[block.index("python3 -m app.eval.orphan"):]
+    assert "break" in after_orphan
+
+
+def test_an_unreachable_host_is_reported_as_unknown_not_as_failed():
+    """If the probe itself cannot reach the host -- the same condition that
+    killed the driver -- then whether the container survived is unknown, and
+    claiming either answer is a guess that costs a run."""
+    block = _predict_failure_block(SCRIPT.read_text(encoding="utf-8"))
+    assert "ARM UNKNOWN" in block

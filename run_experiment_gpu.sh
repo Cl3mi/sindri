@@ -151,6 +151,35 @@ for arm in "${ARMS[@]}"; do
           \"\${RUNCMD[@]}\"
         fi
     "; then
+        # predict returning non-zero does NOT mean the arm died. The container
+        # is started by the remote shell and outlives it, so a dropped ssh looks
+        # identical here to a real failure. Measured 2026-08-27: detectbox's
+        # driver died at document 17 of 20 with "Read from remote host:
+        # Connection timed out" on a host at load average 204; the container was
+        # Up 7 hours and went on to finish the run, while this script printed
+        # ARM FAILED. Ask the host what actually happened before reporting.
+        PS=$(ssh -o BatchMode=yes -o ConnectTimeout=20 "$HOST" \
+             "podman ps --no-trunc --format '{{.ID}} {{.Status}} {{.Command}}'" \
+             2>/dev/null)
+        if [ $? -ne 0 ]; then
+            # The probe failed the same way the driver did, so whether the
+            # container survived is genuinely unknown. Claiming either answer is
+            # a guess that costs a run.
+            echo "ARM UNKNOWN: predict failed for $arm AND the host is not" \
+                 "reachable, so it is unknown whether the container survived." \
+                 "Do NOT relaunch until 'podman ps --no-trunc' on $HOST says" \
+                 "the card is free." >&2
+            FAILED+=("$arm-unknown"); break
+        fi
+        # "$run", not a second "exp-$arm": a literal here would silently drift
+        # from the name actually passed to --out if the convention ever changes.
+        printf '%s\n' "$PS" | python3 -m app.eval.orphan "$run"
+        if [ $? -eq 2 ]; then
+            echo "HOLDING: no further arm will be started, because this card is" \
+                 "still occupied. Wait for the container, then re-run this arm —" \
+                 "resume skips the documents it already predicted." >&2
+            FAILED+=("$arm-connection-lost"); break
+        fi
         echo "ARM FAILED (predict): $arm" >&2; FAILED+=("$arm"); continue
     fi
 
