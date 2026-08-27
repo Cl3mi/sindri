@@ -2720,3 +2720,76 @@ how close to 1.0 it gets.
 * `readcenter` is a **measured dead end**. Do not retune the read prompt toward
   callout selection; the target bucket was proven untouched, not merely
   unmoved-on-average.
+
+---
+
+# Phase C incident — detectbox, and the GPU host
+
+Recorded 2026-08-27 so none of it has to be re-derived. Two separate failures,
+neither in the pipeline.
+
+## I.1 The driver died; the arm did not
+
+`./run_experiment_gpu.sh ... detectbox` printed `ARM FAILED (predict)` after
+document 16 of 20, with:
+
+```
+Read from remote host 193.171.236.11: Connection timed out
+client_loop: send disconnect: Broken pipe
+```
+
+That is the **ssh transport**, not the arm. Checked immediately after:
+
+| evidence | reading |
+|---|---|
+| host load average **204.94**, 25 users | the shared box could not service the ssh channel |
+| GPU 1 **65410 MiB, 99% util** | the container was still running |
+| `podman ps`: `2852f811…` **Up 7 hours**, `--out /data/runs/exp-detectbox` | ours, healthy |
+| log at `[17/20]` | it completed document 17 *after* the driver died |
+
+Findings §8.1 verbatim: a remote container survives killing the local ssh. The
+script cannot tell "the arm failed" from "my connection to the arm failed", and
+reported the former. `app/eval/orphan.py` (commit `25a004c`) now makes that
+distinction, and **breaks** rather than continuing when a container is still
+alive — because `continue` would send the next queued arm onto the same pinned
+card while the orphan holds 65 GB of it, which is a guaranteed Tesseract
+fallback and a worthless arm.
+
+Timings under that load, for future budgeting: documents took 12–28 min, and the
+14457×2384 pt sheet (clamped to 109 dpi) took **46 min** on its own.
+
+## I.2 Then the container died at document 19, and the host left the network
+
+By 20:05 both GPUs read 1 MiB, no containers, and the run directory held **18**
+prediction dumps — so document 18 was saved and the container stopped before 19.
+Its logs went with `podman run --rm`, so the cause stays inference: load ~201
+with 24 users makes host resource pressure the obvious candidate, and it is not
+proven.
+
+Roughly fifteen minutes later the host was **entirely unreachable** — 100% packet
+loss, port 16352 refused — while local outbound networking was verified fine
+(`git ls-remote` OK, github 21 ms RTT). So the box did not merely shed a
+connection; it went away.
+
+## I.3 State to resume from
+
+* **18 of 20 documents predicted**, dumps on the GPU host under
+  `runs/exp-detectbox`. They survive a reboot; they do not survive a reimage.
+* Resume is cheap and safe. `_reusable_dump` compares the whole `RunConfig`, and
+  no pipeline code has changed since `a0ac696` (verified: `git diff a0ac696..HEAD
+  -- app/pipeline/ app/models.py` is empty, and container `git_sha` is always
+  `"unknown"`). So a re-run skips 18 documents and predicts 2 — 30–60 min, not
+  9 h. A truncated in-flight dump is handled: `_reusable_dump` treats an
+  unreadable dump as absent and re-predicts it.
+* **Do not push pipeline code before the resume.** Changing `app/pipeline/` or
+  the prompts moves `prompt_sha256`/`extra`, breaks the match, and re-predicts
+  all 20. Docs-only and shell-driver-only commits are safe — neither reaches
+  `RunConfig`.
+
+## I.4 Operational lesson
+
+Budget for this host being unreliable, not just slow. In one evening it dropped
+an ssh channel mid-run, killed a container 2 documents from the end, and left the
+network. The mitigations that actually paid off were **resume** (18 documents
+preserved) and **per-arm fresh run names** (nothing overwritten). Both were
+already in place for other reasons.
