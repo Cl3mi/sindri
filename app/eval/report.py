@@ -154,6 +154,42 @@ def _failure_mode_counts(report: RunReport) -> Tuple[Dict[str, int], int]:
     return counts, not_measured
 
 
+def _dropped_tolerances(report: RunReport, anonymizer) -> Dict:
+    """Rows where the pipeline produced no tolerance, and how many DISTINCT gold
+    tolerance pairs those rows use — per document.
+
+    This is the winnability test for the biggest failure bucket. `missing:` on a
+    tolerance has two opposite explanations and the same count:
+
+      few distinct values  -> a general tolerance (ISO 2768, title block) that is
+                              not printed beside the callout at all, so NO reader
+                              working from a callout crop can produce it. Those
+                              rows are unwinnable by any prompt or detector, and
+                              field accuracy has a ceiling well below 1.0.
+      many distinct values -> the tolerances really are printed per callout and
+                              the pipeline produced nothing for them, i.e. the
+                              box clipped them off. That IS fixable.
+
+    Per document, never pooled: a general tolerance is one value repeated within
+    ONE drawing, so pooling 20 drawings' separate defaults would report 20
+    "distinct" values and destroy exactly the signal this measures.
+
+    Cardinalities only. A count of distinct tolerances says nothing about what
+    any of them is."""
+    measured = [d for d in report.doc_scores
+                if d.dropped_tol_rows is not None
+                and d.dropped_tol_distinct is not None]
+    return {
+        "rows": sum(d.dropped_tol_rows for d in measured),
+        # Non-zero means re-score before believing this block.
+        "not_measured": len(report.doc_scores) - len(measured),
+        "docs": [{"doc": anonymizer(d.doc_id), "rows": d.dropped_tol_rows,
+                  "distinct": d.dropped_tol_distinct}
+                 for d in sorted(measured, key=lambda d: -d.dropped_tol_rows)
+                 if d.dropped_tol_rows],
+    }
+
+
 def _confidence_by_taxonomy(report: RunReport) -> Tuple[Dict[str, Dict[str, int]],
                                                         int]:
     """Read-confidence band × taxonomy over matched pairs, plus the pairs with
@@ -397,6 +433,10 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
         # threshold-churn confound in any prompt arm. Covers every matched pair.
         "confidence_by_taxonomy": conf_taxonomy,
         "confidence_not_measured": conf_not_measured,
+        # Is the dropped-tolerance bucket winnable? rows vs distinct per
+        # document: few distinct means a general tolerance no reader can see,
+        # many means a box clipping a printed one off.
+        "dropped_tolerances": _dropped_tolerances(report, anonymizer),
         "clamped_docs": clamped_docs,
         "clamped_vs_unclamped": clamp_split,
         # Gold is filtered to match_params.score_kinds; predictions are not. A

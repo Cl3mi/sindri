@@ -155,6 +155,11 @@ def score_doc(dump: PredictionDump, gold: GoldDoc,
         diag, params)
 
     pairs, counts = [], {}
+    # Gold (upper, lower) pairs on rows where the pipeline produced NO tolerance.
+    # A set, because it is the CARDINALITY that distinguishes a general-tolerance
+    # table from tolerances printed per callout — see DocScore.dropped_tol_rows.
+    dropped_tol_rows = 0
+    dropped_tol_values = set()
 
     def bump(k):
         counts[k] = counts.get(k, 0) + 1
@@ -168,7 +173,12 @@ def score_doc(dump: PredictionDump, gold: GoldDoc,
         if errors:
             taxonomy = "flagged_error" if p.needs_review else "escaped_error"
             notes.append(f"cause:{_cause(p, g)}")
-            notes.extend(_failure_modes(p, g))
+            modes = _failure_modes(p, g)
+            notes.extend(modes)
+            if {"missing:upper_tol", "missing:lower_tol"} & set(modes):
+                dropped_tol_rows += 1
+                dropped_tol_values.add((canon_value(g.upper_tol),
+                                        canon_value(g.lower_tol)))
         else:
             taxonomy = "flagged_correct" if p.needs_review else "correct"
         bump(taxonomy)
@@ -243,6 +253,8 @@ def score_doc(dump: PredictionDump, gold: GoldDoc,
         matched_kinds=matched_kinds,
         missed_contended=contended, missed_isolated=isolated,
         missed_unlocated=unlocated,
+        dropped_tol_rows=dropped_tol_rows,
+        dropped_tol_distinct=len(dropped_tol_values),
         frame_origin_frac=round(frame_origin, 6),
         frame_extent_frac=round(frame_extent, 6),
         review_cost=cost,

@@ -463,6 +463,63 @@ def test_correct_rows_carry_no_failure_mode_tag():
                    for n in pair.notes)
 
 
+def _dropped_tol_doc(rows):
+    """rows: (gold_upper, gold_lower) per gold row, each matched by a prediction
+    that carries the right nominal and NO tolerance at all — the
+    missing:upper_tol / missing:lower_tol shape."""
+    gold = GoldDoc(doc_id="D", pdf="d.pdf", excel="d.xlsx", page_rect=RECT,
+                   characteristics=[
+                       GoldCharacteristic(balloon=i, position_pt=(100 * i, 100),
+                                          char_type="Distance", nominal=str(i),
+                                          upper_tol=u, lower_tol=l)
+                       for i, (u, l) in enumerate(rows, start=1)])
+    dump = PredictionDump(
+        doc_id="D", config=RunConfig(model_id="stub", dpi=300), scale=SCALE,
+        page_rect=RECT, result=ExtractionResult(characteristics=[
+            Characteristic(pos=i, char_type="Distance", nominal=str(i),
+                           raw_text=str(i), target_region=_pt_box(100 * i, 100))
+            for i in range(1, len(rows) + 1)]))
+    return score_doc(dump, gold, ReviewCostWeights(), MatchParams())
+
+
+def test_a_repeated_gold_tolerance_shows_as_one_distinct_value():
+    """The general-tolerance signature. If gold's tolerances come from an ISO
+    2768 table in the title block rather than being printed beside each callout,
+    the same pair repeats across many rows -- and no reader looking at a callout
+    crop can ever produce them, so those rows are unwinnable by any prompt."""
+    s = _dropped_tol_doc([("0,1", "-0,1"), ("0,1", "-0,1"), ("0,1", "-0,1")])
+    assert s.dropped_tol_rows == 3
+    assert s.dropped_tol_distinct == 1
+
+
+def test_per_callout_gold_tolerances_show_as_many_distinct_values():
+    """The opposite reading: the tolerances really are printed per callout and
+    the pipeline produced nothing for them, which is a crop clipping them off."""
+    s = _dropped_tol_doc([("0,1", "-0,1"), ("0,2", "-0,2"), ("0,5", "0")])
+    assert s.dropped_tol_rows == 3
+    assert s.dropped_tol_distinct == 3
+
+
+def test_rows_whose_tolerance_was_read_are_not_counted_as_dropped():
+    """Only `missing:` counts. A tolerance read WRONGLY is a perception problem
+    and belongs in a different bucket -- mixing them would make a general
+    tolerance table indistinguishable from a misreading."""
+    gold = GoldDoc(doc_id="D", pdf="d.pdf", excel="d.xlsx", page_rect=RECT,
+                   characteristics=[GoldCharacteristic(
+                       balloon=1, position_pt=(100, 100), char_type="Distance",
+                       nominal="20", upper_tol="0,1", lower_tol="-0,1")])
+    dump = PredictionDump(
+        doc_id="D", config=RunConfig(model_id="stub", dpi=300), scale=SCALE,
+        page_rect=RECT, result=ExtractionResult(characteristics=[
+            Characteristic(pos=1, char_type="Distance", nominal="20",
+                           upper_tol="0,9", lower_tol="-0,9",
+                           raw_text="20 +0,9 -0,9",
+                           target_region=_pt_box(100, 100))]))
+    s = score_doc(dump, gold, ReviewCostWeights(), MatchParams())
+    assert s.dropped_tol_rows == 0
+    assert s.dropped_tol_distinct == 0
+
+
 def test_confidence_bucket_boundary_sits_on_the_review_threshold():
     """review.LOW_CONF is 0.6, so 0.6 must open a bucket rather than close one:
     the whole point is reading off how many rows a threshold move would flag."""

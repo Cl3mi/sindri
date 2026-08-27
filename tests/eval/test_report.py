@@ -737,3 +737,53 @@ def test_a_report_written_before_the_conf_tag_says_not_measured():
     digest = summarize(report, lambda d: "hashed")
     assert digest["confidence_by_taxonomy"] == {}
     assert digest["confidence_not_measured"] == 1
+
+
+def _tol_doc(doc_id, rows, distinct, n_gold=10):
+    return DocScore(doc_id=doc_id, gold_hash="g" * 16, n_gold=n_gold,
+                    n_pred=n_gold, counts={"correct": n_gold},
+                    review_cost=1.0, recall=1.0, precision=1.0,
+                    escaped_rate=0.0, dropped_tol_rows=rows,
+                    dropped_tol_distinct=distinct)
+
+
+def test_dropped_tolerances_report_rows_and_distinct_per_document():
+    """rows/distinct per document, never pooled: a general tolerance is one
+    value repeated within ONE drawing, so pooling across drawings would turn 20
+    documents' worth of separate ISO 2768 defaults into 20 'distinct' values and
+    destroy the signal."""
+    report = aggregate("r", RunConfig(model_id="stub"), ReviewCostWeights(),
+                       MatchParams(),
+                       [_tol_doc("T1025300_B", 30, 2),
+                        _tol_doc("T1025206_D", 12, 11)])
+    dt = summarize(report, lambda d: f"hash-{d}")["dropped_tolerances"]
+    assert dt["rows"] == 42
+    assert dt["not_measured"] == 0
+    by_doc = {d["doc"]: (d["rows"], d["distinct"]) for d in dt["docs"]}
+    assert by_doc["hash-T1025300_B"] == (30, 2)
+    assert by_doc["hash-T1025206_D"] == (12, 11)
+
+
+def test_dropped_tolerances_omit_documents_with_none_dropped():
+    report = aggregate("r", RunConfig(model_id="stub"), ReviewCostWeights(),
+                       MatchParams(), [_tol_doc("D1", 0, 0),
+                                       _tol_doc("D2", 5, 1)])
+    dt = summarize(report, lambda d: "hashed")["dropped_tolerances"]
+    assert dt["rows"] == 5
+    assert len(dt["docs"]) == 1
+
+
+def test_dropped_tolerances_say_not_measured_for_an_older_report():
+    report = aggregate("r", RunConfig(model_id="stub"), ReviewCostWeights(),
+                       MatchParams(), [_doc("D1", 10.0)])
+    dt = summarize(report, lambda d: "hashed")["dropped_tolerances"]
+    assert dt["not_measured"] == 1
+    assert dt["rows"] == 0
+
+
+def test_dropped_tolerances_carry_no_tolerance_value():
+    report = aggregate("r", RunConfig(model_id="stub"), ReviewCostWeights(),
+                       MatchParams(), [_tol_doc("T1025300_B", 30, 2)])
+    blob = json.dumps(summarize(report, lambda d: "hashed"), ensure_ascii=False)
+    for token in ("upper_tol", "lower_tol", "0,1", "-0,1"):
+        assert f'"{token}"' not in blob, f"leaked {token!r}"

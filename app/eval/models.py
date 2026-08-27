@@ -193,6 +193,25 @@ class DocScore(_Versioned):
     missed_contended: int = 0
     missed_isolated: int = 0
     missed_unlocated: int = 0
+    # Matched rows where the pipeline produced NO tolerance and gold has one
+    # (score._failure_modes tagged missing:upper_tol / missing:lower_tol), and
+    # how many DISTINCT gold (upper, lower) pairs those rows use in THIS
+    # document.
+    #
+    # The ratio is the whole point, and it decides whether the biggest failure
+    # bucket is winnable at all. A general tolerance from an ISO 2768 table in
+    # the title block is one symmetric pair repeated across many rows, and no
+    # reader looking at a callout crop can ever produce it -- those rows are
+    # unwinnable by any prompt or detector. A tolerance printed beside each
+    # callout varies row to row, and the pipeline producing nothing for it means
+    # the box clipped it off, which IS fixable. rows=30/distinct=2 and
+    # rows=30/distinct=28 are the same count and opposite conclusions.
+    #
+    # Cardinality only, never a value: a count of distinct tolerances says
+    # nothing about what they are.
+    # None = NOT MEASURED (any DocScore written before these fields existed).
+    dropped_tol_rows: Optional[int] = None
+    dropped_tol_distinct: Optional[int] = None
     # Disagreement between gold.page_rect and dump.page_rect, as a fraction of the
     # gold page diagonal. score_doc places predictions with the dump's frame and
     # the match gate with the gold's, and gold geometry is CV-recovered from the
