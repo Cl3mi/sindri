@@ -2617,3 +2617,106 @@ behaviour. Changing it changes what "correct" means, and `compare_runs` does not
 guard it — `MatchParams` is the only comparability fingerprint and a synonym-map
 change leaves no trace in it. Any change there must re-score both sides and say
 so loudly, or it will silently credit itself.
+
+---
+
+# Phase C results — readcenter, and what it eliminated
+
+Executed 2026-08-26/27 on `4mehpc4_3`, GPU 0, one arm. Commit `3e3dc92`.
+
+## C.1 readcenter loses, and its target bucket did not move
+
+| | control | readcenter | delta |
+|---|---|---|---|
+| `mean_review_cost` | 174.30 | 175.20 | **+0.90** |
+| `field_acc` | 0.3636 | 0.3474 | **−0.0162** |
+| `micro_recall` | 0.6457 | 0.6457 | +0.0000 |
+| `escaped_error` | 129 | 133 | +4 |
+| `correct` | 72 | 70 | −2 |
+| `flagged_correct` | 40 | 37 | −3 |
+
+`ci95 [-0.5, 2.45]`, `significant: False`, worse under **all six** weightings,
+`robust: True`, 9 of 20 documents changed. Fails condition 1 (cost) and the
+campaign's condition 4 (`field_acc` must *rise* for a reading arm).
+
+**The attribution is exact, and that is what makes this useful.** A read-prompt
+change cannot touch detection, and the digest confirms it did not: `n_pred` 830,
+`missed` 169, `contended` 82, `isolated` 74, `misplaced_matches` 80,
+`false_detection` 522 are all **bit-identical** to control. So this was an
+isolated test of the read prompt over the same 308 pairs — and
+`error_cause_crosstab.misread.misplaced`, the bucket the arm was built to move,
+is exactly **64 → 64**.
+
+Naming the centre callout recovered *none* of the 64 misplaced-misread rows.
+
+## C.2 What that eliminates
+
+The 64 rows are therefore **not** a case of the crop being ambiguous about which
+callout to read. If they were, an instruction naming the target would have moved
+at least some of them. The crop must not contain the right callout at all — a
+crop/geometry fault, upstream of the read.
+
+Which is what `detectbox` tests, and it is now the last untested lever on the
+dominant failure mode.
+
+Secondary observation: `field:char_type` −4 but `field:lower_tol` +5,
+`upper_tol` +2, `nominal` +2. A prompt that fixates on one callout classifies it
+slightly better and transcribes its numbers slightly worse.
+
+## C.3 Six arms, six losses
+
+| arm | lever | cost | `field_acc` |
+|---|---|---|---|
+| tightmerge | `merge_y_gap` | +0.35 | +0.0009 |
+| readcenter | **read prompt** | +0.90 | −0.0162 |
+| finetiles | detect tile size | +5.00 | −0.0662 |
+| nomerge | `merge_max_lines` | +5.60 | −0.0123 |
+| render150 | render pixel budget | worse | — |
+| max-cardinality | matcher assignment | *lower* | −0.110 |
+
+Every perturbation of this pipeline, in every direction, has lost. Treat the
+committed configuration as tuned, and treat "one more knob or prompt" as the
+least likely remaining source of a win.
+
+## C.4 Is the biggest bucket even winnable? Mostly yes
+
+Built after readcenter, before spending another card
+(`DocScore.dropped_tol_rows` / `dropped_tol_distinct`).
+
+80 matched rows dropped a tolerance the gold has. Across 18 documents they use
+**49 distinct gold (upper, lower) pairs — 61% distinct**:
+
+| rows | distinct | reading |
+|---|---|---|
+| 16 | 10 | printed per callout |
+| 8 | 2 | **general-tolerance signature** |
+| 8 | 4 | mixed |
+| 7 | 5 | printed per callout |
+| 6 | 3 | mixed |
+| 5 | 4 | printed per callout |
+| 4 | 1 | **general-tolerance signature** |
+| 4 | 1 | **general-tolerance signature** |
+| 3 | 1 | **general-tolerance signature** |
+| 4,3,3,2,2,2,1,1,1 | all distinct | printed per callout |
+
+An ISO 2768 table in the title block would show as many rows sharing one pair.
+The largest document is 16 rows sharing 10. **So the tolerances are genuinely
+printed and vary row to row, and the pipeline simply produced nothing for
+them** — consistent with a box clipping them off, which is `detectbox`'s
+hypothesis. The bucket is not structurally unreachable.
+
+The minority still matters: four documents do carry the signature (8/2, 4/1,
+4/1, 3/1) = **19 of 80 rows** that plausibly cannot be read from a callout crop
+at all. So `field_acc` has a modest ceiling below 1.0. Do not judge an arm by
+how close to 1.0 it gets.
+
+## C.5 Standing state
+
+* `detectbox` remains registered and unrun; `prompt_sha256` `67a373609c367f3a`.
+* Two GPU-free wins still parked, for the same sequencing reason (both sit in the
+  predict path and would confound an arm): `review.LOW_CONF` 0.6 → 0.8 (−3.00
+  cost, 15 silent errors flagged, zero correct rows flagged) and the 23
+  `char_type`-only rows.
+* `readcenter` is a **measured dead end**. Do not retune the read prompt toward
+  callout selection; the target bucket was proven untouched, not merely
+  unmoved-on-average.
