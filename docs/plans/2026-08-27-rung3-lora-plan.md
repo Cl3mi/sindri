@@ -487,10 +487,10 @@ def render_target(gold, hint: str = "") -> str:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `python -m pytest tests/train/test_targets.py -q`
-Expected: `13 passed` (8 parametrised shapes + 5 behaviours).
+Expected: `12 passed` (8 parametrised shapes + 4 behaviours).
 
 Run: `python -m pytest -q`
-Expected: `527 passed, 2 skipped`
+Expected: `526 passed, 2 skipped`
 
 - [ ] **Step 5: Commit**
 
@@ -691,7 +691,7 @@ Run: `python -m pytest tests/test_detect_only.py -q`
 Expected: `2 passed`
 
 Run: `python -m pytest -q`
-Expected: `529 passed, 2 skipped`
+Expected: `528 passed, 2 skipped`
 
 - [ ] **Step 5: Commit**
 
@@ -989,7 +989,7 @@ Run: `python -m pytest tests/train/test_dataset.py -q`
 Expected: `4 passed`
 
 Run: `python -m pytest -q`
-Expected: `533 passed, 2 skipped`
+Expected: `532 passed, 2 skipped`
 
 - [ ] **Step 5: Commit**
 
@@ -1553,7 +1553,7 @@ Run: `python -m pytest tests/test_vlm_prompt.py -q`
 Expected: all pass.
 
 Run: `python -m pytest -q`
-Expected: `537 passed, 2 skipped`
+Expected: `536 passed, 2 skipped`
 
 Also confirm the base path is untouched:
 
@@ -1882,8 +1882,8 @@ bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```
 
-Expected counts: 510 at start → 512 (T1) → 514 (T2) → 527 (T3) → 529 (T4) →
-533 (T6) → 537 (T9). Tasks 5, 7, 8, 10, 11 and 12 add no tests (measurements,
+Expected counts: 510 at start → 512 (T1) → 514 (T2) → 526 (T3) → 528 (T4) →
+532 (T6) → 536 (T9). Tasks 5, 7, 8, 10, 11 and 12 add no tests (measurements,
 image build, and GPU runs).
 
 ## What this plan must not do
