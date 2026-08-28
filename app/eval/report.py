@@ -575,6 +575,18 @@ def compare_runs(a: RunReport, b: RunReport, seed: int = 13,
         warnings.append(
             f"review-cost improved but escaped-error rate rose "
             f"{a.escaped_rate:.3f} -> {b.escaped_rate:.3f} — silent errors up")
+    # RunConfig is deliberately NOT part of _check_comparable: refusing here
+    # would block the Rung-3 experiment, which IS a cross-base comparison (an
+    # AWQ baseline against the same weights loaded as 4-bit NF4). But it must not
+    # be silent either — a base change is larger than any knob measured on this
+    # corpus, and attributing it to an arm's treatment is the exact mistake this
+    # warning exists to prevent. It fires regardless of direction: a base swap
+    # invalidates the reading whether the cost went up or down.
+    if a.config.model_id != b.config.model_id:
+        warnings.append(
+            f"base model differs: {a.config.model_id!r} -> {b.config.model_id!r}. "
+            f"This delta includes the base-model change, not only the treatment. "
+            f"State both models wherever this result is quoted.")
 
     return {
         "schema_version": SCHEMA_VERSION,

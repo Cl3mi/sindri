@@ -787,3 +787,34 @@ def test_dropped_tolerances_carry_no_tolerance_value():
     blob = json.dumps(summarize(report, lambda d: "hashed"), ensure_ascii=False)
     for token in ("upper_tol", "lower_tol", "0,1", "-0,1"):
         assert f'"{token}"' not in blob, f"leaked {token!r}"
+
+
+def test_a_comparison_across_base_models_warns_loudly():
+    """_check_comparable guards the doc set, gold hashes, weights, match_params
+    and splits_hash -- but not RunConfig. So a run on a different base compares
+    against the frozen baseline without complaint, and the swap gets credited to
+    whatever the arm was actually testing. Rung 3 does exactly that twice: the
+    baseline is ...-72B-Instruct-AWQ while both new runs are ...-72B-Instruct
+    quantised to NF4.
+
+    A warning, not a refusal: the cross-base comparison IS the experiment."""
+    a = _run("a", [10.0, 12.0])
+    b = _run("b", [9.0, 11.0])
+    a.config = RunConfig(model_id="Qwen/Qwen2.5-VL-72B-Instruct-AWQ")
+    b.config = RunConfig(model_id="Qwen/Qwen2.5-VL-72B-Instruct")
+
+    cmp = compare_runs(a, b, seed=13)
+
+    assert any("base model" in w for w in cmp["warnings"]), cmp["warnings"]
+    assert any("AWQ" in w for w in cmp["warnings"])
+
+
+def test_same_base_model_produces_no_model_warning():
+    """lora72b vs base72bnf4 is same-model by construction, and that is what
+    makes it the clean measurement of the fine-tune."""
+    a = _run("a", [10.0, 12.0])
+    b = _run("b", [9.0, 11.0])
+    for r in (a, b):
+        r.config = RunConfig(model_id="Qwen/Qwen2.5-VL-72B-Instruct")
+    assert not any("base model" in w
+                   for w in compare_runs(a, b, seed=13)["warnings"])
