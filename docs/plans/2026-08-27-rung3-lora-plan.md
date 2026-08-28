@@ -4,8 +4,15 @@
 > (recommended) or superpowers:executing-plans to implement this plan task-by-task.
 > Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Fine-tune a LoRA adapter for the callout-read task on Qwen2.5-VL-7B and
-measure whether it beats both a zero-shot 7B and the zero-shot 72B baseline.
+**Goal:** Fine-tune a LoRA adapter for the callout-read task on Qwen2.5-VL-**72B**
+(4-bit NF4) and measure whether it beats the zero-shot 72B baseline, with a
+zero-shot NF4 control separating the quantisation change from the fine-tune.
+
+**Revised 2026-08-27** from a 7B target to 72B, after measuring the host: 4-bit
+puts the 72B base at ~36 GB, so the whole run fits one H100 80 GB and needs no
+model parallelism — which matters because the two cards are `NODE`-connected, not
+NVLink. The model cache is on a 7.0 TB volume with 6.2 TB free, so the 145 GB bf16
+download is unremarkable. Tasks 1–6 are unaffected; only Stages D and E changed.
 
 **Architecture:** Five stages, each gated on the previous. Close the
 cross-base-model comparability hole; build a gold→target renderer whose
@@ -16,7 +23,8 @@ root using the pipeline's own crop code; then train in a separate image and run
 the two arms.
 
 **Tech Stack:** Python 3, pytest, pydantic, PyMuPDF, Pillow, transformers 4.49.0
-(inference, pinned), PEFT + transformers (training, separate image), Qwen2.5-VL-7B.
+(inference, pinned), PEFT + bitsandbytes 4-bit NF4 (training, separate image),
+Qwen2.5-VL-72B.
 
 ---
 
@@ -52,7 +60,7 @@ Baseline to beat, frozen: `mean_review_cost=174.30`, `micro_recall=0.64570230607
 | `app/pipeline/ocr/vlm_backend.py` | modify | load a LoRA adapter by name, failing loudly on an unknown one |
 | `Dockerfile.train`, `requirements-train.txt` | **create** | training image, deliberately separate from the pinned inference image |
 | `train_lora.py` | **create** | the LoRA training entry point |
-| `run_experiment_gpu.sh` | modify | register the `base7b` and `lora7b` arms |
+| `run_experiment_gpu.sh` | modify | register the `base72bnf4` and `lora72b` arms |
 | `tests/train/test_targets.py` | **create** | round-trip property over every shape gold contains |
 | `tests/train/test_dataset.py` | **create** | pair building, values-blindness, crop fidelity |
 | `tests/eval/test_report.py` | modify | the cross-model warning |
@@ -69,9 +77,11 @@ the pipeline crop code, which `app/eval` is forbidden from doing wholesale
 
 ## Task 1: Warn when a comparison crosses base models
 
-`_check_comparable` never looks at `RunConfig`, so a 7B report compares against
-the 72B baseline in silence and the base-model swap is credited to the fine-tune.
-It must **warn, not refuse** — comparing across base models is the experiment.
+`_check_comparable` never looks at `RunConfig`, so a run on a different base
+compares against the frozen baseline in silence and the swap is credited to the
+treatment. This campaign does exactly that twice: the baseline is
+`...-72B-Instruct-AWQ` while both new runs are `...-72B-Instruct` quantised to NF4.
+It must **warn, not refuse** — the cross-base comparison IS the experiment.
 
 **Files:**
 - Modify: `app/eval/report.py` (`compare_runs`, the `warnings` block)
@@ -152,12 +162,12 @@ git commit -m "$(cat <<'EOF'
 feat(eval): warn when a comparison crosses base models
 
 _check_comparable guards the doc set, gold hashes, weights, match_params and
-splits_hash, but never looks at RunConfig -- so a 7B report compares against the
-72B baseline in silence and the base-model swap is credited to the treatment.
+splits_hash, but never looks at RunConfig -- so a run on a different base compares
+against the frozen baseline in silence and the swap is credited to the treatment.
 
 A warning rather than a refusal, because a cross-base-model comparison is exactly
-what Rung 3 is: LoRA's effect is lora7b vs base7b, and the ladder's question is
-lora7b vs the zero-shot 72B. Refusing would block the experiment; staying silent
+what Rung 3 is: LoRA's effect is lora72b vs base72bnf4, and the ladder's question is
+lora72b vs the zero-shot 72B. Refusing would block the experiment; staying silent
 would invalidate it.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
@@ -179,11 +189,11 @@ Append to `tests/eval/test_experiment.py`:
 
 ```python
 def test_arm_row_carries_the_base_model():
-    """Rung 3 compares a 7B against a 72B. A row that does not say which model
-    produced it cannot be read as a result."""
+    """Rung 3 compares an AWQ baseline against an NF4 run of the same weights.
+    A row that does not say which model produced it cannot be read as a result."""
     digest = _digest(174.3, 0.6457, 169, 82, 74, 72, 40, 129)
-    digest["config"]["model_id"] = "Qwen/Qwen2.5-VL-7B-Instruct"
-    assert arm_row("base7b", digest)["model"] == "Qwen/Qwen2.5-VL-7B-Instruct"
+    digest["config"]["model_id"] = "Qwen/Qwen2.5-VL-72B-Instruct"
+    assert arm_row("nf4", digest)["model"] == "Qwen/Qwen2.5-VL-72B-Instruct"
 
 
 def test_arm_row_says_so_when_the_model_was_not_recorded():
@@ -204,8 +214,9 @@ Expected: both FAIL with `KeyError: 'model'`.
 In `app/eval/experiment.py`, in the dict `arm_row` returns, after `"arm": name,`:
 
 ```python
-        # Which base model produced this row. Rung 3 compares a 7B against a
-        # 72B, and a delta that does not say which side is which is not a result.
+        # Which base model produced this row. Rung 3 compares an AWQ baseline
+        # against an NF4 run, and a delta that does not say which side is which
+        # is not a result.
         # "unrecorded" rather than a plausible default: an older digest that
         # never captured model_id must not read as the current one.
         "model": digest.get("config", {}).get("model_id") or "unrecorded",
@@ -256,9 +267,10 @@ git add app/eval/experiment.py tests/eval/test_experiment.py
 git commit -m "$(cat <<'EOF'
 feat(eval): show the base model in the arm table
 
-Rung 3 compares a LoRA'd 7B against a zero-shot 7B and against the zero-shot
-72B baseline. A row that does not state which model produced it cannot be read
-as a result, and the table was the one place all arms are seen side by side.
+Rung 3 compares a LoRA'd NF4 72B against a zero-shot NF4 72B and against the
+zero-shot AWQ 72B baseline. A row that does not state which model produced it
+cannot be read as a result, and the table was the one place all arms are seen
+side by side.
 
 "unrecorded" rather than a plausible default, for the same reason
 frame_origin_frac is None rather than 0.0: a digest that never captured model_id
@@ -1008,11 +1020,16 @@ EOF
 
 # Stage D — training
 
-## Task 7: A separate training image
+## Task 7: A separate training image, and the 4-bit smoke test that gates everything
 
 The inference image must not change. `requirements-gpu.txt` documents why it is
 pinned to `transformers==4.49.0` + `autoawq==0.2.8 --no-deps` + torch
 2.6.0/CUDA 12.4, and every measurement to date depends on that path.
+
+**This task is a gate.** `transformers==4.49.0` + Qwen2.5-VL + `bitsandbytes`
+4-bit is untested here, and the 4.49.0 pin cannot move. If a 4-bit 72B load will
+not produce coherent output, the whole campaign falls back to the 32B — and that
+must be discovered now, not after paying for train-split crops.
 
 **Files:**
 - Create: `requirements-train.txt`, `Dockerfile.train`
@@ -1028,12 +1045,19 @@ Create `requirements-train.txt`:
 # Every measurement in docs/plans/ depends on that inference path, so nothing
 # here may touch it.
 #
-# No AWQ at all: the 7B trains in bf16. AWQ is inference-only quantisation and
-# PEFT cannot train adapters against it -- which is exactly why this campaign
-# targets the 7B rather than the deployed 72B-AWQ.
+# transformers is pinned to the SAME 4.49.0 on purpose. Not because training
+# needs that exact version, but because the adapter is served by the inference
+# image: a LoRA trained against a different modelling implementation of
+# Qwen2.5-VL than the one serving it is a silent mismatch, and this is the
+# cheapest way to rule it out.
 transformers==4.49.0
 accelerate>=1.0
 peft>=0.14
+# 4-bit NF4 quantisation. AWQ is inference-only -- PEFT cannot train adapters
+# against it -- so the 72B is quantised with bitsandbytes instead, which puts the
+# base at ~36 GB and the whole training run at ~42-48 GB: one H100, no model
+# parallelism, which matters because the two cards are NODE-connected, not NVLink.
+bitsandbytes>=0.45
 qwen-vl-utils>=0.0.8
 pillow
 ```
@@ -1044,7 +1068,7 @@ Create `Dockerfile.train`:
 # LoRA training image for the callout-read task. Separate from Dockerfile.gpu on
 # purpose: that image's transformers/autoawq pin is load-bearing for every
 # measurement taken so far, and adding a training stack to it would put the
-# inference path at risk. This one needs no AWQ — the 7B trains in bf16.
+# inference path at risk. This one needs no AWQ — it quantises with bitsandbytes.
 FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -1078,37 +1102,95 @@ Expected: an image id printed, no error.
 
 ```bash
 ssh -o BatchMode=yes 4mehpc4_3 "podman run --rm sindri-train python -c \"
-import torch, transformers, peft
-from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+import torch, transformers, peft, bitsandbytes
+from transformers import AutoProcessor, BitsAndBytesConfig, Qwen2_5_VLForConditionalGeneration
 from peft import LoraConfig, get_peft_model
-print('torch', torch.__version__, 'transformers', transformers.__version__, 'peft', peft.__version__)
-print('bf16 supported:', torch.cuda.is_bf16_supported() if torch.cuda.is_available() else 'no cuda in this container')
+print('torch', torch.__version__, 'transformers', transformers.__version__)
+print('peft', peft.__version__, 'bitsandbytes', bitsandbytes.__version__)
 \""
 ```
 
-Expected: versions printed and no ImportError. `Qwen2_5_VLForConditionalGeneration`
-importing is the specific thing that fails on the wrong transformers version.
+Expected: versions printed, no ImportError.
+`Qwen2_5_VLForConditionalGeneration` importing is the specific thing that fails on
+the wrong transformers version.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: THE GATE — load the 72B in 4-bit and check it still reads**
+
+Imports proving nothing is the trap here: the combination can import cleanly and
+still produce garbage. This step is what decides 72B versus the 32B fallback, and
+it must run before any train-split GPU is spent.
+
+```bash
+ssh -o BatchMode=yes 4mehpc4_3 "podman run --rm --device nvidia.com/gpu=1 -v sindri-models:/models sindri-train python -c \"
+import torch
+from transformers import AutoProcessor, BitsAndBytesConfig, Qwen2_5_VLForConditionalGeneration
+from PIL import Image, ImageDraw
+
+BASE = 'Qwen/Qwen2.5-VL-72B-Instruct'
+q = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type='nf4',
+                       bnb_4bit_compute_dtype=torch.bfloat16,
+                       bnb_4bit_use_double_quant=True)
+proc = AutoProcessor.from_pretrained(BASE)
+m = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        BASE, quantization_config=q, device_map='auto')
+m.eval()
+print('loaded; VRAM GB:', round(torch.cuda.max_memory_allocated()/2**30, 1))
+
+# A synthetic callout, so the check needs no client data at all.
+img = Image.new('RGB', (320, 90), 'white')
+ImageDraw.Draw(img).text((20, 30), 'O20 +0,1 -0,1', fill='black')
+msgs = [{'role': 'user', 'content': [{'type': 'image', 'image': img},
+        {'type': 'text', 'text': 'Transcribe the dimension on one line. No explanation.'}]}]
+inp = proc.apply_chat_template(msgs, add_generation_prompt=True, tokenize=True,
+                               return_dict=True, return_tensors='pt').to(m.device)
+out = m.generate(**inp, max_new_tokens=20, do_sample=False)
+print('read:', repr(proc.decode(out[0][inp['input_ids'].shape[1]:], skip_special_tokens=True)))
+\""
+```
+
+Expected: `loaded; VRAM GB:` around **36–45**, and a `read:` line containing
+recognisable digits from the synthetic callout. Coherent output is the pass
+condition — an exact match is not required, since the drawn text is crude.
+
+**If it fails or the output is garbage:** switch `BASE` to
+`Qwen/Qwen2.5-VL-32B-Instruct` and re-run. If the 32B passes, change the plan's
+target to 32B (its AWQ variant exists, so inference needs no quantisation change)
+and record the failure in `requirements-train.txt` — that file's job is to explain
+its pins, exactly as `requirements-gpu.txt` does. Do not proceed on a base whose
+4-bit load has not printed a coherent read.
+
+- [ ] **Step 4: Commit, recording what the gate actually printed**
 
 ```bash
 git add requirements-train.txt Dockerfile.train
 git commit -m "$(cat <<'EOF'
-build(train): a separate training image, so the inference pin stays untouched
+build(train): a separate training image, and the 4-bit gate it exists to run
 
 requirements-gpu.txt is pinned to transformers==4.49.0 + autoawq==0.2.8 --no-deps
 because Qwen2.5-VL support landed in exactly 4.49.0 and 4.50+ breaks AWQ dispatch
 for this model. Every measurement in docs/plans/ depends on that path, so the
-training stack gets its own image rather than being added to it.
+training stack gets its own image rather than being added to it. transformers is
+pinned to the same 4.49.0 anyway: a LoRA trained against a different modelling
+implementation than the one serving it is a silent mismatch.
 
-No AWQ here at all: the 7B trains in bf16. AWQ is inference-only quantisation and
-PEFT cannot train adapters against it, which is the concrete reason this campaign
-targets the 7B rather than the deployed 72B-AWQ.
+No AWQ here -- AWQ is inference-only and PEFT cannot train adapters against it,
+which is why the 72B is quantised with bitsandbytes instead. 4-bit NF4 puts the
+base at ~36 GB and the run at ~42-48 GB: one H100, no model parallelism, which
+matters because the cards are NODE-connected rather than NVLink.
+
+The gate result is recorded in this commit body: <VRAM GB printed> and the
+synthetic read <printed text>. Imports alone prove nothing -- the combination can
+import cleanly and still produce garbage -- so the pass condition is a coherent
+read, and a failure switches the campaign to the 32B before any train-split GPU
+is spent.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
+
+Replace `<VRAM GB printed>` and `<printed text>` with what Step 3 actually
+printed. If they are not filled in, the gate was not run.
 
 ## Task 8: The training entry point
 
@@ -1120,7 +1202,7 @@ EOF
 Create `train_lora.py`:
 
 ```python
-"""LoRA-train the callout-read task on Qwen2.5-VL-7B.
+"""LoRA-train the callout-read task on Qwen2.5-VL-72B, quantised to 4-bit NF4.
 
 Runs inside Dockerfile.train on the GPU host, over a manifest built by
 app.train.dataset. It never reads gold or drawings directly — only the manifest,
@@ -1138,13 +1220,19 @@ from pathlib import Path
 
 import torch
 from PIL import Image
-from peft import LoraConfig, get_peft_model
-from transformers import (AutoProcessor, Qwen2_5_VLForConditionalGeneration,
-                          Trainer, TrainingArguments)
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from transformers import (AutoProcessor, BitsAndBytesConfig,
+                          Qwen2_5_VLForConditionalGeneration, Trainer,
+                          TrainingArguments)
 
 from app.pipeline.ocr.vlm_backend import read_prompt
 
-_BASE = "Qwen/Qwen2.5-VL-7B-Instruct"
+# The 72B, quantised to 4-bit NF4. AWQ -- what inference deploys -- is
+# inference-only, so it cannot be trained against; 4-bit puts the base at ~36 GB
+# and the whole run at ~42-48 GB, which fits ONE H100 80 GB. That matters: the two
+# cards report NODE topology rather than NVLink, so PCIe-bound model parallelism
+# is worth avoiding entirely.
+_BASE = "Qwen/Qwen2.5-VL-72B-Instruct"
 
 
 class ReadDataset(torch.utils.data.Dataset):
@@ -1200,7 +1288,15 @@ def main() -> int:
 
     processor = AutoProcessor.from_pretrained(args.base)
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        args.base, torch_dtype=torch.bfloat16, device_map="auto")
+        args.base, device_map="auto",
+        quantization_config=BitsAndBytesConfig(
+            load_in_4bit=True, bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True))
+    # Casts layer norms to fp32 and enables input grads, both of which a 4-bit
+    # base needs before LoRA layers will train stably.
+    model = prepare_model_for_kbit_training(
+        model, use_gradient_checkpointing=True)
     # Attention projections only. The vision tower is left frozen: the task is
     # transcription of a crop the tower already resolves, and adapting it on ~2-4k
     # examples from one house style is the fastest route to the memorisation the
@@ -1220,6 +1316,10 @@ def main() -> int:
             output_dir=args.out, num_train_epochs=args.epochs,
             per_device_train_batch_size=1, gradient_accumulation_steps=8,
             learning_rate=args.lr, bf16=True, gradient_checkpointing=True,
+            # paged_adamw keeps optimizer state off the card during spikes; with
+            # a 36 GB 4-bit base there is headroom, but a single oversized crop
+            # should not be what ends a multi-hour run.
+            optim="paged_adamw_8bit",
             logging_steps=10, save_strategy="epoch", report_to=[]),
         train_dataset=dataset,
         data_collator=lambda rows: {
@@ -1334,6 +1434,22 @@ def active_adapter(env=None):
     return (os.environ if env is None else env).get("SINDRI_ADAPTER") or None
 
 
+def active_quant(env=None):
+    """The load-time quantisation in effect, or None for the checkpoint's own.
+
+    Recorded in RunConfig.extra because model_id cannot express it: the Rung-3
+    control and the frozen baseline are the same 72B weights loaded two different
+    ways, and a report that cannot tell them apart is not a measurement."""
+    name = (os.environ if env is None else env).get("SINDRI_QUANT") or None
+    if name is not None and name != "nf4":
+        raise ValueError(
+            f"SINDRI_QUANT={name!r} is not supported (only 'nf4'). Refusing to "
+            f"fall back to the checkpoint default: that would serve a different "
+            f"base than the adapter was trained against and report the result as "
+            f"the fine-tune's.")
+    return name
+
+
 def resolve_adapter(env=None):
     """Path to the adapter in effect, or None. Raises if the name is unknown.
 
@@ -1359,7 +1475,32 @@ def resolve_adapter(env=None):
 
 Add `from pathlib import Path` to the imports at the top of the file.
 
-In `VLMBackend.__init__`, after `self.model.eval()`:
+In `VLMBackend.__init__`, replace the single `AutoModelForImageTextToText.from_pretrained(...)`
+call (the one with `torch_dtype=torch.float16`) with a two-branch load. The
+existing comment above it explains that AWQ's Triton dequant kernel only supports
+float16 — that reasoning is **AWQ-specific**, so the 4-bit path must be a separate
+branch rather than an edit to it. The AWQ branch has to keep producing exactly
+what every committed measurement was taken with.
+
+```python
+        if active_quant() == "nf4":
+            # The adapter is trained against a 4-bit NF4 base and must be served
+            # on the same base; serving it on AWQ would mix two quantisations and
+            # make the arm's delta unattributable.
+            from transformers import BitsAndBytesConfig
+            self.model = AutoModelForImageTextToText.from_pretrained(
+                model_id, device_map="auto",
+                quantization_config=BitsAndBytesConfig(
+                    load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=torch.bfloat16,
+                    bnb_4bit_use_double_quant=True))
+        else:
+            self.model = AutoModelForImageTextToText.from_pretrained(
+                model_id, torch_dtype=torch.float16, device_map="auto"
+            )
+```
+
+Then, after `self.model.eval()`:
 
 ```python
         # An adapter, if this run selected one. Loaded after eval() because PEFT
@@ -1371,14 +1512,37 @@ In `VLMBackend.__init__`, after `self.model.eval()`:
             self.model.eval()
 ```
 
+**`peft` must be importable in the inference image for this to work.** Add it to
+`requirements-gpu.txt` — `peft` alone, not `bitsandbytes` plus a training stack —
+and re-verify the AWQ path afterwards:
+
+```bash
+python3 -c "
+from app.eval.runner import _prompt_sha256
+assert _prompt_sha256() == 'aa7659f1929184ea'
+print('AWQ-era prompt hash unchanged')
+"
+```
+
+`bitsandbytes` is also needed there for the NF4 branch. Adding two packages to the
+pinned inference image is the one place this plan touches it, so the smoke test in
+Task 7 Step 3 must be repeated **inside the inference image** before any arm runs
+— a broken AWQ dispatch would invalidate the frozen baseline itself.
+
 In `app/eval/runner.py`, `_cmd_predict`, extend the import and the `extra=`:
 
 ```python
-    from app.pipeline.ocr.vlm_backend import active_adapter, active_prompts
+    from app.pipeline.ocr.vlm_backend import (active_adapter, active_prompts,
+                                              active_quant)
 ```
 ```python
         extra={**active_knobs(), **active_prompts(),
                **({"adapter": active_adapter()} if active_adapter() else {}),
+               # model_id alone cannot distinguish AWQ from NF4 for the same
+               # weights, and the Rung-3 control differs from the arm ONLY in
+               # whether an adapter is loaded. Without this the two runs would be
+               # indistinguishable in every report they produce.
+               **({"quant": active_quant()} if active_quant() else {}),
                **({"detect_only": True} if getattr(args, "detect_only", False)
                   else {})})
 ```
@@ -1429,7 +1593,7 @@ EOF
 
 # Stage E — the three runs
 
-## Task 10: The `base7b` control arm
+## Task 10: The `base72bnf4` control arm
 
 Without it, neither question Rung 3 asks is answerable (design §2).
 
@@ -1441,18 +1605,18 @@ Without it, neither question Rung 3 asks is answerable (design §2).
 In `run_experiment_gpu.sh`, add to `ARM_ENV`:
 
 ```bash
-  [base7b]="-e VLM_MODEL_ID=Qwen/Qwen2.5-VL-7B-Instruct"
-  [lora7b]="-e VLM_MODEL_ID=Qwen/Qwen2.5-VL-7B-Instruct -e SINDRI_ADAPTER=read-lora-v1"
+  [base72bnf4]="-e VLM_MODEL_ID=Qwen/Qwen2.5-VL-72B-Instruct -e SINDRI_QUANT=nf4"
+  [lora72b]="-e VLM_MODEL_ID=Qwen/Qwen2.5-VL-72B-Instruct -e SINDRI_QUANT=nf4 -e SINDRI_ADAPTER=read-lora-v1"
 ```
 
 to `ARM_WHY`:
 
 ```bash
-  [base7b]="isolates the BASE-MODEL change: LoRA's effect is lora7b vs THIS, not vs the 72B baseline"
-  [lora7b]="the fine-tune. Judge vs base7b for the LoRA effect, vs baseline-dev for the deployment question"
+  [base72bnf4]="isolates the QUANTISATION change: the adapter is served on the NF4 base it was trained on, so LoRA's effect is lora72b vs THIS, not vs the AWQ baseline"
+  [lora72b]="the fine-tune. Judge vs base72bnf4 for the LoRA effect, vs baseline-dev for the deployment question"
 ```
 
-and to `ARM_ORDER`: `base7b lora7b`.
+and to `ARM_ORDER`: `base72bnf4 lora72b`.
 
 - [ ] **Step 2: Run it**
 
@@ -1462,7 +1626,7 @@ ssh -o BatchMode=yes 4mehpc4_3 "nvidia-smi --query-gpu=index,memory.used --forma
 Expected: a card at `1 MiB`. Then:
 
 ```bash
-GPU='nvidia.com/gpu=<free-index>' ./run_experiment_gpu.sh 4mehpc4_3 '~/sindri-eval-data' base7b
+GPU='nvidia.com/gpu=<free-index>' ./run_experiment_gpu.sh 4mehpc4_3 '~/sindri-eval-data' base72bnf4
 ```
 
 Watch for `active backend: VLM`. A `falling back`/`Tesseract` line means the load
@@ -1473,40 +1637,43 @@ failed and every document is worthless — kill it rather than let it finish.
 ```bash
 python3 -c "
 import json, pathlib
-d = json.loads(pathlib.Path('docs/eval/exp-base7b-summary.json').read_text(encoding='utf-8'))
+d = json.loads(pathlib.Path('docs/eval/exp-base72bnf4-summary.json').read_text(encoding='utf-8'))
 c = d['config']
 print('model  ', c['model_id'])
 print('extra  ', c['extra'])
 print('cost   ', d['mean_review_cost'], 'recall', round(d['micro_recall'], 4))
-assert '7B' in c['model_id'], c['model_id']
-assert 'adapter' not in c['extra'], 'base7b must serve NO adapter'
+assert c['model_id'] == 'Qwen/Qwen2.5-VL-72B-Instruct', c['model_id']
+assert c['extra'].get('quant') == 'nf4', c['extra']
+assert 'adapter' not in c['extra'], 'base72bnf4 must serve NO adapter'
 assert d['splits_hash'] == '6d174d5e4f1b9228'
 assert d['frame_mismatch']['n_docs_not_measured'] == 0
-print('base7b is a clean zero-shot 7B control')
+print('base72bnf4 is a clean zero-shot NF4 control')
 "
 ```
 
 - [ ] **Step 4: Read the table and the cross-model warning**
 
 Run: `python3 -m app.eval.experiment`
-Expected: a `base7b` row whose `model` column reads `Qwen/Qwen2.5-VL-7B-Instruct`.
+Expected: a `base72bnf4` row whose `model` column reads
+`Qwen/Qwen2.5-VL-72B-Instruct` — distinct from the baseline's `...-AWQ`.
 
-Run: `python3 -m app.eval.runner compare /home/clemi/sindri-client-data/reports/baseline-dev.report.json /home/clemi/sindri-client-data/reports/exp-base7b-dev.report.json --out docs/eval/base7b-vs-baseline.json`
+Run: `python3 -m app.eval.runner compare /home/clemi/sindri-client-data/reports/baseline-dev.report.json /home/clemi/sindri-client-data/reports/exp-base72bnf4-dev.report.json --out docs/eval/base72bnf4-vs-baseline.json`
 Expected: a `warnings` entry containing `base model differs` — the Task 1 guard
 firing on the comparison it was built for.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add run_experiment_gpu.sh docs/eval/exp-base7b-summary.json docs/eval/exp-base7b-vs-control.json docs/eval/base7b-vs-baseline.json
+git add run_experiment_gpu.sh docs/eval/exp-base72bnf4-summary.json docs/eval/exp-base72bnf4-vs-control.json docs/eval/base72bnf4-vs-baseline.json
 git commit -m "$(cat <<'EOF'
-docs(eval): base7b — the zero-shot 7B control
+docs(eval): base72bnf4 — the zero-shot NF4 control
 
 Not an arm to win or lose; the control that makes the LoRA arm interpretable.
-LoRA's effect is lora7b vs base7b, and the ladder's deployment question is
-lora7b vs the zero-shot 72B baseline. Without this row a lora7b result conflates
-the fine-tune with a 10x base-model change, and compare_runs would not have said
-so before Task 1.
+The adapter is trained against a 4-bit NF4 base and must be SERVED on that same
+base -- serving it on AWQ would mix two quantisations. So LoRA's effect is lora72b
+vs base72bnf4, while lora72b vs the AWQ baseline is the deployment question.
+Without this row a lora72b result conflates the fine-tune with the quantisation
+change, and compare_runs would not have said so before Task 1.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 EOF
@@ -1652,12 +1819,12 @@ Expected: `training on N pairs`, a falling loss, then
 Append to this plan under `## Task 11 result`: pair count, unrenderable count,
 epochs, rank, final loss, wall clock. Commit.
 
-## Task 12: The `lora7b` arm, and the verdict
+## Task 12: The `lora72b` arm, and the verdict
 
 - [ ] **Step 1: Run it**
 
 ```bash
-GPU='nvidia.com/gpu=<free-index>' ./run_experiment_gpu.sh 4mehpc4_3 '~/sindri-eval-data' lora7b
+GPU='nvidia.com/gpu=<free-index>' ./run_experiment_gpu.sh 4mehpc4_3 '~/sindri-eval-data' lora72b
 ```
 
 - [ ] **Step 2: Verify the adapter actually loaded**
@@ -1665,10 +1832,10 @@ GPU='nvidia.com/gpu=<free-index>' ./run_experiment_gpu.sh 4mehpc4_3 '~/sindri-ev
 ```bash
 python3 -c "
 import json, pathlib
-d = json.loads(pathlib.Path('docs/eval/exp-lora7b-summary.json').read_text(encoding='utf-8'))
+d = json.loads(pathlib.Path('docs/eval/exp-lora72b-summary.json').read_text(encoding='utf-8'))
 c = d['config']
 assert c['extra'].get('adapter') == 'read-lora-v1', c['extra']
-assert '7B' in c['model_id']
+assert c['extra'].get('quant') == 'nf4', c['extra']
 print('adapter', c['extra']['adapter'], 'on', c['model_id'])
 "
 ```
@@ -1682,7 +1849,7 @@ and the result is meaningless — Task 9's raise should have prevented it.
 python3 -m app.eval.experiment
 ```
 
-The LoRA effect is `lora7b` vs `base7b`, and the deployment question is `lora7b`
+The LoRA effect is `lora72b` vs `base72bnf4`, and the deployment question is `lora72b`
 vs the 174.30 baseline. Both must be stated with their models. All five hardened
 conditions apply (cost down, `field_acc` not down >0.02, `escaped_rate` not up
 >0.02, recall held, robust across all six weightings), plus the two campaign
@@ -1691,17 +1858,17 @@ the field-failure aggregates — `wrong:nominal` (102) and `wrong:char_type` (11
 are what a read LoRA should move.
 
 ```bash
-python3 -m app.eval.runner compare /home/clemi/sindri-client-data/reports/exp-base7b-dev.report.json /home/clemi/sindri-client-data/reports/exp-lora7b-dev.report.json --out docs/eval/lora7b-vs-base7b.json
+python3 -m app.eval.runner compare /home/clemi/sindri-client-data/reports/exp-base72bnf4-dev.report.json /home/clemi/sindri-client-data/reports/exp-lora72b-dev.report.json --out docs/eval/lora72b-vs-base72bnf4.json
 ```
 
-Expected: **no** `base model differs` warning here — both sides are the 7B, which
-is what makes this the clean measurement of the fine-tune.
+Expected: **no** `base model differs` warning here — both sides are the same NF4
+72B, which is what makes this the clean measurement of the fine-tune.
 
 - [ ] **Step 4: Write the verdict and commit**
 
 Append a `## Rung 3 results` section to this plan covering: both comparisons with
 their models named, which field-failure buckets moved, and the decision. If
-`lora7b` beats `base7b` but not the 72B baseline, that is the ladder's answer —
+`lora72b` beats `base72bnf4` but not the 72B baseline, that is the ladder's answer —
 fine-tuning helps but does not close a 10× capacity gap — and Rung 4 is the next
 question, not another adapter.
 
@@ -1723,8 +1890,19 @@ image build, and GPU runs).
 
 * Not touch `MatchParams`, `SCHEMA_VERSION`, or the frozen split
   `6d174d5e4f1b9228`.
-* Not modify `requirements-gpu.txt` or `Dockerfile.gpu`. Every measurement to
-  date depends on that pin.
+* Not modify `requirements-gpu.txt` beyond **adding `peft` and `bitsandbytes`**,
+  and never touch the `transformers==4.49.0` / `autoawq==0.2.8 --no-deps` pins.
+  Serving an adapter requires `peft` in the inference image and the NF4 branch
+  requires `bitsandbytes`, so this plan cannot avoid touching that file — an
+  earlier draft claimed it could, which was wrong.
+
+  **The guard for that change, because every committed measurement depends on
+  this path:** after adding them, re-run the AWQ path on the dev split under a
+  fresh run name and gate it with `python3 -m app.eval.gate` against the frozen
+  baseline. All 20 per-document deltas must be exactly `0.0`. That is what
+  `app/eval/gate.py` exists for, and a partial check will not do — a perturbed
+  AWQ dispatch would invalidate the 174.30 baseline itself, silently, and every
+  Rung-2 conclusion with it.
 * Not train on **dev** or **test**. Dev is the tuning split and test is touched
   once, at the end. Training on dev would destroy the comparison this whole plan
   exists to make.
