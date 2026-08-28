@@ -986,10 +986,10 @@ def build_pairs(gold, page_image, matched: Iterable[Tuple[int, object]],
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `python -m pytest tests/train/test_dataset.py -q`
-Expected: `4 passed`
+Expected: `6 passed`
 
 Run: `python -m pytest -q`
-Expected: `532 passed, 2 skipped`
+Expected: `534 passed, 2 skipped`
 
 - [ ] **Step 5: Commit**
 
@@ -1553,7 +1553,7 @@ Run: `python -m pytest tests/test_vlm_prompt.py -q`
 Expected: all pass.
 
 Run: `python -m pytest -q`
-Expected: `536 passed, 2 skipped`
+Expected: `538 passed, 2 skipped`
 
 Also confirm the base path is untouched:
 
@@ -1883,7 +1883,7 @@ python3 -m app.eval.experiment               # arm decision table
 ```
 
 Expected counts: 510 at start → 512 (T1) → 514 (T2) → 526 (T3) → 528 (T4) →
-532 (T6) → 536 (T9). Tasks 5, 7, 8, 10, 11 and 12 add no tests (measurements,
+534 (T6) → 538 (T9). Tasks 5, 7, 8, 10, 11 and 12 add no tests (measurements,
 image build, and GPU runs).
 
 ## What this plan must not do
