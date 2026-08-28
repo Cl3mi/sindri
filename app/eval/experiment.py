@@ -38,6 +38,12 @@ def arm_row(name: str, digest: Dict) -> Dict:
     right = t.get("correct", 0) + t.get("flagged_correct", 0)
     return {
         "arm": name,
+        # Which base model produced this row. Rung 3 compares an AWQ baseline
+        # against an NF4 run of the same weights, and a delta that does not say
+        # which side is which is not a result. "unrecorded" rather than a
+        # plausible default: a digest that never captured model_id must not read
+        # as the current one, for the same reason frame_origin_frac is None.
+        "model": digest.get("config", {}).get("model_id") or "unrecorded",
         "cost": digest["mean_review_cost"],
         "recall": round(digest["micro_recall"], 4),
         "precision": round(digest.get("micro_precision", 0.0), 4),
@@ -146,13 +152,17 @@ def main(argv=None) -> int:
         arms.append(arm_row(name, _load(p)))
 
     w = 12
-    cols = ("arm", "cost", "recall", "field_acc", "missed", "contended",
+    cols = ("arm", "model", "cost", "recall", "field_acc", "missed", "contended",
             "isolated", "false_detection", "misplaced")
+    # Model ids are long ("Qwen/Qwen2.5-VL-72B-Instruct-AWQ"); this table is read
+    # by a human deciding whether two rows are comparable at all, so the id has
+    # to be legible rather than truncated.
+    widths = {c: (34 if c == "model" else w) for c in cols}
     print(f"control digest: {control_path.name}")
-    print("  ".join(c.ljust(w) for c in cols))
-    print("  ".join("-" * w for _ in cols))
+    print("  ".join(c.ljust(widths[c]) for c in cols))
+    print("  ".join("-" * widths[c] for c in cols))
     for r in arms:
-        print("  ".join(str(r[c]).ljust(w) for c in cols))
+        print("  ".join(str(r[c]).ljust(widths[c]) for c in cols))
 
     if len(arms) == 1:
         print("\nno treatment arms found — nothing to decide yet")

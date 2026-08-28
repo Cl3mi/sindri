@@ -167,3 +167,20 @@ def test_the_spans_zero_clause_is_only_used_when_the_interval_spans_zero():
     why2 = verdict(arm_row("detectbox", _DETECTBOX), arm_row("control", CONTROL),
                    comparison=spans_zero)["why"]
     assert "spanning zero" in why2
+
+
+def test_arm_row_carries_the_base_model():
+    """Rung 3 compares an AWQ baseline against an NF4 run of the same weights.
+    A row that does not say which model produced it cannot be read as a result."""
+    digest = _digest(174.3, 0.6457, 169, 82, 74, 72, 40, 129)
+    digest["config"]["model_id"] = "Qwen/Qwen2.5-VL-72B-Instruct"
+    assert arm_row("nf4", digest)["model"] == "Qwen/Qwen2.5-VL-72B-Instruct"
+
+
+def test_arm_row_says_so_when_the_model_was_not_recorded():
+    """Every digest since the Rung-0 baseline records model_id, but an older one
+    must read as unknown rather than as the current default -- the same reason
+    frame_origin_frac is None rather than 0.0."""
+    digest = _digest(174.3, 0.6457, 169, 82, 74, 72, 40, 129)
+    digest["config"].pop("model_id", None)
+    assert arm_row("old", digest)["model"] == "unrecorded"
