@@ -57,3 +57,30 @@ def test_the_default_path_still_reads(tmp_path):
     backend = _CountingBackend()
     extract(_one_page_pdf(tmp_path), tmp_path / "work", dpi=72, backend=backend)
     assert backend.read_calls > 0
+
+
+def test_a_detect_only_dump_carries_the_render_scale(tmp_path):
+    """Tests the boundary that actually broke. The first version of this file
+    called extract() directly and asserted on result.characteristics, so it never
+    built a PredictionDump and never touched render_scale -- which the detect_only
+    early return had omitted. Every document of the timing arm then failed with
+    ValidationError: scale=None.
+
+    predict_one is the real boundary, and the scale is load-bearing: render.py
+    clamps dpi to a pixel budget on large sheets, so the scale that interprets
+    these boxes is the RENDER's, not dpi/72. Had render_scale defaulted to a
+    plausible number instead of None, every box in every detect-only dump would
+    have been silently wrong and every training crop cut from the wrong place."""
+    from app.eval.models import RunConfig
+    from app.eval.runner import predict_one
+
+    config = RunConfig(model_id="stub", dpi=72)
+    dump = predict_one(_one_page_pdf(tmp_path), "D", 72, _CountingBackend(),
+                       config, tmp_path / "work", detect_only=True)
+
+    assert dump.scale is not None
+    assert dump.scale > 0
+    # the same scale the full path would record for this page
+    full = predict_one(_one_page_pdf(tmp_path), "D", 72, _CountingBackend(),
+                       config, tmp_path / "work2", detect_only=False)
+    assert dump.scale == full.scale

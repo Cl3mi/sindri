@@ -210,7 +210,16 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
             c.id = uuid.uuid4().hex
             results.append(c)
         number_characteristics(results)
-        return ExtractionResult(characteristics=results)
+        # render.scale, NOT dpi/72 and NOT omitted. render.py clamps dpi to a
+        # pixel budget on large-format sheets, so this is the only scale that
+        # interprets the boxes above correctly -- predict_one reads it straight
+        # into PredictionDump.scale. Omitting it left the field None and failed
+        # every document of the timing arm with a ValidationError, which is the
+        # good outcome: had it defaulted to a plausible number, every box in
+        # every detect-only dump would have been silently wrong and every
+        # training crop cut from the wrong place.
+        return ExtractionResult(characteristics=results,
+                                render_scale=render.scale)
 
     known_positions = ({n.pos for n in notes_obj.notes if n.parent_pos is None}
                        if notes_obj is not None else None)
