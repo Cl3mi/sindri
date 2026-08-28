@@ -1159,6 +1159,36 @@ and record the failure in `requirements-train.txt` — that file's job is to exp
 its pins, exactly as `requirements-gpu.txt` does. Do not proceed on a base whose
 4-bit load has not printed a coherent read.
 
+### Task 7 result — the stack works, proven on the 7B first
+
+**Deviation from this plan, deliberate.** Step 3 as written loads the 72B
+directly, which means paying for a 145 GB download before learning anything. The
+stack-compatibility risk (`transformers==4.49.0` + Qwen2.5-VL + bitsandbytes NF4)
+is *identical code* at any model size, so it was proven on the 7B first — a 16 GB
+download. Had the stack been broken, that ordering would have saved the large
+download entirely.
+
+Image built at `880313f`: torch 2.6.0+cu124, transformers 4.49.0, peft 0.20.0,
+bitsandbytes 0.50.2, accelerate 1.14.0.
+
+**7B in 4-bit NF4 — PASS.** Peak VRAM **5.6 GB**; read of the synthetic callout
+came back `'20 +0.1 -0.1'` — coherent, right digits, right tolerance structure.
+(It normalised the comma decimal separator to a period. Not a gate concern: the
+real `_PROMPT` instructs comma explicitly, and `normalize.canon_value` compares
+numerically anyway.)
+
+One warning worth recording as benign: `Failed to load CPU gemm_4bit_forward from
+kernels-community: No module named 'kernels'`. That is the **CPU** 4-bit kernel
+fallback; the GPU path loaded and generated fine, so `kernels` is not needed.
+
+**Download speed measured:** 16 GB in 43 s (~370 MB/s), so the 145 GB bf16 72B is
+minutes rather than hours. The earlier worry about download cost was unfounded.
+
+**Scaling to the 72B, from the measured 7B figure:** 5.6 GB observed for ~8.3B
+params (7.6B LLM + 0.7B ViT) at 0.5 B/param plus activations. 73.4B scales to
+~37 GB of weights, so ~40 GB inference and ~45-55 GB training once LoRA grads,
+optimizer state and checkpointed activations are added. Inside 80 GB with room.
+
 - [ ] **Step 4: Commit, recording what the gate actually printed**
 
 ```bash
