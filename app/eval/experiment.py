@@ -22,6 +22,12 @@ from typing import Dict
 # these bound "materially worse", not measurement noise.
 FIELD_ACC_TOLERANCE = 0.02
 ESCAPED_RATE_TOLERANCE = 0.02
+# Deliberately the same 0.005 report.compare_runs uses for its recall-drop
+# warning. The two tools disagreed about detectbox: compare_runs warned "review
+# cost improved but recall dropped 0.646 -> 0.631 -- likely a net review-time
+# LOSS on missed callouts", while this module tolerated it silently and printed
+# WIN. One number, one threshold.
+RECALL_TOLERANCE = 0.005
 
 
 def arm_row(name: str, digest: Dict) -> Dict:
@@ -50,11 +56,16 @@ def arm_row(name: str, digest: Dict) -> Dict:
     }
 
 
-def verdict(row: Dict, control: Dict) -> Dict:
-    """Did this arm actually improve things, and which bucket did it move?"""
+def verdict(row: Dict, control: Dict, comparison: Dict = None) -> Dict:
+    """Did this arm actually improve things, and which bucket did it move?
+
+    `comparison` is the arm's `runner compare` output against control. Without
+    it, robustness is unmeasured — and an unmeasured condition is not a passing
+    one, so no arm wins on the default weighting alone."""
     d_cost = round(row["cost"] - control["cost"], 2)
     d_acc = round(row["field_acc"] - control["field_acc"], 4)
     d_esc = round(row["escaped_rate"] - control["escaped_rate"], 4)
+    d_rec = round(row["recall"] - control["recall"], 4)
     reasons = []
     if d_cost >= 0:
         reasons.append(f"review cost did not improve ({d_cost:+.2f})")
@@ -64,12 +75,44 @@ def verdict(row: Dict, control: Dict) -> Dict:
     if d_esc > ESCAPED_RATE_TOLERANCE:
         reasons.append(f"escaped-error rate rose {d_esc:+.4f} — more silent "
                        f"wrong values reaching the customer")
+    # Recall, because field accuracy is a RATIO over matched rows and rises when
+    # its denominator shrinks. detectbox turned 7 wrong rows into misses at
+    # w=10 instead of into correct ones: field_acc +0.0284 with `correct`
+    # unchanged at 72, which reads as a quality gain and is not one.
+    if d_rec < -RECALL_TOLERANCE:
+        reasons.append(f"recall fell {d_rec:+.4f} — field accuracy can rise "
+                       f"merely by losing matched rows to the miss bucket, "
+                       f"which costs w=10 each")
+    # Robustness last, so the taxonomy reasons above are always reported too.
+    if comparison is None:
+        reasons.append("robustness unmeasured — no vs-control comparison found, "
+                       "so there is no evidence this beats control under any "
+                       "weighting but the default")
+    else:
+        ws = comparison.get("weight_sensitivity") or {}
+        fraction = ws.get("b_better_fraction")
+        n = ws.get("n_weight_vectors", 0)
+        if not ws.get("robust") or fraction != 1.0:
+            better = int(round((fraction or 0.0) * n))
+            ci = comparison.get("ci95") or [0.0, 0.0]
+            reason = (f"not robust — better under only {better} of {n} "
+                      f"weightings, ci95 {ci}, significant "
+                      f"{comparison.get('significant')}")
+            # Only say "spans zero" when it does. nomerge's ci95 is
+            # [1.15, 9.70] — significantly WORSE, not a no-op — and appending
+            # that clause unconditionally stated something untrue about it. An
+            # inaccurate diagnostic is what sent this campaign after the wrong
+            # lever to begin with.
+            if len(ci) == 2 and ci[0] <= 0.0 <= ci[1]:
+                reason += (". A mean delta on an interval spanning zero is a "
+                           "no-op, not a small gain")
+            reasons.append(reason)
     return {
         "arm": row["arm"],
         "win": not reasons,
         "why": "; ".join(reasons) if reasons else "cost down, accuracy held",
         "cost_delta": d_cost,
-        "recall_delta": round(row["recall"] - control["recall"], 4),
+        "recall_delta": d_rec,
         "field_acc_delta": d_acc,
         "escaped_delta": d_esc,
         "contended_delta": row["contended"] - control["contended"],
@@ -116,10 +159,16 @@ def main(argv=None) -> int:
         return 0
 
     print("\nverdicts (an arm wins only if cost falls AND matched-row accuracy "
-          "holds AND silent errors do not rise):")
+          "holds AND silent errors do not rise AND recall holds AND the gain is "
+          "robust across every weighting):")
     wins = []
     for r in arms[1:]:
-        v = verdict(r, control)
+        # The arm's paired comparison, written next to its digest by
+        # run_experiment_gpu.sh. Absent it, robustness is unmeasured and the arm
+        # cannot win on the default weighting alone.
+        cmp_path = docs / f"exp-{r['arm']}-vs-control.json"
+        comparison = _load(cmp_path) if cmp_path.exists() else None
+        v = verdict(r, control, comparison=comparison)
         flag = "WIN " if v["win"] else "no  "
         print(f"  {flag}{v['arm']:<14} cost {v['cost_delta']:+8.2f}  "
               f"recall {v['recall_delta']:+.4f}  field_acc {v['field_acc_delta']:+.4f}  "
