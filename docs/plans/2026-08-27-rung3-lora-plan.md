@@ -1189,6 +1189,29 @@ params (7.6B LLM + 0.7B ViT) at 0.5 B/param plus activations. 73.4B scales to
 ~37 GB of weights, so ~40 GB inference and ~45-55 GB training once LoRA grads,
 optimizer state and checkpointed activations are added. Inside 80 GB with room.
 
+**72B in 4-bit NF4 — PASS, and this is the gate that mattered.**
+
+| | 7B | 72B |
+|---|---|---|
+| peak VRAM (4-bit NF4) | 5.6 GB | **38.8 GB** |
+| read of the synthetic callout | `'20 +0.1 -0.1'` | **`'Ø20 +0.1 -0.1'`** |
+
+38.8 GB against the 37-40 GB predicted from the 7B figure, leaving **41 GB of
+headroom** on one 80 GB card for LoRA gradients, optimizer state and checkpointed
+activations. One card, no model parallelism, so the NODE interconnect never
+matters. Model cache now 193 GB on a 7.0 TB volume with 6.1 TB still free.
+
+**One observation, explicitly an anecdote and not evidence.** The 72B recovered the
+`Ø` from a crude hand-drawn "O 20 +0,1 -0,1"; the 7B dropped it and returned a
+bare `20`. n=1 on synthetic input proves nothing on its own — but it lands on
+exactly the field Phase A found most broken (`wrong:char_type`, 115 of the 196
+wrong rows) and `char_type` is inferred from precisely that leading symbol
+(`parser.py`: `is_diameter`). Worth remembering when reading the arms; worth
+nothing as a result.
+
+**So: the campaign proceeds on the 72B.** The 32B fallback is not needed, and the
+ladder's 7B recommendation is superseded by measurement rather than by preference.
+
 - [ ] **Step 4: Commit, recording what the gate actually printed**
 
 ```bash
