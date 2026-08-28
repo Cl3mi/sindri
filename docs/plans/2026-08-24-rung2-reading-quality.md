@@ -2793,3 +2793,94 @@ an ssh channel mid-run, killed a container 2 documents from the end, and left th
 network. The mitigations that actually paid off were **resume** (18 documents
 preserved) and **per-arm fresh run names** (nothing overwritten). Both were
 already in place for other reasons.
+
+---
+
+# Phase C results — detectbox, and the close of the campaign
+
+Resumed and completed 2026-08-27 (`665b266`): 18 documents restored from the
+interrupted run, 2 predicted, 0 failed. `active backend: VLM`, so no Tesseract
+fallback. The outage cost 2 documents of GPU time instead of 20.
+
+## D.1 It looks like the first win and it is not one
+
+| | control | detectbox | delta |
+|---|---|---|---|
+| `mean_review_cost` | 174.30 | 174.05 | **−0.25** |
+| `field_acc` | 0.3636 | 0.3920 | **+0.0284** |
+| `micro_recall` | 0.6457 | 0.6310 | −0.0147 |
+| `escaped_rate` | 0.2704 | 0.2851 | +0.0147 |
+| `missed` | 169 | 176 | +7 |
+| `false_detection` | 522 | 474 | **−48** |
+| `n_pred` | 830 | 775 | −55 |
+
+`experiment.py` printed **WIN** and "confirm it on the full corpus". Four reasons
+not to, each independent:
+
+**1. Not robust.** `ci95 [−6.35, 6.00]`, `significant: False`, better under
+**4 of 6** weightings, `robust: False`, per-weighting deltas
+`[−0.25, +4.30, −2.35, −5.75, +2.50, −1.35]` — worse under two of them. A −0.25
+mean on an interval that wide is indistinguishable from `tightmerge`'s +0.35,
+which §4 of the findings records as a no-op.
+
+**2. Both `compare_runs` regression guards fired** — recall dropped *and*
+escaped-error rate rose while cost improved. `compare_runs` warns at 0.005;
+`experiment.py` tolerated 0.02. The WIN was an artifact of the looser threshold,
+now reconciled (commit `c887558`).
+
+**3. It walked into the `score_kinds` dead end in soft form.** The whole cost win
+is the false-detection term (`2 × −48 = −96` against `+70` for misses and `+35`
+for escapes). Those false detections fell because the detector got *more
+conservative* — `note` −27, `theoretical` −23, `gdt` −15 predictions — and it
+took real matches with them:
+
+| matched by kind | control | detectbox |
+|---|---|---|
+| dimension | 247 | 256 (+9) |
+| **gdt** | 31 | **21 (−10)** |
+| **theoretical** | 17 | **9 (−8)** |
+| note | 5 | 7 (+2) |
+
+18 legitimate matches destroyed, by exactly the mechanism CLAUDE.md §3 lists as
+measured dead: *"filtering predictions to `score_kinds` would delete 61 of 308
+matches that non-`dimension` kinds legitimately make."*
+
+**4. The targeted bucket moved the wrong way.**
+`fields:char_type+nominal+upper_tol+lower_tol` went **49 → 54**. The hypothesis
+was that the box clips the callout; the rows that would prove it got worse. So
+whatever produced the cost change, it was not the mechanism under test.
+
+The `field_acc` rise is also thinner than it reads: `correct` — right *and*
+unflagged — is unchanged at 72. The numerator gain is entirely `flagged_correct`
+(+6) and the denominator fell 308 → 301 because 7 wrong rows became misses.
+
+## D.2 Seven arms, seven losses
+
+| arm | lever | cost | `field_acc` | robust |
+|---|---|---|---|---|
+| detectbox | **detect prompt** | −0.25 | +0.0284 | **no** (4/6) |
+| tightmerge | `merge_y_gap` | +0.35 | +0.0009 | no (2/6) |
+| readcenter | **read prompt** | +0.90 | −0.0162 | no (0/6) |
+| finetiles | detect tile size | +5.00 | −0.0662 | no (0/6) |
+| nomerge | `merge_max_lines` | +5.60 | −0.0123 | no (0/6) |
+| render150 | render pixel budget | worse | — | — |
+| max-cardinality | matcher assignment | *lower* | −0.110 | — |
+
+**Prompt-and-knob tuning is exhausted on this corpus.** Both prompt levers were
+tested; both lost, and neither moved the bucket it targeted. Treat the committed
+configuration as tuned and stop proposing arms of this shape.
+
+## D.3 Where the remaining ground is
+
+1. **Bank the two GPU-free wins.** They were parked so they could not confound an
+   arm; the campaign is now closed, so that constraint is lifted.
+   `review.LOW_CONF` 0.6 → 0.8 is −3.00 cost with `field_acc` flat and zero
+   correct rows newly flagged — twelve times detectbox's headline, for free. The
+   23 `char_type`-only rows are ~−4.6 more.
+2. **Rung 3.** The read stage's ceiling is not reachable by instruction: 63.6% of
+   matched rows are wrong, `wrong:` outnumbers `missing:` 314 to 142, and the
+   base prompt beat both variants. That is a capability limit, so LoRA on the 72B
+   is the next real lever.
+3. **Do not spend another arm on a prompt or a detection knob** without a
+   mechanism that predicts which bucket moves and why — the last two arms each
+   had one and neither prediction held.
