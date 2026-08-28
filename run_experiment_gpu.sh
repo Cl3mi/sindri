@@ -56,6 +56,14 @@ declare -A ARM_ENV=(
   [finetiles]="-e VLM_TILE=768"
   [readcenter]="-e SINDRI_READ_PROMPT=center"
   [detectbox]="-e SINDRI_DETECT_PROMPT=box"
+  [detectonly]=""
+)
+# Extra CLI args for `runner predict`, per arm. Separate from ARM_ENV because
+# that map only emits `-e VAR=...` for podman, and --detect-only is a flag on the
+# command itself -- an arm needing it would otherwise run a FULL predict under a
+# name claiming it measured detection alone.
+declare -A ARM_ARGS=(
+  [detectonly]="--detect-only"
 )
 declare -A ARM_WHY=(
   [control]="reproduction check: must match the committed baseline's metrics"
@@ -64,8 +72,9 @@ declare -A ARM_WHY=(
   [finetiles]="74 isolated misses: does a finer grid find undetected callouts?"
   [readcenter]="64 of 144 misread rows sit on MISPLACED pairs — is the reader transcribing a neighbouring callout? must move error_cause_crosstab.misread.misplaced"
   [detectbox]="49 rows (25%) have ALL FOUR fields wrong — is the box cutting the callout? must move fields:char_type+nominal+upper_tol+lower_tol"
+  [detectonly]="TIMING PROBE, never scored: how much of the ~26 min/doc is the read stage? Decides whether the Rung-3 train-split crop pass costs ~4 h or ~26 h"
 )
-ARM_ORDER=(control nomerge tightmerge finetiles readcenter detectbox)
+ARM_ORDER=(control nomerge tightmerge finetiles readcenter detectbox detectonly)
 
 ARMS=("$@")
 [ ${#ARMS[@]} -eq 0 ] && ARMS=("${ARM_ORDER[@]}")
@@ -140,7 +149,8 @@ for arm in "${ARMS[@]}"; do
           sindri-gpu
           python -m app.eval.runner predict
             --pdfs /data/corpus/originals --out /data/runs/$run
-            --splits /data/meta/splits.json --split $SPLIT)
+            --splits /data/meta/splits.json --split $SPLIT
+            ${ARM_ARGS[$arm]:-})
         if [ -f ~/cdi/nvidia.yaml ]; then
           podman unshare -- bash -c '
             set -euo pipefail

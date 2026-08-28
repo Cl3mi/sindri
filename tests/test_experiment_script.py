@@ -77,3 +77,26 @@ def test_an_unreachable_host_is_reported_as_unknown_not_as_failed():
     claiming either answer is a guess that costs a run."""
     block = _predict_failure_block(SCRIPT.read_text(encoding="utf-8"))
     assert "ARM UNKNOWN" in block
+
+
+def test_the_detectonly_arm_passes_the_flag_not_just_an_env_var():
+    """--detect-only is a CLI flag on `runner predict`, so ARM_ENV -- which only
+    emits `-e VAR=...` for podman -- cannot carry it. A parallel ARM_ARGS map
+    keeps each arm's configuration in one place; without it the arm would run a
+    full predict under a name claiming it measured detection alone."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert "ARM_ARGS" in text
+    assert "--detect-only" in text
+    assert "[detectonly]" in text
+
+
+def test_every_registered_arm_appears_in_arm_order():
+    """A name in ARM_ENV but not ARM_ORDER runs only when asked for explicitly
+    and is silently skipped by a bare invocation -- easy to mistake for an arm
+    that ran and found nothing."""
+    import re
+    text = SCRIPT.read_text(encoding="utf-8")
+    env_block = text[text.index("declare -A ARM_ENV=("):text.index("declare -A ARM_WHY=(")]
+    names = set(re.findall(r"^\s*\[(\w+)\]=", env_block, re.M))
+    order = set(text[text.index("ARM_ORDER=("):].split(")")[0].split("=(")[1].split())
+    assert names == order, f"ARM_ENV vs ARM_ORDER mismatch: {names ^ order}"
