@@ -72,10 +72,11 @@ def _select_docs(doc_ids, splits_path, split_name):
 
 
 def predict_one(pdf_path, doc_id: str, dpi: int, backend,
-                config: RunConfig, work_dir) -> PredictionDump:
+                config: RunConfig, work_dir,
+                detect_only: bool = False) -> PredictionDump:
     from app.pipeline.extract import extract
     result = extract(pdf_path, Path(work_dir) / doc_id, dpi=dpi,
-                     backend=backend)
+                     backend=backend, detect_only=detect_only)
     doc = fitz.open(pdf_path)
     rect = doc[0].rect
     doc.close()
@@ -459,7 +460,12 @@ def _cmd_predict(args):
     config = RunConfig(
         model_id=os.environ.get("VLM_MODEL_ID", "default"), dpi=args.dpi,
         git_sha=_git_sha(), prompt_sha256=_prompt_sha256(),
-        extra={**active_knobs(), **active_prompts()})
+        extra={**active_knobs(), **active_prompts(),
+               # A boxes-only dump carries no values and must never be scored.
+               # Recording it here is what stops a resume, a compare, or a human
+               # from mistaking one for a full run.
+               **({"detect_only": True} if getattr(args, "detect_only", False)
+                  else {})})
     pdfs = {p.stem: p for p in Path(args.pdfs).glob(_PDF_GLOB)}
     doc_ids, _, _ = _select_docs(pdfs, args.splits, args.split)
     # Must precede _anon(): constructing an Anonymizer mints the salt.
@@ -483,7 +489,8 @@ def _cmd_predict(args):
             continue
         try:
             dump = predict_one(pdfs[doc_id], doc_id, args.dpi, backend, config,
-                               out / "_work")
+                               out / "_work",
+                               detect_only=getattr(args, "detect_only", False))
         except Exception as e:
             # One unreadable drawing must cost one document, not the run. The
             # exception CLASS is recorded and its message deliberately dropped:
@@ -678,6 +685,12 @@ def main(argv=None) -> int:
     p.add_argument("--pdfs", required=True); p.add_argument("--out", required=True)
     p.add_argument("--dpi", type=int, default=300)
     p.add_argument("--splits", default=None); p.add_argument("--split", default="dev")
+    p.add_argument("--detect-only", action="store_true",
+                   help="stop after detection and write boxes with no "
+                        "transcription. For building training crops: reads are "
+                        "the bulk of per-document time, so this is much cheaper "
+                        "-- but the dumps carry NO values and must never be "
+                        "scored. Recorded in RunConfig.extra.")
     p.set_defaults(fn=_cmd_predict)
 
     p = sub.add_parser("score", parents=[common])

@@ -389,7 +389,8 @@ def test_predict_isolates_a_failing_document_and_carries_on(tmp_path, capsys,
     _no_model(monkeypatch)
     run_dir = tmp_path / "runs" / "base"
 
-    def fake(pdf_path, doc_id, dpi, backend, config, work_dir):
+    def fake(pdf_path, doc_id, dpi, backend, config, work_dir,
+             detect_only=False):
         if doc_id == "SYNA":
             raise Image.DecompressionBombError("Image size (598394358 pixels)")
         return _stub_dump(doc_id, config)
@@ -413,7 +414,8 @@ def test_predict_exits_1_when_every_document_fails(tmp_path, capsys, monkeypatch
     pdfs, _ = _setup_corpus(tmp_path)
     _no_model(monkeypatch)
 
-    def fake(pdf_path, doc_id, dpi, backend, config, work_dir):
+    def fake(pdf_path, doc_id, dpi, backend, config, work_dir,
+             detect_only=False):
         raise RuntimeError("model did not load")
 
     _fake_predict(monkeypatch, fake)
@@ -431,7 +433,8 @@ def test_predict_resumes_instead_of_recomputing_existing_dumps(tmp_path, capsys,
     run_dir = tmp_path / "runs" / "base"
     calls = []
 
-    def fake(pdf_path, doc_id, dpi, backend, config, work_dir):
+    def fake(pdf_path, doc_id, dpi, backend, config, work_dir,
+             detect_only=False):
         calls.append(doc_id)
         return _stub_dump(doc_id, config)
 
@@ -458,7 +461,8 @@ def test_predict_recomputes_a_dump_left_by_a_different_config(tmp_path, capsys,
     save_dump(_stub_dump("SYNA", RunConfig(model_id="a-different-model")), run_dir)
     calls = []
 
-    def fake(pdf_path, doc_id, dpi, backend, config, work_dir):
+    def fake(pdf_path, doc_id, dpi, backend, config, work_dir,
+             detect_only=False):
         calls.append(doc_id)
         return _stub_dump(doc_id, config)
 
@@ -477,7 +481,8 @@ def test_predict_reports_which_documents_had_their_dpi_clamped(tmp_path, capsys,
     pdfs, _ = _setup_corpus(tmp_path)
     _no_model(monkeypatch)
 
-    def fake(pdf_path, doc_id, dpi, backend, config, work_dir):
+    def fake(pdf_path, doc_id, dpi, backend, config, work_dir,
+             detect_only=False):
         scale = (110 if doc_id == "SYNA" else 300) / 72.0
         return _stub_dump(doc_id, config, scale=scale)
 
@@ -501,7 +506,7 @@ def test_predict_warns_when_the_doc_ids_are_throwaway(tmp_path, capsys,
     pdfs, _ = _setup_corpus(tmp_path)
     _no_model(monkeypatch)
     _fake_predict(monkeypatch, lambda pdf_path, doc_id, dpi, backend, config,
-                  work_dir: _stub_dump(doc_id, config))
+                  work_dir, detect_only=False: _stub_dump(doc_id, config))
 
     assert main(["predict", "--pdfs", str(pdfs),
                  "--out", str(tmp_path / "runs" / "base")]) == 0
@@ -517,7 +522,7 @@ def test_predict_is_quiet_when_the_salt_is_persistent(tmp_path, capsys,
     pdfs, _ = _setup_corpus(tmp_path)
     _no_model(monkeypatch)
     _fake_predict(monkeypatch, lambda pdf_path, doc_id, dpi, backend, config,
-                  work_dir: _stub_dump(doc_id, config))
+                  work_dir, detect_only=False: _stub_dump(doc_id, config))
 
     assert main(["predict", "--pdfs", str(pdfs),
                  "--out", str(tmp_path / "runs" / "base")]) == 0

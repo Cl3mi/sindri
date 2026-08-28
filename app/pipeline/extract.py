@@ -105,7 +105,7 @@ def _regions_overlap(a, b, min_frac: float = 0.5) -> bool:
 
 
 def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
-            progress=None) -> ExtractionResult:
+            detect_only: bool = False, progress=None) -> ExtractionResult:
     work_dir = Path(work_dir)
     backend = backend or get_backend()
 
@@ -187,6 +187,30 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
 
     emit("detect", "Detecting characteristics")
     detections = detect_characteristics(image_for_detect, backend)
+
+    # detect_only exists to price the train-split crop pass. Reads are ~41-80
+    # generates per document against detection's ~12, so skipping them MAY be
+    # most of the cost -- but a detect generate runs to 1024 tokens against a
+    # read's 40, so it may not be. This path is what makes that measurable.
+    #
+    # It returns boxes with NO transcription: char_type, nominal and the
+    # tolerances stay empty, and nothing here invents them. Every consumer must
+    # treat such a dump as unscoreable, which is why _cmd_predict records
+    # detect_only in RunConfig.extra.
+    if detect_only:
+        emit("ocr", "Skipping reads (detect_only)", 0, len(detections))
+        results = []
+        for d in detections:
+            outer = _clamp(d.box, render.width, render.height)
+            if d.inner_box is None:
+                outer = _clamp(bx.tighten_to_ink(image, outer),
+                               render.width, render.height)
+            c = Characteristic(pos=0, kind=d.kind, subtype=d.subtype or "",
+                               source="auto", target_region=outer)
+            c.id = uuid.uuid4().hex
+            results.append(c)
+        number_characteristics(results)
+        return ExtractionResult(characteristics=results)
 
     known_positions = ({n.pos for n in notes_obj.notes if n.parent_pos is None}
                        if notes_obj is not None else None)
