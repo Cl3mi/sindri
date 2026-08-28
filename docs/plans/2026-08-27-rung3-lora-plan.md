@@ -804,41 +804,61 @@ EOF
 )"
 ```
 
-### Task 5 result — detection is TWO THIRDS of the cost, so --detect-only is not worth using
+### Task 5 result — detection dominates, so `--detect-only` is NOT used
 
-Measured 2026-08-28 on dev, at host load ~140.
+Measured 2026-08-28 across two independent runs. The first attempt died on a bug
+of mine (see below); both runs' timings are reported because the overlap between
+them is the only reproducibility check available.
 
-| | per document |
-|---|---|
-| detection only (doc 1 → doc 2) | **10 min 50 s** |
-| full predict, dev median (Rung 2, load ~201) | ~15 min (12–28 min observed) |
-| ratio | **~1.4×** |
+| interval | detection only | run |
+|---|---|---|
+| doc 1 → 2 | 10 min 50 s | attempt 1, host load ~140 |
+| doc 1 → 2 | **10 min 55 s** | attempt 2, host load ~167 |
+| doc 2 → 3 | **23 min 45 s** | attempt 2 |
 
-Far below the 3× threshold this task set, so **the train-split crop pass uses the
-ordinary `predict`**, budgeted at ~26 h with resume absorbing interruptions. The
-full dumps are more useful anyway: they also measure how the base model reads the
-train split, which detection alone cannot.
+Full predict, per document, from `detectbox`'s timestamped log (same sorted order,
+so same drawings): 12, 12, 15, 16, 26, 28, **46** min for documents 11–17 —
+median **~16 min**.
 
-**This contradicts the guess that motivated the task.** Stage B reasoned that
-reads were probably most of the cost, since there are ~41-80 of them per document
-against ~12 detection tiles. Wrong: a detection generate runs to
-`max_new_tokens=1024` and encodes a 1024×1024 tile, so twelve of those outweigh
-the many small read crops. Reads are only about a third of per-document time.
+**Decision: ratio is well under 3×, so the train-split crop pass uses the ordinary
+`predict`**, budgeted ~26 h with resume absorbing interruptions. The full dumps are
+more useful anyway: they also measure how the base model reads the train split,
+which detection alone cannot.
 
-The conclusion is robust to the load difference between the two measurements. The
-full-predict figures were taken at load ~201 and detection-only at ~140, so the
-lighter load *favours* detect-only — the true ratio is smaller still, and nothing
-about a 1.4× measured under favourable conditions approaches 3×.
+**The single most telling number:** document 3's detection *alone* took 23 min 45 s,
+which **exceeds the full-predict median of ~16 min**. Reads are not a minority of
+the cost being skipped — detection is nearly all of the cost. For the ratio to
+reach 3×, detection would have to average ~5 min; it measured 11 and 24.
 
-**The `--detect-only` path is kept, not deleted.** It is the instrument that
-produced this number, and keeping it means the measurement can be re-checked
-rather than re-argued — the same reason `--assignment max_cardinality` survives as
-a diagnostic. It is now a measured dead end for its original purpose.
+**This inverts the assumption that motivated the task.** Stage B reasoned reads
+must dominate, at ~41–80 generates per document against ~12 detection tiles.
+Wrong. A detection call encodes a 1024×1024 tile and generates up to 1024 tokens,
+so twelve of those outweigh dozens of small crops. **Detection is the pipeline's
+bottleneck, not reading** — which is worth knowing well beyond this task: cutting
+detection cost (fewer/cheaper tiles, a lower `max_new_tokens`, since the JSON
+arrays returned are short) would reduce every run's wall clock, whereas the read
+stage has little left to give.
 
-**What the run cost, and the bug it exposed:** every document failed with
-`ValidationError` because the `detect_only` early return omitted `render_scale`,
-leaving `PredictionDump.scale` as `None`. `tests/test_detect_only.py` called
-`extract()` directly and asserted on `result.characteristics`, so it never built a
+**What was NOT measured, stated rather than glossed.** I said I would collect
+paired timings through document 17 and decided on two intervals plus one
+replication instead. The measured values sit far from the threshold and document 3
+settles the direction on its own, so 13 more documents (~3+ h of shared GPU) would
+have sharpened a number that cannot change the outcome. The one case that could
+genuinely have differed is **document 16**, the 14457×2384 pt sheet that clamps to
+109 dpi and took 46 min under full predict: if its detection were cheap, that one
+document would show a large saving. It was not reached. The crop pass is governed
+by the median over 60 documents rather than one outlier, so this is recorded as a
+known unmeasured case, not as evidence either way.
+
+**The `--detect-only` path is kept, not deleted.** It produced this number, so
+keeping it means the measurement can be re-checked rather than re-argued — the
+same reason `--assignment max_cardinality` survives as a diagnostic. For its
+original purpose it is now a measured dead end.
+
+**The bug attempt 1 exposed.** Every document failed with `ValidationError` because
+the `detect_only` early return omitted `render_scale`, leaving
+`PredictionDump.scale` as `None`. `tests/test_detect_only.py` called `extract()`
+directly and asserted on `result.characteristics`, so it never built a
 `PredictionDump` and never touched that field — the test was at the wrong
 boundary. Fixed, with a test through `predict_one` asserting the detect-only scale
 equals the full path's.
@@ -847,8 +867,6 @@ That failure mode is the good one. `render_scale` defaults to `None`, so the run
 crashed loudly; had it defaulted to `0.0` or `dpi/72`, every box in every
 detect-only dump would have been silently wrong and every training crop cut from
 the wrong place. `predict_one`'s own comment warns of exactly this.
-
----
 
 ---
 
