@@ -155,3 +155,52 @@ def test_box_variant_is_selectable_and_moves_the_hash():
     h = hashlib.sha256("\n".join(vlm_backend.effective_prompts(
         env={"SINDRI_DETECT_PROMPT": "box"})).encode()).hexdigest()[:16]
     assert h != _prompt_sha256()
+
+
+def test_active_quant_is_none_by_default():
+    """Every measurement to date ran the AWQ checkpoint's own quantisation. That
+    must stay the default, or the frozen 174.30 baseline stops being reproducible."""
+    assert vlm_backend.active_quant(env={}) is None
+
+
+def test_active_quant_reports_nf4_when_selected():
+    assert vlm_backend.active_quant(env={"SINDRI_QUANT": "nf4"}) == "nf4"
+
+
+def test_an_unsupported_quant_fails_loudly_instead_of_falling_back():
+    """Same rule as the prompt variants and the adapter. Falling back to the
+    checkpoint default would serve a DIFFERENT base than the adapter was trained
+    against, and report the result as the fine-tune's."""
+    with pytest.raises(ValueError, match="SINDRI_QUANT"):
+        vlm_backend.active_quant(env={"SINDRI_QUANT": "int8"})
+
+
+def test_active_adapter_is_none_by_default():
+    assert vlm_backend.active_adapter(env={}) is None
+
+
+def test_an_adapter_name_is_reported_for_run_config_extra():
+    assert vlm_backend.active_adapter(
+        env={"SINDRI_ADAPTER": "read-lora-v1"}) == "read-lora-v1"
+
+
+def test_an_adapter_that_does_not_exist_fails_loudly(tmp_path, monkeypatch):
+    """A typo must lose the arm, not silently serve the base model under a
+    treatment arm's run name -- which would read as "the LoRA had no effect" for
+    a run that never loaded it."""
+    monkeypatch.setattr(vlm_backend, "_ADAPTER_ROOT", tmp_path)
+    with pytest.raises(ValueError, match="read-lora-typo"):
+        vlm_backend.resolve_adapter(env={"SINDRI_ADAPTER": "read-lora-typo"})
+
+
+def test_an_adapter_that_exists_resolves_to_its_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(vlm_backend, "_ADAPTER_ROOT", tmp_path)
+    (tmp_path / "read-lora-v1").mkdir()
+    (tmp_path / "read-lora-v1" / "adapter_config.json").write_text("{}")
+    assert vlm_backend.resolve_adapter(
+        env={"SINDRI_ADAPTER": "read-lora-v1"}) == tmp_path / "read-lora-v1"
+
+
+def test_resolve_adapter_is_none_when_none_was_asked_for(tmp_path, monkeypatch):
+    monkeypatch.setattr(vlm_backend, "_ADAPTER_ROOT", tmp_path)
+    assert vlm_backend.resolve_adapter(env={}) is None

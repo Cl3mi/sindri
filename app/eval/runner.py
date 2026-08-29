@@ -450,7 +450,8 @@ def _cmd_predict(args):
     from app.pipeline.ocr import get_backend
     backend = get_backend()
     from app.pipeline.detect import active_knobs
-    from app.pipeline.ocr.vlm_backend import active_prompts
+    from app.pipeline.ocr.vlm_backend import (active_adapter, active_prompts,
+                                              active_quant)
     # extra carries the detection knobs actually in effect. Without them two
     # experiment arms yield indistinguishable reports, and _reusable_dump —
     # which compares the whole RunConfig — would skip a document as "already
@@ -461,6 +462,12 @@ def _cmd_predict(args):
         model_id=os.environ.get("VLM_MODEL_ID", "default"), dpi=args.dpi,
         git_sha=_git_sha(), prompt_sha256=_prompt_sha256(),
         extra={**active_knobs(), **active_prompts(),
+               # model_id cannot express HOW the weights were loaded, and Rung
+               # 3's control differs from its arm only in whether an adapter is
+               # attached. Without these two the runs would be indistinguishable
+               # in every report they produce.
+               **({"quant": active_quant()} if active_quant() else {}),
+               **({"adapter": active_adapter()} if active_adapter() else {}),
                # A boxes-only dump carries no values and must never be scored.
                # Recording it here is what stops a resume, a compare, or a human
                # from mistaking one for a full run.

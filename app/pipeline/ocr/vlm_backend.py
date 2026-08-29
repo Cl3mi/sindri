@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from typing import Optional
 from PIL import Image
 from app.pipeline.ocr.base import OcrResult
@@ -176,6 +177,61 @@ def active_prompts(env=None) -> dict:
                                      env)}
 
 
+# Where LoRA adapters are mounted in the container. A NAME reaches the
+# environment, never a path, so a run cannot be pointed at an arbitrary
+# filesystem location and the name is what lands in RunConfig.extra.
+_ADAPTER_ROOT = Path("/models/adapters")
+
+# Load-time quantisations this backend knows how to build. AWQ is not here: it is
+# a property of the checkpoint, selected by using an -AWQ model id, not a runtime
+# choice.
+_QUANTS = ("nf4",)
+
+
+def active_quant(env=None):
+    """The load-time quantisation in effect, or None for the checkpoint's own.
+
+    Recorded in RunConfig.extra because model_id cannot express it: Rung 3's
+    control and the frozen baseline are the same 72B weights loaded two different
+    ways, and a report that cannot tell them apart is not a measurement."""
+    name = (os.environ if env is None else env).get("SINDRI_QUANT") or None
+    if name is not None and name not in _QUANTS:
+        raise ValueError(
+            f"SINDRI_QUANT={name!r} is not supported (have: {list(_QUANTS)}). "
+            f"Refusing to fall back to the checkpoint default: that would serve "
+            f"a different base than an adapter was trained against and report "
+            f"the result as the fine-tune's.")
+    return name
+
+
+def active_adapter(env=None):
+    """The adapter name in effect, or None for the base model."""
+    return (os.environ if env is None else env).get("SINDRI_ADAPTER") or None
+
+
+def resolve_adapter(env=None):
+    """Path to the adapter in effect, or None. Raises if the name is unknown.
+
+    Loudly, for the same reason an unknown prompt variant raises: silently
+    serving the base model under a treatment arm's run name produces a result
+    that reads as "the LoRA had no effect", which is the single most misleading
+    outcome this campaign could generate."""
+    name = active_adapter(env)
+    if name is None:
+        return None
+    path = _ADAPTER_ROOT / name
+    if not (path / "adapter_config.json").is_file():
+        available = (sorted(p.name for p in _ADAPTER_ROOT.glob("*")
+                            if (p / "adapter_config.json").is_file())
+                     if _ADAPTER_ROOT.is_dir() else [])
+        raise ValueError(
+            f"SINDRI_ADAPTER={name!r} is not an adapter under {_ADAPTER_ROOT} "
+            f"(have: {available}). Refusing to fall back to the base model: that "
+            f"would report 'the LoRA had no effect' for a run that never loaded "
+            f"it.")
+    return path
+
+
 def effective_prompts(env=None) -> list:
     """The five prompts this run will actually send, in the order
     runner._prompt_sha256 hashes them. With no variant selected this is exactly
@@ -214,14 +270,39 @@ class VLMBackend:
         self.max_new_tokens = max_new_tokens
         model_id = model_id or os.getenv("VLM_MODEL_ID", _DEFAULT_MODEL)
         self.processor = AutoProcessor.from_pretrained(model_id)
-        # AWQ's Triton dequant kernel only supports float16: mixing its int32
-        # unpacked weights with bfloat16 scales fails to compile. Qwen2.5-VL's
-        # config defaults to bfloat16, so torch_dtype="auto" picks the
-        # unsupported dtype for AWQ checkpoints; force float16 instead.
-        self.model = AutoModelForImageTextToText.from_pretrained(
-            model_id, torch_dtype=torch.float16, device_map="auto"
-        )
+        # TWO load paths, deliberately separate. The float16 reasoning below is
+        # AWQ-specific, so the 4-bit path is a branch rather than an edit to it:
+        # the AWQ path has to keep producing exactly what every committed
+        # measurement was taken with, including the frozen 174.30 baseline.
+        if active_quant() == "nf4":
+            # An adapter is trained against a 4-bit NF4 base and must be SERVED
+            # on that same base. Serving it on AWQ would mix two quantisations,
+            # so any delta would conflate "quantisation changed" with "LoRA
+            # helped" -- which is why Rung 3 runs a zero-shot NF4 control.
+            from transformers import BitsAndBytesConfig
+            self.model = AutoModelForImageTextToText.from_pretrained(
+                model_id, device_map="auto",
+                quantization_config=BitsAndBytesConfig(
+                    load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=torch.bfloat16,
+                    bnb_4bit_use_double_quant=True))
+        else:
+            # AWQ's Triton dequant kernel only supports float16: mixing its int32
+            # unpacked weights with bfloat16 scales fails to compile. Qwen2.5-VL's
+            # config defaults to bfloat16, so torch_dtype="auto" picks the
+            # unsupported dtype for AWQ checkpoints; force float16 instead.
+            self.model = AutoModelForImageTextToText.from_pretrained(
+                model_id, torch_dtype=torch.float16, device_map="auto"
+            )
         self.model.eval()
+
+        # An adapter, if this run selected one. Loaded after eval() because PEFT
+        # wraps the module and the wrapper inherits that state.
+        adapter = resolve_adapter()
+        if adapter is not None:
+            from peft import PeftModel
+            self.model = PeftModel.from_pretrained(self.model, str(adapter))
+            self.model.eval()
 
     def _generate_text(self, prompt: str, image: Image.Image,
                        max_new_tokens: int):
