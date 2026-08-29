@@ -1080,6 +1080,46 @@ EOF
 )"
 ```
 
+### awqgate result — the dependency change is safe
+
+Run 2026-08-29, 8 h 41 m for 20 dev documents (26 min/doc, matching the Rung-2
+dev figure exactly). `predicted: 20, skipped: 0, failed: 0`, `active backend:
+VLM`, zero fallback lines.
+
+`peft` and `bitsandbytes` were added to `requirements-gpu.txt` for Rung 3's
+serving path, and every measurement this project has ever taken rests on that
+image's AWQ dispatch. So the AWQ path was re-run on dev in the NEW image and
+compared against the frozen baseline:
+
+```
+r3-awqgate-dev: docs=20 mean_review_cost=174.30 recall=0.646 escaped_rate=0.270
+reproduction gate OK: all 20 per-document deltas are exactly 0.0
+```
+
+| | baseline-dev | r3-awqgate-dev |
+|---|---|---|
+| `mean_review_cost` | 174.3 | 174.3 |
+| `micro_recall` | 0.6457023060796646 | 0.6457023060796646 |
+| `escaped_rate` | 0.27044025157232704 | 0.27044025157232704 |
+| per-document deltas | — | **20/20 exactly 0.0** |
+
+Identical to full float precision, `robust: true`, no warnings. **The frozen
+174.30 baseline survives the dependency change**, so every Rung-2 conclusion
+still stands and `base72bnf4` is interpretable against it.
+
+This was the campaign's largest single risk: a perturbed AWQ dispatch would have
+invalidated the baseline *silently*, and every later comparison with it. It was
+worth 9 h of GPU to close with evidence rather than assumption — and worth
+running the moment the stage finished rather than two days later, because a
+failure would have meant stopping `base72bnf4` instead of paying another 9 h for
+an uninterpretable result.
+
+Note also what this did NOT need: the train-split pass runs on the pre-change
+image, so its crops were never exposed to the risk either way. Splitting the
+images was what made the expensive stage independent of this outcome.
+
+---
+
 ---
 
 # Stage D — training
