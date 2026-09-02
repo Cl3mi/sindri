@@ -5,6 +5,12 @@
 #
 #   tmux new -d -s rung3 '~/sindri/run_gpu_queue.sh 0 trainpredict'
 #   tmux new -d -s gate  '~/sindri/run_gpu_queue.sh 1 awqgate base72bnf4'
+#   tmux new -d -s ctl   '~/sindri/run_gpu_queue.sh 1 awqcontrol nf4control'
+#
+# ONE card per queue, always. The first argument is a single GPU index and it
+# reaches podman as `--device nvidia.com/gpu=$GPU_INDEX`, so a queue can never
+# occupy both cards -- this host has 24+ other users. Two queues at once means
+# two explicit launches naming different indices, which is a deliberate act.
 #
 # WHY THIS EXISTS SEPARATELY FROM run_experiment_gpu.sh
 # That script runs on the operator's machine and drives this host over ssh, so it
@@ -50,7 +56,7 @@ IMAGE_NEW="${IMAGE_NEW:-sindri-gpu-nf4}"
 
 if [ -z "$GPU_INDEX" ] || [ ${#STAGES[@]} -eq 0 ]; then
     echo "usage: run_gpu_queue.sh <gpu-index> <stage> [<stage>...]" >&2
-    echo "stages: trainpredict awqgate base72bnf4" >&2
+    echo "stages: trainpredict awqgate base72bnf4 awqcontrol nf4control" >&2
     exit 2
 fi
 
@@ -60,17 +66,22 @@ mkdir -p "$LOGDIR"
 # A stage is fully described here so the queue never needs a special case.
 stage_run()    { case "$1" in trainpredict) echo "r3-trainpredict" ;;
                               awqgate)      echo "r3-awqgate" ;;
-                              base72bnf4)   echo "r3-base72bnf4" ;; esac; }
+                              base72bnf4)   echo "r3-base72bnf4" ;;
+                              awqcontrol)   echo "r3-awqcontrol" ;;
+                              nf4control)   echo "r3-nf4control" ;; esac; }
 stage_split()  { case "$1" in trainpredict) echo "train" ;; *) echo "dev" ;; esac; }
 stage_image()  { case "$1" in trainpredict) echo "$IMAGE_OLD" ;;
                               *)            echo "$IMAGE_NEW" ;; esac; }
 stage_env()    { case "$1" in
-                   base72bnf4) echo "-e VLM_MODEL_ID=Qwen/Qwen2.5-VL-72B-Instruct -e SINDRI_QUANT=nf4" ;;
-                   *)          echo "-e VLM_MODEL_ID=$MODEL" ;; esac; }
+                   base72bnf4|nf4control)
+                     echo "-e VLM_MODEL_ID=Qwen/Qwen2.5-VL-72B-Instruct -e SINDRI_QUANT=nf4" ;;
+                   *) echo "-e VLM_MODEL_ID=$MODEL" ;; esac; }
 stage_why()    { case "$1" in
     trainpredict) echo "60 train documents -> the boxes Rung 3's training crops come from. Never scored: train is the training split." ;;
     awqgate)      echo "adding peft+bitsandbytes to the inference image could perturb AWQ dispatch. This re-runs the AWQ path on dev so app/eval/gate.py can prove all 20 per-document deltas are 0.0. If it does not, the frozen 174.30 baseline is invalid and so is every Rung-2 conclusion." ;;
     base72bnf4)   echo "zero-shot NF4 control. The adapter will be served on this base, so this is what separates 'quantisation changed' from 'LoRA helped'." ;;
+    awqcontrol)   echo "RE-RUN of the AWQ zero-shot on current code, because review.LOW_CONF moved 0.6 -> 0.8. That is a PIPELINE change, so every earlier dump carries flags computed at the old threshold and comparing an arm against them would credit the adapter with ~3.00 of threshold move. PREDICTION this run must hit: mean_review_cost 170.05, and recall/n_pred/missed/false_detection/field_acc IDENTICAL to baseline-dev. Only escaped_error->flagged_error may move, by exactly 15." ;;
+    nf4control)   echo "the same re-run for the NF4 base, and the control for lora72b-nf4. PREDICTION: mean_review_cost 176.40, everything but the escaped/flagged split identical to r3-base72bnf4, which moves by exactly 17." ;;
   esac; }
 
 for s in "${STAGES[@]}"; do

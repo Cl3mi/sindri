@@ -124,3 +124,60 @@ def test_stage_output_reaches_a_log_file_on_disk(tmp_path):
     log = tmp_path / "logs" / "r3-trainpredict.log"
     assert log.is_file()
     assert "stage: trainpredict" in log.read_text()
+
+
+def _podman_line(calls, run_name):
+    """The single podman invocation whose --out names `run_name`."""
+    for line in calls.read_text().splitlines():
+        if f"/data/runs/{run_name}" in line:
+            return line
+    raise AssertionError(f"no podman call for {run_name}:\n{calls.read_text()}")
+
+
+def test_the_fresh_controls_are_known_stages(tmp_path):
+    """LOW_CONF 0.6 -> 0.8 is a PIPELINE change, so every dump predicted before
+    it carries review flags computed at the old threshold. Comparing a LoRA arm
+    against those would credit the adapter with the threshold move -- roughly
+    -3.00 of it. Both controls therefore have to be re-run on the current code,
+    which means the unattended queue has to know them."""
+    env, _ = _stub_env(tmp_path)
+    r = _run(tmp_path, env, "awqcontrol", "nf4control")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "unknown stage" not in (r.stdout + r.stderr)
+
+
+def test_the_awq_control_serves_awq_on_dev_in_the_adapter_image(tmp_path):
+    """The control for lora72b-awq: same base, same image, same split, adapter
+    the only difference. The image must be the peft-bearing one the arm will be
+    served from -- a control built from a different image would reintroduce
+    exactly the dependency risk the awqgate run was paid for."""
+    env, calls = _stub_env(tmp_path)
+    assert _run(tmp_path, env, "awqcontrol").returncode == 0
+    line = _podman_line(calls, "r3-awqcontrol")
+    assert "VLM_MODEL_ID=Qwen/Qwen2.5-VL-72B-Instruct-AWQ" in line, line
+    assert "SINDRI_QUANT" not in line, line
+    assert "--split dev" in line, line
+    assert "sindri-gpu-nf4" in line, line
+
+
+def test_the_nf4_control_serves_nf4_on_dev(tmp_path):
+    """The control for lora72b-nf4. SINDRI_QUANT=nf4 is what makes it the NF4
+    base the adapter is trained against; without it the run would serve the AWQ
+    default under a name claiming otherwise, and vlm_backend records the quant
+    in RunConfig.extra precisely so that cannot pass unnoticed."""
+    env, calls = _stub_env(tmp_path)
+    assert _run(tmp_path, env, "nf4control").returncode == 0
+    line = _podman_line(calls, "r3-nf4control")
+    assert "VLM_MODEL_ID=Qwen/Qwen2.5-VL-72B-Instruct " in line + " ", line
+    assert "SINDRI_QUANT=nf4" in line, line
+    assert "--split dev" in line, line
+
+
+def test_a_control_never_runs_on_the_train_split(tmp_path):
+    """Dev is the tuning split and the controls exist to be compared against dev
+    arms. A control accidentally predicted on train would be compared against a
+    different document set, which compare_runs refuses -- two days late."""
+    env, calls = _stub_env(tmp_path)
+    assert _run(tmp_path, env, "awqcontrol", "nf4control").returncode == 0
+    for run_name in ("r3-awqcontrol", "r3-nf4control"):
+        assert "--split train" not in _podman_line(calls, run_name)
