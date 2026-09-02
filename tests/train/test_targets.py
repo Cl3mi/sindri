@@ -164,3 +164,49 @@ def test_every_unrenderable_row_carries_a_values_blind_reason():
         with pytest.raises(UnrenderableRow) as exc:
             render_target(_gold(**fields), hint)
         assert exc.value.reason == expected, (fields, exc.value.reason)
+
+
+def test_render_target_verifies_its_own_output_against_the_parser():
+    """The module promises "a target is correct exactly when parse_value maps it
+    back to the row it came from". That was TESTED on eight shapes and never
+    ENFORCED, so any shape nobody thought of produced a silently wrong target --
+    which is worse than a dropped row, because it trains the model to emit text
+    the parser maps to the wrong fields.
+
+    Three such shapes exist and were found by probing, not by reasoning:
+
+      lower-only tolerance   "5 -0,1"      -> parser reads upper='-0,1'
+      two positive tolerances "5 +0,3 0,1" -> parser drops the lower entirely
+      negative nominal        "-3"         -> parser copies it into upper too
+
+    None is a formatting problem: there is no text that yields upper='' with a
+    lower set, and '5 +0,3 +0,1' parses to lo='-+0,1'. They are unrenderable
+    with this parser, so they must raise."""
+    unrenderable = [
+        ("lower-only tolerance", dict(char_type="Maß", nominal="5",
+                                      lower_tol="-0,1")),
+        ("two positive tolerances", dict(char_type="Maß", nominal="5",
+                                         upper_tol="0,3", lower_tol="0,1")),
+        ("negative nominal", dict(char_type="Maß", nominal="-3")),
+    ]
+    for name, fields in unrenderable:
+        with pytest.raises(UnrenderableRow) as exc:
+            render_target(_gold(**fields), "")
+        assert exc.value.reason == "not_round_tripping", (name, exc.value.reason)
+
+
+def test_the_self_check_uses_the_same_predicate_as_scoring():
+    """char_type is compared only when gold HAS one, and the three value fields
+    always -- exactly score._compare_fields. A stricter check here would reject
+    rows the metric would have credited; a looser one would admit targets the
+    metric will score as errors."""
+    text = render_target(_gold(char_type="", nominal="20"), "")
+    assert text == "20"
+
+
+@pytest.mark.parametrize("name,fields,hint", SHAPES, ids=[s[0] for s in SHAPES])
+def test_the_self_check_admits_every_shape_the_corpus_contains(name, fields,
+                                                               hint):
+    """The regression half: enforcing the property must not start rejecting the
+    shapes that were already correct."""
+    assert render_target(GoldCharacteristic(balloon=1, **fields), hint)
