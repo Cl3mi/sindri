@@ -35,28 +35,45 @@ advisory, and it has been right every single time it fired.
 
 ## 2. Where things stand
 
-Branch `worktree-eval-harness`, PR #2. Suite: **441 passed, 2 skipped** (the 2
+**Read `docs/plans/2026-08-30-session-handoff.md` first — it is the current state
+of play.** Everything below is the durable summary.
+
+Branch `worktree-eval-harness`, PR #2. Suite: **560 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). `SCHEMA_VERSION` = 1 — do not bump
 it. Split frozen at `6d174d5e4f1b9228` — do not regenerate it.
 
-Rung-0 baseline (dev split, 20 docs):
+Rung-0 baseline (dev split, 20 docs), still the frozen reference:
 `mean_review_cost=174.30 micro_recall=0.646 micro_precision=0.371`,
-`missed=169 (contended 82 / isolated 74 / unlocated 13)`, `false_detection=522`.
+`field_acc=0.3636`, `missed=169 (contended 82 / isolated 74 / unlocated 13)`,
+`false_detection=522`.
 
 An older `245.30 / 0.350` appears in git history and in `docs/eval/render150-*`.
 That number was measuring a coordinate bug, not the model. Do not quote it as the
 baseline.
 
-The four-arm GPU direction run is **done** (`660f462`). Every detection lever
-tested lost, so the defaults above are locally optimal and the next lever is
-Rung 2 prompts. Full metrics, interpretation, and the operational gotchas:
-`docs/plans/2026-08-21-direction-run-findings.md` — **read this before proposing
-any detection change.** Earlier context: `docs/plans/2026-08-20-session-handoff.md`
-(its §2.2 inference about the contended bucket is superseded; see findings §6).
+**Rung 1 and Rung 2 are closed: seven arms, seven losses.** Every detection knob
+and both prompt levers were tested and all lost — and neither prompt arm moved the
+bucket it targeted. Treat the committed configuration as tuned, and do not propose
+another knob or prompt without a mechanism that predicts which bucket moves and
+why. Evidence: `docs/plans/2026-08-21-direction-run-findings.md` (detection) and
+`docs/plans/2026-08-24-rung2-reading-quality.md` (prompts, plus the Phase A
+diagnostics that route the residual).
 
-**Next action:** Rung 2 prompts. The remaining problem is reading, not finding:
-196 matched-but-wrong rows vs 169 missed, `misread` 144 vs `misparse` 52, and
-field accuracy on matched rows is only 0.3636.
+**Rung 3 (LoRA on the read stage) is in flight.** The 72B trains at 4-bit NF4 in
+**38.8 GB on one H100** — gate passed. Its GPU phase is done: the dependency
+change to the inference image is proven safe (AWQ reproduces the baseline to full
+float precision, 20/20 deltas `0.0`), and serving on NF4 costs **+6.75** review
+cost, so a LoRA served that way must recover 6.75 before reaching parity with
+production. Plan: `docs/plans/2026-08-27-rung3-lora-plan.md`; design:
+`docs/plans/2026-08-27-rung3-lora-design.md`.
+
+**Next action:** Rung 3 is **blocked on a data-owner decision** — building
+training pairs needs gold (local-only), and training needs them on the GPU host,
+which means the inspection *values* leave this machine. `docs/eval/DATA-HANDLING.md`
+and the runbook make that the owner's call, not the harness's. Everything else is
+built and tested. Two GPU-free wins are also still unbanked (`review.LOW_CONF`
+0.6 → 0.8 is −3.00 cost for nothing; the 23 `char_type`-only rows ~−4.6) — see
+handoff §6.
 
 ## 3. Measured dead ends — do not retry these
 
@@ -86,6 +103,25 @@ GPU days.
   arm measured. Damage concentrates 12× on the render-clamped sheets. This is a
   *different* lever from the render pixel budget above; both ends of the
   resolution family are now closed.
+* **The read prompt, toward callout selection** (`readcenter`, +0.90 cost,
+  `field_acc` −0.0162). Detection came back bit-identical, so it was an isolated
+  test of the read prompt — and its target bucket, `misread.misplaced`, was
+  **provably untouched at 64 → 64**. Naming the centre callout recovered none of
+  them, so those rows are not an ambiguity about *which* callout to read.
+* **The detect prompt, toward tighter boxes** (`detectbox`). `experiment.py`
+  called it a WIN; it is not. Not robust (better under 4 of 6 weightings, `ci95`
+  spanning zero), both `compare_runs` guards fired, it destroyed 18 legitimate
+  `gdt`/`theoretical` matches by the `score_kinds` mechanism above, and its target
+  bucket moved the **wrong way** (49 → 54). It also shows that suppressing
+  non-`dimension` detections is that same dead end wearing a different hat.
+* **`predict --detect-only` as a way to cheapen the crop pass.** Detection is
+  ~2/3 of per-document cost, not the reads: detection-only measured 10 m 55 s and
+  23 m 45 s on dev documents 2 and 3 against a full-predict median of ~16 min, and
+  document 3's detection alone exceeded that median. Kept as a diagnostic because
+  it produced the measurement. **The corollary is useful though:** cutting
+  detection cost — fewer or cheaper tiles, a lower `max_new_tokens`, since the
+  returned JSON arrays are short — would shorten *every* run, whereas the read
+  stage has little left to give.
 
 ## 4. Conventions — match these, they are load-bearing
 
@@ -131,11 +167,29 @@ GPU days.
 * **Scoring is deterministic here** (greedy VLM decoding): 16 unchanged documents
   gave per-document deltas of exactly `0.0` across a GPU device change. So one arm
   per hypothesis is enough, no repeats, and any non-zero delta is causal.
+* **The digest-key trap.** The pre-commit hook blocks any staged `.json` whose
+  content carries `"upper_tol"` or `"lower_tol"` as a quoted token — it cannot tell
+  a COUNT keyed by a field name from a VALUE stored under one. Aggregate keys are
+  therefore namespaced (`field:lower_tol`, `fields:char_type+nominal`). Do **not**
+  reach for `SINDRI_ALLOW_DATA_COMMIT`: every future digest commit would then need
+  it, which trades a permanent hole in a data guard for six characters.
+* **The Bash guard denies more shapes than it first appears.** `cmd | head`,
+  `a && b`, `> file`, a bare `.pdf` anywhere in the command string, and even
+  `git add <file-whose-CONTENTS-mention-the-protected-root>` are all refused. Run
+  sanctioned commands bare, and split a file edit from its `git add` into separate
+  calls. `sync_client_data.sh` is **not** in the allowlist regex, so pulls are the
+  operator's to run, not an agent's.
+* **The GPU host is unreliable, not merely slow.** 24+ users, load 80–200. In one
+  evening it dropped an ssh channel mid-run, killed a container two documents from
+  the end, and left the network for ~14 h *without rebooting*. Long runs belong in
+  `tmux` **on the host** (`KillUserProcesses=false` is confirmed; another user's
+  server has 123 days' uptime) — see `run_gpu_queue.sh`, which is resumable via
+  `.complete` markers and never scores, because gold is not there.
 
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 441 passed, 2 skipped
+python -m pytest -q                          # 560 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # baseline / arm decision table
 ```
