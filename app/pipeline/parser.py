@@ -130,7 +130,12 @@ def parse_value(raw: str, hint: str = "") -> Characteristic:
         if len(signed) >= 1:
             c.upper_tol = _norm(_strip_sign(signed[0]))
         if len(signed) >= 2:
-            c.lower_tol = _norm(signed[1]) if signed[1][0] == "-" else "-" + _norm(signed[1])
+            # Keep the sign the drawing printed. "20 +0,3 +0,1" is an ordinary
+            # shaft fit whose LOWER bound is plus 0,1; the old expression did
+            # `"-" + _norm(signed[1])`, which both malformed the string ("-+0,1")
+            # and inverted a bound the drawing states explicitly. _strip_sign
+            # only removes "+", so a negative bound passes through untouched.
+            c.lower_tol = _norm(_strip_sign(signed[1]))
         # a single explicit upper tol followed by an unsigned 0 is a MAX-type
         # zero lower tol (e.g. "Ø6.6 +0.2 0")
         if (len(signed) == 1 and signed[0][0] == "+"

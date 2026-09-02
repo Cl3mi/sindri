@@ -140,3 +140,35 @@ def test_gdt_hint_on_plain_tolerance_text_is_not_position():
     # '+' sign as a position symbol; with no real symbol it defaults to Flatness
     c = parse_value("1,2 +0,1 -0,1", hint="gdt")
     assert c.char_type != "Position"
+
+
+def test_two_positive_tolerances_keep_their_sign():
+    """A shaft or hole fit prints both bounds positive -- "20 +0,3 +0,1" means a
+    lower bound of PLUS 0,1, not minus. The old branch did
+    `"-" + _norm(signed[1])`, which produced the malformed '-+0,1' AND inverted
+    a bound the drawing states explicitly. Two defects in one expression.
+
+    Found while building Rung 3's training targets: rendering such a row and
+    parsing it back returned different fields, so the row could not round-trip.
+    That made it visible as training data; in production it has been silently
+    misparsing these callouts all along."""
+    c = parse_value("20 +0,3 +0,1")
+    assert c.nominal == "20"
+    assert c.upper_tol == "0,3"
+    assert c.lower_tol == "0,1"
+
+
+def test_a_negative_lower_tolerance_is_still_negative():
+    """The regression half: the common case must not move. Every committed
+    measurement rests on it."""
+    c = parse_value("20 +0,1 -0,1")
+    assert c.upper_tol == "0,1" and c.lower_tol == "-0,1"
+
+
+def test_an_unsigned_lower_bound_is_still_read_as_negative():
+    """Deliberately unchanged. A drawing printing "20 +0,1 0,1" with no sign on
+    the second bound means +0,1/-0,1 by convention, and _NUM_RE puts an unsigned
+    token in `unsigned`, not `signed` -- so this path never reached the branch
+    above and must keep behaving as it did."""
+    c = parse_value("20 +0,2 0")
+    assert c.upper_tol == "0,2" and c.lower_tol == "0"
