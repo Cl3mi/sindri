@@ -521,11 +521,21 @@ def test_rows_whose_tolerance_was_read_are_not_counted_as_dropped():
 
 
 def test_confidence_bucket_boundary_sits_on_the_review_threshold():
-    """review.LOW_CONF is 0.6, so 0.6 must open a bucket rather than close one:
-    the whole point is reading off how many rows a threshold move would flag."""
-    from app.eval.score import _conf_bucket
+    """An edge must OPEN a bucket rather than close one, at both the old review
+    threshold (0.6) and the live one (0.8): the whole point is reading off how
+    many rows a threshold move would flag. This histogram is what priced the
+    0.6 -> 0.8 move, so if review.LOW_CONF ever moves again, keep an edge on it
+    or the next move cannot be priced without a GPU re-run."""
+    from app.pipeline.review import LOW_CONF
+
+    from app.eval.score import _CONF_EDGES, _conf_bucket
     assert _conf_bucket(0.59) == "0.4-0.6"
     assert _conf_bucket(0.6) == "0.6-0.8"
+    assert _conf_bucket(0.79) == "0.6-0.8"
+    assert _conf_bucket(0.8) == ">=0.8"
+    assert LOW_CONF in _CONF_EDGES, (
+        f"review.LOW_CONF={LOW_CONF} is not a bucket edge {_CONF_EDGES}, so the "
+        f"histogram can no longer say what the live threshold flags")
 
 
 def test_confidence_bucket_covers_the_extremes():

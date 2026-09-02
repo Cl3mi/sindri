@@ -13,7 +13,15 @@ from app.models import Characteristic
 # and Reference (parser only assigns it when a number was parsed, so it can never
 # reach an empty nominal here).
 DIMENSION_TYPES = {"Distance", "Diameter", "Radius", "Theoretical"}
-LOW_CONF = 0.6
+# 0.8, raised from the 0.6 inherited from the Tesseract-era UI. Measured on the
+# dev split, not chosen: the 0.6-0.8 band held 18 matched pairs at a 100% error
+# rate with ZERO correct rows, and all 24 pairs below 0.8 were wrong. Flagging
+# that band converts 15 silent wrong values (w=5) into flagged ones (w=1) and
+# flags no correct row -- -3.00 mean review cost for nothing given up.
+# Not higher: 284 of 308 pairs sit at >=0.8 and 112 of those are correct, so the
+# next band up would charge for 112 correct rows to catch 114 escaped ones.
+# The VLM's confidence is saturated, so this is a two-band decision, not a curve.
+LOW_CONF = 0.8
 
 
 def review_flags(c: Characteristic, rotation_ambiguous: bool,

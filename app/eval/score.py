@@ -17,10 +17,12 @@ _NUM_RE = re.compile(r"[+\-±]?\d+(?:[.,]\d+)?")
 
 _FIELDS = ("nominal", "upper_tol", "lower_tol")
 
-# Read-confidence buckets. 0.6 is a boundary on purpose: it is
-# app.pipeline.review.LOW_CONF, the threshold that decides needs_review, so the
-# joint histogram of bucket x taxonomy answers "how many rows would a threshold
-# move flag, and how many of those are actually wrong?" without a GPU re-run.
+# Read-confidence buckets. 0.6 and 0.8 are both boundaries on purpose: 0.6 was
+# app.pipeline.review.LOW_CONF and 0.8 is what it was raised to, so the joint
+# histogram of bucket x taxonomy answers "how many rows would a threshold move
+# flag, and how many of those are actually wrong?" without a GPU re-run. It is
+# what priced that move: the 0.6-0.8 band was 18 rows, 100% wrong, 0 correct.
+# Keep an edge on the live threshold, or the next such move cannot be priced.
 # Duplicated rather than imported: eval must not import the pipeline module
 # whose constant is under review, and a drifting copy would change only this
 # diagnostic's bucket labels, not any scored result.

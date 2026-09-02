@@ -40,6 +40,34 @@ def test_low_ocr_confidence_when_text_present():
     assert reasons == ["low OCR confidence"]
 
 
+def test_a_read_in_the_zero_point_six_to_zero_point_eight_band_is_flagged():
+    """LOW_CONF was 0.6, which let the 0.6-0.8 band through unflagged. That band
+    is not marginal-but-usually-right; on the dev split it held 18 matched pairs
+    at a 100% error rate with ZERO correct rows (baseline-dev-diag
+    confidence_by_taxonomy: escaped_error 15, flagged_error 3), and every one of
+    the 24 pairs below 0.8 was wrong.
+
+    So flagging it converts 15 silent wrong values (w=5) into flagged ones (w=1)
+    and flags no correct row: -60 total, -3.00 mean review cost, escaped_rate
+    0.2704 -> 0.2390, field_acc untouched. Raising a threshold can only ADD the
+    low-confidence reason, never remove one, which is what makes that arithmetic
+    exact from stored confidences rather than an estimate."""
+    _, reasons = review_flags(_row(raw_text="1,2", nominal="1,2", confidence=0.7),
+                              rotation_ambiguous=False)
+    assert reasons == ["low OCR confidence"]
+
+
+def test_a_saturated_confidence_read_is_still_trusted():
+    """The regression half, and the reason the threshold stops at 0.8 rather than
+    going higher: 284 of the 308 matched pairs sit at >=0.8 and 112 of those are
+    field-correct. Flagging that band would charge w=1 for 112 correct rows to
+    catch 114 escaped ones -- a far worse trade than the 15-for-nothing below
+    it. 0.8 must therefore be trusted, not flagged."""
+    _, reasons = review_flags(_row(raw_text="1,2", nominal="1,2", confidence=0.8),
+                              rotation_ambiguous=False)
+    assert reasons == []
+
+
 def test_rotation_ambiguity_reason():
     _, reasons = review_flags(_row(), rotation_ambiguous=True)
     assert reasons == ["rotation ambiguity"]
