@@ -818,3 +818,49 @@ def test_same_base_model_produces_no_model_warning():
         r.config = RunConfig(model_id="Qwen/Qwen2.5-VL-72B-Instruct")
     assert not any("base model" in w
                    for w in compare_runs(a, b, seed=13)["warnings"])
+
+
+def test_char_type_confusion_names_both_types():
+    """wrong:char_type is the largest single failure mode on this corpus (115 of
+    308 matched pairs) and field_failure_modes says only THAT it is wrong. Which
+    type was confused for which decides the work: a gold Diameter read as
+    Distance is a dropped leading symbol, and parser.py infers Diameter from
+    exactly that symbol, so it is a read-stage target. The reverse is an
+    invented symbol, and a Position/Flatness swap is the GD&T table instead."""
+    digest = summarize(_wrong_row_report(
+        ["char_type: 'Distance'!='Diameter'"],
+        notes=["ctype:Diameter->Distance"]), lambda d: "hashed")
+    assert digest["char_type_confusion"] == {"chartype:Diameter->Distance": 1}
+
+
+def test_char_type_confusion_reconciles_with_the_field_failure_count():
+    """House rule: every aggregate must cross-check against a count that already
+    exists. Every char_type-wrong row carries exactly one ctype note, so the
+    confusion counts must sum to field_failures['field:char_type']."""
+    digest = summarize(_wrong_row_report(
+        ["char_type: 'Distance'!='Diameter'", "nominal: '6,5'!='5,5'"],
+        notes=["ctype:Diameter->Distance"]), lambda d: "hashed")
+    assert (sum(digest["char_type_confusion"].values())
+            == digest["field_failures"]["field:char_type"])
+
+
+def test_char_type_confusion_says_so_when_the_report_predates_the_note():
+    """The same discipline as field_failure_modes_not_measured: an older report
+    carries char_type-wrong rows with no ctype note, and a silent {} would read
+    as 'no confusions' for a run with 115 of them."""
+    digest = summarize(_wrong_row_report(["char_type: 'Distance'!='Diameter'"]),
+                       lambda d: "hashed")
+    assert digest["char_type_confusion"] == {}
+    assert digest["char_type_confusion_not_measured"] == 1
+
+
+def test_char_type_confusion_never_forwards_an_unvetted_label():
+    """score._ctype_label already bucketes an unknown label as 'unmapped', but
+    the digest must not depend on that: if the note format ever changes, this
+    aggregate has to drop the string rather than forward client text into a
+    file built to be committed."""
+    digest = summarize(_wrong_row_report(
+        ["char_type: 'Distance'!='STANZGRATSEITE'"],
+        notes=["ctype:STANZGRATSEITE INNEN->Distance"]), lambda d: "hashed")
+    assert "STANZGRAT" not in json.dumps(digest, ensure_ascii=False).upper()
+    assert digest["char_type_confusion"] == {"chartype:other->Distance": 1}

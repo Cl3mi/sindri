@@ -9,7 +9,8 @@ from app.eval.dump import to_points
 from app.eval.matching import Cand, match_candidates
 from app.eval.models import (DocScore, GoldDoc, MatchParams, MatchedPair,
                              PredictionDump, ReviewCostWeights)
-from app.eval.normalize import canon_value, char_type_equal, values_equal
+from app.eval.normalize import (CHAR_TYPE_SYNONYMS, canon_value,
+                                char_type_equal, values_equal)
 
 # Same numeric token shape as app/pipeline/parser.py's _NUM (kept local so the
 # eval package never imports pipeline internals that may move under tuning).
@@ -27,6 +28,55 @@ _FIELDS = ("nominal", "upper_tol", "lower_tol")
 # whose constant is under review, and a drifting copy would change only this
 # diagnostic's bucket labels, not any scored result.
 _CONF_EDGES = (0.2, 0.4, 0.6, 0.8)
+
+
+# The char_type values app/pipeline/parser.py can emit: its module constants plus
+# the _GDT_SYMBOLS names. A deliberate local copy, for the same reason _NUM_RE and
+# _CONF_EDGES are copies -- eval must not import pipeline internals that move
+# under tuning, and tests/eval/test_score.py fails if the two ever diverge.
+# It doubles as a safety whitelist: anything outside it is reported as "unmapped"
+# rather than echoed, so no digest can carry a string off the inspection sheet.
+_PARSER_CHAR_TYPES = frozenset({
+    "Diameter", "Radius", "Flatness", "Distance", "Material", "Note",
+    "Theoretical", "Reference", "Position", "Circularity", "Concentricity",
+    "Cylindricity", "Parallelism", "Perpendicularity", "Angularity"})
+
+
+def _ctype_label(v) -> str:
+    """A char_type as a closed-vocabulary name, or 'unmapped(<projection>)'.
+
+    Never the raw string. Gold char_type comes off the client's inspection
+    sheet, and an unmapped label in this corpus is a German requirement
+    sentence (normalize.char_type_kind documents the long tail of them), so
+    echoing one would put client text into a digest built to be committed. The
+    COUNT is the finding; the string is the leak.
+
+    The projection exists because CHAR_TYPE_SYNONYMS is matched on the WHOLE
+    label while char_type_kind matches on word CONTAINMENT — so a compound gold
+    label ("Diameter MIN", "Ebenheit 0,05 zu C") is scored as a dimension yet
+    can never equal the parser's bare constant. 68 of dev's 115 char_type
+    disagreements are exactly that. Whether relaxing the map to containment is
+    a fix or an over-credit depends on what those labels hold, so the label
+    reports which single synonym its WORDS resolve to:
+
+      unmapped(Flatness)   one value — containment would resolve this row
+      unmapped(none)       no recognised word — containment would not
+      unmapped(ambiguous)  two or more — containment has no principled answer
+
+    Still a closed vocabulary, so still values-blind."""
+    text = " ".join(str(v or "").split())
+    if not text:
+        return "empty"
+    canon = CHAR_TYPE_SYNONYMS.get(text.casefold(), text)
+    if canon in _PARSER_CHAR_TYPES:
+        return canon
+    words = {w.strip(".,;:()[]").casefold() for w in text.split()}
+    reachable = {CHAR_TYPE_SYNONYMS[w] for w in words if w in CHAR_TYPE_SYNONYMS}
+    if not reachable:
+        return "unmapped(none)"
+    if len(reachable) > 1:
+        return "unmapped(ambiguous)"
+    return f"unmapped({reachable.pop()})"
 
 
 def _conf_bucket(conf: float) -> str:
@@ -177,6 +227,15 @@ def score_doc(dump: PredictionDump, gold: GoldDoc,
             notes.append(f"cause:{_cause(p, g)}")
             modes = _failure_modes(p, g)
             notes.extend(modes)
+            # WHICH two types were confused, not merely that char_type is wrong.
+            # Those route to different work: Diameter read as Distance is a
+            # dropped leading symbol the read stage can fix, an invented one is
+            # the reverse, and a Position/Flatness swap is the GD&T symbol table.
+            # Keyed off `modes` rather than re-comparing, so this can never
+            # disagree with _compare_fields about which fields are wrong.
+            if any(m.endswith(":char_type") for m in modes):
+                notes.append(f"ctype:{_ctype_label(g.char_type)}"
+                             f"->{_ctype_label(p.char_type)}")
             if {"missing:upper_tol", "missing:lower_tol"} & set(modes):
                 dropped_tol_rows += 1
                 dropped_tol_values.add((canon_value(g.upper_tol),

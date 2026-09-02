@@ -144,8 +144,30 @@ def values_equal(a, b) -> bool:
 
 
 def _canon_char_type(v) -> str:
-    key = " ".join(str(v or "").split()).casefold()
-    return CHAR_TYPE_SYNONYMS.get(key, key)
+    """Gold label or parser constant -> one canonical characteristic name.
+
+    Exact match first, then word CONTAINMENT — because gold labels carry
+    qualifiers and datum references ("Diameter MIN", "Ebenheit 0,05 zu C") that
+    an exact match can never resolve. char_type_kind above already reads labels
+    that way, and its docstring already argues for it; matching on the whole
+    string here meant the two functions read the same label two different ways.
+    Measured on dev: 68 of the 115 char_type disagreements were gold labels
+    this function could not resolve at all.
+
+    A unique answer is REQUIRED. If a label's words reach two different
+    characteristic names there is no principled choice, so it stays unresolved
+    rather than being credited to whichever came first — a scoring relaxation
+    with no compare_runs fingerprint must not guess in the pipeline's favour.
+
+    Monotone by construction: exact matches still match, so no row that
+    compared equal before can compare unequal now."""
+    text = " ".join(str(v or "").split())
+    key = text.casefold()
+    if key in CHAR_TYPE_SYNONYMS:
+        return CHAR_TYPE_SYNONYMS[key]
+    words = {w.strip(".,;:()[]").casefold() for w in text.split()}
+    reachable = {CHAR_TYPE_SYNONYMS[w] for w in words if w in CHAR_TYPE_SYNONYMS}
+    return reachable.pop() if len(reachable) == 1 else key
 
 
 def char_type_equal(a, b) -> bool:

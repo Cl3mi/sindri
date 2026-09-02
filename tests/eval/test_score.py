@@ -552,3 +552,97 @@ def test_every_matched_pair_carries_a_confidence_bucket_including_correct_ones()
         dict(char_type="Distance", nominal="20"))
     assert pair.fields_correct
     assert "conf:>=0.8" in pair.notes
+
+
+def test_a_char_type_disagreement_records_which_two_types():
+    """wrong:char_type is the single largest failure mode (115 of 308 matched
+    pairs) and field_failure_modes says only THAT it is wrong, never which type
+    was confused for which. Those routes are different work: Diameter read as
+    Distance is a dropped leading symbol the read stage can fix, while
+    Distance read as Diameter is an invented one, and a Position/Flatness swap
+    is the GD&T symbol table. Without the pair, the biggest bucket on this
+    corpus cannot be aimed at all."""
+    pair = _one_pair(
+        dict(char_type="Distance", nominal="20", raw_text="20"),
+        dict(char_type="Durchmesser", nominal="20"))
+    assert "ctype:Diameter->Distance" in pair.notes, pair.notes
+
+
+def test_the_char_type_note_reports_an_unmapped_label_without_echoing_it():
+    """The NDA property, and the reason this note canonicalises rather than
+    quoting. A label absent from CHAR_TYPE_SYNONYMS is, in this corpus, a German
+    requirement sentence off the inspection sheet -- so echoing it into a digest
+    would put client text in a file built to be committed. 'unmapped' keeps the
+    count (which is the finding) and drops the string (which is the leak)."""
+    pair = _one_pair(
+        dict(char_type="Distance", nominal="20", raw_text="20"),
+        dict(char_type="STANZGRATSEITE INNEN", nominal="20"))
+    ctype = next(n for n in pair.notes if n.startswith("ctype:"))
+    assert ctype.startswith("ctype:unmapped("), ctype
+    assert not any("STANZGRAT" in n.upper() for n in pair.notes), pair.notes
+
+
+def test_no_char_type_note_when_the_types_agree():
+    """The note exists to route disagreements; tagging agreements would make the
+    aggregate stop reconciling against field:char_type."""
+    pair = _one_pair(
+        dict(char_type="Diameter", nominal="20", raw_text="Ø20"),
+        dict(char_type="Durchmesser", nominal="20"))
+    assert pair.fields_correct
+    assert not any(n.startswith("ctype:") for n in pair.notes), pair.notes
+
+
+def test_the_parser_char_type_whitelist_matches_the_parser():
+    """_PARSER_CHAR_TYPES is a deliberate copy -- eval must not import pipeline
+    internals that move under tuning -- so this is what stops the copy from
+    drifting, the same job tests/eval/test_reparse.py does for the parser copy.
+
+    If the parser gains a char_type and this set does not, the new type reports
+    as 'unmapped' and vanishes from the routing aggregate: a real confusion
+    would look like a client-text label. That failure is silent, hence a test."""
+    from app.pipeline import parser
+
+    from app.eval.score import _PARSER_CHAR_TYPES
+    emitted = {parser.DIAMETER, parser.RADIUS, parser.FLATNESS, parser.DISTANCE,
+               parser.MATERIAL, parser.NOTE, parser.THEORETICAL,
+               parser.REFERENCE} | set(parser._GDT_SYMBOLS.values())
+    assert emitted == set(_PARSER_CHAR_TYPES)
+
+
+def test_an_unmapped_gold_label_reports_what_containment_would_resolve_it_to():
+    """A compound gold label that containment resolves produces NO char_type
+    error at all any more -- which is the whole point of the relaxation, and it
+    is why the projection now only ever reads 'none' or 'ambiguous'.
+
+    Kept as the regression test for that collapse. This exact row was one of
+    the 68 disagreements the projection found: gold "Ebenheit 0,05 zu C" was
+    scored as a dimension by char_type_kind's word containment, yet could never
+    equal the parser's "Flatness" under a whole-string map. If a future edit
+    reinstates whole-string matching, the ctype note reappears here."""
+    pair = _one_pair(
+        dict(char_type="Flatness", nominal="0", upper_tol="0,05",
+             lower_tol="0", raw_text="0,05"),
+        dict(char_type="Ebenheit 0,05 zu C", nominal="0", upper_tol="0,05",
+             lower_tol="0"))
+    assert pair.fields_correct, pair.field_errors
+    assert not any(n.startswith("ctype:") for n in pair.notes), pair.notes
+
+
+def test_an_unmapped_label_with_no_recognisable_word_projects_to_none():
+    """The bucket that says containment would NOT fix the row. Without it, a
+    label the map simply does not cover is indistinguishable from one a
+    one-line relaxation would resolve."""
+    pair = _one_pair(
+        dict(char_type="Distance", nominal="20", raw_text="20"),
+        dict(char_type="STANZGRATSEITE INNEN", nominal="20"))
+    assert "ctype:unmapped(none)->Distance" in pair.notes, pair.notes
+
+
+def test_an_unmapped_label_resolving_two_ways_is_reported_ambiguous():
+    """The over-crediting hazard, made countable rather than argued about. If a
+    label's words point at two different characteristic names, containment has
+    no principled answer and must not silently pick the first one."""
+    pair = _one_pair(
+        dict(char_type="Distance", nominal="20", raw_text="20"),
+        dict(char_type="Durchmesser oder Radius", nominal="20"))
+    assert "ctype:unmapped(ambiguous)->Distance" in pair.notes, pair.notes

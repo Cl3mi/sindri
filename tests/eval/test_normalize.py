@@ -111,3 +111,38 @@ def test_the_synonym_map_never_widens_which_gold_rows_are_scored():
         f"_DIMENSION_WORDS changed size to {len(_DIMENSION_WORDS)}; a synonym "
         f"key that is not already a dimension word changes which gold rows are "
         f"scored, so n_gold moves and the report is not comparable")
+
+
+def test_a_qualified_gold_label_canonicalises_by_word_containment():
+    """The measured cause of 68 of dev's 115 char_type disagreements: the map
+    was matched on the WHOLE label while char_type_kind matches on word
+    containment, so a compound gold label is scored as a dimension yet can
+    never equal the parser's bare constant.
+
+    char_type_kind's own docstring already argues for containment ("so
+    'Diameter MIN' and 'Sym. 0,05 zu C' classify as dimensions"); this makes
+    the two functions read a label the same way instead of two ways."""
+    assert char_type_equal("Diameter", "Diameter MIN")
+    assert char_type_equal("Flatness", "Ebenheit 0,05 zu C")
+    assert char_type_equal("Distance", "Maß (Hilfsmaß)")
+
+
+def test_containment_refuses_an_ambiguous_label_rather_than_picking_one():
+    """The over-crediting guard. Two rows on dev carry a label whose words point
+    at two different characteristic names, and there is no principled way to
+    choose -- so those must stay unequal rather than be resolved arbitrarily.
+    Silently picking the first would credit the pipeline for a read that may be
+    wrong, which is exactly what a scoring change with no compare_runs
+    fingerprint must never do."""
+    assert not char_type_equal("Diameter", "Durchmesser oder Radius")
+    assert not char_type_equal("Radius", "Durchmesser oder Radius")
+
+
+def test_containment_can_only_ever_make_a_row_correct_never_break_one():
+    """Why this relaxation is safe to apply to a frozen baseline: it is
+    monotone. Exact matches still match, so no row that compared equal before
+    can compare unequal now -- the re-score can lose no correct row."""
+    assert char_type_equal("Diameter", "Durchmesser")
+    assert char_type_equal("Distance", "Distance")
+    assert not char_type_equal("Radius", "Diameter")
+    assert not char_type_equal("Distance", "STANZGRATSEITE INNEN")

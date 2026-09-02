@@ -7,6 +7,7 @@ from typing import Dict, List, Tuple
 
 from app.eval.models import (DocScore, MatchParams, ReviewCostWeights,
                              RunConfig, RunReport, SCHEMA_VERSION)
+from app.eval.score import _PARSER_CHAR_TYPES
 
 N_BOOTSTRAP = 10_000
 
@@ -119,6 +120,57 @@ def _field_failure_counts(report: RunReport) -> Tuple[Dict[str, int],
                                        if n in names)
             signatures[key] = signatures.get(key, 0) + 1
     return per_field, signatures
+
+
+# The closed vocabulary score._ctype_label may emit. Imported rather than
+# copied: it IS score's whitelist, and a digest that accepted a wider set than
+# score produces would forward whatever a future note format put there.
+_CTYPE_VOCAB = frozenset(
+    _PARSER_CHAR_TYPES | {"empty"}
+    | {f"unmapped({p})" for p in _PARSER_CHAR_TYPES | {"none", "ambiguous"}})
+
+
+def _char_type_confusion(report: RunReport) -> Tuple[Dict[str, int], int]:
+    """Gold char_type -> predicted char_type, over the rows where they disagree.
+
+    `wrong:char_type` is the largest single failure mode on this corpus — 115 of
+    308 matched pairs — and `field_failure_modes` records only THAT the type is
+    wrong. Which pair of types was confused is what routes the work, and the
+    routes are genuinely different: `parser.py` infers Diameter from a leading
+    Ø, so a gold Diameter predicted as Distance is a dropped symbol the read
+    stage can fix, the reverse is an invented one, and a Position/Flatness swap
+    is `parser._GDT_SYMBOLS` rather than anything the model did.
+
+    It also settles a question policy alone could not. A synonym-map gap and a
+    real perception failure produce the same `wrong:char_type` count; only this
+    aggregate separates them, and the `unmapped` bucket is what says which.
+
+    Selects rows exactly as `_field_failure_counts` does — the field name left
+    of the first ":" — so the counts reconcile against `field:char_type` by
+    construction rather than by coincidence. Both label sides arrive already
+    canonicalised by `score._ctype_label`; anything outside that vocabulary is
+    bucketed `other` rather than forwarded, for the same reason an unknown field
+    name becomes `field:other`: a values-blind file must not inherit an upstream
+    format change. `not_measured` counts char_type-wrong rows from reports that
+    predate the note, for the same reason `field_failure_modes_not_measured`
+    exists — a silent `{}` would read as "no confusions" for a run with 115."""
+    out: Dict[str, int] = {}
+    not_measured = 0
+    for d in report.doc_scores:
+        for p in d.pairs:
+            if not any(e.split(":", 1)[0].strip() == "char_type"
+                       for e in p.field_errors):
+                continue
+            note = next((n.split(":", 1)[1] for n in p.notes
+                         if n.startswith("ctype:")), None)
+            if note is None:
+                not_measured += 1
+                continue
+            gold, _, pred = note.partition("->")
+            key = (f"chartype:{gold if gold in _CTYPE_VOCAB else 'other'}"
+                   f"->{pred if pred in _CTYPE_VOCAB else 'other'}")
+            out[key] = out.get(key, 0) + 1
+    return out, not_measured
 
 
 # The three ways score._failure_modes can describe a wrong field.
@@ -394,6 +446,7 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
     field_failures, field_signatures = _field_failure_counts(report)
     failure_modes, modes_not_measured = _failure_mode_counts(report)
     conf_taxonomy, conf_not_measured = _confidence_by_taxonomy(report)
+    ctype_confusion, ctype_not_measured = _char_type_confusion(report)
     clamped_docs, clamp_split = _clamp_split(report, anonymizer)
     pred_kinds, false_kinds, matched_kinds = _kind_totals(report)
     worst = sorted(report.doc_scores, key=lambda d: (-d.review_cost, d.doc_id))
@@ -429,6 +482,12 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
         # predates the tags — re-score, do not read the histogram as complete.
         "field_failure_modes": failure_modes,
         "field_failure_modes_not_measured": modes_not_measured,
+        # WHICH two types each char_type-wrong row confused. The largest single
+        # failure mode here, and the only aggregate that can tell a synonym-map
+        # gap ('unmapped') from a real perception failure (Diameter->Distance).
+        # Sums to field_failures['field:char_type'] by construction.
+        "char_type_confusion": ctype_confusion,
+        "char_type_confusion_not_measured": ctype_not_measured,
         # The price list for a review-flag threshold move, and the size of the
         # threshold-churn confound in any prompt arm. Covers every matched pair.
         "confidence_by_taxonomy": conf_taxonomy,
