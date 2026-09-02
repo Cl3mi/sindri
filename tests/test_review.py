@@ -130,3 +130,22 @@ def test_note_ref_when_no_block_present_skips_unknown_check():
              nominal="101", note_ref_pos=101)
     _, reasons = review_flags(c, rotation_ambiguous=False, known_note_positions=None)
     assert "unknown note reference" not in reasons
+
+
+def test_active_review_policy_reports_the_threshold_for_run_config_extra():
+    """Recorded into RunConfig.extra at predict time, for exactly the reason
+    detect.active_knobs is (tests/test_detect.py): without it two runs differing
+    only in this threshold produce byte-indistinguishable RunConfigs.
+
+    Concretely, r3-awqcontrol and baseline-dev share model_id, dpi,
+    prompt_sha256 and every detection knob, yet differ by a constant worth 3.00
+    review cost -- so compare_runs would not warn, and _reusable_dump, which
+    compares the whole RunConfig, could skip documents as 'already predicted'
+    across the change. That failure has already been paid for once on this
+    project, when detection knobs were unrecorded.
+
+    Absence of the key means the dump PREDATES it, not 0.6. Same discipline as
+    frame_origin_frac being None rather than a plausible 0.0."""
+    from app.pipeline.review import LOW_CONF, active_review_policy
+    assert active_review_policy() == {"review_low_conf": LOW_CONF}
+    assert active_review_policy()["review_low_conf"] == 0.8

@@ -24,6 +24,24 @@ DIMENSION_TYPES = {"Distance", "Diameter", "Radius", "Theoretical"}
 LOW_CONF = 0.8
 
 
+def active_review_policy() -> dict:
+    """The review policy in effect, for `RunConfig.extra` at predict time.
+
+    The same job `detect.active_knobs` does, and it exists for the same reason:
+    two runs differing only in this threshold otherwise produce
+    byte-indistinguishable RunConfigs. `r3-awqcontrol` and `baseline-dev` share
+    model_id, dpi, prompt_sha256 and every detection knob while differing by a
+    constant worth 3.00 review cost -- so `compare_runs` would not warn, and
+    `_reusable_dump`, which compares the whole RunConfig, could skip documents
+    as "already predicted" straight across the change. That exact failure has
+    been paid for once here already, when detection knobs went unrecorded.
+
+    A dump with no `review_low_conf` key PREDATES the field; it does not mean
+    0.6. Same discipline as `DocScore.frame_origin_frac` being None rather than
+    a plausible-looking 0.0."""
+    return {"review_low_conf": LOW_CONF}
+
+
 def review_flags(c: Characteristic, rotation_ambiguous: bool,
                  known_note_positions: Optional[Set[int]] = None) -> Tuple[bool, List[str]]:
     """Return (needs_review, reasons) for a populated Characteristic.

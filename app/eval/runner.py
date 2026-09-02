@@ -452,6 +452,7 @@ def _cmd_predict(args):
     from app.pipeline.detect import active_knobs
     from app.pipeline.ocr.vlm_backend import (active_adapter, active_prompts,
                                               active_quant)
+    from app.pipeline.review import active_review_policy
     # extra carries the detection knobs actually in effect. Without them two
     # experiment arms yield indistinguishable reports, and _reusable_dump —
     # which compares the whole RunConfig — would skip a document as "already
@@ -462,6 +463,11 @@ def _cmd_predict(args):
         model_id=os.environ.get("VLM_MODEL_ID", "default"), dpi=args.dpi,
         git_sha=_git_sha(), prompt_sha256=_prompt_sha256(),
         extra={**active_knobs(), **active_prompts(),
+               # The needs-review threshold. Pipeline behaviour, not scoring
+               # policy, so it is baked into the dumps and nothing downstream can
+               # recover it -- and two runs either side of a change to it are
+               # otherwise indistinguishable in every field above.
+               **active_review_policy(),
                # model_id cannot express HOW the weights were loaded, and Rung
                # 3's control differs from its arm only in whether an adapter is
                # attached. Without these two the runs would be indistinguishable
