@@ -33,14 +33,14 @@
  },
  "headline": {
   "baseline-dev": {
-   "mean_review_cost": 174.3,
+   "mean_review_cost": 173.05,
    "recall": 0.6457023060796646,
-   "escaped_rate": 0.27044025157232704
+   "escaped_rate": 0.259958071278826
   },
   "r3-awqgate-dev": {
-   "mean_review_cost": 174.3,
+   "mean_review_cost": 173.05,
    "recall": 0.6457023060796646,
-   "escaped_rate": 0.27044025157232704
+   "escaped_rate": 0.259958071278826
   }
  },
  "weight_sensitivity": {

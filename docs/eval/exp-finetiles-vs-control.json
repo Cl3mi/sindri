@@ -1,12 +1,12 @@
 {
  "schema_version": 1,
- "run_a": "baseline-dev",
+ "run_a": "exp-control-dev",
  "run_b": "exp-finetiles-dev",
  "n_docs": 20,
- "mean_delta": 5.0,
+ "mean_delta": 6.0,
  "ci95": [
-  -1.7,
-  13.45
+  -0.95,
+  14.9
  ],
  "significant": false,
  "per_doc_deltas": {
@@ -26,33 +26,33 @@
   "f1639571": -5.0,
   "28b2c522": -2.0,
   "7bd2fd06": 7.0,
-  "01806166": 3.0,
-  "c3aa6a9e": -11.0,
-  "961693d9": 68.0,
+  "01806166": 13.0,
+  "c3aa6a9e": -6.0,
+  "961693d9": 73.0,
   "aa3592aa": 14.0
  },
  "headline": {
-  "baseline-dev": {
-   "mean_review_cost": 174.3,
+  "exp-control-dev": {
+   "mean_review_cost": 173.05,
    "recall": 0.6457023060796646,
-   "escaped_rate": 0.27044025157232704
+   "escaped_rate": 0.259958071278826
   },
   "exp-finetiles-dev": {
-   "mean_review_cost": 179.3,
+   "mean_review_cost": 179.05,
    "recall": 0.6415094339622641,
-   "escaped_rate": 0.3039832285115304
+   "escaped_rate": 0.3018867924528302
   }
  },
  "weight_sensitivity": {
   "n_weight_vectors": 6,
   "b_better_fraction": 0.0,
   "mean_delta_per_weighting": [
-   5.0,
-   8.4,
-   3.7,
-   5.0,
-   6.95,
-   1.65
+   6.0,
+   10.0,
+   4.5,
+   6.0,
+   8.55,
+   2.05
   ],
   "robust": true
  },

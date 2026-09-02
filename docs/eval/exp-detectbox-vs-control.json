@@ -1,16 +1,16 @@
 {
  "schema_version": 1,
- "run_a": "baseline-dev",
+ "run_a": "exp-control-dev",
  "run_b": "exp-detectbox-dev",
  "n_docs": 20,
- "mean_delta": -0.25,
+ "mean_delta": 0.75,
  "ci95": [
-  -6.35,
-  6.0
+  -5.75,
+  7.45
  ],
  "significant": false,
  "per_doc_deltas": {
-  "8e5fb4d8": 16.0,
+  "8e5fb4d8": 21.0,
   "1a3064de": -12.0,
   "514ec627": -18.0,
   "a7994023": 13.0,
@@ -26,38 +26,35 @@
   "f1639571": 3.0,
   "28b2c522": -8.0,
   "7bd2fd06": 10.0,
-  "01806166": 0.0,
-  "c3aa6a9e": 2.0,
-  "961693d9": 24.0,
+  "01806166": 5.0,
+  "c3aa6a9e": 7.0,
+  "961693d9": 29.0,
   "aa3592aa": -10.0
  },
  "headline": {
-  "baseline-dev": {
-   "mean_review_cost": 174.3,
+  "exp-control-dev": {
+   "mean_review_cost": 173.05,
    "recall": 0.6457023060796646,
-   "escaped_rate": 0.27044025157232704
+   "escaped_rate": 0.259958071278826
   },
   "exp-detectbox-dev": {
-   "mean_review_cost": 174.05,
+   "mean_review_cost": 173.8,
    "recall": 0.6310272536687631,
-   "escaped_rate": 0.2851153039832285
+   "escaped_rate": 0.2830188679245283
   }
  },
  "weight_sensitivity": {
   "n_weight_vectors": 6,
-  "b_better_fraction": 0.6666666666666666,
+  "b_better_fraction": 0.5,
   "mean_delta_per_weighting": [
-   -0.25,
-   4.3,
-   -2.35,
-   -5.75,
-   2.5,
-   -1.35
+   0.75,
+   5.9,
+   -1.55,
+   -4.75,
+   4.1,
+   -0.95
   ],
   "robust": false
  },
- "warnings": [
-  "review-cost improved but recall dropped 0.646 -> 0.631 — likely a net review-time LOSS on missed callouts (handoff §6 regression guard)",
-  "review-cost improved but escaped-error rate rose 0.270 -> 0.285 — silent errors up"
- ]
+ "warnings": []
 }

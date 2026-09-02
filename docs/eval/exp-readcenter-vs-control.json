@@ -1,6 +1,6 @@
 {
  "schema_version": 1,
- "run_a": "baseline-dev",
+ "run_a": "exp-control-dev",
  "run_b": "exp-readcenter-dev",
  "n_docs": 20,
  "mean_delta": 0.9,
@@ -32,15 +32,15 @@
   "aa3592aa": 0.0
  },
  "headline": {
-  "baseline-dev": {
-   "mean_review_cost": 174.3,
+  "exp-control-dev": {
+   "mean_review_cost": 173.05,
    "recall": 0.6457023060796646,
-   "escaped_rate": 0.27044025157232704
+   "escaped_rate": 0.259958071278826
   },
   "exp-readcenter-dev": {
-   "mean_review_cost": 175.2,
+   "mean_review_cost": 173.95,
    "recall": 0.6457023060796646,
-   "escaped_rate": 0.27882599580712786
+   "escaped_rate": 0.26834381551362685
   }
  },
  "weight_sensitivity": {

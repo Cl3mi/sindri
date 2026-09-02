@@ -5,13 +5,13 @@
  "n_docs": 20,
  "n_gold": 477,
  "n_pred": 775,
- "mean_review_cost": 174.05,
+ "mean_review_cost": 173.8,
  "micro_recall": 0.6310272536687631,
  "micro_precision": 0.38838709677419353,
- "escaped_rate": 0.2851153039832285,
+ "escaped_rate": 0.2830188679245283,
  "taxonomy": {
-  "escaped_error": 136,
-  "correct": 72,
+  "escaped_error": 135,
+  "correct": 73,
   "flagged_correct": 46,
   "flagged_error": 47,
   "missed": 176,
@@ -19,7 +19,7 @@
  },
  "error_causes": {
   "misparse": 44,
-  "misread": 139
+  "misread": 138
  },
  "error_cause_crosstab": {
   "misparse": {
@@ -30,10 +30,10 @@
    "flagged": 12
   },
   "misread": {
-   "total": 139,
+   "total": 138,
    "misplaced": 65,
-   "on_target": 74,
-   "escaped": 104,
+   "on_target": 73,
+   "escaped": 103,
    "flagged": 35
   }
  },
@@ -41,30 +41,29 @@
  "field_failures": {
   "field:lower_tol": 134,
   "field:nominal": 123,
-  "field:char_type": 106,
+  "field:char_type": 94,
   "field:upper_tol": 117
  },
  "field_failure_signatures": {
-  "fields:lower_tol": 13,
-  "fields:nominal": 15,
+  "fields:lower_tol": 20,
+  "fields:nominal": 17,
   "fields:char_type+nominal+lower_tol": 5,
-  "fields:char_type": 13,
-  "fields:char_type+nominal": 12,
+  "fields:char_type": 12,
   "fields:char_type+nominal+upper_tol+lower_tol": 54,
   "fields:nominal+upper_tol+lower_tol": 33,
-  "fields:char_type+upper_tol+lower_tol": 8,
-  "fields:upper_tol+lower_tol": 13,
+  "fields:char_type+upper_tol+lower_tol": 7,
+  "fields:upper_tol+lower_tol": 14,
+  "fields:char_type+nominal": 10,
   "fields:nominal+lower_tol": 1,
-  "fields:upper_tol": 1,
+  "fields:upper_tol": 2,
   "fields:char_type+nominal+upper_tol": 2,
-  "fields:char_type+lower_tol": 7,
   "fields:nominal+upper_tol": 1,
-  "fields:char_type+upper_tol": 5
+  "fields:char_type+upper_tol": 4
  },
  "field_failure_modes": {
   "missing:lower_tol": 77,
   "wrong:nominal": 111,
-  "wrong:char_type": 106,
+  "wrong:char_type": 94,
   "wrong:lower_tol": 48,
   "missing:upper_tol": 55,
   "wrong:upper_tol": 49,
@@ -74,10 +73,43 @@
   "spurious:lower_tol": 9
  },
  "field_failure_modes_not_measured": 0,
+ "char_type_confusion": {
+  "chartype:Distance->Perpendicularity": 1,
+  "chartype:unmapped(none)->Distance": 14,
+  "chartype:Distance->Radius": 2,
+  "chartype:Distance->Diameter": 10,
+  "chartype:unmapped(Material)->Distance": 2,
+  "chartype:Diameter->Distance": 12,
+  "chartype:Radius->Distance": 2,
+  "chartype:Distance->Flatness": 2,
+  "chartype:unmapped(none)->Radius": 3,
+  "chartype:Flatness->Theoretical": 2,
+  "chartype:unmapped(ambiguous)->Diameter": 2,
+  "chartype:unmapped(Position)->Diameter": 3,
+  "chartype:unmapped(Position)->Flatness": 7,
+  "chartype:Flatness->Distance": 1,
+  "chartype:unmapped(Parallelism)->Distance": 1,
+  "chartype:Distance->Theoretical": 5,
+  "chartype:unmapped(Distance)->Flatness": 1,
+  "chartype:Distance->Note": 5,
+  "chartype:unmapped(Position)->Distance": 2,
+  "chartype:unmapped(none)->Theoretical": 1,
+  "chartype:unmapped(none)->Note": 1,
+  "chartype:unmapped(none)->Flatness": 7,
+  "chartype:unmapped(Parallelism)->Flatness": 1,
+  "chartype:Diameter->Note": 1,
+  "chartype:unmapped(none)->Diameter": 1,
+  "chartype:unmapped(Flatness)->Distance": 1,
+  "chartype:unmapped(Material)->Diameter": 1,
+  "chartype:Position->Distance": 1,
+  "chartype:unmapped(Flatness)->Theoretical": 1,
+  "chartype:unmapped(Distance)->Radius": 1
+ },
+ "char_type_confusion_not_measured": 0,
  "confidence_by_taxonomy": {
   ">=0.8": {
-   "escaped_error": 124,
-   "correct": 72,
+   "escaped_error": 123,
+   "correct": 73,
    "flagged_correct": 46,
    "flagged_error": 40
   },
@@ -224,7 +256,7 @@
   "unclamped": {
    "n": 16,
    "macro_mean_recall": 0.7049,
-   "mean_review_cost": 145.44,
+   "mean_review_cost": 145.12,
    "missed_isolated": 54
   },
   "unknown_dpi": {
@@ -332,7 +364,7 @@
   },
   {
    "doc": "01806166",
-   "review_cost": 153.0
+   "review_cost": 148.0
   },
   {
    "doc": "53c2a083",

@@ -5,35 +5,35 @@
  "n_docs": 20,
  "n_gold": 477,
  "n_pred": 926,
- "mean_review_cost": 181.05,
+ "mean_review_cost": 179.8,
  "micro_recall": 0.6687631027253669,
  "micro_precision": 0.3444924406047516,
- "escaped_rate": 0.3039832285115304,
+ "escaped_rate": 0.29350104821802936,
  "taxonomy": {
-  "correct": 72,
-  "escaped_error": 145,
+  "correct": 77,
+  "escaped_error": 140,
   "flagged_correct": 42,
   "flagged_error": 60,
   "missed": 158,
   "false_detection": 607
  },
  "error_causes": {
-  "misparse": 49,
-  "misread": 156
+  "misparse": 48,
+  "misread": 152
  },
  "error_cause_crosstab": {
   "misparse": {
-   "total": 49,
+   "total": 48,
    "misplaced": 5,
-   "on_target": 44,
-   "escaped": 38,
+   "on_target": 43,
+   "escaped": 37,
    "flagged": 11
   },
   "misread": {
-   "total": 156,
+   "total": 152,
    "misplaced": 81,
-   "on_target": 75,
-   "escaped": 107,
+   "on_target": 71,
+   "escaped": 103,
    "flagged": 49
   }
  },
@@ -42,30 +42,29 @@
   "field:lower_tol": 148,
   "field:nominal": 131,
   "field:upper_tol": 134,
-  "field:char_type": 124
+  "field:char_type": 106
  },
  "field_failure_signatures": {
-  "fields:lower_tol": 11,
-  "fields:nominal+upper_tol+lower_tol": 41,
-  "fields:nominal+lower_tol": 2,
-  "fields:upper_tol": 4,
-  "fields:char_type": 20,
-  "fields:nominal": 8,
-  "fields:char_type+nominal": 14,
-  "fields:char_type+nominal+upper_tol+lower_tol": 54,
-  "fields:upper_tol+lower_tol": 15,
+  "fields:lower_tol": 18,
+  "fields:nominal+upper_tol+lower_tol": 42,
+  "fields:nominal+lower_tol": 3,
+  "fields:upper_tol": 6,
+  "fields:char_type": 15,
+  "fields:nominal": 9,
+  "fields:char_type+nominal": 13,
+  "fields:char_type+nominal+upper_tol+lower_tol": 53,
+  "fields:upper_tol+lower_tol": 16,
   "fields:char_type+nominal+upper_tol": 3,
-  "fields:char_type+nominal+lower_tol": 9,
-  "fields:char_type+upper_tol+lower_tol": 9,
-  "fields:char_type+lower_tol": 7,
-  "fields:char_type+upper_tol": 8
+  "fields:char_type+nominal+lower_tol": 8,
+  "fields:char_type+upper_tol+lower_tol": 8,
+  "fields:char_type+upper_tol": 6
  },
  "field_failure_modes": {
   "missing:lower_tol": 91,
   "wrong:nominal": 110,
   "wrong:upper_tol": 46,
   "wrong:lower_tol": 48,
-  "wrong:char_type": 124,
+  "wrong:char_type": 106,
   "missing:upper_tol": 71,
   "missing:nominal": 12,
   "spurious:nominal": 9,
@@ -73,10 +72,45 @@
   "spurious:lower_tol": 9
  },
  "field_failure_modes_not_measured": 0,
+ "char_type_confusion": {
+  "chartype:unmapped(none)->Distance": 12,
+  "chartype:Radius->Note": 3,
+  "chartype:unmapped(none)->Theoretical": 4,
+  "chartype:unmapped(Material)->Distance": 2,
+  "chartype:unmapped(none)->Diameter": 2,
+  "chartype:Distance->Note": 6,
+  "chartype:Diameter->Distance": 11,
+  "chartype:Radius->Distance": 1,
+  "chartype:Diameter->Note": 2,
+  "chartype:Distance->Theoretical": 11,
+  "chartype:Distance->Flatness": 4,
+  "chartype:Radius->Diameter": 1,
+  "chartype:Flatness->Theoretical": 1,
+  "chartype:unmapped(ambiguous)->Diameter": 2,
+  "chartype:unmapped(Position)->Diameter": 3,
+  "chartype:unmapped(Position)->Flatness": 8,
+  "chartype:unmapped(Parallelism)->Distance": 1,
+  "chartype:unmapped(Material)->Diameter": 1,
+  "chartype:Distance->Diameter": 7,
+  "chartype:unmapped(Distance)->Flatness": 1,
+  "chartype:unmapped(Position)->Distance": 1,
+  "chartype:unmapped(none)->Note": 1,
+  "chartype:unmapped(none)->Flatness": 9,
+  "chartype:unmapped(Parallelism)->Flatness": 1,
+  "chartype:unmapped(Distance)->Note": 2,
+  "chartype:unmapped(Parallelism)->Diameter": 1,
+  "chartype:unmapped(Flatness)->Distance": 1,
+  "chartype:unmapped(none)->Radius": 3,
+  "chartype:Position->Distance": 1,
+  "chartype:Position->Diameter": 1,
+  "chartype:unmapped(Distance)->Radius": 1,
+  "chartype:unmapped(Position)->Radius": 1
+ },
+ "char_type_confusion_not_measured": 0,
  "confidence_by_taxonomy": {
   ">=0.8": {
-   "correct": 72,
-   "escaped_error": 128,
+   "correct": 77,
+   "escaped_error": 123,
    "flagged_correct": 41,
    "flagged_error": 47
   },
@@ -229,7 +263,7 @@
   "unclamped": {
    "n": 16,
    "macro_mean_recall": 0.7259,
-   "mean_review_cost": 153.31,
+   "mean_review_cost": 151.75,
    "missed_isolated": 60
   },
   "unknown_dpi": {
@@ -326,7 +360,7 @@
   },
   {
    "doc": "961693d9",
-   "review_cost": 331.0
+   "review_cost": 326.0
   },
   {
    "doc": "1a007bc4",
@@ -341,16 +375,16 @@
    "review_cost": 156.0
   },
   {
-   "doc": "01806166",
-   "review_cost": 155.0
-  },
-  {
    "doc": "d01660e4",
    "review_cost": 150.0
   },
   {
+   "doc": "01806166",
+   "review_cost": 145.0
+  },
+  {
    "doc": "c3aa6a9e",
-   "review_cost": 142.0
+   "review_cost": 137.0
   }
  ]
 }

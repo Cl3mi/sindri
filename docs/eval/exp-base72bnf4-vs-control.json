@@ -1,6 +1,6 @@
 {
  "schema_version": 1,
- "run_a": "baseline-dev",
+ "run_a": "exp-control-dev",
  "run_b": "r3-base72bnf4-dev",
  "n_docs": 20,
  "mean_delta": 6.75,
@@ -32,7 +32,7 @@
   "aa3592aa": 14.0
  },
  "headline": {
-  "baseline-dev": {
+  "exp-control-dev": {
    "mean_review_cost": 173.05,
    "recall": 0.6457023060796646,
    "escaped_rate": 0.259958071278826
