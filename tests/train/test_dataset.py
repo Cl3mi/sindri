@@ -111,3 +111,64 @@ def test_a_balloon_with_no_gold_row_is_counted_not_crashed_on(tmp_path):
                         tmp_path / "pairs")
     assert counts["no_gold"] == 1
     assert counts["pairs"] == 0
+
+
+def _gold_rows(*chars):
+    """The same GoldDoc shell as _gold(), with rows the caller chooses."""
+    doc = _gold()
+    doc.characteristics = list(chars)
+    return doc
+
+
+def test_unrenderable_rows_are_counted_by_reason(tmp_path):
+    """The first train-split build reported `unrenderable: 790` against
+    `pairs: 192` and nothing about WHY -- diagnosing it took a code read and a
+    hypothesis instead of a number. A bare total is not a diagnosis.
+
+    Reasons come from UnrenderableRow.REASONS, a closed slug set, so the
+    breakdown stays exactly as values-blind as the totals beside it."""
+    gold = _gold_rows(
+        GoldCharacteristic(balloon=1, position_pt=(100, 100),
+                           char_type="Maß", nominal=""),
+        GoldCharacteristic(balloon=2, position_pt=(300, 200),
+                           char_type="Ebenheit", nominal="0", upper_tol="0,05"))
+    page = Image.new("RGB", (842, 595), "white")
+
+    counts = build_pairs(gold, page,
+                         [(1, _Box((90, 90, 200, 120))),
+                          (2, _Box((290, 190, 400, 220)))],
+                         tmp_path / "pairs")
+
+    assert counts["pairs"] == 0
+    assert counts["unrenderable"] == 2
+    # balloon 1 is a Distance with no nominal; balloon 2 is a geometric row the
+    # detector called `dimension`, so it arrives with no hint and provably
+    # cannot round-trip.
+    assert counts["unrenderable:no_nominal"] == 1
+    assert counts["unrenderable:gdt_no_hint"] == 1
+    blob = json.dumps(counts, ensure_ascii=False)
+    for leak in ("Maß", "Ebenheit", "0,05"):
+        assert leak not in blob, f"counts leaked {leak!r}"
+
+
+def test_the_reason_breakdown_reconciles_with_the_unrenderable_total(tmp_path):
+    """House rule: every aggregate cross-checks against a count that already
+    exists. Each rejected row raises exactly once, so the per-reason counts sum
+    to `unrenderable`."""
+    gold = _gold_rows(
+        GoldCharacteristic(balloon=1, position_pt=(100, 100),
+                           char_type="Maß", nominal=""),
+        GoldCharacteristic(balloon=2, position_pt=(200, 100),
+                           char_type="Ebenheit", nominal="0", upper_tol="0,05"),
+        GoldCharacteristic(balloon=3, position_pt=(300, 100),
+                           char_type="STANZGRATSEITE", nominal="20"))
+    page = Image.new("RGB", (842, 595), "white")
+
+    counts = build_pairs(gold, page,
+                         [(i, _Box((100 * i - 10, 90, 100 * i + 60, 120)))
+                          for i in (1, 2, 3)],
+                         tmp_path / "pairs")
+
+    per_reason = {k: v for k, v in counts.items()
+                  if k.startswith("unrenderable:")}
+    assert sum(per_reason.values()) == counts["unrenderable"] == 3

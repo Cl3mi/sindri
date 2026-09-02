@@ -80,17 +80,17 @@ def test_a_german_geometric_tolerance_name_maps_to_the_parser_constant():
 def test_every_synonym_value_is_also_a_key():
     """The map's load-bearing invariant, and it bit while adding Circularity.
 
-    _canon_char_type returns the mapped value VERBATIM and leaves an unmapped
+    canon_char_type returns the mapped value VERBATIM and leaves an unmapped
     label merely casefolded. So if "rundheit" -> "Circularity" but "circularity"
     is not itself a key, the gold side canonicalises to "Circularity" and the
     parser side to "circularity", and the two never compare equal -- a synonym
     entry that silently does nothing. Every value must round-trip to itself."""
-    from app.eval.normalize import CHAR_TYPE_SYNONYMS, _canon_char_type
+    from app.eval.normalize import CHAR_TYPE_SYNONYMS, canon_char_type
 
     for label, canon in CHAR_TYPE_SYNONYMS.items():
-        assert _canon_char_type(canon) == canon, (
+        assert canon_char_type(canon) == canon, (
             f"{label!r} -> {canon!r}, but {canon!r} canonicalises to "
-            f"{_canon_char_type(canon)!r}, so the entry cannot ever match")
+            f"{canon_char_type(canon)!r}, so the entry cannot ever match")
 
 
 def test_the_synonym_map_never_widens_which_gold_rows_are_scored():

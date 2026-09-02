@@ -23,6 +23,11 @@ transcription: a drawing printing `Ø20 ±0,1` and one printing `Ø20 +0,1 -0,1`
 the same target. That is the intent — the read stage's job is to produce text
 parse_value maps to the right fields, which is exactly what the metric rewards.
 """
+# The one import from app.eval, and it is deliberate: a target must be the text
+# the METRIC rewards, so the renderer has to read a char_type label exactly the
+# way scoring reads it. Two vocabularies would mean training toward something
+# the metric does not credit.
+from app.eval.normalize import canon_char_type
 
 # char_type -> the prefix the parser needs to re-infer that char_type. The parser
 # classifies by leading symbol (parser.py: is_diameter / is_radius), so the symbol
@@ -40,7 +45,21 @@ _GDT_SYMBOL = {
 
 
 class UnrenderableRow(ValueError):
-    """This gold row cannot be expressed as text the parser maps back to it."""
+    """This gold row cannot be expressed as text the parser maps back to it.
+
+    Carries a short `reason` slug from a CLOSED set, because the count alone is
+    not a diagnosis: the first train-split build reported 790 unrenderable rows
+    and nothing about why. The slug is the only thing that may be reported --
+    the label itself is the client's text, so it is deliberately kept OUT of the
+    message too."""
+
+    REASONS = ("char_type", "no_nominal", "gdt_no_hint", "gdt_no_zone",
+               "gdt_hint_mismatch")
+
+    def __init__(self, reason: str, message: str):
+        assert reason in self.REASONS, reason
+        super().__init__(message)
+        self.reason = reason
 
 
 def _clean(v) -> str:
@@ -55,30 +74,56 @@ def render_target(gold, hint: str = "") -> str:
     parse_value's behaviour depends on it: the same text parses differently under
     hint="gdt" than under no hint, so a target is only meaningful paired with the
     hint it will be parsed under."""
-    char_type = _clean(gold.char_type)
+    # Canonicalised through the SAME map scoring uses, never the raw label.
+    # Gold labels this corpus in German and qualifies them ("Durchmesser",
+    # "Diameter MIN", "Ebenheit 0,05 zu C"); _PREFIX and _GDT_SYMBOL below hold
+    # only the parser's English constants. Matching the raw label against them
+    # is why the first train-split build rendered 192 rows and discarded 790 --
+    # 80% of every matched row on the split. The tests missed it because their
+    # fixtures used the parser's vocabulary rather than gold's.
+    char_type = canon_char_type(gold.char_type)
     nominal = _clean(gold.nominal)
     upper, lower = _clean(gold.upper_tol), _clean(gold.lower_tol)
 
-    if hint == "gdt" or char_type in _GDT_SYMBOL:
+    # Geometric tolerances are reachable ONLY through the hint. Measured:
+    # parse_value("⏥ 0,05", hint="") returns Distance/0,05, not Flatness --
+    # the parser reaches those constants nowhere else. So the GD&T rendering is
+    # valid exactly when the detector called this callout gdt, and the two
+    # mismatch cases below are genuinely unrenderable rather than approximable.
+    if hint == "gdt":
         symbol = _GDT_SYMBOL.get(char_type)
         if symbol is None:
             raise UnrenderableRow(
-                f"char_type {char_type!r} has no GD&T symbol, so the parser "
-                f"cannot re-infer it under hint={hint!r}")
+                "gdt_hint_mismatch",
+                f"row {gold.balloon}: detector said gdt but this char_type has "
+                f"no GD&T symbol, and hint='gdt' forces the parser to a "
+                f"geometric constant, so nothing can round-trip")
         if not upper:
             raise UnrenderableRow(
+                "gdt_no_zone",
                 f"GD&T row {gold.balloon} has no tolerance zone (upper_tol is "
                 f"empty), so there is nothing to transcribe")
         return f"{symbol} {upper}"
 
+    if char_type in _GDT_SYMBOL:
+        raise UnrenderableRow(
+            "gdt_no_hint",
+            f"row {gold.balloon} is a geometric characteristic but the detector "
+            f"did not call it gdt (hint={hint!r}). Emitting the symbol anyway "
+            f"would put a target in the training set that the pipeline provably "
+            f"cannot reproduce, which is worse than dropping the row")
+
     if not nominal:
         raise UnrenderableRow(
+            "no_nominal",
             f"row {gold.balloon} has an empty nominal, so no transcription can "
             f"parse back to it")
     if char_type and char_type not in _PREFIX:
         raise UnrenderableRow(
-            f"char_type {char_type!r} is not one the parser infers from a "
-            f"leading symbol; rendering it would lose a scored field")
+            "char_type",
+            f"row {gold.balloon}: char_type is not one the parser infers from a "
+            f"leading symbol; rendering it would lose a scored field. The label "
+            f"itself is client text and is deliberately not quoted here")
 
     parts = [f"{_PREFIX.get(char_type, '')}{nominal}"]
     # A Radius carrying upper_tol "0" and no lower_tol is the MAX convention:

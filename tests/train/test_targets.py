@@ -74,6 +74,93 @@ def test_an_unrenderable_row_raises_rather_than_approximating():
 
 
 def test_an_unknown_char_type_raises_instead_of_guessing():
+    """Asserts on the reason slug, not on the message text. The message used to
+    quote the offending label back, and a gold char_type is the client's own
+    string -- an exception that echoes it can carry client text anywhere the
+    traceback goes. The slug says as much for routing and leaks nothing."""
     gold = GoldCharacteristic(balloon=1, char_type="Wackiness", nominal="20")
-    with pytest.raises(UnrenderableRow, match="Wackiness"):
+    with pytest.raises(UnrenderableRow) as exc:
         render_target(gold, "")
+    assert exc.value.reason == "char_type"
+    assert "Wackiness" not in str(exc.value)
+
+
+# --- gold speaks German, and the fixtures above did not -------------------
+# Every SHAPES case above builds gold with the PARSER's vocabulary ("Distance",
+# "Diameter"). Real gold uses the client's: "Durchmesser", "Maß", "Ebenheit",
+# and compound labels like "Diameter MIN". That gap is why the first train-split
+# build produced 192 pairs and 790 unrenderable rows -- 80% of every matched row
+# on the split, discarded because the label was not already an English constant.
+
+def _gold(**kw):
+    fields = dict(balloon=1)
+    fields.update(kw)
+    return GoldCharacteristic(**fields)
+
+
+@pytest.mark.parametrize("label", ["Durchmesser", "durchmesser", "Diameter MIN"])
+def test_a_german_or_qualified_diameter_still_renders_with_its_symbol(label):
+    """char_type must be canonicalised through the SAME synonym map scoring
+    uses, or the renderer and the metric disagree about what the row even is.
+    The Ø is not decoration: parser.py infers Diameter from exactly that leading
+    symbol, so dropping the row loses a training example for the single field
+    Phase A found most broken."""
+    text = render_target(_gold(char_type=label, nominal="20",
+                               upper_tol="0,1", lower_tol="-0,1"), "")
+    assert text.startswith("Ø"), text
+    back = parse_value(text, hint="")
+    assert char_type_equal(back.char_type, label), (text, back.char_type)
+    assert values_equal(back.nominal, "20")
+
+
+def test_a_german_linear_dimension_renders():
+    for label in ("Maß", "Abstand", "Breite"):
+        text = render_target(_gold(char_type=label, nominal="5,5"), "")
+        back = parse_value(text, hint="")
+        assert char_type_equal(back.char_type, label), (label, text)
+        assert values_equal(back.nominal, "5,5")
+
+
+def test_a_german_geometric_label_renders_under_the_gdt_hint():
+    """"Ebenheit 0,05 zu C" is a Flatness row wearing a datum reference. It
+    canonicalises to Flatness by word containment, exactly as char_type_kind
+    already reads it."""
+    text = render_target(_gold(char_type="Ebenheit 0,05 zu C", nominal="0",
+                               upper_tol="0,05", lower_tol="0"), "gdt")
+    back = parse_value(text, hint="gdt")
+    assert char_type_equal(back.char_type, "Ebenheit"), text
+    assert values_equal(back.upper_tol, "0,05")
+
+
+def test_a_geometric_row_without_the_gdt_hint_is_unrenderable():
+    """Measured, not assumed: parse_value('⏥ 0,05', hint='') returns
+    Distance/0,05, NOT Flatness. So when the detector did not call this callout
+    gdt, no text exists that parses back to a geometric char_type -- the parser
+    only reaches those constants through the hint.
+
+    Emitting the GD&T rendering anyway would put a target in the training set
+    that the pipeline provably cannot reproduce, which is worse than dropping
+    the row. This is the branch canonicalisation makes reachable: before it,
+    German geometric labels never matched _GDT_SYMBOL at all."""
+    with pytest.raises(UnrenderableRow) as exc:
+        render_target(_gold(char_type="Ebenheit", nominal="0",
+                            upper_tol="0,05", lower_tol="0"), "")
+    assert exc.value.reason == "gdt_no_hint"
+
+
+def test_every_unrenderable_row_carries_a_values_blind_reason():
+    """The count alone said 790 and nothing about WHY. These slugs are the only
+    thing that can be reported about a rejected row -- the label itself is the
+    client's text and can never be printed."""
+    cases = [
+        ("no_nominal", dict(char_type="Maß", nominal=""), ""),
+        ("char_type", dict(char_type="STANZGRATSEITE INNEN", nominal="20"), ""),
+        ("gdt_no_zone", dict(char_type="Ebenheit", nominal="0",
+                             upper_tol=""), "gdt"),
+        ("gdt_no_hint", dict(char_type="Position", nominal="0",
+                             upper_tol="0,1"), ""),
+    ]
+    for expected, fields, hint in cases:
+        with pytest.raises(UnrenderableRow) as exc:
+            render_target(_gold(**fields), hint)
+        assert exc.value.reason == expected, (fields, exc.value.reason)

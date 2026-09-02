@@ -49,7 +49,7 @@ CHAR_TYPE_SYNONYMS: Dict[str, str] = {
     # Geometric tolerances. parser._GDT_SYMBOLS emits English constants while
     # gold labels this corpus in German, so the two could never compare equal.
     # The English constant must be a key too, or the two sides canonicalise
-    # differently: _canon_char_type returns the mapped VALUE verbatim, so an
+    # differently: canon_char_type returns the mapped VALUE verbatim, so an
     # unmapped "Circularity" stays casefolded as "circularity" and never equals
     # the "Circularity" that "rundheit" maps to. Every value below is also a key
     # for exactly this reason -- see test_every_synonym_value_is_also_a_key.
@@ -143,8 +143,13 @@ def values_equal(a, b) -> bool:
     return canon_value(a) == canon_value(b)
 
 
-def _canon_char_type(v) -> str:
+def canon_char_type(v) -> str:
     """Gold label or parser constant -> one canonical characteristic name.
+
+    Public because `app/train/targets.py` needs it too: a training target must
+    be the text the METRIC rewards, and the metric's notion of what a char_type
+    is lives here. Rendering targets against a different vocabulary is how the
+    first train-split build discarded 80% of its rows.
 
     Exact match first, then word CONTAINMENT — because gold labels carry
     qualifiers and datum references ("Diameter MIN", "Ebenheit 0,05 zu C") that
@@ -171,4 +176,4 @@ def _canon_char_type(v) -> str:
 
 
 def char_type_equal(a, b) -> bool:
-    return _canon_char_type(a) == _canon_char_type(b)
+    return canon_char_type(a) == canon_char_type(b)

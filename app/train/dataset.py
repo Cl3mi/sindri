@@ -48,10 +48,16 @@ def build_pairs(gold, page_image, matched: Iterable[Tuple[int, object]],
             hint = _HINTS.get(getattr(pred, "kind", "") or "", "")
             try:
                 target = render_target(g, hint)
-            except UnrenderableRow:
+            except UnrenderableRow as e:
                 # Counted, never approximated: a made-up target would train the
                 # model toward a value gold does not hold.
+                # Counted BY REASON as well, because a bare total is not a
+                # diagnosis: the first train-split build reported 790 of these
+                # and the only way to learn why was to read the code and guess.
+                # The slug set is closed, so this stays values-blind.
                 counts["unrenderable"] += 1
+                key = "unrenderable:" + e.reason
+                counts[key] = counts.get(key, 0) + 1
                 continue
             box = bx.tighten_to_ink(page_image, region)
             crop = _prep_crop(page_image, box, w, h, pad=_CROP_PAD)
