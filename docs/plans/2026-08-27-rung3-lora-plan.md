@@ -1120,6 +1120,66 @@ images was what made the expensive stage independent of this outcome.
 
 ---
 
+### base72bnf4 result — NF4 costs 6.75 review-cost points, and the control earned its keep
+
+Run 2026-08-29, 7 h 38 m for 20 dev documents. `predicted: 20, skipped: 0,
+failed: 0`, `active backend: VLM`, and `config.extra.quant == "nf4"` — proof the
+NF4 path was genuinely exercised rather than the AWQ default under an NF4 run
+name.
+
+| | AWQ baseline | NF4 control | delta |
+|---|---|---|---|
+| `mean_review_cost` | 174.30 | **181.05** | **+6.75** |
+| `micro_recall` | 0.6457 | 0.6688 | +0.0231 |
+| `escaped_rate` | 0.2704 | 0.3040 | +0.0335 |
+| `field_acc` | 0.3636 | 0.3574 | −0.0063 |
+| `missed` | 169 | 158 | −11 |
+| `escaped_error` | 129 | 145 | +16 |
+| `false_detection` | 522 | 607 | **+85** |
+| `n_pred` | 830 | 926 | **+96** |
+| `misplaced` | 80 | 97 | +17 |
+| **`correct`** | **72** | **72** | **±0** |
+
+`significant: true`, `ci95 [0.15, 13.75]`, worse under **all six** weightings,
+`robust: true`. Cost reconciles from the taxonomy alone:
+`10(−11) + 5(+16) + 2(+85) + 1(−5) = +135`, ÷20 = +6.75.
+
+**What NF4 actually did: it became more eager and less precise.** It emitted 96
+more predictions, of which **85 were false**. It recovered 11 misses and turned
+them into silent errors (+16 escaped). And the sharpest number in the table is
+`correct` — right *and* unflagged — which is **exactly unchanged at 72**. Ninety-six
+extra predictions produced not one additional fully-correct row.
+
+The noise concentrates in the non-`dimension` kinds, which is a coarser
+quantisation degrading the detect prompt's JSON discipline rather than a
+perception change:
+
+| kind | predictions | of which false |
+|---|---|---|
+| `note` | 54 → 90 (+36) | 49 → 76 (+27) |
+| `theoretical` | 102 → 118 (+16) | 85 → 102 (+17) |
+| `material` | 7 → 19 (+12) | 6 → 18 (**+12 — every one false**) |
+
+**The control earned its keep, exactly as argued.** Without it, a `lora72b`
+result of, say, 178 would have read as "the LoRA is worse than the 174.30
+baseline" when it would in fact have been "the LoRA recovered 3 of the 6.75
+points the quantisation costs". The control converts an uninterpretable number
+into an interpretable one, which is the whole reason it was run before training
+rather than after.
+
+**An independent replication, worth noting.** The dropped-tolerance winnability
+ratio is **61% on both quantisations** (AWQ: 80 rows / 49 distinct; NF4: 95 / 58).
+That finding — the tolerances really are printed per callout rather than inherited
+from an ISO 2768 table — now reproduces on a different numeric substrate.
+
+**What this does to the campaign's economics.** Serving on NF4 imposes a 6.75-point
+tax, so a LoRA served that way must recover 6.75 before it reaches parity with
+production. Against Rung 2's measured headroom of −35.6 points for perfect reading
+of all matched rows, that is a real but not disqualifying handicap. It does,
+however, make a second arm worth running — see below.
+
+---
+
 ---
 
 # Stage D — training
