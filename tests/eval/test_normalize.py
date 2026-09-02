@@ -46,3 +46,68 @@ def test_char_type_equal_uses_synonyms_case_insensitively():
     assert char_type_equal("Radius", "Radius")
     assert not char_type_equal("Radius", "Diameter")
     assert char_type_equal("", "")
+
+
+def test_a_named_linear_dimension_is_a_distance():
+    """The map already sends Maß/Abstand/Länge to Distance, and these are the
+    same category with the entries missing: a width, height, depth or thickness
+    IS a linear distance.
+
+    Why it matters more than tidiness: the parser emits Distance for any bare
+    number, and a callout printing "20" carries NO information about whether
+    that 20 is a width or a length -- that lives in the drawing's geometry, not
+    in the crop the read stage sees. So scoring these as char_type errors
+    charges the pipeline for information it cannot possibly recover, which
+    inflates wrong:char_type (115 of 308 matched pairs) with rows no model or
+    prompt could ever fix."""
+    for label in ("Breite", "width", "Höhe", "Hoehe", "height", "Tiefe",
+                  "depth", "Dicke", "thickness"):
+        assert char_type_equal("Distance", label), label
+
+
+def test_a_german_geometric_tolerance_name_maps_to_the_parser_constant():
+    """parser._GDT_SYMBOLS emits English constants (Circularity, Parallelism)
+    while gold labels this corpus in German, so the two could never compare
+    equal. Only the pairs where the parser HAS the constant and the German word
+    is unambiguous are mapped -- see the module comment for the ones deliberately
+    left alone."""
+    assert char_type_equal("Circularity", "Rundheit")
+    assert char_type_equal("Circularity", "roundness")
+    assert char_type_equal("Parallelism", "Parallelität")
+    assert char_type_equal("Parallelism", "Parallelitaet")
+
+
+def test_every_synonym_value_is_also_a_key():
+    """The map's load-bearing invariant, and it bit while adding Circularity.
+
+    _canon_char_type returns the mapped value VERBATIM and leaves an unmapped
+    label merely casefolded. So if "rundheit" -> "Circularity" but "circularity"
+    is not itself a key, the gold side canonicalises to "Circularity" and the
+    parser side to "circularity", and the two never compare equal -- a synonym
+    entry that silently does nothing. Every value must round-trip to itself."""
+    from app.eval.normalize import CHAR_TYPE_SYNONYMS, _canon_char_type
+
+    for label, canon in CHAR_TYPE_SYNONYMS.items():
+        assert _canon_char_type(canon) == canon, (
+            f"{label!r} -> {canon!r}, but {canon!r} canonicalises to "
+            f"{_canon_char_type(canon)!r}, so the entry cannot ever match")
+
+
+def test_the_synonym_map_never_widens_which_gold_rows_are_scored():
+    """The comparability guard for this whole change. _DIMENSION_WORDS is built
+    from the synonym map's own keys, and char_type_kind decides which gold rows
+    are scored at all -- so a NEW key that was not already a dimension word
+    would silently move gold rows into the denominator, change n_gold, and make
+    the re-scored report incomparable with every report before it.
+
+    MatchParams has no fingerprint for the synonym map, so compare_runs cannot
+    catch that. This test is the only thing standing in its place."""
+    from app.eval.normalize import CHAR_TYPE_SYNONYMS, _DIMENSION_WORDS
+
+    # Every key must already have been a dimension word before it was a synonym.
+    # Frozen membership list, so adding a key that widens scoring fails here.
+    assert set(CHAR_TYPE_SYNONYMS) <= set(_DIMENSION_WORDS)
+    assert len(_DIMENSION_WORDS) == 59, (
+        f"_DIMENSION_WORDS changed size to {len(_DIMENSION_WORDS)}; a synonym "
+        f"key that is not already a dimension word changes which gold rows are "
+        f"scored, so n_gold moves and the report is not comparable")

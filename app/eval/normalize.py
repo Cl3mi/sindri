@@ -35,6 +35,42 @@ CHAR_TYPE_SYNONYMS: Dict[str, str] = {
     "reference": "Reference",
     "klammermass": "Reference",
     "klammermaß": "Reference",
+    # Named linear dimensions. The same category as maß/abstand/länge above,
+    # which were mapped from the start -- these entries were simply missing.
+    # They are not cosmetic: the parser emits Distance for any bare number, and
+    # a callout printing "20" carries nothing that says whether that 20 is a
+    # width or a length. That distinction lives in the drawing's geometry, not
+    # in the crop the read stage sees, so scoring these as char_type errors
+    # charged the pipeline for information no model or prompt could recover.
+    "breite": "Distance", "width": "Distance",
+    "höhe": "Distance", "hoehe": "Distance", "height": "Distance",
+    "tiefe": "Distance", "depth": "Distance",
+    "dicke": "Distance", "thickness": "Distance",
+    # Geometric tolerances. parser._GDT_SYMBOLS emits English constants while
+    # gold labels this corpus in German, so the two could never compare equal.
+    # The English constant must be a key too, or the two sides canonicalise
+    # differently: _canon_char_type returns the mapped VALUE verbatim, so an
+    # unmapped "Circularity" stays casefolded as "circularity" and never equals
+    # the "Circularity" that "rundheit" maps to. Every value below is also a key
+    # for exactly this reason -- see test_every_synonym_value_is_also_a_key.
+    "circularity": "Circularity",
+    "rundheit": "Circularity", "roundness": "Circularity",
+    "parallelism": "Parallelism",
+    "parallelität": "Parallelism", "parallelitaet": "Parallelism",
+    # DELIBERATELY NOT MAPPED, and each for a reason worth keeping:
+    #   symmetrie/symmetry, rundlauf/runout, profil/profile, oberfläche/surface
+    #     -- the parser has no such char_type constant, so mapping the gold label
+    #        would point it at a value the pipeline can never emit. Fixing these
+    #        means extending parser._GDT_SYMBOLS, not this map.
+    #   winkel/angle/winkligkeit
+    #     -- ambiguous (Winkligkeit is angularity, Rechtwinkligkeit is
+    #        perpendicularity) AND the parser has no Angle constant, so any
+    #        mapping here would be scoring policy inventing a win.
+    #   gewinde/thread, fase/chamfer
+    #     -- genuinely different characteristics, not distance synonyms.
+    # Adding a key that is NOT already in _DIMENSION_WORDS below would change
+    # which gold rows are scored at all, moving n_gold and breaking comparability
+    # with every earlier report. tests/eval/test_normalize.py guards that.
 }
 
 
