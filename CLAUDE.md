@@ -38,14 +38,19 @@ advisory, and it has been right every single time it fired.
 **Read `docs/plans/2026-08-30-session-handoff.md` first — it is the current state
 of play.** Everything below is the durable summary.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **560 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **580 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). `SCHEMA_VERSION` = 1 — do not bump
 it. Split frozen at `6d174d5e4f1b9228` — do not regenerate it.
 
-Rung-0 baseline (dev split, 20 docs), still the frozen reference:
-`mean_review_cost=174.30 micro_recall=0.646 micro_precision=0.371`,
-`field_acc=0.3636`, `missed=169 (contended 82 / isolated 74 / unlocated 13)`,
-`false_detection=522`.
+Rung-0 baseline (dev split, 20 docs), the current reference:
+`mean_review_cost=173.05 micro_recall=0.646 micro_precision=0.371`,
+`field_acc=0.3799`, `escaped_rate=0.2600`,
+`missed=169 (contended 82 / isolated 74 / unlocated 13)`, `false_detection=522`.
+
+**It was 174.30 / 0.3636 until 2026-09-02**, when a char_type scoring bug was
+fixed (see §3's note on the synonym map). Same dumps, corrected scoring; every
+arm was re-scored the same way and **no verdict flipped**. Numbers quoted from
+before that date are one policy behind — check the date before comparing.
 
 An older `245.30 / 0.350` appears in git history and in `docs/eval/render150-*`.
 That number was measuring a coordinate bug, not the model. Do not quote it as the
@@ -67,13 +72,20 @@ cost, so a LoRA served that way must recover 6.75 before reaching parity with
 production. Plan: `docs/plans/2026-08-27-rung3-lora-plan.md`; design:
 `docs/plans/2026-08-27-rung3-lora-design.md`.
 
-**Next action:** Rung 3 is **blocked on a data-owner decision** — building
-training pairs needs gold (local-only), and training needs them on the GPU host,
-which means the inspection *values* leave this machine. `docs/eval/DATA-HANDLING.md`
-and the runbook make that the owner's call, not the harness's. Everything else is
-built and tested. Two GPU-free wins are also still unbanked (`review.LOW_CONF`
-0.6 → 0.8 is −3.00 cost for nothing; the 23 `char_type`-only rows ~−4.6) — see
-handoff §6.
+**The data-owner decision is GRANTED** (2026-09-02): rendered target values may
+be pushed to the GPU host for training. Rung 3's remaining blocker is mechanical
+— `runs/r3-trainpredict` (60 dumps) is not on this machine yet, and pulls are the
+operator's to run.
+
+**Both GPU-free wins from handoff §6 are banked**, and only one paid what was
+predicted:
+
+* `review.LOW_CONF` 0.6 → 0.8: **−3.00**, exactly as derived. The 0.6–0.8 band
+  was 18 matched pairs, 100% wrong, zero correct. Pipeline behaviour, so it does
+  not show in a re-score of the frozen dumps — it needs one predict run to
+  appear in a report.
+* The `char_type` rows: predicted ~−4.6, **measured −1.25**. The premise was
+  wrong; see §3.
 
 ## 3. Measured dead ends — do not retry these
 
@@ -108,12 +120,29 @@ GPU days.
   test of the read prompt — and its target bucket, `misread.misplaced`, was
   **provably untouched at 64 → 64**. Naming the centre callout recovered none of
   them, so those rows are not an ambiguity about *which* callout to read.
-* **The detect prompt, toward tighter boxes** (`detectbox`). `experiment.py`
-  called it a WIN; it is not. Not robust (better under 4 of 6 weightings, `ci95`
-  spanning zero), both `compare_runs` guards fired, it destroyed 18 legitimate
+* **The detect prompt, toward tighter boxes** (`detectbox`). `experiment.py` once
+  called it a WIN on a −0.25 cost delta; it is not. Not robust, `ci95` spanning
+  zero, both `compare_runs` guards fired, it destroyed 18 legitimate
   `gdt`/`theoretical` matches by the `score_kinds` mechanism above, and its target
   bucket moved the **wrong way** (49 → 54). It also shows that suppressing
   non-`dimension` detections is that same dead end wearing a different hat.
+  Under the corrected char_type policy it no longer has even a nominal cost win:
+  **+0.75, better under 3 of 6 weightings** (was −0.25 and 4 of 6).
+* **The `char_type` bucket as a synonym-map problem.** `wrong:char_type` is the
+  largest single failure mode (115 of 308 matched pairs), and the standing
+  hypothesis was that gold's German labels were missing from
+  `normalize.CHAR_TYPE_SYNONYMS`. Adding the obvious words (breite/höhe/tiefe/
+  dicke, rundheit, parallelität) moved **exactly nothing** — a re-score was
+  byte-identical. The real fault was that the map matched the WHOLE label while
+  `char_type_kind` matches on word containment, so compound gold labels
+  ("Diameter MIN") were admitted to scoring by one function and judged unequal by
+  the other. Fixing that is worth **−1.25, not the ~−4.6 the handoff estimated**:
+  it corrects 16 of the 115 rows, of which only 5 were wrong in `char_type` ALONE
+  and so became fully correct. **Do not propose more synonym entries.** The
+  residual is real: `Diameter→Distance` 11 and `Distance→Diameter` 11, a
+  symmetric confusion over the leading Ø that `parser.py` infers Diameter from —
+  a read-stage fault, which is Rung 3's target. `char_type_confusion` in the
+  digest is the aggregate that settles this; read it before touching the map.
 * **`predict --detect-only` as a way to cheapen the crop pass.** Detection is
   ~2/3 of per-document cost, not the reads: detection-only measured 10 m 55 s and
   23 m 45 s on dev documents 2 and 3 against a full-predict median of ~16 min, and
@@ -189,7 +218,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 560 passed, 2 skipped
+python -m pytest -q                          # 580 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # baseline / arm decision table
 ```
