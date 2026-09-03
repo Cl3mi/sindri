@@ -217,6 +217,16 @@ GPU days.
   sanctioned commands bare, and split a file edit from its `git add` into separate
   calls. `sync_client_data.sh` is **not** in the allowlist regex, so pulls are the
   operator's to run, not an agent's.
+* **Never `git checkout` on the GPU host while a queue is running.** Bash reads
+  a script incrementally, so replacing `run_gpu_queue.sh` on disk mid-run can
+  corrupt the executing queue — and a checkout is exactly how code reaches that
+  host. If something must be deployed while a queue runs, `scp` it to a path
+  **outside** `~/sindri` (that is why `run_train_lora.sh` takes no `$REPO` and
+  can run from `~`). Note also that the host **cannot fetch from GitHub** at
+  all: its remote is credential-less HTTPS and its ssh key is a deploy key for
+  a different repo, so code arrives via
+  `git push ssh://<host>/home/rebe_test3/sindri <branch>:refs/heads/from-operator`
+  followed by a checkout of `from-operator`.
 * **The GPU host is unreliable, not merely slow.** 24+ users, load 80–200. In one
   evening it dropped an ssh channel mid-run, killed a container two documents from
   the end, and left the network for ~14 h *without rebooting*. Long runs belong in
