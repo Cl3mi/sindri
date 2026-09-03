@@ -3,6 +3,7 @@ synthetic data: the crop must be the one inference would produce, and nothing th
 builder REPORTS may contain a client value."""
 import json
 
+import pytest
 from PIL import Image
 
 from app.eval.models import GoldCharacteristic, GoldDoc
@@ -172,3 +173,75 @@ def test_the_reason_breakdown_reconciles_with_the_unrenderable_total(tmp_path):
     per_reason = {k: v for k, v in counts.items()
                   if k.startswith("unrenderable:")}
     assert sum(per_reason.values()) == counts["unrenderable"] == 3
+
+
+# --- the holdout, which has to be by DOCUMENT ------------------------------
+
+def _rows(*counts):
+    """Manifest rows for documents D0, D1, ... with the given row counts."""
+    out = []
+    for doc, n in enumerate(counts):
+        out += [{"image": f"D{doc}/D{doc}-{i:04d}.png", "target": "20",
+                 "hint": "", "balloon": i} for i in range(n)]
+    return out
+
+
+def test_the_holdout_never_splits_a_document_across_both_sides():
+    """The load-bearing property. Crops from ONE drawing share its house style,
+    its scan quality and often its exact tolerance values, so a validation crop
+    whose drawing also appears in training measures memorisation, not
+    generalisation -- which is the ladder's stated primary risk for Rung 3, made
+    worse by a 72B against only 735 examples."""
+    from app.train.dataset import split_by_document
+
+    train, val = split_by_document(_rows(30, 25, 20, 15, 10), holdout_frac=0.2)
+    train_docs = {r["image"].split("/")[0] for r in train}
+    val_docs = {r["image"].split("/")[0] for r in val}
+    assert train_docs & val_docs == set(), train_docs & val_docs
+    assert val_docs, "a silent empty holdout would leave the epoch choice blind"
+
+
+def test_the_holdout_accounts_for_every_row():
+    """House rule: reconcile against a count that already exists. No row may be
+    dropped or duplicated by the split."""
+    from app.train.dataset import split_by_document
+
+    rows = _rows(30, 25, 20, 15, 10)
+    train, val = split_by_document(rows, holdout_frac=0.2)
+    assert len(train) + len(val) == len(rows)
+    assert {r["image"] for r in train} | {r["image"] for r in val} == \
+        {r["image"] for r in rows}
+
+
+def test_the_holdout_is_deterministic_for_a_given_seed():
+    """A training run that cannot be reproduced cannot be compared against, and
+    the whole campaign rests on A/B runs being attributable."""
+    from app.train.dataset import split_by_document
+
+    rows = _rows(30, 25, 20, 15, 10, 12, 8)
+    a = split_by_document(rows, holdout_frac=0.2, seed=13)
+    b = split_by_document(rows, holdout_frac=0.2, seed=13)
+    c = split_by_document(rows, holdout_frac=0.2, seed=99)
+    assert [r["image"] for r in a[1]] == [r["image"] for r in b[1]]
+    assert [r["image"] for r in a[1]] != [r["image"] for r in c[1]]
+
+
+def test_the_holdout_lands_near_the_requested_fraction():
+    """By-document splitting cannot hit a row fraction exactly, but it must not
+    drift far either: too small and the eval loss is noise, too large and the
+    already-scarce training set shrinks further."""
+    from app.train.dataset import split_by_document
+
+    rows = _rows(*([10] * 20))            # 200 rows over 20 documents
+    _, val = split_by_document(rows, holdout_frac=0.1)
+    assert 0.05 <= len(val) / len(rows) <= 0.20, len(val) / len(rows)
+
+
+def test_a_single_document_cannot_be_held_out_and_says_so():
+    """Refuses rather than returning an empty holdout. An empty validation set
+    would make load_best_model_at_end silently meaningless, and the run would
+    look fine while selecting a checkpoint at random."""
+    from app.train.dataset import split_by_document
+
+    with pytest.raises(ValueError, match="document"):
+        split_by_document(_rows(40), holdout_frac=0.1)

@@ -14,8 +14,12 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir -r requirements-train.txt
 
 COPY app ./app
+COPY train_lora.py ./
 
 # Model weights are cached here; mount the same volume the inference image uses
 # so a base downloaded once serves both.
 ENV HF_HOME=/models
-CMD ["python", "-c", "import torch, transformers, peft, bitsandbytes; print('training image OK')"]
+# The entry point, not an import smoke test. The image previously ended at the
+# smoke test and never copied train_lora.py, so `podman build` succeeded and the
+# Task 7 gate passed while the thing the image exists to run was absent.
+CMD ["python", "train_lora.py", "--help"]

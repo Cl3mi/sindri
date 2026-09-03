@@ -10,6 +10,7 @@ Crops are produced by the pipeline's own `boxes.tighten_to_ink` and
 inference crop teaches the model the wrong input distribution, which would show
 up as a LoRA that helps on paper and not in the pipeline."""
 import json
+import random
 from pathlib import Path
 from typing import Dict, Iterable, Tuple
 
@@ -68,3 +69,60 @@ def build_pairs(gold, page_image, matched: Iterable[Tuple[int, object]],
                                 ensure_ascii=False) + "\n")
             counts["pairs"] += 1
     return counts
+
+
+def _doc_of(row) -> str:
+    """The document a manifest row belongs to.
+
+    build_pairs writes one directory per document and the merged manifest
+    prefixes each image name with it, so the prefix IS the document id."""
+    return str(row["image"]).split("/", 1)[0]
+
+
+def split_by_document(rows, holdout_frac: float = 0.1, seed: int = 13):
+    """Split manifest rows into (train, validation), never splitting a document.
+
+    By document, not by row, and that is the whole point. Crops from one drawing
+    share its house style, its scan quality and often its exact tolerance
+    values, so a validation crop whose drawing also appears in training measures
+    memorisation rather than generalisation. The ladder names that as Rung 3's
+    primary risk, and 735 pairs against a 72B makes it sharper -- the frozen
+    corpus split already applies the same rule at the document level.
+
+    Why a holdout exists at all: with three epoch checkpoints and no eval, the
+    choice between them is arbitrary. This makes it eval_loss.
+
+    Deterministic given `seed`, because a training run that cannot be reproduced
+    cannot be compared against, and every conclusion here rests on A/B runs
+    being attributable. Documents are sorted before shuffling so the result does
+    not depend on manifest order.
+
+    Raises rather than returning an empty holdout: transformers'
+    load_best_model_at_end would then select a checkpoint on no evidence while
+    the run still looked healthy."""
+    by_doc = {}
+    for row in rows:
+        by_doc.setdefault(_doc_of(row), []).append(row)
+    if len(by_doc) < 2:
+        raise ValueError(
+            f"cannot hold out by document: the manifest covers {len(by_doc)} "
+            f"document(s), so any holdout either is empty or takes the whole "
+            f"training set. Build pairs over more documents first.")
+
+    docs = sorted(by_doc)
+    random.Random(seed).shuffle(docs)
+    target = len(rows) * holdout_frac
+
+    held, n = [], 0
+    for doc in docs:
+        if held and n >= target:
+            break
+        if len(held) == len(docs) - 1:      # always leave one to train on
+            break
+        held.append(doc)
+        n += len(by_doc[doc])
+
+    held_set = set(held)
+    train = [r for r in rows if _doc_of(r) not in held_set]
+    val = [r for r in rows if _doc_of(r) in held_set]
+    return train, val
