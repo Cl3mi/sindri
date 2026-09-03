@@ -13,8 +13,12 @@ from pathlib import Path
 SCRIPT = Path(__file__).parents[1] / "run_train_lora.sh"
 
 
-def _env(tmp_path, gpu_used="1", wait_for=""):
-    """A PATH where podman and nvidia-smi are stubs that record their args."""
+def _env(tmp_path, gpu_used="1", wait_for="", frees_after=None):
+    """A PATH where podman and nvidia-smi are stubs that record their args.
+
+    `frees_after`: report the card busy for that many calls, then free. Models
+    the real race -- the predecessor's completion marker is written the moment
+    its container exits, but the driver takes a few seconds to release ~68 GB."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     calls = tmp_path / "podman-calls"
@@ -23,9 +27,17 @@ def _env(tmp_path, gpu_used="1", wait_for=""):
         "#!/usr/bin/env bash\n"
         f'echo "$@" >> "{calls}"\n'
         "exit 0\n")
-    (bindir / "nvidia-smi").write_text(
-        "#!/usr/bin/env bash\n"
-        f'echo "{gpu_used}"\n')
+    if frees_after is None:
+        (bindir / "nvidia-smi").write_text(
+            "#!/usr/bin/env bash\n"
+            f'echo "{gpu_used}"\n')
+    else:
+        counter = tmp_path / "smi-calls"
+        (bindir / "nvidia-smi").write_text(
+            "#!/usr/bin/env bash\n"
+            f'n=$(cat "{counter}" 2>/dev/null || echo 0); n=$((n+1))\n'
+            f'echo "$n" > "{counter}"\n'
+            f'if [ "$n" -le {frees_after} ]; then echo 68452; else echo 1; fi\n')
     for f in ("podman", "nvidia-smi"):
         (bindir / f).chmod(0o755)
 
@@ -43,6 +55,9 @@ def _env(tmp_path, gpu_used="1", wait_for=""):
         "WAIT_FOR": wait_for,
         "WAIT_TIMEOUT": "2",
         "WAIT_POLL": "1",
+        # Real defaults are minutes; tests must not wait them out.
+        "CARD_RETRIES": "3",
+        "CARD_POLL": "1",
     })
     return env, calls
 
@@ -149,3 +164,25 @@ def test_logs_land_on_disk(tmp_path):
     logs = list((tmp_path / "logs").glob("*.log"))
     assert logs, "no log written"
     assert "train" in logs[0].read_text().lower()
+
+
+def test_a_card_still_draining_is_waited_out_not_refused(tmp_path):
+    """The race this closes. run_gpu_queue.sh writes a stage's completion marker
+    the moment its container exits, but the driver takes seconds to release
+    ~68 GB -- so a launcher chained on that marker can see the card still busy
+    and refuse a card that is about to be free.
+
+    Bounded retry, not an unbounded wait: a card genuinely held by one of this
+    host's other 24 users must still be refused rather than queued behind."""
+    env, calls = _env(tmp_path, frees_after=2)
+    r = _run(tmp_path, env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "train_lora.py" in calls.read_text()
+
+
+def test_a_card_held_throughout_is_still_refused(tmp_path):
+    """The other half: retrying must not become "start anyway"."""
+    env, calls = _env(tmp_path, frees_after=99)
+    r = _run(tmp_path, env)
+    assert r.returncode != 0
+    assert not calls.exists(), "podman ran on a card that never freed"

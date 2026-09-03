@@ -50,6 +50,11 @@ SEED="${SEED:-13}"
 WAIT_FOR="${WAIT_FOR:-}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-72000}"    # 20 h, comfortably past a 20-doc run
 WAIT_POLL="${WAIT_POLL:-300}"
+# How long to tolerate a card that is still DRAINING after its predecessor
+# exited. 10 x 30s = 5 min, far longer than a driver needs to release 68 GB and
+# far shorter than waiting out somebody else's job.
+CARD_RETRIES="${CARD_RETRIES:-10}"
+CARD_POLL="${CARD_POLL:-30}"
 
 mkdir -p "$LOGDIR"
 CURLOG="$LOGDIR/train-$ADAPTER.log"
@@ -95,15 +100,31 @@ if [ -n "$WAIT_FOR" ]; then
     log "marker present after ${waited}s: $WAIT_FOR"
 fi
 
-used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits \
-       -i "$GPU_INDEX" 2>/dev/null | tr -d ' ')
-log "gpu $GPU_INDEX memory.used=${used:-unknown} MiB"
-if [ -z "$used" ] || [ "$used" -gt 2000 ]; then
-    log "FAILED: gpu $GPU_INDEX is occupied (${used:-unknown} MiB)."
-    log "  A 4-bit 72B plus LoRA state needs ~45-55 GB; sharing a card with"
-    log "  another job OOMs hours in or degrades quietly."
-    exit 1
-fi
+# Bounded retry, because the card may still be DRAINING rather than taken:
+# run_gpu_queue.sh writes a stage's completion marker the moment its container
+# exits, but the driver needs seconds to release ~68 GB. Chaining on that marker
+# and checking once would refuse a card that is about to be free.
+# Bounded, not patient: a card genuinely held by one of this host's other 24
+# users must still be refused rather than queued behind.
+attempt=0
+while : ; do
+    used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits \
+           -i "$GPU_INDEX" 2>/dev/null | tr -d ' ')
+    log "gpu $GPU_INDEX memory.used=${used:-unknown} MiB"
+    if [ -n "$used" ] && [ "$used" -le 2000 ]; then
+        break
+    fi
+    attempt=$((attempt + 1))
+    if [ "$attempt" -ge "$CARD_RETRIES" ]; then
+        log "FAILED: gpu $GPU_INDEX is occupied (${used:-unknown} MiB) after"
+        log "  $attempt checks over $((attempt * CARD_POLL))s."
+        log "  A 4-bit 72B plus LoRA state needs ~45-55 GB; sharing a card with"
+        log "  another job OOMs hours in or degrades quietly."
+        exit 1
+    fi
+    log "  still busy; re-checking in ${CARD_POLL}s ($attempt/$CARD_RETRIES)"
+    sleep "$CARD_POLL"
+done
 
 RUNCMD=(podman run --rm --device "nvidia.com/gpu=$GPU_INDEX"
   -v sindri-models:/models
