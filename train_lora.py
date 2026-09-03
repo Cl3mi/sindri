@@ -40,6 +40,65 @@ from app.train.dataset import split_by_document
 # parallelism is worth avoiding entirely. Measured at 38.8 GB by the Task 7 gate.
 _BASE = "Qwen/Qwen2.5-VL-72B-Instruct"
 
+# The tensors that carry a batch dimension. EVERYTHING ELSE MUST NOT BE INDEXED.
+# Qwen2.5-VL's processor returns pixel_values as a flat [patches, dim] sequence
+# with no batch dimension, and image_grid_thw as [images, 3]. Taking [0] of
+# those -- which the original spec did to every key alike -- hands the vision
+# tower one patch instead of 56 and crashes it inside
+# `reshape(seq_len // spatial_merge_unit, ...)` with `shape '[0, 4, -1]'`.
+_SEQ_KEYS = ("input_ids", "attention_mask", "labels")
+
+
+def collate(rows):
+    """Batch examples the way Qwen2.5-VL expects.
+
+    Sequence tensors stack into [B, L]; the vision tensors CONCATENATE, because
+    pixel_values is one flat patch sequence over the whole batch and
+    image_grid_thw says how to cut it back up. Stacking those would invent a
+    batch dimension the model does not read."""
+    out = {}
+    for key in rows[0]:
+        if key in _SEQ_KEYS:
+            out[key] = torch.stack([r[key] for r in rows])
+        else:
+            out[key] = torch.cat([r[key] for r in rows], dim=0)
+    return out
+
+
+def shape_check(dataset, n: int) -> None:
+    """Assert a collated batch has the shapes the vision tower requires.
+
+    This exists because the shape bug above cost a full overnight GPU window:
+    training died four minutes in, at step 0 of 243, after the controls had
+    already finished and freed the card. Every part of it was checkable on CPU
+    in seconds -- the processor runs fine without a GPU -- so it is now checked
+    before the 145 GB model load rather than after.
+
+    It also asserts the labels are not entirely masked. If the prompt were as
+    long as the full sequence, every label would be -100, the loss would be
+    computed over nothing, and the run would look healthy for hours while
+    learning nothing at all."""
+    rows = [dataset[i] for i in range(min(n, len(dataset)))]
+    for i, row in enumerate(rows):
+        pv = row["pixel_values"]
+        assert pv.dim() == 2, f"example {i}: pixel_values is {tuple(pv.shape)}, expected [patches, dim]"
+        assert pv.shape[0] >= 4, (
+            f"example {i}: only {pv.shape[0]} patch(es); the vision tower's "
+            f"spatial_merge_unit is 4 and reshape would fail")
+        assert row["image_grid_thw"].dim() == 2, (
+            f"example {i}: image_grid_thw is {tuple(row['image_grid_thw'].shape)}, expected [images, 3]")
+        for key in _SEQ_KEYS:
+            assert row[key].dim() == 1, f"example {i}: {key} is {tuple(row[key].shape)}, expected [L]"
+        assert row["labels"].shape == row["input_ids"].shape
+        assert bool((row["labels"] != -100).any()), (
+            f"example {i}: every label is masked, so this example contributes "
+            f"no gradient")
+    batch = collate(rows[:1])
+    print(json.dumps({"examples_checked": len(rows),
+                      "batch_shapes": {k: list(v.shape) for k, v in batch.items()}}),
+          flush=True)
+    print("shape check OK", flush=True)
+
 
 class ReadDataset(torch.utils.data.Dataset):
     """One example = the read prompt + a callout crop -> its rendered target.
@@ -69,7 +128,9 @@ class ReadDataset(torch.utils.data.Dataset):
         full = prompt_text + row["target"] + self.processor.tokenizer.eos_token
         enc = self.processor(text=[full], images=[image], return_tensors="pt",
                              padding=True)
-        enc = {k: v[0] for k, v in enc.items()}
+        # Squeeze the batch dimension from the SEQUENCE tensors only -- see
+        # _SEQ_KEYS. Indexing [0] into pixel_values takes patch zero of 56.
+        enc = {k: (v[0] if k in _SEQ_KEYS else v) for k, v in enc.items()}
         # Loss on the answer only: the prompt is byte-identical in every
         # example, so training on it teaches nothing and dilutes the gradient.
         prompt_len = len(self.processor(text=[prompt_text], images=[image],
@@ -98,6 +159,11 @@ def main() -> int:
                          "epoch checkpoint")
     ap.add_argument("--seed", type=int, default=13,
                     help="holdout seed; 13 matches the frozen corpus split")
+    ap.add_argument("--shape-check", type=int, default=0, metavar="N",
+                    help="build N examples, assert the shapes the vision tower "
+                         "requires, and exit WITHOUT loading the model. Runs on "
+                         "CPU in seconds. A shape bug here once cost a whole "
+                         "overnight GPU window by failing at step 0 of 243.")
     args = ap.parse_args()
 
     manifest = Path(args.manifest)
@@ -116,7 +182,17 @@ def main() -> int:
                       "rank": args.rank, "epochs": args.epochs,
                       "seed": args.seed}), flush=True)
 
+    # Processor and datasets FIRST, model second. Loading 145 GB before finding
+    # out the data is malformed is how the shape bug burned an overnight window.
     processor = AutoProcessor.from_pretrained(args.base)
+    root = manifest.parent
+    train_ds = ReadDataset(train_rows, root, processor)
+    val_ds = ReadDataset(val_rows, root, processor)
+
+    if args.shape_check:
+        shape_check(train_ds, args.shape_check)
+        return 0
+
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         args.base, device_map="auto",
         quantization_config=BitsAndBytesConfig(
@@ -136,10 +212,6 @@ def main() -> int:
         bias="none", task_type="CAUSAL_LM",
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj"]))
     model.print_trainable_parameters()
-
-    root = manifest.parent
-    train_ds = ReadDataset(train_rows, root, processor)
-    val_ds = ReadDataset(val_rows, root, processor)
 
     Trainer(
         model=model,
@@ -165,8 +237,7 @@ def main() -> int:
             logging_steps=10, report_to=[]),
         train_dataset=train_ds,
         eval_dataset=val_ds,
-        data_collator=lambda rows: {
-            k: torch.stack([r[k] for r in rows]) for k in rows[0]},
+        data_collator=collate,
     ).train()
 
     # load_best_model_at_end leaves the best-eval_loss adapter in memory, so
