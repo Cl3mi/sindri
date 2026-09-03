@@ -80,10 +80,19 @@ operator's to run.
 **Both GPU-free wins from handoff §6 are banked**, and only one paid what was
 predicted:
 
-* `review.LOW_CONF` 0.6 → 0.8: **−3.00**, exactly as derived. The 0.6–0.8 band
-  was 18 matched pairs, 100% wrong, zero correct. Pipeline behaviour, so it does
-  not show in a re-score of the frozen dumps — it needs one predict run to
-  appear in a report.
+* `review.LOW_CONF` 0.6 → 0.8: **−3.00**, exactly as derived, and now **measured**
+  by a fresh predict run (`r3-awqcontrol`, 2026-09-03). The 0.6–0.8 band was 18
+  matched pairs, 100% wrong, zero correct.
+
+  **So there are two AWQ reference numbers and they differ only by this
+  threshold.** `baseline-dev` = 173.05 is the pre-change scoring reference;
+  **`r3-awqcontrol` = 170.05 is what current code produces**, and it is what a
+  new arm must be compared against. Runs are told apart by
+  `config.extra.review_low_conf`, absent on every dump predicted before
+  2026-09-02. The gate result: cost −3.00 with recall, `n_pred`, `missed`,
+  `false_detection`, `correct`, `field_acc` and every field aggregate
+  **bit-identical**; only 15 rows moved escaped → flagged. That also
+  re-confirms decoding determinism on a run taken 9.5 h later.
 * The `char_type` rows: predicted ~−4.6, **measured −1.25**. The premise was
   wrong; see §3.
 
