@@ -56,7 +56,7 @@ IMAGE_NEW="${IMAGE_NEW:-sindri-gpu-nf4}"
 
 if [ -z "$GPU_INDEX" ] || [ ${#STAGES[@]} -eq 0 ]; then
     echo "usage: run_gpu_queue.sh <gpu-index> <stage> [<stage>...]" >&2
-    echo "stages: trainpredict awqgate base72bnf4 awqcontrol nf4control" >&2
+    echo "stages: trainpredict awqgate base72bnf4 awqcontrol nf4control lora72bnf4 lora72bawq" >&2
     exit 2
 fi
 
@@ -68,13 +68,19 @@ stage_run()    { case "$1" in trainpredict) echo "r3-trainpredict" ;;
                               awqgate)      echo "r3-awqgate" ;;
                               base72bnf4)   echo "r3-base72bnf4" ;;
                               awqcontrol)   echo "r3-awqcontrol" ;;
-                              nf4control)   echo "r3-nf4control" ;; esac; }
+                              nf4control)   echo "r3-nf4control" ;;
+                              lora72bnf4)   echo "r3-lora72bnf4" ;;
+                              lora72bawq)   echo "r3-lora72bawq" ;; esac; }
 stage_split()  { case "$1" in trainpredict) echo "train" ;; *) echo "dev" ;; esac; }
 stage_image()  { case "$1" in trainpredict) echo "$IMAGE_OLD" ;;
                               *)            echo "$IMAGE_NEW" ;; esac; }
 stage_env()    { case "$1" in
                    base72bnf4|nf4control)
                      echo "-e VLM_MODEL_ID=Qwen/Qwen2.5-VL-72B-Instruct -e SINDRI_QUANT=nf4" ;;
+                   lora72bnf4)
+                     echo "-e VLM_MODEL_ID=Qwen/Qwen2.5-VL-72B-Instruct -e SINDRI_QUANT=nf4 -e SINDRI_ADAPTER=read-lora-v1" ;;
+                   lora72bawq)
+                     echo "-e VLM_MODEL_ID=$MODEL -e SINDRI_ADAPTER=read-lora-v1" ;;
                    *) echo "-e VLM_MODEL_ID=$MODEL" ;; esac; }
 stage_why()    { case "$1" in
     trainpredict) echo "60 train documents -> the boxes Rung 3's training crops come from. Never scored: train is the training split." ;;
@@ -82,6 +88,8 @@ stage_why()    { case "$1" in
     base72bnf4)   echo "zero-shot NF4 control. The adapter will be served on this base, so this is what separates 'quantisation changed' from 'LoRA helped'." ;;
     awqcontrol)   echo "RE-RUN of the AWQ zero-shot on current code, because review.LOW_CONF moved 0.6 -> 0.8. That is a PIPELINE change, so every earlier dump carries flags computed at the old threshold and comparing an arm against them would credit the adapter with ~3.00 of threshold move. PREDICTION this run must hit: mean_review_cost 170.05, and recall/n_pred/missed/false_detection/field_acc IDENTICAL to baseline-dev. Only escaped_error->flagged_error may move, by exactly 15." ;;
     nf4control)   echo "the same re-run for the NF4 base, and the control for lora72b-nf4. PREDICTION: mean_review_cost 176.40, everything but the escaped/flagged split identical to r3-base72bnf4, which moves by exactly 17." ;;
+    lora72bnf4)   echo "THE FINE-TUNE, isolated. Same NF4 base as r3-nf4control, adapter the only difference, both on current code. Judge vs r3-nf4control -- and on field_acc RISING plus the targeted bucket moving, not on review cost alone, which has been wrong three times on this corpus." ;;
+    lora72bawq)   echo "THE DEPLOYMENT QUESTION: an adapter attached to what production actually serves. Judge vs r3-awqcontrol (170.05). Trained on NF4 and served on AWQ, so this arm also measures that quantisation mismatch, whose size is unknown." ;;
   esac; }
 
 for s in "${STAGES[@]}"; do

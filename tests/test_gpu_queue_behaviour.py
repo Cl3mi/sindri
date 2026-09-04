@@ -181,3 +181,39 @@ def test_a_control_never_runs_on_the_train_split(tmp_path):
     assert _run(tmp_path, env, "awqcontrol", "nf4control").returncode == 0
     for run_name in ("r3-awqcontrol", "r3-nf4control"):
         assert "--split train" not in _podman_line(calls, run_name)
+
+
+def test_the_lora_arms_serve_the_adapter_on_their_matched_base(tmp_path):
+    """The two arms Rung 3 exists to run, each a SINGLE-variable comparison:
+
+      lora72bnf4  vs r3-nf4control   -- same NF4 base, adapter the only change
+      lora72bawq  vs r3-awqcontrol   -- same AWQ base, adapter the only change
+
+    Both controls were re-run on current code, so neither delta can be credited
+    with the review-threshold move. The adapter lives at /models/adapters inside
+    the sindri-models volume the queue already mounts, which is exactly where
+    vlm_backend._ADAPTER_ROOT looks."""
+    env, calls = _stub_env(tmp_path)
+    assert _run(tmp_path, env, "lora72bnf4", "lora72bawq").returncode == 0
+
+    nf4 = _podman_line(calls, "r3-lora72bnf4")
+    assert "SINDRI_ADAPTER=read-lora-v1" in nf4, nf4
+    assert "SINDRI_QUANT=nf4" in nf4, nf4
+    assert "VLM_MODEL_ID=Qwen/Qwen2.5-VL-72B-Instruct " in nf4 + " ", nf4
+    assert "--split dev" in nf4, nf4
+
+    awq = _podman_line(calls, "r3-lora72bawq")
+    assert "SINDRI_ADAPTER=read-lora-v1" in awq, awq
+    assert "SINDRI_QUANT" not in awq, awq
+    assert "VLM_MODEL_ID=Qwen/Qwen2.5-VL-72B-Instruct-AWQ" in awq, awq
+    assert "--split dev" in awq, awq
+
+
+def test_the_lora_arms_mount_the_volume_holding_the_adapter(tmp_path):
+    """An arm that cannot see /models/adapters would have vlm_backend RAISE on
+    the unknown adapter name -- which is the designed behaviour and far better
+    than silently serving the base under a treatment arm's run name, but it is
+    still nine hours lost."""
+    env, calls = _stub_env(tmp_path)
+    assert _run(tmp_path, env, "lora72bawq").returncode == 0
+    assert "sindri-models:/models" in _podman_line(calls, "r3-lora72bawq")
