@@ -31,7 +31,7 @@ from transformers import (AutoProcessor, BitsAndBytesConfig,
                           TrainingArguments)
 
 from app.pipeline.ocr.vlm_backend import read_prompt
-from app.train.dataset import split_by_document
+from app.train.dataset import filter_readable_crops, split_by_document
 
 # The 72B, quantised to 4-bit NF4. AWQ -- what inference deploys -- is
 # inference-only, so it cannot be trained against; 4-bit puts the base at ~36 GB
@@ -169,6 +169,8 @@ def main() -> int:
     manifest = Path(args.manifest)
     rows = [json.loads(line) for line in
             manifest.read_text(encoding="utf-8").splitlines() if line.strip()]
+    # Before the split, so a dropped crop cannot distort the holdout fraction.
+    rows, unreadable = filter_readable_crops(rows, manifest.parent)
     train_rows, val_rows = split_by_document(
         rows, holdout_frac=args.holdout_frac, seed=args.seed)
 
@@ -176,7 +178,7 @@ def main() -> int:
         return len({r["image"].split("/", 1)[0] for r in rs})
 
     # Counts only. The manifest's target field is the client's value.
-    print(json.dumps({"pairs": len(rows),
+    print(json.dumps({"pairs": len(rows), "dropped_unreadable_crops": unreadable,
                       "train_pairs": len(train_rows), "train_docs": n_docs(train_rows),
                       "val_pairs": len(val_rows), "val_docs": n_docs(val_rows),
                       "rank": args.rank, "epochs": args.epochs,

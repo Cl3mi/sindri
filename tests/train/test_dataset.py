@@ -245,3 +245,55 @@ def test_a_single_document_cannot_be_held_out_and_says_so():
 
     with pytest.raises(ValueError, match="document"):
         split_by_document(_rows(40), holdout_frac=0.1)
+
+
+# --- crops the processor cannot read at all --------------------------------
+
+def _png(path, size):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", size, "white").save(path)
+
+
+def test_a_crop_below_the_processor_factor_is_dropped(tmp_path):
+    """Qwen2-VL's smart_resize refuses an image whose SHORTER side is under its
+    patch factor: "height:149 or width:20 must be larger than factor:28".
+
+    At inference that exception is swallowed by extract._safe_read, which
+    returns ("", 0.0) -- so such a callout silently becomes an empty read and
+    the run looks healthy. Training has no such swallow and died at step 21 of
+    243. Either way the crop is unusable, so it must not be a training example:
+    the model would be taught a target for an input it never truly receives."""
+    from app.train.dataset import filter_readable_crops
+
+    _png(tmp_path / "D0" / "a.png", (20, 149))     # too narrow
+    _png(tmp_path / "D0" / "b.png", (120, 60))     # fine
+    rows = [{"image": "D0/a.png"}, {"image": "D0/b.png"}]
+
+    kept, dropped = filter_readable_crops(rows, tmp_path)
+
+    assert [r["image"] for r in kept] == ["D0/b.png"]
+    assert dropped == 1
+
+
+def test_a_crop_exactly_at_the_factor_is_kept(tmp_path):
+    """The boundary is "larger than factor" in the processor's own message, and
+    28x28 is what it accepts. Dropping it would discard usable pairs from an
+    already scarce set."""
+    from app.train.dataset import PROCESSOR_MIN_EDGE, filter_readable_crops
+
+    _png(tmp_path / "D0" / "c.png", (PROCESSOR_MIN_EDGE, 200))
+    kept, dropped = filter_readable_crops([{"image": "D0/c.png"}], tmp_path)
+    assert dropped == 0 and len(kept) == 1
+
+
+def test_the_filter_accounts_for_every_row(tmp_path):
+    """House rule: reconcile against a count that already exists."""
+    from app.train.dataset import filter_readable_crops
+
+    for i, size in enumerate([(10, 100), (120, 60), (5, 5), (200, 90)]):
+        _png(tmp_path / "D0" / f"{i}.png", size)
+    rows = [{"image": f"D0/{i}.png"} for i in range(4)]
+
+    kept, dropped = filter_readable_crops(rows, tmp_path)
+    assert len(kept) + dropped == len(rows)
+    assert dropped == 2

@@ -126,3 +126,34 @@ def split_by_document(rows, holdout_frac: float = 0.1, seed: int = 13):
     train = [r for r in rows if _doc_of(r) not in held_set]
     val = [r for r in rows if _doc_of(r) in held_set]
     return train, val
+
+
+# Qwen2-VL's image processor refuses an image whose SHORTER side is below its
+# patch factor -- smart_resize raises
+#   "height:149 or width:20 must be larger than factor:28"
+# At INFERENCE that exception is swallowed by extract._safe_read, which returns
+# ("", 0.0), so such a callout silently becomes an EMPTY READ and the run looks
+# healthy. Training has no such swallow and died at step 21 of 243 on one.
+#
+# Either way the crop is unusable, so it must not be a training example: the
+# model would be taught a target for an input it never truly receives. 4 of the
+# 735 train-split pairs are this narrow.
+PROCESSOR_MIN_EDGE = 28
+
+
+def filter_readable_crops(rows, root, min_edge: int = PROCESSOR_MIN_EDGE):
+    """Drop manifest rows whose crop the processor cannot accept.
+
+    Returns (kept_rows, n_dropped). The count is the only thing reportable --
+    the images are client drawings."""
+    from PIL import Image
+
+    root = Path(root)
+    kept, dropped = [], 0
+    for row in rows:
+        with Image.open(root / row["image"]) as im:
+            if min(im.size) < min_edge:
+                dropped += 1
+                continue
+        kept.append(row)
+    return kept, dropped
