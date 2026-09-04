@@ -38,7 +38,7 @@ advisory, and it has been right every single time it fired.
 **Read `docs/plans/2026-08-30-session-handoff.md` first — it is the current state
 of play.** Everything below is the durable summary.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **580 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **626 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). `SCHEMA_VERSION` = 1 — do not bump
 it. Split frozen at `6d174d5e4f1b9228` — do not regenerate it.
 
@@ -73,9 +73,11 @@ production. Plan: `docs/plans/2026-08-27-rung3-lora-plan.md`; design:
 `docs/plans/2026-08-27-rung3-lora-design.md`.
 
 **The data-owner decision is GRANTED** (2026-09-02): rendered target values may
-be pushed to the GPU host for training. Rung 3's remaining blocker is mechanical
-— `runs/r3-trainpredict` (60 dumps) is not on this machine yet, and pulls are the
-operator's to run.
+be pushed to the GPU host for training. The adapter `read-lora-v1` is TRAINED
+(2026-09-04) from 731 verified pairs — 645 train / 86 validation over 47 / 7
+documents, r=8, best checkpoint chosen on a by-document holdout at epoch 2
+(`eval_loss` 0.2951 → **0.2816** → 0.2876, so epoch 3 was already overfitting
+while train loss kept falling to 0.21). Both arms are registered and running.
 
 **Both GPU-free wins from handoff §6 are banked**, and only one paid what was
 predicted:
@@ -93,6 +95,13 @@ predicted:
   `false_detection`, `correct`, `field_acc` and every field aggregate
   **bit-identical**; only 15 rows moved escaped → flagged. That also
   re-confirms decoding determinism on a run taken 9.5 h later.
+
+  The NF4 side has the same pair and passed the same way: `r3-base72bnf4` =
+  179.80 is pre-change, **`r3-nf4control` = 176.40 is current code**, delta
+  −3.40 over exactly 17 rows, `field_acc` 0.3730 both sides, and `micro_recall`,
+  `n_pred`, `missed`, `false_detection`, `field_failures`,
+  `field_failure_modes` and `char_type_confusion` all bit-identical. So BOTH
+  quantisations hit a pre-registered prediction to the decimal.
 * The `char_type` rows: predicted ~−4.6, **measured −1.25**. The premise was
   wrong; see §3.
 
@@ -237,7 +246,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 580 passed, 2 skipped
+python -m pytest -q                          # 626 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # baseline / arm decision table
 ```
