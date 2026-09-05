@@ -64,7 +64,33 @@ why. Evidence: `docs/plans/2026-08-21-direction-run-findings.md` (detection) and
 `docs/plans/2026-08-24-rung2-reading-quality.md` (prompts, plus the Phase A
 diagnostics that route the residual).
 
-**Rung 3 (LoRA on the read stage) is in flight.** The 72B trains at 4-bit NF4 in
+**Rung 3 is CLOSED: the adapter loses, but not the way the others did.**
+`lora72bnf4` vs its matched control `r3-nf4control` (176.40): cost **186.40
+(+10.00)**, not robust (2 of 6 weightings), `ci95` spanning zero. Yet
+`micro_recall` 0.669 → **0.755**, `missed` 158 → **117**, `correct` 77 → **88**,
+`escaped_error` 123 → **106**. The whole loss is `false_detection` 607 → **931**
+at w=2 (+648) swamping the misses recovered (−410).
+
+**The arm did not test the read stage.** `resolve_adapter` wraps the whole model
+in `PeftModel`, so `detect_regions` ran through adapted weights too — every
+prediction kind rose. That is a bug in the arm, and the next arm is to scope the
+adapter to the read pass (`disable_adapter()` around detection), with the
+falsifiable prediction that `n_pred` returns to exactly 926 and
+`false_detection` to 607.
+
+**The finding worth more than the verdict:** `missed_isolated` 75 → **43**. Rung
+1 threw render resolution, tile size and both merge knobs at isolated misses and
+this file records `isolated` as "provably untouched". The detector's WEIGHTS
+move it; its knobs and prompts never did.
+
+The read stage learned exactly what it was trained on: `dropped_tolerances`
+95 → 32 and `missing:*_tol` down ~100, but `wrong:upper_tol` 46 → 107 and
+`wrong:lower_tol` 48 → 130 — it learned to always emit tolerance-SHAPED output,
+because `render_target` renders an explicit `+x -y` whenever gold has one.
+Serving an adapter also costs **~2.3x inference wall-clock** (28 → 65 min/doc).
+Full writeup: `docs/plans/2026-08-27-rung3-lora-plan.md` "Rung 3 results".
+
+**Rung 3 background.** The 72B trains at 4-bit NF4 in
 **38.8 GB on one H100** — gate passed. Its GPU phase is done: the dependency
 change to the inference image is proven safe (AWQ reproduces the baseline to full
 float precision, 20/20 deltas `0.0`), and serving on NF4 costs **+6.75** review

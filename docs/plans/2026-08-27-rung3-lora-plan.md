@@ -2129,3 +2129,92 @@ image build, and GPU runs).
 * Not commit anything derived from gold values. The dataset, the manifests and
   the crops stay under the protected root; only counts are reported.
 * Not quote a cross-model delta without naming both models.
+
+---
+
+## Rung 3 results — the adapter LOSES, and it is the most informative loss yet
+
+Judged against `r3-nf4control` (176.40), its matched control: same NF4 base, same
+image, same code, adapter the only difference. Both controls hit predictions
+registered before they ran, so this delta is attributable.
+
+**VERDICT: NO.** `mean_review_cost` 176.40 → **186.40 (+10.00)**, not robust
+(better under 2 of 6 weightings), `ci95 [-3.95, 23.9]` spans zero, not
+significant. The rule requires cost to fall; it rose.
+
+| | nf4control | lora72bnf4 | |
+|---|---|---|---|
+| `mean_review_cost` | 176.40 | **186.40** | +10.00 |
+| `micro_recall` | 0.6688 | **0.7547** | **+0.0860** |
+| `micro_precision` | 0.3445 | 0.2789 | −0.0656 |
+| `escaped_rate` | 0.2579 | **0.2222** | −0.0356 |
+| `field_acc` | 0.3730 | 0.3778 | +0.0047 |
+| `correct` | 77 | **88** | **+11** |
+| `escaped_error` | 123 | 106 | −17 |
+| `missed` | 158 | **117** | **−41** |
+| `false_detection` | 607 | **931** | **+324** |
+| `n_pred` | 926 | 1291 | +365 |
+
+Cost reconciles exactly: `10(−41) + 5(−17) + 2(+324) + 1(+47) = +200`, ÷20 = +10.00.
+**The entire loss is `false_detection` at w=2 (+648) swamping the misses it
+recovered (−410).**
+
+### The arm did not test what it was designed to test
+
+The design says "Scope: the read stage only." It was not. Every prediction kind
+rose — `dimension` +202, `gdt` +67, `theoretical` +52, `note` +43 — which a read
+adapter cannot do. `resolve_adapter` wraps the WHOLE model in `PeftModel`, so
+`detect_regions` runs through the adapted weights too. This arm measures "adapter
+on both stages", and that is a bug in the arm, not a property of LoRA.
+
+### What the read stage actually learned, and it is exactly what was trained
+
+The targeted bucket moved hard: `missing:upper_tol` 71 → 29, `missing:lower_tol`
+91 → 31, `dropped_tolerances` rows 95 → 32. The dropped-tolerance bucket — a
+standing Rung-2 target — was cut by two thirds.
+
+But it converted them into wrong ones: `wrong:upper_tol` 46 → 107,
+`wrong:lower_tol` 48 → 130, `spurious:upper_tol` 17 → 48. The model learned to
+ALWAYS emit tolerance-shaped output, because `render_target` emits an explicit
+`+x -y` for every gold row that has one. The design predicted the mechanism
+("training on a canonical rendering teaches a normalisation") and underestimated
+its reach: it taught the SHAPE, not just the normalisation.
+
+### The finding nothing else in the campaign produced
+
+`missed_isolated` 75 → **43**. Rung 1 threw render resolution, detect tile size
+and both `merge_adjacent` knobs at isolated misses and CLAUDE.md records that
+`isolated` was "provably untouched by merge knobs (74 in all three arms)". The
+adapter moved it by 32 — as an unintended side effect of perturbing detection.
+
+That is worth more than the arm's verdict: **isolated misses are movable, and
+the lever is the detector's weights, not its knobs or its prompt.**
+
+### Next arm, with a mechanism and a falsifiable prediction
+
+Scope the adapter to the read pass — PEFT's `disable_adapter()` around
+`detect_regions` — so detection runs on unadapted weights.
+
+PREDICTION, testable and cheap: `n_pred` returns to exactly **926** and
+`false_detection` to **607**, bit-identical to `r3-nf4control`, because decoding
+is deterministic and the detect pass would then use identical weights. The read
+gains stay. If `n_pred` is not 926, the adapter is reaching further than
+`detect_regions` and the scoping is incomplete.
+
+If that holds, the arm costs `2(+0)` instead of `2(+324)` and the recovered
+misses stop being paid for. Whether the read stage's own trade — fewer dropped
+tolerances, more wrong ones — is net positive is then measurable in isolation
+for the first time.
+
+### `lora72bawq` could not run at all
+
+See CLAUDE.md §3. PEFT cannot inject into autoawq's `WQLinear_GEMM`, so the
+"deployment question" arm is impossible with this stack rather than merely
+unmeasured.
+
+### Cost of serving an adapter, measured incidentally
+
+~28 min/document without the adapter, **~65 min/document with it** — same card,
+same image, same host load. ~2.3x. At r=8 the extra matmuls are negligible, so
+this is PEFT's wrapper defeating a fused path. A deployment consideration
+independent of quality.
