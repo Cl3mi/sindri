@@ -1,0 +1,60 @@
+{
+ "schema_version": 1,
+ "run_a": "exp-control-dev",
+ "run_b": "exp-tightmerge-dev",
+ "n_docs": 20,
+ "mean_delta": 0.35,
+ "ci95": [
+  -1.35,
+  1.9
+ ],
+ "significant": false,
+ "per_doc_deltas": {
+  "8e5fb4d8": 0.0,
+  "1a3064de": 0.0,
+  "514ec627": 0.0,
+  "a7994023": 0.0,
+  "53c2a083": 0.0,
+  "d01660e4": 4.0,
+  "acb2b8bc": 0.0,
+  "1a007bc4": -7.0,
+  "c32e79eb": 0.0,
+  "caf2afd1": 4.0,
+  "3a75ba3d": 0.0,
+  "6095d6ec": 2.0,
+  "c9395a33": 2.0,
+  "f1639571": 4.0,
+  "28b2c522": 0.0,
+  "7bd2fd06": -10.0,
+  "01806166": 0.0,
+  "c3aa6a9e": 0.0,
+  "961693d9": 8.0,
+  "aa3592aa": 0.0
+ },
+ "headline": {
+  "exp-control-dev": {
+   "mean_review_cost": 173.05,
+   "recall": 0.6457023060796646,
+   "escaped_rate": 0.259958071278826
+  },
+  "exp-tightmerge-dev": {
+   "mean_review_cost": 173.4,
+   "recall": 0.649895178197065,
+   "escaped_rate": 0.259958071278826
+  }
+ },
+ "weight_sensitivity": {
+  "n_weight_vectors": 6,
+  "b_better_fraction": 0.3333333333333333,
+  "mean_delta_per_weighting": [
+   0.35,
+   -0.65,
+   0.85,
+   1.7,
+   -0.1,
+   0.4
+  ],
+  "robust": false
+ },
+ "warnings": []
+}

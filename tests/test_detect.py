@@ -237,3 +237,47 @@ def test_detect_characteristics_keeps_cv_box_overlapping_vlm():
     backend = StubVLMBackend(detections=[Detection((100, 100, 180, 132), "dimension", 0.9)])
     dets = detect_characteristics(img, backend)
     assert any(d.subtype == "theoretical" and d.inner_box is not None for d in dets)
+
+
+def test_resolve_merge_defaults_match_the_documented_knobs():
+    from app.pipeline.detect import _resolve_merge
+    assert _resolve_merge(None, None, None, env={}) == (20, 20, 2)
+
+
+def test_resolve_merge_honors_env_override():
+    """Variants have to be selectable without rebuilding the GPU image, the same
+    way VLM_TILE already works -- an experiment arm is an env change, not a
+    commit."""
+    from app.pipeline.detect import _resolve_merge
+    assert _resolve_merge(None, None, None,
+                          env={"SINDRI_MERGE_X_TOL": "12",
+                               "SINDRI_MERGE_Y_GAP": "8",
+                               "SINDRI_MERGE_MAX_LINES": "1"}) == (12, 8, 1)
+
+
+def test_resolve_merge_explicit_args_win_and_malformed_env_is_ignored():
+    from app.pipeline.detect import _resolve_merge
+    assert _resolve_merge(5, None, None, env={"SINDRI_MERGE_X_TOL": "12"})[0] == 5
+    assert _resolve_merge(None, None, None,
+                          env={"SINDRI_MERGE_MAX_LINES": "lots"})[2] == 2
+
+
+def test_max_lines_one_disables_stacking_merges():
+    """The sharpest test of the contended-miss hypothesis: with max_lines=1 a
+    stacked tolerance-over-nominal pair stays TWO detections instead of one, so
+    two gold balloons can each get their own prediction."""
+    from app.pipeline.detect import Detection, merge_adjacent
+    stacked = [Detection(box=(0, 0, 40, 10), kind="dimension", conf=0.9),
+               Detection(box=(0, 14, 40, 24), kind="dimension", conf=0.8)]
+    assert len(merge_adjacent(stacked)) == 1                 # default merges
+    assert len(merge_adjacent(stacked, max_lines=1)) == 2     # disabled does not
+
+
+def test_active_knobs_reports_every_detection_knob():
+    """Recorded into RunConfig.extra at predict time. Without it two experiment
+    arms produce reports that are byte-indistinguishable, and resume would treat
+    a knob change as 'already predicted'."""
+    from app.pipeline.detect import active_knobs
+    k = active_knobs(env={"VLM_TILE": "768", "SINDRI_MERGE_MAX_LINES": "1"})
+    assert k == {"tile": 768, "tile_overlap": 0.15,
+                 "merge_x_tol": 20, "merge_y_gap": 20, "merge_max_lines": 1}

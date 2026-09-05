@@ -1,0 +1,25 @@
+# LoRA training image for the callout-read task. Separate from Dockerfile.gpu on
+# purpose: that image's transformers/autoawq pin is load-bearing for every
+# measurement taken so far, and adding a training stack to it would put the
+# inference path at risk. This one needs no AWQ — it quantises with bitsandbytes.
+FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgl1 libglib2.0-0 build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY requirements.txt requirements-train.txt ./
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir -r requirements-train.txt
+
+COPY app ./app
+COPY train_lora.py ./
+
+# Model weights are cached here; mount the same volume the inference image uses
+# so a base downloaded once serves both.
+ENV HF_HOME=/models
+# The entry point, not an import smoke test. The image previously ended at the
+# smoke test and never copied train_lora.py, so `podman build` succeeded and the
+# Task 7 gate passed while the thing the image exists to run was absent.
+CMD ["python", "train_lora.py", "--help"]

@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from typing import Optional
 from PIL import Image
 from app.pipeline.ocr.base import OcrResult
@@ -86,6 +87,160 @@ _TITLE_PROMPT = (
 _MAX_READ_LONG_EDGE = 1600
 
 
+# Prompt variants, selected per run by environment variable. Registries rather
+# than edited constants for three reasons, each one paid for:
+#   * two arms whose only difference is a source constant cannot run
+#     concurrently — run_experiment_gpu.sh keeps one checkout on the GPU host,
+#     so a code-level prompt edit serialises the campaign at ~9 h per arm.
+#   * `prompt_sha256` proves that A prompt changed, never WHICH. The variant
+#     name reaches RunConfig.extra, so the digest says so out loud.
+#   * an unknown name raises instead of falling back, so a typo loses the arm
+#     rather than producing a control run wearing a treatment arm's run name.
+# "base" must stay byte-identical to the constants above: it is what every
+# report from the Rung-0 baseline onward was produced with, and
+# tests/test_vlm_prompt.py pins the resulting hash at aa7659f1929184ea.
+# Arm `readcenter`. Hypothesis from the Phase A cross-tab: 64 of 144 misread
+# rows sit on MISPLACED pairs, and 70 of the 80 misplaced pairs are wrong (87.5%)
+# — the signature of transcribing a neighbouring callout correctly and being
+# scored as a perception failure. The base prompt says "ONLY the dimension" for a
+# crop that may hold parts of several, and never says which one to read. Targets
+# error_cause_crosstab.misread.misplaced.
+_PROMPT_CENTER = (
+    "This image is a crop from a mechanical engineering drawing containing one "
+    "dimension callout at its centre, and possibly parts of neighbouring "
+    "callouts near the edges. Transcribe ONLY the callout closest to the "
+    "centre of the image, as plain text on one line, e.g. '1,2 +0,1 -0,1' or "
+    "'Ø7 +0,1 -0,1' or 'R0,5 MAX'. Ignore any other callout, even a complete "
+    "one, and never merge two callouts into one line. Use a comma as the "
+    "decimal separator. Preserve the symbols Ø, R and ±. Ignore leader lines, "
+    "dimension lines and arrowheads. If there is no dimension text at the "
+    "centre, output nothing. No explanation."
+)
+
+# Arm `detectbox`. Hypothesis from the Phase A signatures: 49 rows (25% of the
+# 196 wrong rows) have ALL FOUR fields wrong and 42% have the whole value wrong.
+# A box that clips the tolerance off a callout, or swallows a neighbour, produces
+# exactly that — every field wrong at once — because the read crop is derived
+# from it. The base prompt says to find callouts but never says what the box must
+# enclose. Targets fields:char_type+nominal+upper_tol+lower_tol.
+#
+# Riskiest arm in the campaign: it changes the crop for every downstream read,
+# which is how finetiles did its damage (-0.0662 field_acc). The kind vocabulary
+# is unchanged on purpose — parse_detections validates against detect._KINDS, so
+# renaming a kind here would silently discard detections rather than improve
+# them.
+_DETECT_PROMPT_BOX = (
+    "This image is a tile cropped from a mechanical engineering drawing. Find "
+    "EVERY inspection callout: linear/diameter/radius dimensions with their "
+    "tolerances, GD&T feature-control frames, surface-finish symbols, numbered "
+    "notes, and material/process specifications. Each box must enclose the "
+    "COMPLETE callout — the nominal value together with its tolerance text, "
+    "prefix symbol (Ø, R, ±) and any MAX/MIN qualifier — and nothing else: do "
+    "not include a neighbouring callout, and do not cut a tolerance off. Give "
+    "one box per callout, not one per line of text. Return ONLY a JSON array, "
+    "no prose. Each element: {\"box\":[x0,y0,x1,y1],\"kind\":\"dimension|gdt|"
+    "surface|note|material\"}. box is pixel coordinates within this image. If "
+    "there are no callouts, return []."
+)
+
+_READ_VARIANTS = {"base": _PROMPT, "center": _PROMPT_CENTER}
+_DETECT_VARIANTS = {"base": _DETECT_PROMPT, "box": _DETECT_PROMPT_BOX}
+
+
+def _select(variants, env_key, env):
+    name = (os.environ if env is None else env).get(env_key, "base")
+    if name not in variants:
+        raise ValueError(
+            f"{env_key}={name!r} is not a known prompt variant "
+            f"(have: {sorted(variants)}). Refusing to fall back to 'base': a "
+            f"silent fallback turns a treatment arm into a control arm wearing "
+            f"a treatment arm's run name.")
+    return name
+
+
+def read_prompt(env=None) -> str:
+    """The per-callout read prompt in effect for this run."""
+    return _READ_VARIANTS[_select(_READ_VARIANTS, "SINDRI_READ_PROMPT", env)]
+
+
+def detect_prompt(env=None) -> str:
+    """The tile detection prompt in effect for this run."""
+    return _DETECT_VARIANTS[_select(_DETECT_VARIANTS, "SINDRI_DETECT_PROMPT",
+                                    env)]
+
+
+def active_prompts(env=None) -> dict:
+    """Variant names in effect, for RunConfig.extra — the same role
+    detect.active_knobs plays for the detection knobs."""
+    return {"read_prompt": _select(_READ_VARIANTS, "SINDRI_READ_PROMPT", env),
+            "detect_prompt": _select(_DETECT_VARIANTS, "SINDRI_DETECT_PROMPT",
+                                     env)}
+
+
+# Where LoRA adapters are mounted in the container. A NAME reaches the
+# environment, never a path, so a run cannot be pointed at an arbitrary
+# filesystem location and the name is what lands in RunConfig.extra.
+_ADAPTER_ROOT = Path("/models/adapters")
+
+# Load-time quantisations this backend knows how to build. AWQ is not here: it is
+# a property of the checkpoint, selected by using an -AWQ model id, not a runtime
+# choice.
+_QUANTS = ("nf4",)
+
+
+def active_quant(env=None):
+    """The load-time quantisation in effect, or None for the checkpoint's own.
+
+    Recorded in RunConfig.extra because model_id cannot express it: Rung 3's
+    control and the frozen baseline are the same 72B weights loaded two different
+    ways, and a report that cannot tell them apart is not a measurement."""
+    name = (os.environ if env is None else env).get("SINDRI_QUANT") or None
+    if name is not None and name not in _QUANTS:
+        raise ValueError(
+            f"SINDRI_QUANT={name!r} is not supported (have: {list(_QUANTS)}). "
+            f"Refusing to fall back to the checkpoint default: that would serve "
+            f"a different base than an adapter was trained against and report "
+            f"the result as the fine-tune's.")
+    return name
+
+
+def active_adapter(env=None):
+    """The adapter name in effect, or None for the base model."""
+    return (os.environ if env is None else env).get("SINDRI_ADAPTER") or None
+
+
+def resolve_adapter(env=None):
+    """Path to the adapter in effect, or None. Raises if the name is unknown.
+
+    Loudly, for the same reason an unknown prompt variant raises: silently
+    serving the base model under a treatment arm's run name produces a result
+    that reads as "the LoRA had no effect", which is the single most misleading
+    outcome this campaign could generate."""
+    name = active_adapter(env)
+    if name is None:
+        return None
+    path = _ADAPTER_ROOT / name
+    if not (path / "adapter_config.json").is_file():
+        available = (sorted(p.name for p in _ADAPTER_ROOT.glob("*")
+                            if (p / "adapter_config.json").is_file())
+                     if _ADAPTER_ROOT.is_dir() else [])
+        raise ValueError(
+            f"SINDRI_ADAPTER={name!r} is not an adapter under {_ADAPTER_ROOT} "
+            f"(have: {available}). Refusing to fall back to the base model: that "
+            f"would report 'the LoRA had no effect' for a run that never loaded "
+            f"it.")
+    return path
+
+
+def effective_prompts(env=None) -> list:
+    """The five prompts this run will actually send, in the order
+    runner._prompt_sha256 hashes them. With no variant selected this is exactly
+    [_PROMPT, _DETECT_PROMPT, _GDT_PROMPT, _NOTES_PROMPT, _TITLE_PROMPT], so the
+    default hash is unchanged."""
+    return [read_prompt(env), detect_prompt(env), _GDT_PROMPT, _NOTES_PROMPT,
+            _TITLE_PROMPT]
+
+
 def _cap_long_edge(image: Image.Image, max_long_edge: int = _MAX_READ_LONG_EDGE) -> Image.Image:
     """Downscale `image` so its longest side is at most `max_long_edge`, keeping
     aspect ratio. Returns the image unchanged when already within bounds."""
@@ -115,14 +270,39 @@ class VLMBackend:
         self.max_new_tokens = max_new_tokens
         model_id = model_id or os.getenv("VLM_MODEL_ID", _DEFAULT_MODEL)
         self.processor = AutoProcessor.from_pretrained(model_id)
-        # AWQ's Triton dequant kernel only supports float16: mixing its int32
-        # unpacked weights with bfloat16 scales fails to compile. Qwen2.5-VL's
-        # config defaults to bfloat16, so torch_dtype="auto" picks the
-        # unsupported dtype for AWQ checkpoints; force float16 instead.
-        self.model = AutoModelForImageTextToText.from_pretrained(
-            model_id, torch_dtype=torch.float16, device_map="auto"
-        )
+        # TWO load paths, deliberately separate. The float16 reasoning below is
+        # AWQ-specific, so the 4-bit path is a branch rather than an edit to it:
+        # the AWQ path has to keep producing exactly what every committed
+        # measurement was taken with, including the frozen 174.30 baseline.
+        if active_quant() == "nf4":
+            # An adapter is trained against a 4-bit NF4 base and must be SERVED
+            # on that same base. Serving it on AWQ would mix two quantisations,
+            # so any delta would conflate "quantisation changed" with "LoRA
+            # helped" -- which is why Rung 3 runs a zero-shot NF4 control.
+            from transformers import BitsAndBytesConfig
+            self.model = AutoModelForImageTextToText.from_pretrained(
+                model_id, device_map="auto",
+                quantization_config=BitsAndBytesConfig(
+                    load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=torch.bfloat16,
+                    bnb_4bit_use_double_quant=True))
+        else:
+            # AWQ's Triton dequant kernel only supports float16: mixing its int32
+            # unpacked weights with bfloat16 scales fails to compile. Qwen2.5-VL's
+            # config defaults to bfloat16, so torch_dtype="auto" picks the
+            # unsupported dtype for AWQ checkpoints; force float16 instead.
+            self.model = AutoModelForImageTextToText.from_pretrained(
+                model_id, torch_dtype=torch.float16, device_map="auto"
+            )
         self.model.eval()
+
+        # An adapter, if this run selected one. Loaded after eval() because PEFT
+        # wraps the module and the wrapper inherits that state.
+        adapter = resolve_adapter()
+        if adapter is not None:
+            from peft import PeftModel
+            self.model = PeftModel.from_pretrained(self.model, str(adapter))
+            self.model.eval()
 
     def _generate_text(self, prompt: str, image: Image.Image,
                        max_new_tokens: int):
@@ -150,7 +330,8 @@ class VLMBackend:
         return text, conf
 
     def read_region(self, image: Image.Image) -> OcrResult:
-        text, conf = self._generate_text(_PROMPT, image, self.max_new_tokens)
+        text, conf = self._generate_text(read_prompt(), image,
+                                         self.max_new_tokens)
         return OcrResult(text=text, confidence=conf)
 
     def read_region_gdt(self, image: Image.Image) -> OcrResult:
@@ -169,7 +350,7 @@ class VLMBackend:
         from app.pipeline.detect import parse_detections
         messages = [{"role": "user", "content": [
             {"type": "image", "image": image.convert("RGB")},
-            {"type": "text", "text": _DETECT_PROMPT},
+            {"type": "text", "text": detect_prompt()},
         ]}]
         inputs = self.processor.apply_chat_template(
             messages, add_generation_prompt=True, tokenize=True,

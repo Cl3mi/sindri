@@ -13,7 +13,33 @@ from app.models import Characteristic
 # and Reference (parser only assigns it when a number was parsed, so it can never
 # reach an empty nominal here).
 DIMENSION_TYPES = {"Distance", "Diameter", "Radius", "Theoretical"}
-LOW_CONF = 0.6
+# 0.8, raised from the 0.6 inherited from the Tesseract-era UI. Measured on the
+# dev split, not chosen: the 0.6-0.8 band held 18 matched pairs at a 100% error
+# rate with ZERO correct rows, and all 24 pairs below 0.8 were wrong. Flagging
+# that band converts 15 silent wrong values (w=5) into flagged ones (w=1) and
+# flags no correct row -- -3.00 mean review cost for nothing given up.
+# Not higher: 284 of 308 pairs sit at >=0.8 and 112 of those are correct, so the
+# next band up would charge for 112 correct rows to catch 114 escaped ones.
+# The VLM's confidence is saturated, so this is a two-band decision, not a curve.
+LOW_CONF = 0.8
+
+
+def active_review_policy() -> dict:
+    """The review policy in effect, for `RunConfig.extra` at predict time.
+
+    The same job `detect.active_knobs` does, and it exists for the same reason:
+    two runs differing only in this threshold otherwise produce
+    byte-indistinguishable RunConfigs. `r3-awqcontrol` and `baseline-dev` share
+    model_id, dpi, prompt_sha256 and every detection knob while differing by a
+    constant worth 3.00 review cost -- so `compare_runs` would not warn, and
+    `_reusable_dump`, which compares the whole RunConfig, could skip documents
+    as "already predicted" straight across the change. That exact failure has
+    been paid for once here already, when detection knobs went unrecorded.
+
+    A dump with no `review_low_conf` key PREDATES the field; it does not mean
+    0.6. Same discipline as `DocScore.frame_origin_frac` being None rather than
+    a plausible-looking 0.0."""
+    return {"review_low_conf": LOW_CONF}
 
 
 def review_flags(c: Characteristic, rotation_ambiguous: bool,

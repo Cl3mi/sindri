@@ -1,0 +1,380 @@
+{
+ "run": "baseline-dev",
+ "split": "dev",
+ "splits_hash": "6d174d5e4f1b9228",
+ "n_docs": 20,
+ "n_gold": 477,
+ "n_pred": 830,
+ "mean_review_cost": 173.05,
+ "micro_recall": 0.6457023060796646,
+ "micro_precision": 0.3710843373493976,
+ "escaped_rate": 0.259958071278826,
+ "taxonomy": {
+  "escaped_error": 124,
+  "correct": 77,
+  "flagged_correct": 40,
+  "flagged_error": 67,
+  "missed": 169,
+  "false_detection": 522
+ },
+ "error_causes": {
+  "misparse": 51,
+  "misread": 140
+ },
+ "error_cause_crosstab": {
+  "misparse": {
+   "total": 51,
+   "misplaced": 6,
+   "on_target": 45,
+   "escaped": 30,
+   "flagged": 21
+  },
+  "misread": {
+   "total": 140,
+   "misplaced": 64,
+   "on_target": 76,
+   "escaped": 94,
+   "flagged": 46
+  }
+ },
+ "misplaced_matches": 80,
+ "field_failures": {
+  "field:lower_tol": 133,
+  "field:upper_tol": 122,
+  "field:nominal": 119,
+  "field:char_type": 99
+ },
+ "field_failure_signatures": {
+  "fields:lower_tol": 16,
+  "fields:nominal+upper_tol+lower_tol": 33,
+  "fields:char_type+nominal": 10,
+  "fields:nominal+lower_tol": 6,
+  "fields:char_type": 18,
+  "fields:nominal": 16,
+  "fields:char_type+nominal+upper_tol+lower_tol": 49,
+  "fields:upper_tol+lower_tol": 17,
+  "fields:upper_tol": 4,
+  "fields:char_type+upper_tol+lower_tol": 9,
+  "fields:char_type+nominal+lower_tol": 3,
+  "fields:char_type+nominal+upper_tol": 2,
+  "fields:char_type+upper_tol": 8
+ },
+ "field_failure_modes": {
+  "missing:lower_tol": 76,
+  "wrong:nominal": 102,
+  "wrong:upper_tol": 50,
+  "wrong:lower_tol": 47,
+  "wrong:char_type": 99,
+  "spurious:upper_tol": 14,
+  "spurious:lower_tol": 10,
+  "missing:nominal": 8,
+  "missing:upper_tol": 58,
+  "spurious:nominal": 9
+ },
+ "field_failure_modes_not_measured": 0,
+ "char_type_confusion": {
+  "chartype:Distance->Diameter": 11,
+  "chartype:unmapped(none)->Distance": 9,
+  "chartype:Radius->Perpendicularity": 1,
+  "chartype:unmapped(none)->Theoretical": 4,
+  "chartype:unmapped(Material)->Distance": 2,
+  "chartype:unmapped(none)->Diameter": 3,
+  "chartype:Diameter->Distance": 11,
+  "chartype:Radius->Distance": 2,
+  "chartype:Distance->Theoretical": 10,
+  "chartype:Distance->Flatness": 2,
+  "chartype:Flatness->Theoretical": 2,
+  "chartype:unmapped(ambiguous)->Diameter": 2,
+  "chartype:unmapped(Position)->Diameter": 2,
+  "chartype:unmapped(Position)->Flatness": 9,
+  "chartype:Flatness->Distance": 1,
+  "chartype:unmapped(Parallelism)->Distance": 1,
+  "chartype:Distance->Note": 3,
+  "chartype:Distance->Radius": 2,
+  "chartype:unmapped(Distance)->Flatness": 1,
+  "chartype:unmapped(Position)->Distance": 2,
+  "chartype:unmapped(none)->Note": 1,
+  "chartype:unmapped(Parallelism)->Flatness": 1,
+  "chartype:Diameter->Note": 1,
+  "chartype:unmapped(Flatness)->Distance": 1,
+  "chartype:unmapped(Material)->Diameter": 1,
+  "chartype:unmapped(Diameter)->Distance": 1,
+  "chartype:unmapped(none)->Flatness": 11,
+  "chartype:unmapped(Distance)->Radius": 1,
+  "chartype:Diameter->Theoretical": 1
+ },
+ "char_type_confusion_not_measured": 0,
+ "confidence_by_taxonomy": {
+  ">=0.8": {
+   "escaped_error": 109,
+   "correct": 77,
+   "flagged_correct": 40,
+   "flagged_error": 58
+  },
+  "0.6-0.8": {
+   "escaped_error": 15,
+   "flagged_error": 3
+  },
+  "<0.2": {
+   "flagged_error": 3
+  },
+  "0.4-0.6": {
+   "flagged_error": 2
+  },
+  "0.2-0.4": {
+   "flagged_error": 1
+  }
+ },
+ "confidence_not_measured": 0,
+ "dropped_tolerances": {
+  "rows": 80,
+  "not_measured": 0,
+  "docs": [
+   {
+    "doc": "961693d9",
+    "rows": 16,
+    "distinct": 10
+   },
+   {
+    "doc": "a7994023",
+    "rows": 8,
+    "distinct": 2
+   },
+   {
+    "doc": "1a007bc4",
+    "rows": 8,
+    "distinct": 4
+   },
+   {
+    "doc": "7bd2fd06",
+    "rows": 7,
+    "distinct": 5
+   },
+   {
+    "doc": "caf2afd1",
+    "rows": 6,
+    "distinct": 3
+   },
+   {
+    "doc": "01806166",
+    "rows": 5,
+    "distinct": 4
+   },
+   {
+    "doc": "6095d6ec",
+    "rows": 4,
+    "distinct": 1
+   },
+   {
+    "doc": "f1639571",
+    "rows": 4,
+    "distinct": 3
+   },
+   {
+    "doc": "c3aa6a9e",
+    "rows": 4,
+    "distinct": 1
+   },
+   {
+    "doc": "acb2b8bc",
+    "rows": 3,
+    "distinct": 1
+   },
+   {
+    "doc": "c9395a33",
+    "rows": 3,
+    "distinct": 3
+   },
+   {
+    "doc": "aa3592aa",
+    "rows": 3,
+    "distinct": 3
+   },
+   {
+    "doc": "8e5fb4d8",
+    "rows": 2,
+    "distinct": 2
+   },
+   {
+    "doc": "1a3064de",
+    "rows": 2,
+    "distinct": 2
+   },
+   {
+    "doc": "53c2a083",
+    "rows": 2,
+    "distinct": 2
+   },
+   {
+    "doc": "514ec627",
+    "rows": 1,
+    "distinct": 1
+   },
+   {
+    "doc": "c32e79eb",
+    "rows": 1,
+    "distinct": 1
+   },
+   {
+    "doc": "3a75ba3d",
+    "rows": 1,
+    "distinct": 1
+   }
+  ]
+ },
+ "clamped_docs": [
+  {
+   "doc": "7bd2fd06",
+   "effective_dpi": 109,
+   "recall": 0.2264,
+   "review_cost": 490.0,
+   "missed_isolated": 0
+  },
+  {
+   "doc": "d01660e4",
+   "effective_dpi": 208,
+   "recall": 0.0,
+   "review_cost": 124.0,
+   "missed_isolated": 1
+  },
+  {
+   "doc": "a7994023",
+   "effective_dpi": 225,
+   "recall": 0.4776,
+   "review_cost": 455.0,
+   "missed_isolated": 13
+  },
+  {
+   "doc": "c32e79eb",
+   "effective_dpi": 225,
+   "recall": 0.7778,
+   "review_cost": 70.0,
+   "missed_isolated": 2
+  }
+ ],
+ "clamped_vs_unclamped": {
+  "clamped": {
+   "n": 4,
+   "macro_mean_recall": 0.3705,
+   "mean_review_cost": 284.75,
+   "missed_isolated": 16
+  },
+  "unclamped": {
+   "n": 16,
+   "macro_mean_recall": 0.7281,
+   "mean_review_cost": 145.12,
+   "missed_isolated": 58
+  },
+  "unknown_dpi": {
+   "n": 0,
+   "macro_mean_recall": null,
+   "mean_review_cost": null,
+   "missed_isolated": 0
+  }
+ },
+ "pred_kinds": {
+  "dimension": 589,
+  "gdt": 57,
+  "note": 54,
+  "theoretical": 102,
+  "surface": 21,
+  "material": 7
+ },
+ "false_detections_by_kind": {
+  "dimension": 342,
+  "gdt": 26,
+  "theoretical": 85,
+  "note": 49,
+  "surface": 14,
+  "material": 6
+ },
+ "matched_by_pred_kind": {
+  "dimension": 247,
+  "gdt": 31,
+  "theoretical": 17,
+  "surface": 7,
+  "note": 5,
+  "material": 1
+ },
+ "frame_mismatch": {
+  "n_docs_affected": 0,
+  "n_docs_frames_agree": 20,
+  "n_docs_not_measured": 0,
+  "max_frac": 0.0,
+  "micro_recall_frames_agree": 0.6457,
+  "micro_recall_frames_differ": null,
+  "docs": []
+ },
+ "missed_diagnosis": {
+  "contended": 82,
+  "isolated": 74,
+  "unlocated": 13
+ },
+ "config": {
+  "model_id": "Qwen/Qwen2.5-VL-72B-Instruct-AWQ",
+  "dpi": 300,
+  "git_sha": "unknown",
+  "prompt_sha256": "aa7659f1929184ea",
+  "extra": {}
+ },
+ "weights": {
+  "miss": 10.0,
+  "escaped": 5.0,
+  "false": 2.0,
+  "flag": 1.0
+ },
+ "match_params": {
+  "max_geo_frac": 0.1,
+  "value_bonus": 0.35,
+  "misplaced_frac": 0.04,
+  "mode": "geometry",
+  "value_sim_min": 0.6,
+  "score_kinds": [
+   "dimension"
+  ],
+  "reconcile_frames": "none",
+  "assignment": "greedy"
+ },
+ "worst_docs": [
+  {
+   "doc": "7bd2fd06",
+   "review_cost": 490.0
+  },
+  {
+   "doc": "a7994023",
+   "review_cost": 455.0
+  },
+  {
+   "doc": "caf2afd1",
+   "review_cost": 426.0
+  },
+  {
+   "doc": "961693d9",
+   "review_cost": 281.0
+  },
+  {
+   "doc": "1a007bc4",
+   "review_cost": 242.0
+  },
+  {
+   "doc": "514ec627",
+   "review_cost": 183.0
+  },
+  {
+   "doc": "53c2a083",
+   "review_cost": 143.0
+  },
+  {
+   "doc": "01806166",
+   "review_cost": 143.0
+  },
+  {
+   "doc": "c3aa6a9e",
+   "review_cost": 139.0
+  },
+  {
+   "doc": "d01660e4",
+   "review_cost": 124.0
+  }
+ ]
+}

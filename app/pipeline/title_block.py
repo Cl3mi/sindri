@@ -105,6 +105,31 @@ def detect_cells(image: Image.Image,
     return cells
 
 
+# Read-crop normalization for title-block cells, mirroring extract._prep_crop.
+# Qwen2.5-VL rejects any crop with a side below its patch factor, so a short
+# cell used to raise and be dropped in silence on every drawing. _MIN_CELL_PX
+# aims a little above that floor because small captions read more reliably with
+# some headroom; the patch factor itself is a hard model constraint and
+# overrides the upscale cap.
+_PATCH_FACTOR = 28
+_MIN_CELL_PX = 40
+_MAX_CELL_UPSCALE = 4.0
+
+
+def _prep_cell(crop: Image.Image) -> Image.Image:
+    """Upscale a cell crop that is too small for the model to accept."""
+    w, h = crop.size
+    if w <= 0 or h <= 0:
+        return crop
+    scale = min(_MAX_CELL_UPSCALE, max(1.0, _MIN_CELL_PX / w, _MIN_CELL_PX / h))
+    scale = max(scale, _PATCH_FACTOR / w, _PATCH_FACTOR / h)
+    if scale <= 1.0:
+        return crop
+    return crop.resize((max(_PATCH_FACTOR, int(round(w * scale))),
+                        max(_PATCH_FACTOR, int(round(h * scale)))),
+                       Image.LANCZOS)
+
+
 @dataclass
 class TitleBlockRegion:
     outer_box: Tuple[int, int, int, int]
@@ -146,7 +171,7 @@ def read_title_block(image: Image.Image, region: TitleBlockRegion,
     Per-cell failures are skipped, never fatal."""
     fields: List[TitleField] = []
     for box in region.cells:
-        crop = image.crop(box)
+        crop = _prep_cell(image.crop(box))
         try:
             if hasattr(backend, "read_title_cell"):
                 res = backend.read_title_cell(crop)

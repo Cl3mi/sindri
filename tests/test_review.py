@@ -40,6 +40,34 @@ def test_low_ocr_confidence_when_text_present():
     assert reasons == ["low OCR confidence"]
 
 
+def test_a_read_in_the_zero_point_six_to_zero_point_eight_band_is_flagged():
+    """LOW_CONF was 0.6, which let the 0.6-0.8 band through unflagged. That band
+    is not marginal-but-usually-right; on the dev split it held 18 matched pairs
+    at a 100% error rate with ZERO correct rows (baseline-dev-diag
+    confidence_by_taxonomy: escaped_error 15, flagged_error 3), and every one of
+    the 24 pairs below 0.8 was wrong.
+
+    So flagging it converts 15 silent wrong values (w=5) into flagged ones (w=1)
+    and flags no correct row: -60 total, -3.00 mean review cost, escaped_rate
+    0.2704 -> 0.2390, field_acc untouched. Raising a threshold can only ADD the
+    low-confidence reason, never remove one, which is what makes that arithmetic
+    exact from stored confidences rather than an estimate."""
+    _, reasons = review_flags(_row(raw_text="1,2", nominal="1,2", confidence=0.7),
+                              rotation_ambiguous=False)
+    assert reasons == ["low OCR confidence"]
+
+
+def test_a_saturated_confidence_read_is_still_trusted():
+    """The regression half, and the reason the threshold stops at 0.8 rather than
+    going higher: 284 of the 308 matched pairs sit at >=0.8 and 112 of those are
+    field-correct. Flagging that band would charge w=1 for 112 correct rows to
+    catch 114 escaped ones -- a far worse trade than the 15-for-nothing below
+    it. 0.8 must therefore be trusted, not flagged."""
+    _, reasons = review_flags(_row(raw_text="1,2", nominal="1,2", confidence=0.8),
+                              rotation_ambiguous=False)
+    assert reasons == []
+
+
 def test_rotation_ambiguity_reason():
     _, reasons = review_flags(_row(), rotation_ambiguous=True)
     assert reasons == ["rotation ambiguity"]
@@ -102,3 +130,22 @@ def test_note_ref_when_no_block_present_skips_unknown_check():
              nominal="101", note_ref_pos=101)
     _, reasons = review_flags(c, rotation_ambiguous=False, known_note_positions=None)
     assert "unknown note reference" not in reasons
+
+
+def test_active_review_policy_reports_the_threshold_for_run_config_extra():
+    """Recorded into RunConfig.extra at predict time, for exactly the reason
+    detect.active_knobs is (tests/test_detect.py): without it two runs differing
+    only in this threshold produce byte-indistinguishable RunConfigs.
+
+    Concretely, r3-awqcontrol and baseline-dev share model_id, dpi,
+    prompt_sha256 and every detection knob, yet differ by a constant worth 3.00
+    review cost -- so compare_runs would not warn, and _reusable_dump, which
+    compares the whole RunConfig, could skip documents as 'already predicted'
+    across the change. That failure has already been paid for once on this
+    project, when detection knobs were unrecorded.
+
+    Absence of the key means the dump PREDATES it, not 0.6. Same discipline as
+    frame_origin_frac being None rather than a plausible 0.0."""
+    from app.pipeline.review import LOW_CONF, active_review_policy
+    assert active_review_policy() == {"review_low_conf": LOW_CONF}
+    assert active_review_policy()["review_low_conf"] == 0.8

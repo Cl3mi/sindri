@@ -1,0 +1,384 @@
+{
+ "run": "exp-finetiles-dev",
+ "split": "dev",
+ "splits_hash": "6d174d5e4f1b9228",
+ "n_docs": 20,
+ "n_gold": 477,
+ "n_pred": 833,
+ "mean_review_cost": 179.05,
+ "micro_recall": 0.6415094339622641,
+ "micro_precision": 0.3673469387755102,
+ "escaped_rate": 0.3018867924528302,
+ "taxonomy": {
+  "correct": 65,
+  "escaped_error": 144,
+  "flagged_correct": 28,
+  "flagged_error": 69,
+  "missed": 171,
+  "false_detection": 527
+ },
+ "error_causes": {
+  "misparse": 56,
+  "misread": 157
+ },
+ "error_cause_crosstab": {
+  "misparse": {
+   "total": 56,
+   "misplaced": 7,
+   "on_target": 49,
+   "escaped": 33,
+   "flagged": 23
+  },
+  "misread": {
+   "total": 157,
+   "misplaced": 70,
+   "on_target": 87,
+   "escaped": 111,
+   "flagged": 46
+  }
+ },
+ "misplaced_matches": 86,
+ "field_failures": {
+  "field:lower_tol": 150,
+  "field:upper_tol": 149,
+  "field:nominal": 137,
+  "field:char_type": 98
+ },
+ "field_failure_signatures": {
+  "fields:lower_tol": 18,
+  "fields:char_type+nominal+upper_tol+lower_tol": 54,
+  "fields:nominal+upper_tol+lower_tol": 45,
+  "fields:char_type": 11,
+  "fields:upper_tol+lower_tol": 20,
+  "fields:nominal": 23,
+  "fields:char_type+upper_tol+lower_tol": 8,
+  "fields:upper_tol": 7,
+  "fields:char_type+nominal": 7,
+  "fields:char_type+nominal+lower_tol": 3,
+  "fields:char_type+nominal+upper_tol": 3,
+  "fields:nominal+lower_tol": 2,
+  "fields:char_type+upper_tol": 12
+ },
+ "field_failure_modes": {
+  "missing:lower_tol": 88,
+  "wrong:char_type": 98,
+  "wrong:nominal": 119,
+  "missing:upper_tol": 67,
+  "wrong:upper_tol": 66,
+  "wrong:lower_tol": 53,
+  "missing:nominal": 10,
+  "spurious:nominal": 8,
+  "spurious:upper_tol": 16,
+  "spurious:lower_tol": 9
+ },
+ "field_failure_modes_not_measured": 0,
+ "char_type_confusion": {
+  "chartype:Distance->Note": 6,
+  "chartype:Distance->Theoretical": 8,
+  "chartype:unmapped(none)->Distance": 9,
+  "chartype:unmapped(none)->Diameter": 2,
+  "chartype:Distance->Diameter": 13,
+  "chartype:unmapped(Material)->Distance": 3,
+  "chartype:Diameter->Distance": 13,
+  "chartype:Radius->Distance": 1,
+  "chartype:Diameter->Radius": 1,
+  "chartype:Distance->Flatness": 1,
+  "chartype:Distance->Radius": 4,
+  "chartype:unmapped(ambiguous)->Diameter": 2,
+  "chartype:unmapped(Position)->Flatness": 10,
+  "chartype:unmapped(Parallelism)->Distance": 2,
+  "chartype:unmapped(Position)->Distance": 4,
+  "chartype:unmapped(Distance)->Flatness": 1,
+  "chartype:unmapped(none)->Theoretical": 4,
+  "chartype:unmapped(none)->Flatness": 8,
+  "chartype:Diameter->Note": 1,
+  "chartype:unmapped(Flatness)->Distance": 1,
+  "chartype:unmapped(Flatness)->Theoretical": 1,
+  "chartype:unmapped(none)->Note": 1,
+  "chartype:Radius->Note": 1,
+  "chartype:unmapped(Distance)->Radius": 1
+ },
+ "char_type_confusion_not_measured": 0,
+ "confidence_by_taxonomy": {
+  ">=0.8": {
+   "correct": 65,
+   "escaped_error": 127,
+   "flagged_correct": 27,
+   "flagged_error": 56
+  },
+  "0.6-0.8": {
+   "escaped_error": 17,
+   "flagged_error": 5
+  },
+  "<0.2": {
+   "flagged_error": 5,
+   "flagged_correct": 1
+  },
+  "0.4-0.6": {
+   "flagged_error": 3
+  }
+ },
+ "confidence_not_measured": 0,
+ "dropped_tolerances": {
+  "rows": 93,
+  "not_measured": 0,
+  "docs": [
+   {
+    "doc": "961693d9",
+    "rows": 15,
+    "distinct": 9
+   },
+   {
+    "doc": "1a007bc4",
+    "rows": 13,
+    "distinct": 5
+   },
+   {
+    "doc": "a7994023",
+    "rows": 11,
+    "distinct": 2
+   },
+   {
+    "doc": "6095d6ec",
+    "rows": 7,
+    "distinct": 3
+   },
+   {
+    "doc": "c3aa6a9e",
+    "rows": 7,
+    "distinct": 4
+   },
+   {
+    "doc": "8e5fb4d8",
+    "rows": 6,
+    "distinct": 4
+   },
+   {
+    "doc": "f1639571",
+    "rows": 5,
+    "distinct": 3
+   },
+   {
+    "doc": "caf2afd1",
+    "rows": 4,
+    "distinct": 2
+   },
+   {
+    "doc": "7bd2fd06",
+    "rows": 4,
+    "distinct": 2
+   },
+   {
+    "doc": "53c2a083",
+    "rows": 3,
+    "distinct": 3
+   },
+   {
+    "doc": "28b2c522",
+    "rows": 3,
+    "distinct": 3
+   },
+   {
+    "doc": "01806166",
+    "rows": 3,
+    "distinct": 3
+   },
+   {
+    "doc": "1a3064de",
+    "rows": 2,
+    "distinct": 2
+   },
+   {
+    "doc": "514ec627",
+    "rows": 2,
+    "distinct": 2
+   },
+   {
+    "doc": "c32e79eb",
+    "rows": 2,
+    "distinct": 2
+   },
+   {
+    "doc": "c9395a33",
+    "rows": 2,
+    "distinct": 2
+   },
+   {
+    "doc": "aa3592aa",
+    "rows": 2,
+    "distinct": 2
+   },
+   {
+    "doc": "acb2b8bc",
+    "rows": 1,
+    "distinct": 1
+   },
+   {
+    "doc": "3a75ba3d",
+    "rows": 1,
+    "distinct": 1
+   }
+  ]
+ },
+ "clamped_docs": [
+  {
+   "doc": "7bd2fd06",
+   "effective_dpi": 109,
+   "recall": 0.1887,
+   "review_cost": 497.0,
+   "missed_isolated": 0
+  },
+  {
+   "doc": "d01660e4",
+   "effective_dpi": 208,
+   "recall": 0.0,
+   "review_cost": 120.0,
+   "missed_isolated": 1
+  },
+  {
+   "doc": "a7994023",
+   "effective_dpi": 225,
+   "recall": 0.5373,
+   "review_cost": 460.0,
+   "missed_isolated": 26
+  },
+  {
+   "doc": "c32e79eb",
+   "effective_dpi": 225,
+   "recall": 0.8889,
+   "review_cost": 75.0,
+   "missed_isolated": 1
+  }
+ ],
+ "clamped_vs_unclamped": {
+  "clamped": {
+   "n": 4,
+   "macro_mean_recall": 0.4037,
+   "mean_review_cost": 288.0,
+   "missed_isolated": 28
+  },
+  "unclamped": {
+   "n": 16,
+   "macro_mean_recall": 0.7107,
+   "mean_review_cost": 151.81,
+   "missed_isolated": 62
+  },
+  "unknown_dpi": {
+   "n": 0,
+   "macro_mean_recall": null,
+   "mean_review_cost": null,
+   "missed_isolated": 0
+  }
+ },
+ "pred_kinds": {
+  "dimension": 607,
+  "note": 47,
+  "surface": 29,
+  "gdt": 55,
+  "theoretical": 79,
+  "material": 16
+ },
+ "false_detections_by_kind": {
+  "dimension": 356,
+  "note": 38,
+  "gdt": 29,
+  "surface": 23,
+  "theoretical": 66,
+  "material": 15
+ },
+ "matched_by_pred_kind": {
+  "dimension": 251,
+  "note": 9,
+  "theoretical": 13,
+  "gdt": 26,
+  "surface": 6,
+  "material": 1
+ },
+ "frame_mismatch": {
+  "n_docs_affected": 0,
+  "n_docs_frames_agree": 20,
+  "n_docs_not_measured": 0,
+  "max_frac": 0.0,
+  "micro_recall_frames_agree": 0.6415,
+  "micro_recall_frames_differ": null,
+  "docs": []
+ },
+ "missed_diagnosis": {
+  "contended": 66,
+  "isolated": 90,
+  "unlocated": 15
+ },
+ "config": {
+  "model_id": "Qwen/Qwen2.5-VL-72B-Instruct-AWQ",
+  "dpi": 300,
+  "git_sha": "unknown",
+  "prompt_sha256": "aa7659f1929184ea",
+  "extra": {
+   "tile": 768,
+   "tile_overlap": 0.15,
+   "merge_x_tol": 20,
+   "merge_y_gap": 20,
+   "merge_max_lines": 2
+  }
+ },
+ "weights": {
+  "miss": 10.0,
+  "escaped": 5.0,
+  "false": 2.0,
+  "flag": 1.0
+ },
+ "match_params": {
+  "max_geo_frac": 0.1,
+  "value_bonus": 0.35,
+  "misplaced_frac": 0.04,
+  "mode": "geometry",
+  "value_sim_min": 0.6,
+  "score_kinds": [
+   "dimension"
+  ],
+  "reconcile_frames": "none",
+  "assignment": "greedy"
+ },
+ "worst_docs": [
+  {
+   "doc": "7bd2fd06",
+   "review_cost": 497.0
+  },
+  {
+   "doc": "a7994023",
+   "review_cost": 460.0
+  },
+  {
+   "doc": "caf2afd1",
+   "review_cost": 411.0
+  },
+  {
+   "doc": "961693d9",
+   "review_cost": 354.0
+  },
+  {
+   "doc": "1a007bc4",
+   "review_cost": 243.0
+  },
+  {
+   "doc": "514ec627",
+   "review_cost": 169.0
+  },
+  {
+   "doc": "53c2a083",
+   "review_cost": 159.0
+  },
+  {
+   "doc": "01806166",
+   "review_cost": 156.0
+  },
+  {
+   "doc": "c3aa6a9e",
+   "review_cost": 133.0
+  },
+  {
+   "doc": "aa3592aa",
+   "review_cost": 122.0
+  }
+ ]
+}

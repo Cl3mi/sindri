@@ -1,0 +1,22 @@
+# Training-only deps. DELIBERATELY separate from requirements-gpu.txt: that file
+# is pinned to transformers==4.49.0 + autoawq==0.2.8 --no-deps because Qwen2.5-VL
+# support landed in exactly 4.49.0 and 4.50+ breaks AWQ dispatch for this model.
+# Every measurement in docs/plans/ depends on that inference path, so nothing
+# here may touch it.
+#
+# transformers is pinned to the SAME 4.49.0 on purpose. Not because training
+# needs that exact version, but because the adapter is served by the inference
+# image: a LoRA trained against a different modelling implementation of
+# Qwen2.5-VL than the one serving it is a silent mismatch, and pinning both to
+# one version is the cheapest way to rule it out.
+transformers==4.49.0
+accelerate>=1.0
+peft>=0.14
+# 4-bit NF4 quantisation. AWQ is inference-only -- PEFT cannot train adapters
+# against it -- so the 72B is quantised with bitsandbytes instead. That puts the
+# base at ~36 GB and the whole training run at ~42-48 GB: one H100, no model
+# parallelism, which matters because `nvidia-smi topo -m` reports the two cards
+# NODE-connected rather than NVLink and PCIe-bound sharding would be slow.
+bitsandbytes>=0.45
+qwen-vl-utils>=0.0.8
+pillow

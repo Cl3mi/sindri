@@ -69,3 +69,8 @@ class ExtractionResult(BaseModel):
     notes: Optional[NoteBlock] = None
     title_block: List[TitleField] = []
     marks: Optional[MarkBlock] = None
+    # Every box above is in RENDER PIXELS, so the result cannot be converted
+    # back to PDF points without the resolution it was produced at. The render
+    # clamps its dpi to a pixel budget for large-format sheets, so this is not
+    # always the requested dpi/72 — read it here, never recompute it.
+    render_scale: Optional[float] = None    # render pixels per PDF point

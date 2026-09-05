@@ -16,6 +16,14 @@ from dataclasses import dataclass
 _DEFAULT_TILE = 1024
 _DEFAULT_OVERLAP = 0.15
 
+# merge_adjacent's stacking knobs, env-overridable for the same reason as the
+# tiling ones: an experiment arm on the GPU host should be an env change, not a
+# rebuild. max_lines=1 disables stacking merges entirely, which is the sharpest
+# available test of whether merging is what strands a second gold balloon.
+_DEFAULT_X_TOL = 20
+_DEFAULT_Y_GAP = 20
+_DEFAULT_MAX_LINES = 2
+
 
 def _resolve_tiling(tile, overlap, env=None):
     """Resolve (tile, overlap): explicit args win, then env (VLM_TILE /
@@ -33,6 +41,39 @@ def _resolve_tiling(tile, overlap, env=None):
         except (KeyError, ValueError, TypeError):
             overlap = _DEFAULT_OVERLAP
     return tile, overlap
+
+
+def _resolve_merge(x_tol=None, y_gap=None, max_lines=None, env=None):
+    """Resolve merge_adjacent's knobs: explicit args, then env, then defaults.
+    Malformed env values are ignored rather than fatal, matching _resolve_tiling
+    — a typo in an experiment arm must not silently become a different run."""
+    env = os.environ if env is None else env
+
+    def pick(name, given, default):
+        if given is not None:
+            return given
+        try:
+            return int(env[name])
+        except (KeyError, ValueError, TypeError):
+            return default
+
+    return (pick("SINDRI_MERGE_X_TOL", x_tol, _DEFAULT_X_TOL),
+            pick("SINDRI_MERGE_Y_GAP", y_gap, _DEFAULT_Y_GAP),
+            pick("SINDRI_MERGE_MAX_LINES", max_lines, _DEFAULT_MAX_LINES))
+
+
+def active_knobs(env=None) -> dict:
+    """Every detection knob actually in effect, for RunConfig.extra.
+
+    Without this two experiment arms produce reports that cannot be told apart,
+    and `_reusable_dump` — which compares the whole RunConfig — would treat a
+    knob change as 'already predicted' and skip the document. The container's
+    git_sha is always "unknown" (.git is dockerignored), so these values are the
+    only thing distinguishing one arm's dumps from another's."""
+    tile, overlap = _resolve_tiling(None, None, env=env)
+    x_tol, y_gap, max_lines = _resolve_merge(env=env)
+    return {"tile": tile, "tile_overlap": overlap, "merge_x_tol": x_tol,
+            "merge_y_gap": y_gap, "merge_max_lines": max_lines}
 
 from app.pipeline.geom import _iou, _x_aligned, _y_close, _union
 
@@ -213,6 +254,8 @@ def detect_characteristics(image, backend, tile: int = None, overlap: float = No
                 box=(d.box[0] + tx0, d.box[1] + ty0, d.box[2] + tx0, d.box[3] + ty0),
                 kind=d.kind, conf=d.conf))
     from app.pipeline.boxes import detect_boxes
-    vlm = dedupe(merge_adjacent(acc))
+    x_tol, y_gap, max_lines = _resolve_merge()
+    vlm = dedupe(merge_adjacent(acc, x_tol=x_tol, y_gap=y_gap,
+                                max_lines=max_lines))
     merged = merge_boxes(vlm, detect_boxes(image))
     return resolve_cross_kind_overlaps(merged)
