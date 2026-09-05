@@ -146,6 +146,27 @@ GPU days.
   non-`dimension` detections is that same dead end wearing a different hat.
   Under the corrected char_type policy it no longer has even a nominal cost win:
   **+0.75, better under 3 of 6 weightings** (was −0.25 and 4 of 6).
+* **Serving a LoRA adapter on the AWQ base. Not a loss — an IMPOSSIBILITY.**
+  `lora72bawq` was the "deployment question" arm: attach `read-lora-v1` to what
+  production actually serves. On a clean card (`memory.used=1 MiB`) PEFT refused
+  at load:
+
+      ValueError: Target module WQLinear_GEMM(in_features=8192, out_features=8192,
+      bias=True, w_bit=4, group_size=128) is not supported. Currently, only the
+      following modules are supported: torch.nn.Linear, torch.nn.Embedding, ...
+
+  autoawq replaces every `q_proj`/`k_proj`/`v_proj`/`o_proj` with
+  `WQLinear_GEMM`, and PEFT can only inject into the module types listed above.
+  The later `device_map contains a CPU or disk device` errors in that log are
+  DOWNSTREAM: the failed first attempt still held ~40 GB, so `device_map="auto"`
+  spilled to CPU and AWQ refuses that. Do not chase the device_map message.
+
+  So the design's open question — "the mismatch's size is unknown and one arm
+  measures it" — has an answer, and it is that the mismatch cannot be measured
+  this way at all. Deploying a LoRA means one of: serve the NF4 base (pay the
+  measured +6.75 review cost AND ~2.3x inference wall-clock), merge the adapter
+  into bf16 and re-quantise to AWQ, or move to a serving stack with native LoRA
+  support. All three are decisions, not experiments.
 * **The `char_type` bucket as a synonym-map problem.** `wrong:char_type` is the
   largest single failure mode (115 of 308 matched pairs), and the standing
   hypothesis was that gold's German labels were missing from
