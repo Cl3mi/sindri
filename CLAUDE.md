@@ -35,8 +35,8 @@ advisory, and it has been right every single time it fired.
 
 ## 2. Where things stand
 
-**Read `docs/plans/2026-08-30-session-handoff.md` first — it is the current state
-of play.** Everything below is the durable summary.
+**Read `docs/plans/2026-09-05-session-handoff.md` first — it is the current state
+of play, and it carries the production-facing error and effort rates.** Everything below is the durable summary.
 
 Branch `worktree-eval-harness`, PR #2. Suite: **626 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). `SCHEMA_VERSION` = 1 — do not bump
