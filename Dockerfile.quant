@@ -21,8 +21,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 # Newer than the serving pin ON PURPOSE — see the header. accelerate for the
 # sharded bf16 load, peft to attach the adapter before folding it in.
+# transformers PINNED to 4.51.3, and the window is narrow at BOTH ends:
+#   >= 4.51    autoawq 0.2.9 imports awq/models/qwen3.py at package init
+#   <= 4.51.x  awq.quantize.scale imports transformers.activations.
+#              PytorchGELUTanh, which later versions removed — 4.57 fails with
+#              ImportError before any model is touched.
+# Verified in this image: gelu yes, qwen3 yes, `import awq` succeeds.
 RUN pip install --no-cache-dir \
-        "transformers>=4.51,<5" "accelerate>=1.0" "peft>=0.14" \
+        "transformers==4.51.3" "accelerate>=1.0" "peft>=0.14" \
         autoawq==0.2.9 autoawq-kernels==0.0.9 \
         datasets>=2.20 zstandard qwen-vl-utils>=0.0.8
 
