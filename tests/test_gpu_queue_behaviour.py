@@ -217,3 +217,27 @@ def test_the_lora_arms_mount_the_volume_holding_the_adapter(tmp_path):
     env, calls = _stub_env(tmp_path)
     assert _run(tmp_path, env, "lora72bawq").returncode == 0
     assert "sindri-models:/models" in _podman_line(calls, "r3-lora72bawq")
+
+
+def test_the_read_scoped_arm_is_a_stage_of_its_own(tmp_path):
+    """The re-run of the LoRA arm with detection back on base weights.
+
+    It must not reuse `lora72bnf4`'s run name. Resume compares the whole
+    RunConfig and the container's git_sha is always "unknown", so a re-run under
+    the old name would find 20 dumps whose config now matches on `adapter_scope`
+    too only if it were also re-recorded -- and skip every document as "already
+    predicted", producing the VOID arm's numbers under the new arm's name.
+
+    Everything else is deliberately identical to lora72bnf4: same NF4 base, same
+    adapter, same split, same image. The scoping in the code is the only
+    variable, which is what makes n_pred == 926 a falsifiable gate rather than
+    an observation."""
+    env, calls = _stub_env(tmp_path)
+    assert _run(tmp_path, env, "loraread").returncode == 0
+
+    line = _podman_line(calls, "r3-loraread")
+    assert "SINDRI_ADAPTER=read-lora-v1" in line, line
+    assert "SINDRI_QUANT=nf4" in line, line
+    assert "VLM_MODEL_ID=Qwen/Qwen2.5-VL-72B-Instruct " in line + " ", line
+    assert "--split dev" in line, line
+    assert "sindri-gpu-nf4" in line, line
