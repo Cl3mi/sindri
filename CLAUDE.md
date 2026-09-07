@@ -35,10 +35,12 @@ advisory, and it has been right every single time it fired.
 
 ## 2. Where things stand
 
-**Read `docs/plans/2026-09-05-session-handoff.md` first — it is the current state
-of play, and it carries the production-facing error and effort rates.** Everything below is the durable summary.
+**Read `docs/plans/2026-09-07-rung3-loraread-result.md` first — it is the
+current state of play. Then `docs/plans/2026-09-05-session-handoff.md`, which
+still carries the production-facing error and effort rates but whose §3 verdict
+is superseded.** Everything below is the durable summary.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **626 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **648 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). `SCHEMA_VERSION` = 1 — do not bump
 it. Split frozen at `6d174d5e4f1b9228` — do not regenerate it.
 
@@ -64,31 +66,57 @@ why. Evidence: `docs/plans/2026-08-21-direction-run-findings.md` (detection) and
 `docs/plans/2026-08-24-rung2-reading-quality.md` (prompts, plus the Phase A
 diagnostics that route the residual).
 
-**Rung 3 is CLOSED: the adapter loses, but not the way the others did.**
-`lora72bnf4` vs its matched control `r3-nf4control` (176.40): cost **186.40
-(+10.00)**, not robust (2 of 6 weightings), `ci95` spanning zero. Yet
-`micro_recall` 0.669 → **0.755**, `missed` 158 → **117**, `correct` 77 → **88**,
-`escaped_error` 123 → **106**. The whole loss is `false_detection` 607 → **931**
-at w=2 (+648) swamping the misses recovered (−410).
+**Rung 3 WON on its second arm — the first win of the campaign.**
+`r3-loraread` (the adapter scoped to the read pass) vs its matched control
+`r3-nf4control` (176.40): **172.00, −4.40**, `ci95 [−7.9, −1.2]` excluding zero,
+better under **6 of 6** weightings, no `compare_runs` warnings. `field_acc`
+0.3730 → **0.4119**, `escaped_rate` 0.2579 → **0.2096**, `escaped_error`
+123 → **100**. Cost reconciles exactly: `10(+1) + 5(−23) + 2(+1) + 1(+15) = −88`,
+÷20 = −4.40 — **the whole win is 23 silent errors converted for 15 extra flags.**
 
-**The arm did not test the read stage.** `resolve_adapter` wraps the whole model
-in `PeftModel`, so `detect_regions` ran through adapted weights too — every
-prediction kind rose. That is a bug in the arm, and the next arm is to scope the
-adapter to the read pass (`disable_adapter()` around detection), with the
-falsifiable prediction that `n_pred` returns to exactly 926 and
-`false_detection` to 607.
+**But it is NOT shippable yet: 172.00 is +1.95 WORSE than the 170.05 production
+serves**, because the NF4 base an adapter must be served on costs +6.35 by
+itself. That is what the merge-and-requantise route (§3, `merge_lora.py`, stages
+`loramerged`/`mergedcontrol`) exists to remove. Full writeup:
+`docs/plans/2026-09-07-rung3-loraread-result.md`.
+
+**The first arm, `lora72bnf4`, was void — it never tested the read stage.**
+`resolve_adapter` wraps the whole model in `PeftModel`, so `detect_regions` ran
+through adapted weights too and `false_detection` went 607 → 931 (+10.00
+overall). `detect_regions` now generates inside `VLMBackend._base_weights()`.
+
+**The scoping gate passed, and taught a lesson about the matcher.** `n_pred`
+returned to exactly 926, with `dimension`/`gdt`/`surface`/`material` bit-identical
+in both matched and false counts. But `false_detection` came back 608, not the
+registered 607: **matching is not purely geometric.** `matching.py:82` gives a
+`value_bonus` when a prediction's parsed `nominal` equals gold's, and
+`matching.py:68-76` matches an `unlocated` gold row by value similarity ALONE, so
+read text reaches the matcher through `nominal`. 25 predictions moved
+`note`→`theoretical` (`extract.py:251` relabels on the READ), and one unlocated
+row lost its partner. **The sound detection-identity gate is `n_pred` exact PLUS
+per-kind matched/false identity on kinds not subject to read-driven relabelling.**
 
 **The finding worth more than the verdict:** `missed_isolated` 75 → **43**. Rung
 1 threw render resolution, tile size and both merge knobs at isolated misses and
 this file records `isolated` as "provably untouched". The detector's WEIGHTS
 move it; its knobs and prompts never did.
 
-The read stage learned exactly what it was trained on: `dropped_tolerances`
-95 → 32 and `missing:*_tol` down ~100, but `wrong:upper_tol` 46 → 107 and
-`wrong:lower_tol` 48 → 130 — it learned to always emit tolerance-SHAPED output,
-because `render_target` renders an explicit `+x -y` whenever gold has one.
-Serving an adapter also costs **~2.3x inference wall-clock** (28 → 65 min/doc).
-Full writeup: `docs/plans/2026-08-27-rung3-lora-plan.md` "Rung 3 results".
+The read stage learned exactly what it was trained on, and **this survives the
+scoping**: `dropped_tolerances` 95 → 33, `missing:*_tol` −101 combined — but
+`wrong:*_tol` +88 and `spurious:*_tol` +23, close to a wash on raw counts. It
+learned to always emit tolerance-SHAPED output, because `render_target` renders
+an explicit `+x -y` whenever gold has one. **That is now the largest identified
+read-stage fault, and it lives in the TARGETS, not the serving.** The named
+`char_type` target moved only half: `Distance→Diameter` 7 → 2, but
+`Diameter→Distance` unchanged at 11.
+
+**Corpus policy (2026-09-07): score and train on single-sheet drawings only.**
+`render_page` takes `page_index=0`, so gold on sheet 2 was always an
+unrecoverable miss at `w=10`. Use `score --pdfs <dir> --max-pages 1`. It is OFF
+by default because all four reference numbers were scored unfiltered, and
+`_check_comparable` already refuses a filtered report against an unfiltered one —
+so **every arm must be re-scored under the same setting before its delta means
+anything.** `probe --summary` reports `multi_page_docs` and `pages_per_doc`.
 
 **Rung 3 background.** The 72B trains at 4-bit NF4 in
 **38.8 GB on one H100** — gate passed. Its GPU phase is done: the dependency
@@ -190,9 +218,17 @@ GPU days.
   So the design's open question — "the mismatch's size is unknown and one arm
   measures it" — has an answer, and it is that the mismatch cannot be measured
   this way at all. Deploying a LoRA means one of: serve the NF4 base (pay the
-  measured +6.75 review cost AND ~2.3x inference wall-clock), merge the adapter
+  measured +6.35 review cost AND ~2.3x inference wall-clock), merge the adapter
   into bf16 and re-quantise to AWQ, or move to a serving stack with native LoRA
   support. All three are decisions, not experiments.
+
+  **Route 2 is now measured and route 1 is now BUILT.** Serving NF4 + the scoped
+  adapter is `r3-loraread` at 172.00 — a win over its NF4 control but still
+  +1.95 worse than production. `merge_lora.py` plus the `loramerged` /
+  `mergedcontrol` stages implement the merge route. Run `mergedcontrol` FIRST:
+  the merged checkpoint is not one any AWQ number was measured on, so its
+  zero-scale control must reproduce 170.05 before any `loramerged` delta is
+  attributable to the fine-tune.
 * **The `char_type` bucket as a synonym-map problem.** `wrong:char_type` is the
   largest single failure mode (115 of 308 matched pairs), and the standing
   hypothesis was that gold's German labels were missing from
@@ -293,7 +329,13 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 626 passed, 2 skipped
+python -m pytest -q                          # 648 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
-python3 -m app.eval.experiment               # baseline / arm decision table
+python3 -m app.eval.experiment               # arm decision table
 ```
+
+`experiment.py` now judges each arm against **the control its comparison file
+names** (`run_a`), and prints it as `[vs <run>]`. The old single global control
+was AWQ-and-0.6-era and reported `lora72bnf4` at +13.35 when the matched answer
+is +10.00. An arm whose named control has no digest here is reported and NOT
+judged, rather than silently falling back.
