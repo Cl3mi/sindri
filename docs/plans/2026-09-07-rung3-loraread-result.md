@@ -149,6 +149,57 @@ python3 -m app.eval.runner probe <corpus>/originals --summary
 whole corpus and for the dev split, so the size of what the filter removes is on
 the record rather than assumed.
 
+## 5b. IN FLIGHT overnight 2026-09-08 — read this first in the morning
+
+Two chains launched detached in `tmux` **on the GPU host**, one per card, at
+~00:20 UTC. `KillUserProcesses=no` is confirmed, so they survive every logout.
+
+| tmux | card | chain | logs (`~/rung3-logs/`) |
+|---|---|---|---|
+| `mc` | 0 | merge zero-scale → quantise → predict `r3-mergedcontrol` | `merge-zero-scale.log`, `r3-mergedcontrol.log`, `chain-control.log` |
+| `ma` | 1 | merge `read-lora-v1` → quantise → predict `r3-loramerged` | `merge-read-lora-v1.log`, `r3-loramerged.log`, `chain-arm.log` |
+
+Rough shape: merge ~45 min, quantise several hours, predict ~9 h. Expect the
+predicts to finish late morning, not at dawn. Both are resumable — re-running
+the same chain skips completed stages via `.complete` markers.
+
+**Check on waking:**
+
+```bash
+ssh 4mehpc4_3 'tmux ls; tail -3 ~/rung3-logs/chain-control.log ~/rung3-logs/chain-arm.log'
+ssh 4mehpc4_3 'nvidia-smi --query-gpu=index,memory.used --format=csv,noheader'
+```
+
+`CHAIN_EXIT=0` in both chain logs means the predicts finished; anything else
+names the stage that failed and the chain can simply be re-launched.
+
+**Then, and in this order:**
+
+1. Pull both runs, score them, and **gate on `r3-mergedcontrol` reproducing
+   170.05.** The merged checkpoint is not one any AWQ number was measured on,
+   and it was quantised by a *newer* autoawq than the one that serves it
+   (0.2.9 vs the pinned 0.2.8 — see §5c). The control is what proves that whole
+   toolchain is neutral. **If it misses 170.05, `r3-loramerged` is
+   uninterpretable and must not be quoted** — diagnose the round trip first.
+2. Only if the gate passes, judge `r3-loramerged` against `r3-mergedcontrol` —
+   never against `r3-awqcontrol`.
+3. Then `./rescore_onepage.sh`, which also collects the pending page counts.
+
+### 5c. A trap this run walked into, recorded before it is forgotten
+
+The first `merge_lora.py` as committed **could not have worked**. autoawq 0.2.8
+ships `awq/models/qwen2vl.py` and no `qwen2_5_vl` one, while this base is
+`model_type: qwen2_5_vl` — so quantisation would have failed *after* the 137 GB
+load, the fold and the save. 0.2.9 adds the wrapper but imports `qwen3.py` at
+init, needing transformers ≥ 4.51; and `awq.quantize.scale` imports
+`PytorchGELUTanh`, which transformers removed after 4.51.x. **The window is
+exactly 4.51.3**, pinned in `Dockerfile.quant`.
+
+Quantisation therefore runs in its own image and **the serving image does not
+move** — it stays at transformers 4.49.0 / autoawq 0.2.8, because 4.50+ breaks
+AWQ dispatch for Qwen2.5-VL at inference. `assert_quantisable()` now refuses
+before the load; it found this in seconds instead of hours.
+
 ## 6. Next steps, in order
 
 1. **Record the page counts** (§5) and re-score the standing runs with
