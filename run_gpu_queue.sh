@@ -56,7 +56,7 @@ IMAGE_NEW="${IMAGE_NEW:-sindri-gpu-nf4}"
 
 if [ -z "$GPU_INDEX" ] || [ ${#STAGES[@]} -eq 0 ]; then
     echo "usage: run_gpu_queue.sh <gpu-index> <stage> [<stage>...]" >&2
-    echo "stages: trainpredict awqgate base72bnf4 awqcontrol nf4control lora72bnf4 lora72bawq loraread" >&2
+    echo "stages: trainpredict awqgate base72bnf4 awqcontrol nf4control lora72bnf4 lora72bawq loraread loramerged mergedcontrol" >&2
     exit 2
 fi
 
@@ -71,7 +71,9 @@ stage_run()    { case "$1" in trainpredict) echo "r3-trainpredict" ;;
                               nf4control)   echo "r3-nf4control" ;;
                               lora72bnf4)   echo "r3-lora72bnf4" ;;
                               lora72bawq)   echo "r3-lora72bawq" ;;
-                              loraread)     echo "r3-loraread" ;; esac; }
+                              loraread)     echo "r3-loraread" ;;
+                              loramerged)   echo "r3-loramerged" ;;
+                              mergedcontrol) echo "r3-mergedcontrol" ;; esac; }
 stage_split()  { case "$1" in trainpredict) echo "train" ;; *) echo "dev" ;; esac; }
 stage_image()  { case "$1" in trainpredict) echo "$IMAGE_OLD" ;;
                               *)            echo "$IMAGE_NEW" ;; esac; }
@@ -82,6 +84,10 @@ stage_env()    { case "$1" in
                      echo "-e VLM_MODEL_ID=Qwen/Qwen2.5-VL-72B-Instruct -e SINDRI_QUANT=nf4 -e SINDRI_ADAPTER=read-lora-v1" ;;
                    lora72bawq)
                      echo "-e VLM_MODEL_ID=$MODEL -e SINDRI_ADAPTER=read-lora-v1" ;;
+                   loramerged)
+                     echo "-e VLM_MODEL_ID=/models/merged/read-lora-v1-awq" ;;
+                   mergedcontrol)
+                     echo "-e VLM_MODEL_ID=/models/merged/zero-scale-awq" ;;
                    *) echo "-e VLM_MODEL_ID=$MODEL" ;; esac; }
 stage_why()    { case "$1" in
     trainpredict) echo "60 train documents -> the boxes Rung 3's training crops come from. Never scored: train is the training split." ;;
@@ -91,6 +97,8 @@ stage_why()    { case "$1" in
     nf4control)   echo "the same re-run for the NF4 base, and the control for lora72b-nf4. PREDICTION: mean_review_cost 176.40, everything but the escaped/flagged split identical to r3-base72bnf4, which moves by exactly 17." ;;
     lora72bnf4)   echo "THE FINE-TUNE, isolated. Same NF4 base as r3-nf4control, adapter the only difference, both on current code. Judge vs r3-nf4control -- and on field_acc RISING plus the targeted bucket moving, not on review cost alone, which has been wrong three times on this corpus." ;;
     loraread)     echo "THE FINE-TUNE, actually isolated. lora72bnf4 served the read adapter over the WHOLE model, so detect_regions ran through it and false_detection went 607 -> 931: the arm measured two stages at once and lost on the one it never meant to touch. Detection is now scoped back to base weights. Same base, same adapter, same image, same split as lora72bnf4 -- the scoping is the only variable. PREDICTION, registered before the run: n_pred returns to EXACTLY 926 and false_detection to 607, bit-identical to r3-nf4control, because decoding is greedy and both are pure functions of detection. If n_pred is not 926 the scoping is incomplete and this arm is VOID. Judge vs r3-nf4control (176.40), never vs exp-control, and on field_acc plus the read buckets, not on review cost alone." ;;
+    loramerged)   echo "THE DEPLOYMENT ROUTE THAT WORKS. read-lora-v1 merged into bf16 and re-quantised to AWQ by merge_lora.py, so the fine-tune is baked into an ordinary checkpoint: no PEFT at serving time, no WQLinear_GEMM problem, and none of the NF4 route's +6.35 review cost or its inference penalty. Judge vs r3-mergedcontrol, NOT vs r3-awqcontrol -- the merged checkpoint is a different one from any AWQ number ever measured. Reference: r3-loraread showed the scoped adapter is worth -4.40 on the NF4 base; this asks whether that survives the round trip onto the base production serves." ;;
+    mergedcontrol) echo "THE CONTROL FOR loramerged, and it is not optional. Same merge and the same re-quantisation with the adapter contribution scaled to zero (merge_lora.py --zero-scale), so it is numerically the base but travels byte-identical code. PREDICTION: it reproduces r3-awqcontrol at 170.05. If it does NOT, the merge/quantisation round trip moved the model on its own and no delta from loramerged is attributable to the fine-tune. Run it FIRST." ;;
     lora72bawq)   echo "THE DEPLOYMENT QUESTION: an adapter attached to what production actually serves. Judge vs r3-awqcontrol (170.05). Trained on NF4 and served on AWQ, so this arm also measures that quantisation mismatch, whose size is unknown." ;;
   esac; }
 

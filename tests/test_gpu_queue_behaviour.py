@@ -241,3 +241,39 @@ def test_the_read_scoped_arm_is_a_stage_of_its_own(tmp_path):
     assert "VLM_MODEL_ID=Qwen/Qwen2.5-VL-72B-Instruct " in line + " ", line
     assert "--split dev" in line, line
     assert "sindri-gpu-nf4" in line, line
+
+
+def test_the_merged_awq_arm_and_its_zero_scale_control_are_stages(tmp_path):
+    """Handoff §4 route 1, as two runs that differ in one thing.
+
+    Both serve a MERGED AWQ checkpoint from the models volume, so neither sets
+    SINDRI_QUANT (AWQ is a property of the checkpoint, not a runtime choice) and
+    neither sets SINDRI_ADAPTER (the adapter is baked in; PEFT cannot attach to
+    WQLinear_GEMM anyway, which is the whole reason this route exists).
+
+    mergedcontrol is the zero-scale round trip. It is what says whether the
+    merge and re-quantisation moved the model on their own: it must reproduce
+    r3-awqcontrol at 170.05, and until it does, no delta from loramerged is
+    attributable to the fine-tune."""
+    env, calls = _stub_env(tmp_path)
+    assert _run(tmp_path, env, "loramerged", "mergedcontrol").returncode == 0
+
+    arm = _podman_line(calls, "r3-loramerged")
+    assert "SINDRI_QUANT" not in arm, arm
+    assert "SINDRI_ADAPTER" not in arm, arm
+    assert "/models/merged/read-lora-v1-awq" in arm, arm
+    assert "--split dev" in arm, arm
+
+    ctl = _podman_line(calls, "r3-mergedcontrol")
+    assert "SINDRI_QUANT" not in ctl, ctl
+    assert "SINDRI_ADAPTER" not in ctl, ctl
+    assert "/models/merged/zero-scale-awq" in ctl, ctl
+    assert "--split dev" in ctl, ctl
+
+
+def test_the_merged_stages_mount_the_volume_holding_the_checkpoints(tmp_path):
+    """merge_lora.py writes into the sindri-models volume; a run that cannot see
+    it would fall back to a HF model id and silently serve stock weights."""
+    env, calls = _stub_env(tmp_path)
+    assert _run(tmp_path, env, "loramerged").returncode == 0
+    assert "sindri-models:/models" in _podman_line(calls, "r3-loramerged")
