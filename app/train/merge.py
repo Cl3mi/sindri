@@ -45,3 +45,24 @@ def zero_lora_scaling(model) -> int:
             "plain-base checkpoint that reads as the zero-scale control while "
             "skipping the merge round trip the control exists to measure.")
     return n
+
+
+def assert_quantisable(model_type: str, supported) -> None:
+    """Refuse, before the 137 GB load, a model autoawq will not be able to
+    quantise afterwards.
+
+    The merge half succeeds for any architecture -- load, fold, save all work --
+    so an unsupported model fails only once quantisation starts, hours in and
+    after ~137 GB has been written. autoawq 0.2.8 ships a `qwen2_vl` wrapper and
+    no `qwen2_5_vl` one, while this corpus' base is `qwen2_5_vl`; 0.2.9 adds it,
+    which is why quantisation runs in its own image and serving does not move.
+
+    SystemExit rather than ValueError: this is a CLI preflight, and it reports a
+    misconfigured run rather than a bug in a caller."""
+    if model_type not in set(supported):
+        raise SystemExit(
+            f"autoawq here cannot quantise model_type {model_type!r}. It "
+            f"supports: {sorted(set(supported))}. Merging first would spend the "
+            f"load, the fold and the save before failing. Build the "
+            f"quantisation image (Dockerfile.quant, autoawq>=0.2.9) and run "
+            f"there; the pinned serving image must NOT move.")

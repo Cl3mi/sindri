@@ -28,7 +28,7 @@ import json
 import sys
 from pathlib import Path
 
-from app.train.merge import zero_lora_scaling
+from app.train.merge import assert_quantisable, zero_lora_scaling
 
 _BASE = "Qwen/Qwen2.5-VL-72B-Instruct"
 
@@ -71,6 +71,17 @@ def main(argv=None) -> int:
 
     facts = preflight(args.base, args.adapter, args.out)
     print(json.dumps({**facts, "zero_scale": args.zero_scale}, indent=1))
+
+    if not args.merge_only:
+        # BEFORE the 137 GB load: the merge half succeeds for any architecture,
+        # so an unsupported one fails only once quantisation starts -- hours in,
+        # with the whole checkpoint already written.
+        from awq.models.auto import AWQ_CAUSAL_LM_MODEL_MAP
+        from transformers import AutoConfig
+        model_type = AutoConfig.from_pretrained(args.base).model_type
+        assert_quantisable(model_type, AWQ_CAUSAL_LM_MODEL_MAP.keys())
+        print(f"autoawq can quantise model_type {model_type!r}")
+
     if args.dry_run:
         return 0
 
@@ -96,16 +107,19 @@ def main(argv=None) -> int:
     if args.merge_only:
         return 0
 
+    del model, merged
     from awq import AutoAWQForCausalLM
+    from transformers import AutoTokenizer
     # The same quantisation production already serves: 4-bit, group 128, GEMM.
     # Any departure here would be a second variable on top of the merge.
     quant = {"zero_point": True, "q_group_size": 128, "w_bit": 4,
              "version": "GEMM"}
     awq_out = args.out.parent / (args.out.name + "-awq")
     awq_model = AutoAWQForCausalLM.from_pretrained(str(args.out))
-    awq_model.quantize(AutoProcessor.from_pretrained(args.base).tokenizer,
+    awq_model.quantize(AutoTokenizer.from_pretrained(args.base),
                        quant_config=quant)
     awq_model.save_quantized(str(awq_out))
+    AutoProcessor.from_pretrained(args.base).save_pretrained(str(awq_out))
     print(f"AWQ checkpoint written to {awq_out}")
     return 0
 

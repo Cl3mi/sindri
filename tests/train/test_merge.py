@@ -75,3 +75,29 @@ def test_a_model_with_no_lora_layers_fails_loudly():
     silently drops the round trip the control exists to measure."""
     with pytest.raises(ValueError, match="no LoRA layers"):
         zero_lora_scaling(_Model([_Plain(), _Plain()]))
+
+
+# --- quantisability preflight ------------------------------------------------
+
+from app.train.merge import assert_quantisable
+
+
+def test_a_model_autoawq_cannot_quantise_is_refused_before_the_merge():
+    """The 137 GB load, the merge and the save all succeed for a model autoawq
+    then cannot touch, so the failure lands hours in. autoawq 0.2.8 ships a
+    qwen2_vl wrapper but no qwen2_5_vl one, and the base here is qwen2_5_vl --
+    which is exactly the run this check exists to not waste."""
+    with pytest.raises(SystemExit, match="qwen2_5_vl"):
+        assert_quantisable("qwen2_5_vl", ["llama", "qwen2", "qwen2_vl"])
+
+
+def test_the_supported_types_are_named_so_the_fix_is_obvious():
+    """Naming what IS supported is what turns this from "it broke" into "you
+    need the 0.2.9 wrapper"."""
+    with pytest.raises(SystemExit, match="qwen2_vl"):
+        assert_quantisable("qwen2_5_vl", ["qwen2_vl"])
+
+
+def test_a_supported_model_passes_quietly():
+    assert assert_quantisable("qwen2_5_vl",
+                              ["qwen2_vl", "qwen2_5_vl"]) is None
