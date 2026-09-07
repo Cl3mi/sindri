@@ -1,3 +1,4 @@
+import contextlib
 import os
 from pathlib import Path
 from typing import Optional
@@ -298,11 +299,33 @@ class VLMBackend:
 
         # An adapter, if this run selected one. Loaded after eval() because PEFT
         # wraps the module and the wrapper inherits that state.
-        adapter = resolve_adapter()
-        if adapter is not None:
+        self.adapter = resolve_adapter()
+        if self.adapter is not None:
             from peft import PeftModel
-            self.model = PeftModel.from_pretrained(self.model, str(adapter))
+            self.model = PeftModel.from_pretrained(self.model,
+                                                   str(self.adapter))
             self.model.eval()
+
+    def _base_weights(self):
+        """The context DETECTION generates in: the adapter suspended when one is
+        loaded, and nothing at all when one is not.
+
+        Rung 3's first arm attached a read-trained adapter and PeftModel wrapped
+        the whole model, so detect_regions ran through it too: false detections
+        607 -> 931, whose +648 review cost swamped the -410 the recovered misses
+        earned. The read stage's contribution was therefore not recoverable from
+        the total. `read-lora-v1` saw only callout crops in training; detection
+        must see the weights its control ran on."""
+        if self.adapter is None:
+            return contextlib.nullcontext()
+        disable = getattr(self.model, "disable_adapter", None)
+        if disable is None:
+            raise RuntimeError(
+                f"adapter {self.adapter} is loaded but the model has no "
+                f"disable_adapter(): detection would generate through a read "
+                f"adapter and the arm would be void, which n_pred would only "
+                f"reveal after the whole run. Refusing to generate.")
+        return disable()
 
     def _generate_text(self, prompt: str, image: Image.Image,
                        max_new_tokens: int):
@@ -356,7 +379,7 @@ class VLMBackend:
             messages, add_generation_prompt=True, tokenize=True,
             return_dict=True, return_tensors="pt",
         ).to(self.model.device)
-        with self.torch.inference_mode():
+        with self._base_weights(), self.torch.inference_mode():
             out = self.model.generate(
                 **inputs, max_new_tokens=1024, do_sample=False,
             )
