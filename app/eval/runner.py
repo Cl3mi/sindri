@@ -450,8 +450,9 @@ def _cmd_predict(args):
     from app.pipeline.ocr import get_backend
     backend = get_backend()
     from app.pipeline.detect import active_knobs
-    from app.pipeline.ocr.vlm_backend import (active_adapter, active_prompts,
-                                              active_quant)
+    from app.pipeline.ocr.vlm_backend import (active_adapter,
+                                              active_adapter_scope,
+                                              active_prompts, active_quant)
     from app.pipeline.review import active_review_policy
     # extra carries the detection knobs actually in effect. Without them two
     # experiment arms yield indistinguishable reports, and _reusable_dump —
@@ -473,7 +474,15 @@ def _cmd_predict(args):
                # attached. Without these two the runs would be indistinguishable
                # in every report they produce.
                **({"quant": active_quant()} if active_quant() else {}),
-               **({"adapter": active_adapter()} if active_adapter() else {}),
+               **({"adapter": active_adapter(),
+                   # Which pass the adapter is served over. r3-lora72bnf4 served
+                   # it over the whole model and the scoped arm serves it over
+                   # the read pass; they agree in every other field here, so
+                   # without this the void arm's dumps and the real one's are
+                   # indistinguishable and _reusable_dump could skip a document
+                   # as "already predicted" across the change being measured.
+                   "adapter_scope": active_adapter_scope()}
+                  if active_adapter() else {}),
                # A boxes-only dump carries no values and must never be scored.
                # Recording it here is what stops a resume, a compare, or a human
                # from mistaking one for a full run.

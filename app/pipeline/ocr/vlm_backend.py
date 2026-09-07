@@ -210,6 +210,22 @@ def active_adapter(env=None):
     return (os.environ if env is None else env).get("SINDRI_ADAPTER") or None
 
 
+# How much of the model an adapter is applied to. Not configurable: serving a
+# read adapter over detection too is the bug that voided Rung 3's first arm, not
+# an option worth keeping. It is recorded because r3-lora72bnf4 and the scoped
+# arm agree in every other recorded field, and the container's git_sha is always
+# "unknown".
+_ADAPTER_SCOPE = "read"
+
+
+def active_adapter_scope(env=None):
+    """Which pass the adapter is served over, or None when there is no adapter.
+
+    Absence of this key in a dump's RunConfig.extra means the dump PREDATES the
+    scoping -- whole-model -- not that the scope was "read"."""
+    return _ADAPTER_SCOPE if active_adapter(env) else None
+
+
 def resolve_adapter(env=None):
     """Path to the adapter in effect, or None. Raises if the name is unknown.
 

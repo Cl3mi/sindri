@@ -204,3 +204,27 @@ def test_an_adapter_that_exists_resolves_to_its_path(tmp_path, monkeypatch):
 def test_resolve_adapter_is_none_when_none_was_asked_for(tmp_path, monkeypatch):
     monkeypatch.setattr(vlm_backend, "_ADAPTER_ROOT", tmp_path)
     assert vlm_backend.resolve_adapter(env={}) is None
+
+
+def test_active_adapter_scope_is_read_when_an_adapter_is_in_effect():
+    """Recorded into RunConfig.extra for the same reason `quant` and `adapter`
+    are: r3-lora72bnf4 served this adapter over the WHOLE model, the scoped arm
+    serves it over the read pass only, and the two differ in nothing else --
+    same model_id, dpi, prompt_sha256, knobs, threshold and adapter name. Since
+    the container's git_sha is always "unknown", without this key the void arm's
+    dumps and the real one's are indistinguishable in every recorded field, and
+    _reusable_dump could skip a document as "already predicted" across the code
+    change that is the entire point of the arm.
+
+    Absence of the key means the dump PREDATES the scoping, i.e. whole-model,
+    not "read". Same discipline as review_low_conf being absent rather than 0.6
+    on pre-2026-09-02 dumps."""
+    assert vlm_backend.active_adapter_scope(
+        env={"SINDRI_ADAPTER": "read-lora-v1"}) == "read"
+
+
+def test_active_adapter_scope_is_none_without_an_adapter():
+    """A base-model run must keep the extra it always had. Every AWQ and NF4
+    control in the campaign is a base run, and adding a key to their config
+    would break dump reuse against all of them for no measurement."""
+    assert vlm_backend.active_adapter_scope(env={}) is None
