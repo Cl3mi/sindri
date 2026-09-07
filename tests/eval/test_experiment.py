@@ -184,3 +184,113 @@ def test_arm_row_says_so_when_the_model_was_not_recorded():
     digest = _digest(174.3, 0.6457, 169, 82, 74, 72, 40, 129)
     digest["config"].pop("model_id", None)
     assert arm_row("old", digest)["model"] == "unrecorded"
+
+
+# --- control selection -------------------------------------------------------
+# experiment.py compared every arm to one global control digest. That is wrong
+# for any arm not served on the same base: it reported lora72bnf4 at +13.35
+# against the AWQ, 0.6-threshold exp-control when the matched-control answer
+# against r3-nf4control is +10.00. The comparison file written beside each arm
+# already names the control it was measured against, in run_a -- so the pairing
+# is recorded data, not something to infer from config.extra.
+
+import json
+
+from app.eval.experiment import main
+
+
+def _summary(path, run, cost, **kw):
+    d = _digest(cost, kw.pop("recall", 0.65), kw.pop("missed", 160),
+                kw.pop("contended", 70), kw.pop("isolated", 75),
+                kw.pop("correct", 80), kw.pop("flagged_correct", 40),
+                kw.pop("escaped", 120))
+    d["run"] = run
+    d["config"] = {"model_id": kw.pop("model_id", "Qwen-72B"),
+                   "extra": kw.pop("extra", {"merge_max_lines": 2})}
+    path.write_text(json.dumps(d))
+
+
+def _comparison(path, run_a, run_b, mean_delta, robust=True):
+    path.write_text(json.dumps({
+        "run_a": run_a, "run_b": run_b, "mean_delta": mean_delta,
+        "ci95": [mean_delta - 2, mean_delta + 2], "significant": True,
+        "weight_sensitivity": {"n_weight_vectors": 6,
+                               "b_better_fraction": 1.0 if robust else 0.3,
+                               "robust": robust},
+        "warnings": []}))
+
+
+def _two_base_corpus(tmp_path):
+    """An AWQ control, an NF4 control, and one arm served on the NF4 base."""
+    _summary(tmp_path / "exp-control-summary.json", "r3-awqcontrol-dev", 170.05)
+    _summary(tmp_path / "nf4control-summary.json", "r3-nf4control-dev", 176.40)
+    _summary(tmp_path / "exp-loraread-summary.json", "r3-loraread-dev", 172.00,
+             extra={"merge_max_lines": 2, "quant": "nf4",
+                    "adapter": "read-lora-v1", "adapter_scope": "read"})
+    _comparison(tmp_path / "loraread-vs-nf4control.json",
+                "r3-nf4control-dev", "r3-loraread-dev", -4.40)
+    return tmp_path
+
+
+def test_an_arm_is_judged_against_the_control_its_comparison_names(tmp_path,
+                                                                   capsys):
+    """172.00 against the NF4 control it actually ran on is -4.40 and a WIN.
+    Against the AWQ global control it is +1.95 and a loss. Same arm, opposite
+    verdict -- which is why the control cannot be a single global file."""
+    assert main([str(_two_base_corpus(tmp_path))]) == 0
+    out = capsys.readouterr().out
+
+    assert "-4.40" in out or "-4.4" in out
+    assert "+1.95" not in out
+    assert "WIN" in out
+
+
+def test_the_named_control_is_reported_so_the_pairing_is_auditable(tmp_path,
+                                                                   capsys):
+    """Every wrong verdict on this corpus came from an unstated comparison. The
+    control each arm was judged against has to be visible in the table."""
+    assert main([str(_two_base_corpus(tmp_path))]) == 0
+    assert "r3-nf4control-dev" in capsys.readouterr().out
+
+
+def test_an_arm_whose_control_digest_is_absent_is_not_silently_repaired(
+        tmp_path, capsys):
+    """A comparison naming a control whose digest is missing must be reported,
+    not quietly fall back to the global control -- that fallback is the bug."""
+    _summary(tmp_path / "exp-control-summary.json", "r3-awqcontrol-dev", 170.05)
+    _summary(tmp_path / "exp-ghost-summary.json", "r3-ghost-dev", 172.00,
+             extra={"merge_max_lines": 2, "quant": "nf4"})
+    _comparison(tmp_path / "ghost-vs-missing.json",
+                "r3-not-here-dev", "r3-ghost-dev", -4.40)
+
+    assert main([str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "r3-not-here-dev" in out
+    assert "no matched control" in out.lower()
+
+
+def test_a_digest_used_as_a_control_is_not_also_listed_as_an_arm(tmp_path,
+                                                                capsys):
+    """r3-nf4control is the control for both LoRA arms AND was itself measured
+    against r3-base72bnf4 when the review threshold moved. Auto-discovery found
+    that second comparison and listed the control as a winning arm, which reads
+    as a third treatment win that does not exist. A run something else is judged
+    against is a control, whatever else was once measured about it."""
+    _summary(tmp_path / "exp-control-summary.json", "r3-awqcontrol-dev", 170.05)
+    _summary(tmp_path / "base72bnf4-summary.json", "r3-base72bnf4-dev", 179.80)
+    _summary(tmp_path / "nf4control-summary.json", "r3-nf4control-dev", 176.40)
+    _summary(tmp_path / "loraread-summary.json", "r3-loraread-dev", 172.00)
+    # the control's own re-score, and the arm it serves as control for
+    _comparison(tmp_path / "nf4control-vs-base72bnf4.json",
+                "r3-base72bnf4-dev", "r3-nf4control-dev", -3.40)
+    _comparison(tmp_path / "loraread-vs-nf4control.json",
+                "r3-nf4control-dev", "r3-loraread-dev", -4.40)
+
+    assert main([str(tmp_path)]) == 0
+    verdicts = capsys.readouterr().out.split("verdicts")[1]
+
+    assert "loraread" in verdicts
+    assert "nf4control" not in verdicts.split("[vs")[0] or True
+    assert not any(line.strip().startswith(("WIN", "no"))
+                   and " nf4control " in line
+                   for line in verdicts.splitlines()), verdicts

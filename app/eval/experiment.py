@@ -38,6 +38,10 @@ def arm_row(name: str, digest: Dict) -> Dict:
     right = t.get("correct", 0) + t.get("flagged_correct", 0)
     return {
         "arm": name,
+        # The run name this digest records. It is the identity a comparison
+        # file's run_a/run_b refer to, so it is how an arm finds the control it
+        # was actually measured against.
+        "run": digest.get("run", ""),
         # Which base model produced this row. Rung 3 compares an AWQ baseline
         # against an NF4 run of the same weights, and a delta that does not say
         # which side is which is not a result. "unrecorded" rather than a
@@ -144,12 +148,49 @@ def main(argv=None) -> int:
         return 1
     control = arm_row("control", _load(control_path))
 
+    # Every digest in the directory, by the run name it records. A comparison
+    # names its control in run_a, so the arm->control pairing is recorded data
+    # and never inferred: guessing it from config.extra is what produced
+    # lora72bnf4 at +13.35 against an AWQ control when the matched answer
+    # against r3-nf4control is +10.00.
+    digests = {}
+    for path in sorted(docs.glob("*-summary.json")):
+        d = _load(path)
+        if d.get("run"):
+            digests[d["run"]] = (path, d)
+
+    # run_b -> (control run name, comparison). A vs-file is the only place the
+    # matched control is written down.
+    matched = {}
+    for path in sorted(docs.glob("*-vs-*.json")):
+        cmp_ = _load(path)
+        if cmp_.get("run_a") and cmp_.get("run_b"):
+            matched[cmp_["run_b"]] = (cmp_["run_a"], cmp_)
+
     arms = [control]
-    for p in sorted(docs.glob("exp-*-summary.json")):
-        name = p.name[len("exp-"):-len("-summary.json")]
+    seen = {control_path}
+    for path in sorted(docs.glob("exp-*-summary.json")):
+        name = path.name[len("exp-"):-len("-summary.json")]
         if name == "control":
             continue
-        arms.append(arm_row(name, _load(p)))
+        seen.add(path)
+        arms.append(arm_row(name, _load(path)))
+    # An arm need not carry the exp- prefix to be an arm. Anything a comparison
+    # measured against a control is one, which is how r3-loraread -- written as
+    # loraread-summary.json -- reaches this table at all.
+    # A run something else is judged AGAINST is a control, whatever else was
+    # once measured about it. r3-nf4control is the control for both LoRA arms
+    # and was itself re-scored against r3-base72bnf4 when the review threshold
+    # moved; without this it appears as a winning arm and reads as a treatment
+    # win that does not exist.
+    controls = {ctl for ctl, _ in matched.values()}
+    for run_b in sorted(matched):
+        if run_b in controls:
+            continue
+        if run_b in digests and digests[run_b][0] not in seen:
+            path, d = digests[run_b]
+            seen.add(path)
+            arms.append(arm_row(path.name[:-len("-summary.json")], d))
 
     w = 12
     cols = ("arm", "model", "cost", "recall", "field_acc", "missed", "contended",
@@ -173,16 +214,32 @@ def main(argv=None) -> int:
           "robust across every weighting):")
     wins = []
     for r in arms[1:]:
-        # The arm's paired comparison, written next to its digest by
-        # run_experiment_gpu.sh. Absent it, robustness is unmeasured and the arm
-        # cannot win on the default weighting alone.
+        # The arm's paired comparison, written next to its digest. Absent it,
+        # robustness is unmeasured and the arm cannot win on the default
+        # weighting alone.
         cmp_path = docs / f"exp-{r['arm']}-vs-control.json"
         comparison = _load(cmp_path) if cmp_path.exists() else None
-        v = verdict(r, control, comparison=comparison)
+        arm_control, note = control, ""
+        if r["run"] in matched:
+            ctl_run, cmp_ = matched[r["run"]]
+            comparison = comparison or cmp_
+            if ctl_run in digests:
+                arm_control = arm_row("control", digests[ctl_run][1])
+                note = f"  [vs {ctl_run}]"
+            else:
+                # Refusing to fall back silently: the global control is a
+                # DIFFERENT base, and crediting that difference to the arm is
+                # the precise error this selection exists to remove.
+                note = (f"  [no matched control: {ctl_run} names no digest here "
+                        f"— NOT judged]")
+                print(f"  ??  {r['arm']:<14}{note}")
+                continue
+        v = verdict(r, arm_control, comparison=comparison)
         flag = "WIN " if v["win"] else "no  "
         print(f"  {flag}{v['arm']:<14} cost {v['cost_delta']:+8.2f}  "
               f"recall {v['recall_delta']:+.4f}  field_acc {v['field_acc_delta']:+.4f}  "
-              f"contended {v['contended_delta']:+d}  isolated {v['isolated_delta']:+d}")
+              f"contended {v['contended_delta']:+d}  isolated {v['isolated_delta']:+d}"
+              f"{note}")
         print(f"      {v['why']}")
         print(f"      knobs: {r['knobs'] or '<defaults>'}")
         if v["win"]:
