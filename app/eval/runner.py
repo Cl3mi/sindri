@@ -539,6 +539,23 @@ def _cmd_predict(args):
     return 1 if failures and not (predicted or skipped) else 0
 
 
+def _page_counts(pdf_dir) -> dict:
+    """doc_id -> sheet count for every drawing in `pdf_dir`.
+
+    Opened with fitz rather than probed, because page_count is the one fact
+    needed here and probe_pdf also recovers balloons, which costs real time on a
+    large-format sheet and would be thrown away."""
+    import fitz
+    out = {}
+    for path in sorted(Path(pdf_dir).glob(_PDF_GLOB)):
+        doc = fitz.open(path)
+        try:
+            out[path.stem] = doc.page_count
+        finally:
+            doc.close()
+    return out
+
+
 def _cmd_score(args):
     gold = _load_gold_dir(args.gold)
     dumps = {d.doc_id: d for d in
@@ -562,9 +579,31 @@ def _cmd_score(args):
               f"gold positions are mapped into each dump's page space. This is a "
               f"DIAGNOSTIC scoring mode; the result is not comparable to a run "
               f"scored without it.", file=sys.stderr)
+    max_pages = getattr(args, "max_pages", None)
+    if max_pages is not None and not getattr(args, "pdfs", None):
+        # Silently scoring the full corpus while the operator believes it was
+        # filtered would misattribute the difference to whatever else changed.
+        print("ERROR: --max-pages needs --pdfs — page counts are only in the "
+              "drawings themselves, and there is nowhere else to read them",
+              file=sys.stderr)
+        return 1
     doc_ids, sp_hash, sp_name = _select_docs(
         set(gold) & set(dumps), args.splits, args.split)
     anon = _anon(args)
+    if max_pages is not None:
+        pages = _page_counts(args.pdfs)
+        unknown = [d for d in doc_ids if d not in pages]
+        if unknown:
+            print(f"ERROR: no drawing found for {len(unknown)} scored document(s) "
+                  f"{[anon(d) for d in unknown]}, so their page count is unknown. "
+                  f"Refusing to guess — point --pdfs at the corpus these dumps "
+                  f"were predicted from", file=sys.stderr)
+            return 1
+        dropped = [d for d in doc_ids if pages[d] > max_pages]
+        doc_ids = [d for d in doc_ids if pages[d] <= max_pages]
+        if dropped:
+            print(f"excluded {len(dropped)} drawing(s) over {max_pages} "
+                  f"sheet(s): {[anon(d) for d in dropped]}", file=sys.stderr)
     missing = sorted((set(gold) & set(dumps)) ^ set(dumps))
     if missing:
         print(f"WARNING: dumps without gold (excluded): "
@@ -586,7 +625,8 @@ def _cmd_score(args):
                          f"re-predict the full split with one config")
     config = dumps[doc_ids[0]].config
     report = aggregate(args.name, config, weights, params, scores,
-                       splits_hash=sp_hash, split_used=sp_name)
+                       splits_hash=sp_hash, split_used=sp_name,
+                       max_pages=max_pages)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(report.model_dump_json(indent=1),
                               encoding="utf-8")
@@ -720,6 +760,14 @@ def main(argv=None) -> int:
     p.add_argument("--name", required=True); p.add_argument("--out", required=True)
     p.add_argument("--splits", default=None); p.add_argument("--split", default="dev")
     p.add_argument("--weights", default=None)
+    p.add_argument("--pdfs", default=None,
+                   help="source drawings, needed only to read page counts for "
+                        "--max-pages")
+    p.add_argument("--max-pages", type=int, default=None,
+                   help="score only drawings with at most this many sheets. "
+                        "render_page reads sheet 1 only, so gold on later "
+                        "sheets is an unrecoverable miss. Off by default: every "
+                        "committed measurement scored the whole split.")
     p.add_argument("--reconcile-frames", choices=("none", "scale", "center"),
                    default="none",
                    help="DIAGNOSTIC: map gold balloon positions into each dump's "

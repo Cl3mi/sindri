@@ -243,6 +243,11 @@ class RunReport(_Versioned):
     match_params: MatchParams
     splits_hash: str = ""
     split_used: str = ""              # "dev" | "test" | "all"
+    # Page ceiling the corpus was filtered to, or None for "every document".
+    # None means UNFILTERED, not 1: every report written before this field
+    # existed scored whatever the split held, and a default of 1 would claim
+    # those runs excluded multi-sheet drawings when they did not.
+    max_pages: Optional[int] = None
     doc_scores: List[DocScore] = []
     mean_review_cost: float = 0.0
     micro_recall: float = 0.0
