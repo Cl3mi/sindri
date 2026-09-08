@@ -118,6 +118,45 @@ overhead before any arm delta is readable.
 
 ---
 
+## 1b. Feasibility, measured on the host 2026-09-08 — not inferred
+
+**B: the capability gate PASSES.** vLLM **0.28.0**, inspecting
+`vllm.model_executor.models.qwen2_5_vl.Qwen2_5_VLForConditionalGeneration`:
+
+```
+SupportsMultiModal  SupportsLoRA  SupportsQuant  SupportsMRoPE  SupportsPP …
+```
+
+All four capabilities B depends on are declared on the **same class**, and a
+search of `vllm/` found **no** guard refusing LoRA together with a quantised
+base. `Qwen2_5_VLForConditionalGeneration` is in the supported-architecture
+registry.
+
+That is a capability declaration, not a passing run: it does **not** yet prove
+AWQ + LoRA + multimodal work together at inference, nor that the NF4-trained
+deltas behave on AWQ weights. But the combination is no longer speculative, and
+B's largest structural unknown is closed.
+
+**A: still blocked on its toolchain.** Three attempts to get `llm-compressor`
+importable, all dependency failures rather than anything about the model:
+
+| attempt | result |
+|---|---|
+| `pip install llmcompressor` over the torch-2.6 image | pulls transformers **5.14.1** + torch **2.13** over the image's conda torch 2.6; `from transformers import PreTrainedModel` then fails |
+| pin `llmcompressor==0.7.1` / `0.9.0` | contaminated by the already-installed transformers 5.x; same import failure |
+| force `torch==2.6.0` + `transformers==4.51.3` + `llmcompressor==0.7.1` | `ResolutionImpossible` — that llmcompressor cannot take torch 2.6 |
+
+The diagnosis is that llm-compressor 0.13 is a **self-consistent modern stack**
+(transformers 5, torch 2.13) and the error came from layering it over a
+torch-2.6 base, not from any incompatibility with the task. The untried fix is a
+**clean base** (`python:3.11-slim`, pip brings its own torch), which is
+legitimate for A because quantisation is an offline transform — the serving
+image stays pinned at transformers 4.49.0 / autoawq 0.2.8 regardless.
+
+**Standing rule for both:** do not write code against either API before
+inspecting it on the host. Committing `merge_lora.py` against an unverified
+autoawq cost a full night.
+
 ## 2. Fallback order, if B does not work
 
 1. **A with `llm-compressor`.** Both merges are done; this is the shortest path
