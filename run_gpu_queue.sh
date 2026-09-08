@@ -53,10 +53,11 @@ LOGDIR="${LOGDIR:-$HOME/rung3-logs}"
 # the 26 h crop pass.
 IMAGE_OLD="${IMAGE_OLD:-sindri-gpu}"
 IMAGE_NEW="${IMAGE_NEW:-sindri-gpu-nf4}"
+IMAGE_VLLM="${IMAGE_VLLM:-sindri-vllm}"
 
 if [ -z "$GPU_INDEX" ] || [ ${#STAGES[@]} -eq 0 ]; then
     echo "usage: run_gpu_queue.sh <gpu-index> <stage> [<stage>...]" >&2
-    echo "stages: trainpredict awqgate base72bnf4 awqcontrol nf4control lora72bnf4 lora72bawq loraread loramerged mergedcontrol" >&2
+    echo "stages: trainpredict awqgate base72bnf4 awqcontrol nf4control lora72bnf4 lora72bawq loraread loramerged mergedcontrol vllmcontrol vllmlora" >&2
     exit 2
 fi
 
@@ -73,9 +74,17 @@ stage_run()    { case "$1" in trainpredict) echo "r3-trainpredict" ;;
                               lora72bawq)   echo "r3-lora72bawq" ;;
                               loraread)     echo "r3-loraread" ;;
                               loramerged)   echo "r3-loramerged" ;;
-                              mergedcontrol) echo "r3-mergedcontrol" ;; esac; }
+                              mergedcontrol) echo "r3-mergedcontrol" ;;
+                              vllmcontrol)  echo "r3-vllmcontrol" ;;
+                              vllmlora)     echo "r3-vllmlora" ;; esac; }
 stage_split()  { case "$1" in trainpredict) echo "train" ;; *) echo "dev" ;; esac; }
 stage_image()  { case "$1" in trainpredict) echo "$IMAGE_OLD" ;;
+                              # vLLM cannot share the pinned image: that one is
+                              # held at transformers 4.49.0 / autoawq 0.2.8
+                              # because 4.50+ breaks AWQ dispatch for Qwen2.5-VL
+                              # at inference, and it must stay exactly as every
+                              # committed measurement found it.
+                              vllmcontrol|vllmlora) echo "$IMAGE_VLLM" ;;
                               *)            echo "$IMAGE_NEW" ;; esac; }
 stage_env()    { case "$1" in
                    base72bnf4|nf4control)
@@ -86,6 +95,13 @@ stage_env()    { case "$1" in
                      echo "-e VLM_MODEL_ID=$MODEL -e SINDRI_ADAPTER=read-lora-v1" ;;
                    loramerged)
                      echo "-e VLM_MODEL_ID=/models/merged/read-lora-v1-awq" ;;
+                   # Route B serves Qwen's OFFICIAL AWQ checkpoint untouched —
+                   # nothing is quantised here, which is the route's advantage.
+                   # No SINDRI_QUANT: AWQ is the checkpoint's own property.
+                   vllmcontrol)
+                     echo "-e OCR_BACKEND=vllm -e VLM_MODEL_ID=$MODEL" ;;
+                   vllmlora)
+                     echo "-e OCR_BACKEND=vllm -e VLM_MODEL_ID=$MODEL -e SINDRI_ADAPTER=read-lora-v1" ;;
                    mergedcontrol)
                      echo "-e VLM_MODEL_ID=/models/merged/zero-scale-awq" ;;
                    *) echo "-e VLM_MODEL_ID=$MODEL" ;; esac; }
@@ -99,6 +115,8 @@ stage_why()    { case "$1" in
     loraread)     echo "THE FINE-TUNE, actually isolated. lora72bnf4 served the read adapter over the WHOLE model, so detect_regions ran through it and false_detection went 607 -> 931: the arm measured two stages at once and lost on the one it never meant to touch. Detection is now scoped back to base weights. Same base, same adapter, same image, same split as lora72bnf4 -- the scoping is the only variable. PREDICTION, registered before the run: n_pred returns to EXACTLY 926 and false_detection to 607, bit-identical to r3-nf4control, because decoding is greedy and both are pure functions of detection. If n_pred is not 926 the scoping is incomplete and this arm is VOID. Judge vs r3-nf4control (176.40), never vs exp-control, and on field_acc plus the read buckets, not on review cost alone." ;;
     loramerged)   echo "THE DEPLOYMENT ROUTE THAT WORKS. read-lora-v1 merged into bf16 and re-quantised to AWQ by merge_lora.py, so the fine-tune is baked into an ordinary checkpoint: no PEFT at serving time, no WQLinear_GEMM problem, and none of the NF4 route's +6.35 review cost or its inference penalty. Judge vs r3-mergedcontrol, NOT vs r3-awqcontrol -- the merged checkpoint is a different one from any AWQ number ever measured. Reference: r3-loraread showed the scoped adapter is worth -4.40 on the NF4 base; this asks whether that survives the round trip onto the base production serves." ;;
     mergedcontrol) echo "THE CONTROL FOR loramerged, and it is not optional. Same merge and the same re-quantisation with the adapter contribution scaled to zero (merge_lora.py --zero-scale), so it is numerically the base but travels byte-identical code. PREDICTION: it reproduces r3-awqcontrol at 170.05. If it does NOT, the merge/quantisation round trip moved the model on its own and no delta from loramerged is attributable to the fine-tune. Run it FIRST." ;;
+    vllmcontrol)  echo "ROUTE B's CONTROL, and it is not optional. Qwen's official AWQ checkpoint served through vLLM with NO adapter. vLLM's kernels are not transformers' kernels, so r3-awqcontrol (170.05) is NOT a valid baseline for a vLLM run: this prices the change of serving stack by itself, and only then can r3-vllmlora price the adapter. Run it FIRST." ;;
+    vllmlora)     echo "ROUTE B: read-lora-v1 served at RUNTIME on the official AWQ checkpoint via vLLM's per-request LoRA. Nothing is quantised on this route -- no merge, no calibration, none of the failure class that cost days on route A. Detection issues requests with NO adapter and reads issue them with one, which is VLMBackend._base_weights() expressed the way vLLM expects. Judge vs r3-vllmcontrol, never vs r3-awqcontrol, and on field_acc plus escaped_rate, not review cost alone." ;;
     lora72bawq)   echo "THE DEPLOYMENT QUESTION: an adapter attached to what production actually serves. Judge vs r3-awqcontrol (170.05). Trained on NF4 and served on AWQ, so this arm also measures that quantisation mismatch, whose size is unknown." ;;
   esac; }
 

@@ -474,6 +474,11 @@ def _cmd_predict(args):
                # attached. Without these two the runs would be indistinguishable
                # in every report they produce.
                **({"quant": active_quant()} if active_quant() else {}),
+               # Which serving stack produced these dumps. Only recorded when
+               # it is not the transformers path, so every historical dump keeps
+               # the config it already has and stays reusable.
+               **({"serving_backend": _serving_backend()}
+                  if _serving_backend() else {}),
                **({"adapter": active_adapter(),
                    # Which pass the adapter is served over. r3-lora72bnf4 served
                    # it over the whole model and the scoped arm serves it over
@@ -554,6 +559,25 @@ def _page_counts(pdf_dir) -> dict:
         finally:
             doc.close()
     return out
+
+
+def _serving_backend(env=None):
+    """The serving stack in effect, or None for the transformers VLM path.
+
+    Route B serves the same base and the same adapter as route A but through
+    vLLM, so without this every other recorded field matches and a vLLM run is
+    indistinguishable from a transformers one -- and _reusable_dump, which
+    compares the whole RunConfig, could skip documents as "already predicted"
+    across a change of serving stack.
+
+    None for "vlm" and for absent, because every dump in the campaign was
+    predicted on the transformers path: recording it for them would break dump
+    reuse against the whole corpus for no measurement. Absence therefore means
+    transformers, never "unknown"."""
+    import os          # local, matching _cmd_predict — this module has no
+                       # module-scope os and predict is the only other user
+    choice = (os.environ if env is None else env).get("OCR_BACKEND", "")
+    return choice.lower() if choice.lower() not in ("", "vlm") else None
 
 
 def _cmd_score(args):

@@ -228,3 +228,39 @@ def test_active_adapter_scope_is_none_without_an_adapter():
     control in the campaign is a base run, and adding a key to their config
     would break dump reuse against all of them for no measurement."""
     assert vlm_backend.active_adapter_scope(env={}) is None
+
+
+def test_the_serving_backend_is_recorded_when_it_is_not_the_default():
+    """Route B serves the SAME base and the SAME adapter as route A, through
+    vLLM instead of transformers. Every other field in RunConfig.extra is then
+    identical -- model_id, dpi, prompt_sha256, knobs, review_low_conf, adapter,
+    adapter_scope -- and the container's git_sha is always "unknown". Without
+    this key a vLLM run and a transformers run are indistinguishable in every
+    recorded field, and _reusable_dump could skip documents as "already
+    predicted" across a change of serving stack.
+
+    Absence means the transformers VLM path, which is what every dump in the
+    campaign was predicted with -- the same discipline as review_low_conf being
+    absent rather than 0.6 on pre-2026-09-02 dumps."""
+    from app.eval.runner import _serving_backend
+    assert _serving_backend(env={"OCR_BACKEND": "vllm"}) == "vllm"
+
+
+def test_the_transformers_path_records_nothing():
+    """Every historical dump ran OCR_BACKEND=vlm. Adding a key for them would
+    break dump reuse against the entire campaign for no measurement."""
+    from app.eval.runner import _serving_backend
+    assert _serving_backend(env={"OCR_BACKEND": "vlm"}) is None
+    assert _serving_backend(env={}) is None
+
+
+def test_the_backend_is_read_from_the_real_environment_too(monkeypatch):
+    """The env= argument exists for tests; predict calls it with no argument and
+    reads the process environment. A conditional expression never evaluates the
+    branch it does not take, so injected-env tests alone cannot prove that path
+    imports what it needs -- and it raised NameError in every predict run."""
+    from app.eval.runner import _serving_backend
+    monkeypatch.setenv("OCR_BACKEND", "vllm")
+    assert _serving_backend() == "vllm"
+    monkeypatch.setenv("OCR_BACKEND", "vlm")
+    assert _serving_backend() is None

@@ -277,3 +277,49 @@ def test_the_merged_stages_mount_the_volume_holding_the_checkpoints(tmp_path):
     env, calls = _stub_env(tmp_path)
     assert _run(tmp_path, env, "loramerged").returncode == 0
     assert "sindri-models:/models" in _podman_line(calls, "r3-loramerged")
+
+
+def test_the_vllm_arm_and_its_control_are_stages(tmp_path):
+    """Route B: the adapter served at runtime on Qwen's OFFICIAL AWQ checkpoint,
+    through vLLM. Nothing is quantised on this route — that is its whole
+    advantage over route A, whose quantisation step has cost days.
+
+    vllmcontrol is NOT optional and is not r3-awqcontrol. vLLM's kernels are not
+    transformers' kernels, so 170.05 cannot serve as this route's baseline: the
+    control prices the change of serving stack, and only then does the arm price
+    the adapter. Both run the SAME official AWQ model id, so the adapter is the
+    only difference between them."""
+    env, calls = _stub_env(tmp_path)
+    assert _run(tmp_path, env, "vllmcontrol", "vllmlora").returncode == 0
+
+    ctl = _podman_line(calls, "r3-vllmcontrol")
+    assert "OCR_BACKEND=vllm" in ctl, ctl
+    assert "SINDRI_ADAPTER" not in ctl, ctl
+    assert "SINDRI_QUANT" not in ctl, ctl
+    assert "Qwen2.5-VL-72B-Instruct-AWQ" in ctl, ctl
+
+    arm = _podman_line(calls, "r3-vllmlora")
+    assert "OCR_BACKEND=vllm" in arm, arm
+    assert "SINDRI_ADAPTER=read-lora-v1" in arm, arm
+    assert "SINDRI_QUANT" not in arm, arm
+    assert "Qwen2.5-VL-72B-Instruct-AWQ" in arm, arm
+
+
+def test_the_vllm_stages_run_in_the_vllm_image_not_the_pinned_one(tmp_path):
+    """The serving image is pinned at transformers 4.49.0 / autoawq 0.2.8 and
+    must not move — 4.50+ breaks AWQ dispatch for Qwen2.5-VL at inference. vLLM
+    brings its own stack, so it gets its own image and the pinned one is left
+    exactly as every committed measurement found it."""
+    env, calls = _stub_env(tmp_path)
+    assert _run(tmp_path, env, "vllmlora").returncode == 0
+    line = _podman_line(calls, "r3-vllmlora")
+    assert "sindri-vllm" in line, line
+    assert "sindri-gpu-nf4" not in line, line
+
+
+def test_the_vllm_stages_mount_the_volume_holding_the_adapter(tmp_path):
+    """vLLM loads the adapter by path from the models volume; without it the run
+    would serve the base and report it under the arm's name."""
+    env, calls = _stub_env(tmp_path)
+    assert _run(tmp_path, env, "vllmlora").returncode == 0
+    assert "sindri-models:/models" in _podman_line(calls, "r3-vllmlora")
