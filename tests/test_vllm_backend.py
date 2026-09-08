@@ -593,3 +593,27 @@ def test_compilation_itself_is_not_switched_off():
     makes every read slower than the transformers path it is being compared
     against."""
     assert set(compilation_config()) == {"cudagraph_capture_sizes"}
+
+
+# --- torch.compile is off, and that is measurement-neutral -------------------
+
+from app.pipeline.ocr.vllm_backend import engine_extra
+
+
+def test_the_engine_runs_eager():
+    """Capping cudagraph_capture_sizes fixed the 49-minute capture, but the
+    engine then died BEFORE serving anything, inside torch.compile's Inductor
+    autotuner: triton_heuristics.bench -> benchmark_gpu -> do_bench ->
+    synchronize -> "CUDA error: an illegal memory access was encountered", on
+    torch 2.6.0+cu124 / vLLM 0.8.5 / AWQ 72B / H100.
+
+    enforce_eager is the ONLY lever: V1 forces compilation to PIECEWISE in
+    VllmConfig.__post_init__ unless it is set, so the level cannot be lowered
+    any other way.
+
+    This does NOT bias the experiment. The comparison is r3-vllmlora against
+    r3-vllmcontrol, both served by this same code with this same setting, and
+    review cost measures REVIEWER effort -- it has no inference-time term at
+    all. What eager costs is wall-clock, which belongs in the deployment
+    write-up, not in the delta."""
+    assert engine_extra()["enforce_eager"] is True

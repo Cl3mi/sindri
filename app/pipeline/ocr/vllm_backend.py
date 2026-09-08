@@ -201,6 +201,25 @@ def compilation_config() -> dict:
     return {"cudagraph_capture_sizes": list(_CUDAGRAPH_CAPTURE_SIZES)}
 
 
+def engine_extra() -> dict:
+    """Engine settings that are about getting a result at all.
+
+    enforce_eager turns torch.compile OFF. Capping the cudagraph sizes fixed the
+    49-minute capture, but the engine then died BEFORE serving a single request,
+    inside Inductor's autotuner -- triton_heuristics.bench -> benchmark_gpu ->
+    do_bench -> synchronize -> "CUDA error: an illegal memory access was
+    encountered" -- on torch 2.6.0+cu124 / vLLM 0.8.5 / AWQ 72B / H100. V1
+    forces compilation to PIECEWISE in VllmConfig.__post_init__ unless
+    enforce_eager is set, so there is no smaller lever.
+
+    It does not bias the experiment. r3-vllmlora is compared against
+    r3-vllmcontrol, both served by this code with this setting, and review cost
+    scores REVIEWER effort -- there is no inference-time term in it. Eager costs
+    wall-clock, which belongs in the deployment write-up next to the NF4 route's
+    2.3x, not in the delta."""
+    return {"enforce_eager": True}
+
+
 # Longest sequence the engine sizes its KV cache for. The checkpoint's config
 # advertises max_position_embeddings=128000, and a KV cache for that does not
 # fit beside ~40 GB of AWQ weights on one H100. The real ceiling is far lower,
@@ -258,6 +277,7 @@ class VLLMBackend:
             limit_mm_per_prompt={"image": 1},   # one crop per request, always
             max_model_len=_MAX_MODEL_LEN,
             compilation_config=compilation_config(),
+            **engine_extra(),
         )
         # The engine's own tokenizer, so chat_prompt renders with the template
         # that shipped with the checkpoint being served rather than one this
