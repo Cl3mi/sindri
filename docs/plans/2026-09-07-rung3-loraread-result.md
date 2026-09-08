@@ -175,15 +175,52 @@ names the stage that failed and the chain can simply be re-launched.
 
 **Then, and in this order:**
 
-1. Pull both runs, score them, and **gate on `r3-mergedcontrol` reproducing
-   170.05.** The merged checkpoint is not one any AWQ number was measured on,
-   and it was quantised by a *newer* autoawq than the one that serves it
-   (0.2.9 vs the pinned 0.2.8 — see §5c). The control is what proves that whole
-   toolchain is neutral. **If it misses 170.05, `r3-loramerged` is
-   uninterpretable and must not be quoted** — diagnose the round trip first.
-2. Only if the gate passes, judge `r3-loramerged` against `r3-mergedcontrol` —
-   never against `r3-awqcontrol`.
-3. Then `./rescore_onepage.sh`, which also collects the pending page counts.
+1. Pull both runs and score them. **Correction to how this was first written
+   here:** "`r3-mergedcontrol` must reproduce 170.05" is the wrong gate, and
+   stating it that way would have thrown away a valid arm. 170.05 was measured
+   on **Qwen's official AWQ checkpoint**; `r3-mergedcontrol` is **our own AWQ
+   quantisation** of the bf16 base, over autoawq's generic `pileval`
+   calibration. Two different quantisations of the same weights are not
+   expected to be numerically identical, so a gap is a measurement, not a bug.
+2. Read the two comparisons for what each actually answers:
+   * **`r3-mergedcontrol` vs `r3-awqcontrol` (170.05)** — what our quantisation
+     pipeline costs against Qwen's official one. Pure overhead, and it is the
+     number that decides whether this deployment route is attractive at all.
+   * **`r3-loramerged` vs `r3-mergedcontrol`** — the adapter's effect on the
+     production serving path. **This is the experiment**, and the only
+     comparison the arm may be judged on.
+3. The shipping question is neither of those on its own: it is
+   **`r3-loramerged` against 170.05**, because that is what production serves
+   today. `r3-loraread` already showed the scoped adapter is worth −4.40 on the
+   NF4 base; if our quantisation overhead is smaller than that, the route wins,
+   and if it is larger, the overhead eats the fine-tune and the answer is to
+   improve calibration (or obtain Qwen's) rather than to abandon the adapter.
+4. Then `./rescore_onepage.sh`, which also collects the pending page counts.
+
+### 5b-i. The first attempt failed. Two causes, both recorded
+
+The 2026-09-07 launch lost **both** cards ~26 minutes in, before either predict
+started. The merges succeeded and both 137 GB checkpoints survived, so only
+quantisation had to be redone — `merge_lora.py --quantise-only` exists for
+exactly that, because `preflight` otherwise refuses a non-empty `--out`.
+
+1. **`device_map="auto"` — the real one.** `AutoAWQForCausalLM.from_pretrained`
+   defaults to it, which placed ~57.5 GiB of the 72B on the card and left ~21
+   GiB for calibration activations; `_compute_best_scale` then wanted 9.22 GiB
+   with 6.24 GiB free. autoawq's quantizer moves each block to the device
+   itself (`quantize/quantizer.py:137`), so a model this size is **meant** to
+   sit on CPU while one block at a time visits the GPU. The host has 1007 GB of
+   RAM. `AWQ_LOAD = {"device_map": "cpu"}`.
+2. **`n_parallel_calib_samples` is not usable here.** The first fix attempt
+   chunked calibration; it splits the hidden states but **not** the mrope
+   position embeddings, so Qwen2.5-VL dies in
+   `apply_multimodal_rotary_pos_emb` — "tensor a (8) must match tensor b (59)".
+
+**Do not fix a quantisation OOM by cutting `max_calib_samples` or
+`max_calib_seq_len`.** Both degrade the scale estimates, and the control is
+being compared against a checkpoint Qwen calibrated properly. Fix memory by
+placement. With the model on CPU the cards sit at ~40 GiB of 79 and autoawq's
+defaults run unmodified at ~81 s/block, ~1h50m for 80 blocks.
 
 ### 5c. A trap this run walked into, recorded before it is forgotten
 
