@@ -159,3 +159,24 @@ def offloading_quantizer(base_cls):
 
     _OffloadingQuantizer.__name__ = f"Offloading{base_cls.__name__}"
     return _OffloadingQuantizer
+
+
+# Modules the AWQ pass must NOT touch, for route A via llm-compressor.
+#
+# Qwen ships Qwen2.5-VL-72B-Instruct-AWQ with the vision tower unquantised, and
+# r3-awqcontrol's 170.05 was measured on that checkpoint. Quantising the tower
+# here would make ours structurally different, so r3-mergedcontrol would price
+# that difference instead of the merge round trip it exists to measure.
+# lm_head is excluded by the same convention: it costs accuracy for almost no
+# memory.
+AWQ_IGNORE = ("lm_head", "re:visual.*", "re:model.visual.*")
+
+
+def awq_scheme() -> dict:
+    """The AWQ scheme, matching what production already serves.
+
+    4-bit, group 128 — identical to the quantisation r3-awqcontrol runs on. Any
+    departure would be a second variable on top of the merge, and the arm's
+    delta could no longer be attributed to the adapter."""
+    return {"num_bits": 4, "group_size": 128, "symmetric": False,
+            "strategy": "group"}

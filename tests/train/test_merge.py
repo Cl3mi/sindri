@@ -245,3 +245,31 @@ def test_quantisation_happens_before_the_offload_not_after():
     offloading_quantizer(_Recording)()._apply_quant(_RecordingBlock(), {})
 
     assert order == ["quantise", "to:cpu"]
+
+
+# --- the AWQ recipe for route A, via llm-compressor --------------------------
+
+from app.train.merge import AWQ_IGNORE, awq_scheme
+
+
+def test_the_vision_tower_is_left_alone():
+    """Qwen ships the official AWQ checkpoint with the vision tower unquantised.
+    Quantising it here would make our checkpoint structurally different from the
+    one 170.05 was measured on, so r3-mergedcontrol would be measuring that
+    difference rather than the merge round trip it exists to price."""
+    assert any("visual" in pattern for pattern in AWQ_IGNORE)
+
+
+def test_the_output_head_is_left_alone():
+    """lm_head is excluded from AWQ by convention and by Qwen's own checkpoint;
+    quantising it costs accuracy for almost no memory."""
+    assert "lm_head" in AWQ_IGNORE
+
+
+def test_the_scheme_matches_what_production_already_serves():
+    """4-bit, group 128 — the same quantisation r3-awqcontrol runs on. Any
+    departure is a second variable on top of the merge, and the arm could not be
+    attributed to the adapter."""
+    scheme = awq_scheme()
+    assert scheme["num_bits"] == 4
+    assert scheme["group_size"] == 128
