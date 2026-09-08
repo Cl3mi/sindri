@@ -142,15 +142,28 @@ def test_the_token_budget_is_carried_through():
 # The doubles below are duck-typed rather than built on vllm, for the reason
 # tests/test_vlm_adapter_scope.py gives for peft and torch: vllm is not
 # installed outside the GPU image, and `VLLMBackend.__init__` loads ~40 GB of
-# weights. Backends are therefore built with `object.__new__` and the four
+# weights. Backends are therefore built with `object.__new__` and the five
 # attributes `__init__` would have set -- the same idiom that file uses.
 #
-# Every call shape asserted here was verified against vLLM 0.28.0 on the host
-# (`inspect.signature` and the installed source), not against documentation:
-#   LLM.chat(messages, sampling_params, *, lora_request=...) -> [RequestOutput]
+# Every call shape asserted here was verified on the host against the vLLM this
+# route actually runs, **0.8.5.post1** (`inspect.signature` and the installed
+# source), not against documentation and NOT against 0.28: 0.28 pulls
+# torch 2.13.0+cu130 and this host's driver is CUDA 12.4, so a real matmul dies
+# with "The NVIDIA driver on your system is too old (found version 12040)".
+# `torch.cuda.is_available()` still returns True there, so it proves nothing.
+#
+#   LLM.generate(prompts, sampling_params, ..., use_tqdm=, lora_request=)
+#                                                   -> list[RequestOutput]
+#   TextPrompt  = {"prompt": str, "multi_modal_data": {"image": <PIL.Image>}}
 #   RequestOutput.outputs[0].text / .logprobs   (list[dict[int, Logprob]])
-#   {"type": "image_pil", "image_pil": <PIL.Image>} is in chat_utils.MM_PARSER_MAP
-#   LoRARequest(lora_name, lora_int_id, lora_path)
+#   Logprob(logprob, rank=None, decoded_token=None)
+#   LoRARequest(lora_name, lora_int_id, lora_path)      (a msgspec Struct)
+#   LLM.get_tokenizer(lora_request=None) -> AnyTokenizer
+#
+# `LLM.chat` is deliberately NOT used. 0.8.5's chat_utils.MM_PARSER_MAP is
+# {audio_url, image_embeds, image_url, input_audio, refusal, text, video_url}:
+# `image_pil` does not exist on this version, so a PIL crop could only reach
+# chat() as a base64 data URI. generate() takes the object itself.
 
 from PIL import Image
 
@@ -174,6 +187,32 @@ class _RequestOutput:
         self.outputs = [_Completion(text, logprobs)]
 
 
+class _FakeTokenizer:
+    """Duck of what `LLM.get_tokenizer()` returns, recording every render.
+
+    The sentinel wrapper is not the real template — it is what lets an
+    assertion say "the backend put THIS prompt into the model's own template"
+    without re-testing jinja. The real render was verified on the host against
+    Qwen/Qwen2.5-VL-72B-Instruct-AWQ and is byte-identical to what the
+    transformers path's AutoProcessor produces for the same turn:
+        '<|im_start|>system\\nYou are a helpful assistant.<|im_end|>\\n'
+        '<|im_start|>user\\n<|vision_start|><|image_pad|><|vision_end|>'
+        '<prompt><|im_end|>\\n<|im_start|>assistant\\n'
+    """
+
+    def __init__(self):
+        self.calls = []
+
+    def apply_chat_template(self, conversation, add_generation_prompt=False,
+                            tokenize=True):
+        self.calls.append({"conversation": conversation,
+                           "add_generation_prompt": add_generation_prompt,
+                           "tokenize": tokenize})
+        text = "".join(part["text"] for part in conversation[0]["content"]
+                       if part["type"] == "text")
+        return f"<tpl>{text}</tpl>"
+
+
 class _FakeLLM:
     """Duck of `vllm.LLM`, recording every request so the assertions can read
     the prompt, the image, the token budget and the adapter off it."""
@@ -184,10 +223,12 @@ class _FakeLLM:
                          else logprobs)
         self.calls = []
 
-    def chat(self, messages, sampling_params, lora_request=None):
-        self.calls.append({"messages": messages,
+    def generate(self, prompts, sampling_params, lora_request=None,
+                 use_tqdm=True):
+        self.calls.append({"prompts": prompts,
                            "sampling_params": sampling_params,
-                           "lora_request": lora_request})
+                           "lora_request": lora_request,
+                           "use_tqdm": use_tqdm})
         return [_RequestOutput(self.text, self.logprobs)]
 
     # --- readers over the last call, so the tests stay about the behaviour ---
@@ -197,11 +238,14 @@ class _FakeLLM:
 
     @property
     def sent_prompt(self):
-        return self.last["messages"][0]["content"][1]["text"]
+        """The prompt text, with _FakeTokenizer's sentinel template removed."""
+        templated = self.last["prompts"]["prompt"]
+        assert templated.startswith("<tpl>") and templated.endswith("</tpl>")
+        return templated[len("<tpl>"):-len("</tpl>")]
 
     @property
     def sent_image(self):
-        return self.last["messages"][0]["content"][0]["image_pil"]
+        return self.last["prompts"]["multi_modal_data"]["image"]
 
     @property
     def sent_budget(self):
@@ -218,6 +262,7 @@ def _backend(llm, adapter="read-lora-v1"):
     that also lets a test read the budget back."""
     b = object.__new__(vb.VLLMBackend)
     b.llm = llm
+    b.tokenizer = _FakeTokenizer()
     b.sampling_params_cls = dict
     b.adapter = adapter
     b.lora_request = _LORA if adapter else None
@@ -261,6 +306,41 @@ def test_the_read_prompt_follows_the_variant_in_effect(monkeypatch):
     llm = _FakeLLM()
     _backend(llm).read_region(_crop())
     assert llm.sent_prompt == vlm_backend._PROMPT_CENTER
+
+
+# --- the chat template: the second half of the comparability pin ------------
+
+def test_the_prompt_is_rendered_by_the_models_own_chat_template():
+    """`generate()` takes a raw string, so route B has to apply the template
+    `LLM.chat` would have applied. It asks the TOKENIZER rather than carrying a
+    hand-written '<|im_start|>...' string, because a literal would silently
+    stop matching the checkpoint the day the checkpoint changes -- and the
+    transformers path gets its copy from AutoProcessor. Both renders were
+    compared on the host for Qwen2.5-VL-72B-Instruct-AWQ and are identical, so
+    the two backends send the same bytes to the same weights."""
+    llm = _FakeLLM()
+    b = _backend(llm)
+    b.read_region(_crop())
+
+    call = b.tokenizer.calls[-1]
+    assert call["add_generation_prompt"] is True     # else no assistant turn
+    assert call["tokenize"] is False                 # generate() wants text
+    assert llm.last["prompts"]["prompt"] == "<tpl>" + vlm_backend.read_prompt() \
+        + "</tpl>"
+
+
+def test_the_template_turn_carries_an_image_part_before_the_text():
+    """Qwen's template emits <|vision_start|><|image_pad|><|vision_end|> for an
+    image part, and that placeholder is where the crop's visual tokens are
+    spliced in. A turn rendered without it produces a prompt with nowhere to
+    put the image, and the engine rejects the request rather than reading a
+    blank page. Order matters too: the transformers path puts the image first
+    and every measurement was taken that way."""
+    b = _backend(_FakeLLM())
+    b.read_region(_crop())
+
+    content = b.tokenizer.calls[-1]["conversation"][0]["content"]
+    assert [part["type"] for part in content] == ["image", "text"]
 
 
 # --- the read/detect scoping, now as a per-request adapter ------------------
@@ -339,6 +419,17 @@ def test_the_request_is_greedy_and_asks_for_logprobs():
     assert llm.last["sampling_params"]["logprobs"] >= 1
 
 
+def test_no_progress_bar_is_drawn_per_request():
+    """`generate()` defaults use_tqdm=True and this backend issues ONE request
+    per callout -- roughly 900 per document. The stage log is teed to disk by
+    run_gpu_queue.sh and is the only surviving record of how long a run took
+    (`podman run --rm` destroys the container's own), so 900 progress bars per
+    document would bury the per-document timings that record exists for."""
+    llm = _FakeLLM()
+    _backend(llm).read_region(_crop())
+    assert llm.last["use_tqdm"] is False
+
+
 # --- crops: the vision encoder OOMs on a full-size legend -------------------
 
 def test_a_large_read_crop_is_downscaled():
@@ -364,16 +455,20 @@ def test_detection_sees_the_full_image():
     assert llm.sent_image.size == (2890, 1436)
 
 
-def test_the_image_travels_as_a_pil_content_part():
-    """vLLM 0.28's chat_utils.MM_PARSER_MAP accepts {"type": "image_pil",
-    "image_pil": <PIL.Image>}, so the crop goes straight to the engine. The
-    alternative -- a base64 data URI -- would re-encode every one of the ~900
-    crops per document for nothing."""
+def test_the_image_travels_as_multi_modal_data_not_as_a_content_part():
+    """vLLM 0.8.5's chat_utils.MM_PARSER_MAP holds only {audio_url,
+    image_embeds, image_url, input_audio, refusal, text, video_url} -- there is
+    no `image_pil`, so `LLM.chat` could take a crop only as a base64 data URI
+    and would re-encode ~900 crops per document for nothing. `generate()`
+    accepts the PIL object itself under multi_modal_data, so this asserts the
+    object ARRIVES, not a copy or an encoding of it."""
     llm = _FakeLLM()
-    _backend(llm).read_region(_crop())
-    part = llm.last["messages"][0]["content"][0]
-    assert part["type"] == "image_pil"
-    assert isinstance(part["image_pil"], Image.Image)
+    crop = _crop()
+    _backend(llm).read_region(crop)
+
+    prompts = llm.last["prompts"]
+    assert set(prompts) == {"prompt", "multi_modal_data"}
+    assert isinstance(prompts["multi_modal_data"]["image"], Image.Image)
 
 
 # --- results -----------------------------------------------------------------
@@ -425,3 +520,76 @@ def test_detections_come_back_parsed():
     assert len(dets) == 1
     assert dets[0].box == (1, 2, 30, 40)
     assert dets[0].kind == "gdt"
+
+
+# --- how the engine's worker process is started -----------------------------
+#
+# Measured on the host, card 1, 2026-09-08. Not a theory: this is the traceback
+# a route-B run produced before the fix, three times, and then it degraded.
+
+from app.pipeline.ocr.vllm_backend import engine_multiproc_method
+
+
+def test_the_engine_core_is_spawned_rather_than_forked():
+    """`get_backend()` calls `torch.cuda.is_available()` before it builds any
+    backend, and on this image that initialises the CUDA driver in the parent
+    -- torch only uses the NVML path when PYTORCH_NVML_BASED_CUDA_CHECK is set.
+    vLLM's V1 EngineCore then forks, and the child dies at `init_device`:
+
+        RuntimeError: Cannot re-initialize CUDA in forked subprocess. To use
+        CUDA with multiprocessing, you must use the 'spawn' start method
+
+    vLLM's own auto-override does not catch it, because that tests
+    `torch.cuda.is_initialized()` -- torch's flag, which stays False while the
+    driver context is already created. So the choice has to be made here.
+
+    What makes this worth a test rather than a comment: the failure is NOT
+    loud. `_load_vlm_with_retry` retried three times, `get_backend()` swallowed
+    the last error and returned TesseractBackend, and the run would have gone
+    on to garble all 20 documents while exiting 0."""
+    env = {}
+    assert engine_multiproc_method(env) == "spawn"
+    assert env["VLLM_WORKER_MULTIPROC_METHOD"] == "spawn"
+
+
+def test_an_explicitly_chosen_start_method_is_left_alone():
+    """An operator who sets vLLM's own variable owns the outcome; this only
+    supplies the default the image would otherwise not have. Overriding it back
+    would make the variable a lie, and it is the documented way to debug a
+    spawn problem on a host this unreliable."""
+    env = {"VLLM_WORKER_MULTIPROC_METHOD": "fork"}
+    assert engine_multiproc_method(env) == "fork"
+
+
+# --- how many CUDA graph shapes the engine captures -------------------------
+
+from app.pipeline.ocr.vllm_backend import compilation_config
+
+
+def test_only_the_batch_sizes_this_pipeline_can_reach_are_captured():
+    """`extract()` reads one crop at a time and this backend issues one request
+    per `generate()` call, so the decode batch is always 1. vLLM's default is to
+    capture 67 shapes up to batch 512 -- 66 of which this pipeline can never
+    reach.
+
+    Measured on the host, card 1, 2026-09-08: the 72B AWQ engine reached
+    "GPU KV cache size: 76,896 tokens" at 14:12:47 and was STILL capturing 49
+    minutes later, at ~4900% CPU, with the compile cache static and only graph
+    memory growing. The run had to be killed. That is per container start, and
+    run_gpu_queue.sh starts one per stage.
+
+    Capping is safe by construction rather than by luck: a batch larger than
+    `max_capture_size` runs eagerly instead of failing, so the headroom above 1
+    costs nothing if it is never used."""
+    sizes = compilation_config()["cudagraph_capture_sizes"]
+    assert sizes == [1, 2, 4, 8]
+
+
+def test_compilation_itself_is_not_switched_off():
+    """The dict must carry ONLY the capture sizes. Setting `level` here would
+    fight vLLM: V1 overwrites it to PIECEWISE in `VllmConfig.__post_init__`
+    unless enforce_eager is set, so a level in this dict is either ignored or,
+    if it ever stopped being ignored, silently turns torch.compile off and
+    makes every read slower than the transformers path it is being compared
+    against."""
+    assert set(compilation_config()) == {"cudagraph_capture_sizes"}

@@ -3,10 +3,20 @@
 Route B of `docs/plans/2026-09-08-deployment-routes.md`. PEFT cannot attach a
 LoRA to an AWQ checkpoint (autoawq replaces every q/k/v/o projection with
 WQLinear_GEMM), and merging into bf16 then re-quantising is route A. vLLM
-applies adapters at runtime instead, and its
-`Qwen2_5_VLForConditionalGeneration` declares SupportsLoRA, SupportsQuant,
-SupportsMultiModal and SupportsMRoPE on one class — verified on the host against
-vLLM 0.28.0.
+applies adapters at runtime instead, and it works where PEFT refuses because
+`lora/utils.py` dispatches on `LinearBase` -- "In vLLM, all linear layers
+support LoRA" -- which is the class the AWQ path keeps, while `lora/layers.py`
+reads a quantised base layer's device off its `qweight`.
+
+Verified on the host against **vLLM 0.8.5.post1** (torch 2.6.0+cu124), which is
+what this route runs. vLLM 0.28 was verified first and then discarded: it pulls
+torch 2.13.0+cu130 and this host's driver is CUDA 12.4, so a real matmul dies
+with "The NVIDIA driver on your system is too old (found version 12040)" --
+while `torch.cuda.is_available()` still returns True, which is why only a real
+op counts as proof here. On 0.8.5 `Qwen2_5_VLForConditionalGeneration` declares
+SupportsMultiModal, SupportsLoRA and SupportsPP (0.28's SupportsQuant and
+SupportsMRoPE do not exist on this version), and nothing in the tree guards
+LoRA against quantisation.
 
 The read/detect scoping that made Rung 3 measurable transfers natively here:
 vLLM takes a LoRA per REQUEST, so detection issues requests carrying no adapter
@@ -108,6 +118,89 @@ def sampling_kwargs(max_tokens: int) -> dict:
     return {"temperature": 0.0, "max_tokens": max_tokens, "logprobs": 1}
 
 
+def chat_prompt(tokenizer, prompt: str) -> str:
+    """One image+text user turn, rendered by the checkpoint's own chat template.
+
+    `LLM.generate` takes a raw string, so route B has to apply the template
+    `LLM.chat` would have applied -- and it must be the SAME string the
+    transformers path sends, or the two backends prompt the same weights
+    differently and the arm prices the difference rather than the adapter. Both
+    renders were compared on the host for Qwen2.5-VL-72B-Instruct-AWQ and are
+    byte-identical:
+
+        <|im_start|>system\\nYou are a helpful assistant.<|im_end|>\\n
+        <|im_start|>user\\n<|vision_start|><|image_pad|><|vision_end|>
+        <prompt><|im_end|>\\n<|im_start|>assistant\\n
+
+    Asked of the tokenizer rather than written out here, because a literal
+    would keep rendering happily on the day the checkpoint's template changes
+    and the only symptom would be worse reads. The image part carries no
+    payload: it exists so the template emits the <|vision_start|> placeholder
+    the crop's visual tokens are spliced into, and the crop itself travels
+    beside the prompt in multi_modal_data.
+    """
+    return tokenizer.apply_chat_template(
+        [{"role": "user", "content": [{"type": "image"},
+                                      {"type": "text", "text": prompt}]}],
+        add_generation_prompt=True, tokenize=False)
+
+
+def engine_multiproc_method(env=None) -> str:
+    """Start method for vLLM's EngineCore worker; defaults it to "spawn".
+
+    Measured on the host, card 1, 2026-09-08. `get_backend()` probes
+    `torch.cuda.is_available()` before it builds any backend, and on this image
+    that CREATES the CUDA driver context in the parent -- torch takes the NVML
+    path only when PYTORCH_NVML_BASED_CUDA_CHECK is set. V1's EngineCore then
+    forks, and the child dies in `gpu_worker.init_device`:
+
+        RuntimeError: Cannot re-initialize CUDA in forked subprocess. To use
+        CUDA with multiprocessing, you must use the 'spawn' start method
+
+    vLLM has an auto-override for exactly this and it does not fire, because it
+    asks `torch.cuda.is_initialized()` -- torch's own flag, still False while
+    the driver context already exists. So the default has to be set here.
+
+    Spawn is chosen over un-poisoning the parent (PYTORCH_NVML_BASED_CUDA_CHECK,
+    which lives in the shared selection path and would also change route A)
+    because it holds no matter what touched CUDA first. The cost is that the
+    child re-imports the main module, which is safe here: `app/eval/runner.py`
+    guards on `if __name__ == "__main__"`, so the re-import runs imports and
+    nothing else.
+
+    This is worth a named function rather than a line in __init__ because the
+    failure it prevents is SILENT: `_load_vlm_with_retry` retried the load three
+    times, `get_backend()` swallowed the last error, and the run continued on
+    Tesseract -- 20 garbled documents and exit code 0."""
+    env = os.environ if env is None else env
+    return env.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+
+
+# Decode batch sizes worth capturing a CUDA graph for. `extract()` reads one
+# crop at a time and _generate issues one request per call, so the batch is
+# always 1; the rest is headroom that costs nothing, because a batch above
+# max_capture_size runs eagerly rather than failing.
+_CUDAGRAPH_CAPTURE_SIZES = [1, 2, 4, 8]
+
+
+def compilation_config() -> dict:
+    """vLLM compilation settings: capture graphs only for reachable batches.
+
+    Measured on the host, card 1, 2026-09-08. Left at the default, the engine
+    captures 67 shapes up to batch 512. The 72B AWQ engine reported
+    "GPU KV cache size: 76,896 tokens" at 14:12:47 and was STILL capturing 49
+    minutes later -- ~4900% CPU, compile cache static at 292 files, only graph
+    memory growing -- and had to be killed before it ever served a request.
+    run_gpu_queue.sh starts one container per stage, so that is paid per arm.
+
+    Only the capture sizes are set. `level` is deliberately absent: V1 forces
+    it to PIECEWISE in `VllmConfig.__post_init__` unless enforce_eager is set,
+    so naming it here is at best ignored and at worst turns torch.compile off,
+    which would make route B slower than the path it is being compared to for
+    reasons that have nothing to do with the adapter."""
+    return {"cudagraph_capture_sizes": list(_CUDAGRAPH_CAPTURE_SIZES)}
+
+
 # Longest sequence the engine sizes its KV cache for. The checkpoint's config
 # advertises max_position_embeddings=128000, and a KV cache for that does not
 # fit beside ~40 GB of AWQ weights on one H100. The real ceiling is far lower,
@@ -129,6 +222,10 @@ class VLLMBackend:
     other in a report."""
 
     def __init__(self, model_id=None, max_new_tokens: int = 40):
+        # Before the import, not after: the EngineCore child is started from
+        # the value of this variable, and forking it would fail on a parent
+        # whose CUDA context the backend-selection probe already created.
+        engine_multiproc_method()
         # Imported lazily for the reason the module docstring gives: the CPU
         # image has no vllm, and app.pipeline.ocr imports this module to decide
         # whether to build it. Same shape as VLMBackend's torch import.
@@ -160,7 +257,12 @@ class VLLMBackend:
             max_loras=1,                    # one adapter per run, by design
             limit_mm_per_prompt={"image": 1},   # one crop per request, always
             max_model_len=_MAX_MODEL_LEN,
+            compilation_config=compilation_config(),
         )
+        # The engine's own tokenizer, so chat_prompt renders with the template
+        # that shipped with the checkpoint being served rather than one this
+        # process guessed at.
+        self.tokenizer = self.llm.get_tokenizer()
         # One request object for the whole run. lora_int_id is what vLLM keys
         # its adapter cache on, and there is only ever one adapter here.
         self.lora_request = (
@@ -172,21 +274,30 @@ class VLLMBackend:
                   max_tokens: int):
         """One constrained generation; returns (text, logprob steps).
 
+        `generate` rather than `chat`, because 0.8.5's
+        chat_utils.MM_PARSER_MAP holds only {audio_url, image_embeds,
+        image_url, input_audio, refusal, text, video_url}: there is no
+        `image_pil` content part on this version, so chat() could take a crop
+        only as a base64 data URI and would re-encode ~900 crops per document
+        for nothing. generate() accepts the PIL object itself under
+        multi_modal_data, and chat_prompt supplies the template chat() would
+        otherwise have applied.
+
+        use_tqdm=False because this issues one request per callout and the
+        stage log run_gpu_queue.sh tees to disk is the only surviving record of
+        a run's timings -- `podman run --rm` destroys the container's own.
+
         The adapter is chosen per REQUEST rather than suspended around a block:
         that is the whole of `VLMBackend._base_weights()` on this stack, and it
         cannot leak into the next pass the way a context manager can."""
-        out = self.llm.chat(
-            [{"role": "user", "content": [
-                # chat_utils.MM_PARSER_MAP accepts a PIL image directly, so the
-                # crop reaches the engine without a base64 round trip -- worth
-                # having at ~900 crops per document.
-                {"type": "image_pil", "image_pil": image},
-                {"type": "text", "text": prompt},
-            ]}],
+        out = self.llm.generate(
+            {"prompt": chat_prompt(self.tokenizer, prompt),
+             "multi_modal_data": {"image": image}},
             self.sampling_params_cls(**sampling_kwargs(max_tokens)),
             lora_request=(self.lora_request
                           if adapter_for_pass(pass_name, self.adapter)
                           else None),
+            use_tqdm=False,
         )[0].outputs[0]
         return out.text.strip(), out.logprobs
 
