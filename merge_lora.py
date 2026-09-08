@@ -28,8 +28,8 @@ import json
 import sys
 from pathlib import Path
 
-from app.train.merge import (CALIB, assert_quantisable, check_merge_target,
-                             zero_lora_scaling)
+from app.train.merge import (AWQ_LOAD, CALIB, assert_quantisable,
+                             check_merge_target, zero_lora_scaling)
 
 _BASE = "Qwen/Qwen2.5-VL-72B-Instruct"
 
@@ -131,7 +131,7 @@ def main(argv=None) -> int:
     quant = {"zero_point": True, "q_group_size": 128, "w_bit": 4,
              "version": "GEMM"}
     awq_out = args.out.parent / (args.out.name + "-awq")
-    awq_model = AutoAWQForCausalLM.from_pretrained(str(args.out))
+    awq_model = AutoAWQForCausalLM.from_pretrained(str(args.out), **AWQ_LOAD)
     awq_model.quantize(AutoTokenizer.from_pretrained(args.base),
                        quant_config=quant, **CALIB)
     awq_model.save_quantized(str(awq_out))

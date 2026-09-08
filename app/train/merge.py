@@ -68,17 +68,34 @@ def assert_quantisable(model_type: str, supported) -> None:
             f"there; the pinned serving image must NOT move.")
 
 
+# How the model is LOADED for quantisation. autoawq's from_pretrained defaults
+# to device_map="auto", which placed ~57.5 GiB of the 72B onto the card and left
+# only ~21 GiB for calibration activations -- the cause of the first OOM
+# (9.22 GiB wanted, 6.24 GiB free, 14.75 GiB reserved-but-unallocated).
+#
+# Its quantizer moves each block to the device itself
+# (awq/quantize/quantizer.py:137, `self.modules[i].to(best_device)`), so a large
+# model is MEANT to sit on CPU while one block at a time visits the GPU. The
+# host has 1007 GB of RAM; the card then has all 79 GiB for activations.
+AWQ_LOAD = {"device_map": "cpu"}
+
 # Calibration settings for the AWQ pass. CONSTANTS, deliberately not CLI flags:
 # the arm and its zero-scale control must be quantised identically or the delta
 # measures the calibration instead of the adapter, and a flag is exactly how the
 # two would drift apart.
 #
-# autoawq's default n_parallel_calib_samples is None, which forwards all 128
-# calibration samples in ONE pass. On a 72B that OOM'd both cards ~20 minutes in
-# (9.22 GiB wanted, 6.24 GiB free, plus 14.75 GiB reserved-but-unallocated).
-# Chunking to 8 cuts that activation ~16x and leaves a wide margin; it changes
-# throughput, not the objective being optimised.
-CALIB = {"n_parallel_calib_samples": 8,
+# These are autoawq's own defaults, restated so a future reader sees they were
+# CHOSEN. Two things must not be "fixed" here:
+#
+#   n_parallel_calib_samples -- chunks the hidden states but NOT the mrope
+#     position embeddings, so Qwen2.5-VL dies in apply_multimodal_rotary_pos_emb
+#     ("tensor a (8) must match tensor b (59)"). Unavailable on this
+#     architecture, and unnecessary once the model is off the card.
+#   max_calib_samples / max_calib_seq_len -- cutting either degrades the scale
+#     estimates, and the zero-scale control has to stand against a checkpoint
+#     Qwen calibrated properly. Fix memory by PLACEMENT, not by weakening
+#     calibration.
+CALIB = {"n_parallel_calib_samples": None,
          "max_calib_samples": 128,
          "max_calib_seq_len": 512}
 

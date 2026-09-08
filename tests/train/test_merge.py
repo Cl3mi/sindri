@@ -141,3 +141,34 @@ def test_quantise_only_accepts_the_checkpoint_the_failed_run_left(tmp_path):
 
 def test_a_fresh_merge_into_an_empty_directory_is_fine(tmp_path):
     assert check_merge_target(tmp_path / "new", quantise_only=False) is None
+
+
+# --- two measured OOM/shape failures, pinned --------------------------------
+
+from app.train.merge import AWQ_LOAD, CALIB
+
+
+def test_the_model_is_not_loaded_onto_the_card_it_is_quantised_on():
+    """The real cause of the first OOM. autoawq's from_pretrained defaults to
+    device_map="auto", which put ~57.5 GiB of the 72B on the card and left only
+    ~21 GiB for calibration activations. Its quantizer moves each block to the
+    device itself (quantize/quantizer.py:137), so the model belongs on CPU and
+    the card stays free -- the host has 1007 GB of RAM for exactly this."""
+    assert AWQ_LOAD["device_map"] == "cpu"
+
+
+def test_calibration_is_not_chunked():
+    """n_parallel_calib_samples splits the hidden states but NOT the mrope
+    position embeddings, so Qwen2.5-VL dies in
+    apply_multimodal_rotary_pos_emb with "tensor a (8) must match tensor b
+    (59)". Chunking is not available on this architecture, and it is not needed
+    once the model is off the card."""
+    assert CALIB.get("n_parallel_calib_samples") is None
+
+
+def test_calibration_keeps_autoawq_defaults():
+    """Cutting samples or sequence length degrades the scale estimates, and the
+    zero-scale control has to reproduce a checkpoint Qwen calibrated properly.
+    Fix the memory by placement, not by weakening calibration."""
+    assert CALIB["max_calib_samples"] == 128
+    assert CALIB["max_calib_seq_len"] == 512
