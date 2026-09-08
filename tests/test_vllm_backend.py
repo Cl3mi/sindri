@@ -107,3 +107,31 @@ def test_an_unclassified_pass_fails_loudly():
     detectable in the output, so refuse instead."""
     with pytest.raises(ValueError, match="unclassified"):
         adapter_for_pass("marks", "read-lora-v1")
+
+
+# --- sampling: determinism is the comparison method, not a preference --------
+
+from app.pipeline.ocr.vllm_backend import sampling_kwargs
+
+
+def test_decoding_is_greedy():
+    """CLAUDE.md section 5: scoring is deterministic here BECAUSE decoding is
+    greedy — 16 unchanged documents gave per-document deltas of exactly 0.0
+    across a GPU change, which is what licenses one arm per hypothesis and makes
+    any non-zero delta causal. Sampling would destroy that, and every conclusion
+    in the repo rests on it."""
+    kw = sampling_kwargs(max_tokens=40)
+    assert kw["temperature"] == 0.0
+
+
+def test_logprobs_are_requested():
+    """Without them vLLM returns None and mean_confidence_from_logprobs raises —
+    by design, since scoring None as 0.0 would flag every row."""
+    assert sampling_kwargs(max_tokens=40)["logprobs"] >= 1
+
+
+def test_the_token_budget_is_carried_through():
+    """The four passes have different budgets: 40 for a callout, 512 for the
+    notes block, 128 for the title, 1024 for detection. A single default would
+    truncate the notes block, which is a silent content loss."""
+    assert sampling_kwargs(max_tokens=1024)["max_tokens"] == 1024
