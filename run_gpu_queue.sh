@@ -86,6 +86,16 @@ stage_image()  { case "$1" in trainpredict) echo "$IMAGE_OLD" ;;
                               # committed measurement found it.
                               vllmcontrol|vllmlora) echo "$IMAGE_VLLM" ;;
                               *)            echo "$IMAGE_NEW" ;; esac; }
+# The serving backend, emitted ONCE. stage_env may set its own, and passing both
+# left the command carrying -e OCR_BACKEND=vlm -e OCR_BACKEND=vllm: podman takes
+# the last one, so it worked, but the run then depended on an ordering
+# convention rather than on what the stage asked for. Resolved the other way,
+# the vLLM arms would have run the transformers path against an AWQ checkpoint —
+# a complete, plausible, WRONG run under route B's name.
+stage_backend() { case "$1" in
+                    vllmcontrol|vllmlora) echo "" ;;
+                    *) echo "-e OCR_BACKEND=vlm" ;; esac; }
+
 stage_env()    { case "$1" in
                    base72bnf4|nf4control)
                      echo "-e VLM_MODEL_ID=Qwen/Qwen2.5-VL-72B-Instruct -e SINDRI_QUANT=nf4" ;;
@@ -169,7 +179,7 @@ for stage in "${STAGES[@]}"; do
 
     mkdir -p "$outdir"
     RUNCMD=(podman run --rm --device "nvidia.com/gpu=$GPU_INDEX"
-      -e OCR_BACKEND=vlm $(stage_env "$stage")
+      $(stage_backend "$stage") $(stage_env "$stage")
       -v sindri-models:/models
       -v "$RROOT":/data:Z
       "$image"

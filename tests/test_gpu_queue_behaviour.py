@@ -323,3 +323,27 @@ def test_the_vllm_stages_mount_the_volume_holding_the_adapter(tmp_path):
     env, calls = _stub_env(tmp_path)
     assert _run(tmp_path, env, "vllmlora").returncode == 0
     assert "sindri-models:/models" in _podman_line(calls, "r3-vllmlora")
+
+
+def test_a_stage_that_sets_the_backend_does_not_also_get_the_default(tmp_path):
+    """The queue hardcodes -e OCR_BACKEND=vlm and the vllm stages add
+    -e OCR_BACKEND=vllm, so the command carries BOTH. It happens to work —
+    podman takes the last -e, verified on the host — but the run then depends on
+    an ordering convention rather than on what the stage asked for. If it ever
+    resolved the other way the vLLM arms would silently run the transformers
+    path against an AWQ checkpoint: a complete, plausible, wrong run under route
+    B's name, indistinguishable except by config.extra.serving_backend."""
+    env, calls = _stub_env(tmp_path)
+    assert _run(tmp_path, env, "vllmlora").returncode == 0
+    line = _podman_line(calls, "r3-vllmlora")
+    assert line.count("OCR_BACKEND=") == 1, line
+    assert "OCR_BACKEND=vllm" in line, line
+
+
+def test_a_stage_that_does_not_set_the_backend_still_gets_the_default(tmp_path):
+    """Every transformers-path stage relies on that default; removing it
+    outright would fall back to Tesseract and quietly produce garbage."""
+    env, calls = _stub_env(tmp_path)
+    assert _run(tmp_path, env, "awqcontrol").returncode == 0
+    line = _podman_line(calls, "r3-awqcontrol")
+    assert "OCR_BACKEND=vlm" in line, line
