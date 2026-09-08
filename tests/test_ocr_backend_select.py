@@ -54,3 +54,74 @@ def test_get_backend_clears_reason_when_not_requesting_vlm(monkeypatch):
     monkeypatch.setenv("OCR_BACKEND", "tesseract")
     get_backend()
     assert get_vlm_fallback_reason() is None
+
+
+# --- OCR_BACKEND=vllm: route B's serving stack ------------------------------
+#
+# Route B serves the same base and the same adapter as the transformers path but
+# through vLLM, so selection has to tell them apart on one character. The
+# fallback machinery above is shared deliberately: both are GPU backends on a
+# contended host, and both fail the same way when another job holds the card.
+
+def test_vllm_is_selected_by_its_own_name(monkeypatch):
+    """`vlm` and `vllm` differ by one character and mean different serving
+    stacks, recorded separately by runner._serving_backend(). Matching loosely
+    -- a prefix or a `startswith` -- would run route B under route A's run name
+    or the reverse, and the dumps would be indistinguishable."""
+    monkeypatch.setenv("OCR_BACKEND", "vllm")
+    monkeypatch.setattr(ocr, "_gpu_available", lambda: True)
+    monkeypatch.setattr(ocr, "_vllm_factory", lambda: "VLLM-BACKEND")
+    monkeypatch.setattr(ocr, "_vlm_factory",
+                        lambda: pytest.fail("route B must not build VLMBackend"))
+
+    assert get_backend() == "VLLM-BACKEND"
+    assert get_vlm_fallback_reason() is None
+
+
+def test_the_transformers_path_is_undisturbed(monkeypatch):
+    """Every committed measurement in the campaign was predicted on this path,
+    and route B is an experiment against them. Adding a backend must not change
+    which one OCR_BACKEND=vlm builds."""
+    monkeypatch.setenv("OCR_BACKEND", "vlm")
+    monkeypatch.setattr(ocr, "_gpu_available", lambda: True)
+    monkeypatch.setattr(ocr, "_vlm_factory", lambda: "VLM-BACKEND")
+    monkeypatch.setattr(ocr, "_vllm_factory",
+                        lambda: pytest.fail("route A must not build VLLMBackend"))
+
+    assert get_backend() == "VLM-BACKEND"
+
+
+def test_an_unknown_backend_still_falls_back_to_tesseract(monkeypatch):
+    """The default. Only the two names above are GPU backends."""
+    monkeypatch.setenv("OCR_BACKEND", "vllm-ish")
+    assert isinstance(get_backend(), TesseractBackend)
+
+
+def test_a_vllm_load_failure_names_the_backend_that_was_requested(monkeypatch):
+    """The fallback reason is folded into the auto-balloon error and the health
+    endpoint. On a host where both serving stacks are plausible, a reason that
+    said "vlm" for a vLLM run would send the reader to the wrong code."""
+    monkeypatch.setenv("OCR_BACKEND", "vllm")
+    monkeypatch.setattr(ocr, "_gpu_available", lambda: True)
+
+    def boom():
+        raise RuntimeError("EngineCore failed to start")
+    monkeypatch.setattr(ocr, "_vllm_factory", boom)
+    monkeypatch.setattr(ocr.time, "sleep", lambda d: None)
+
+    assert isinstance(get_backend(), TesseractBackend)
+    reason = get_vlm_fallback_reason()
+    assert "OCR_BACKEND=vllm" in reason
+    assert "EngineCore failed to start" in reason
+
+
+def test_selecting_a_backend_imports_no_vllm():
+    """Hard constraint, not a nicety: the CPU image has no vllm, and
+    app.pipeline.ocr is imported by the API process on every host. A
+    module-scope `import vllm` anywhere under it would make the whole package
+    unimportable off the GPU box -- which is also why every double in
+    tests/test_vllm_backend.py is duck-typed."""
+    import sys
+
+    import app.pipeline.ocr.vllm_backend  # noqa: F401
+    assert "vllm" not in sys.modules

@@ -28,6 +28,25 @@ def _vlm_factory() -> OCRBackend:
     return VLMBackend()
 
 
+def _vllm_factory() -> OCRBackend:
+    """Construct the vLLM backend (route B: the same base and adapter, served by
+    vLLM instead of transformers). Isolated for the same two reasons as
+    _vlm_factory, and for a third: vllm is not installed outside the GPU image,
+    so the import must not happen until something actually asks for it."""
+    from app.pipeline.ocr.vllm_backend import VLLMBackend
+    return VLLMBackend()
+
+
+# The GPU backends, by the OCR_BACKEND value that selects each. Names are
+# matched EXACTLY: `vlm` and `vllm` differ by one character and mean different
+# serving stacks, which runner._serving_backend() records separately, so a loose
+# match would run one route under the other's run name and the dumps would be
+# indistinguishable. Values are attribute names rather than the functions
+# themselves so that a test substituting a failing factory on this module is
+# still what get_backend() calls.
+_GPU_BACKENDS = {"vlm": "_vlm_factory", "vllm": "_vllm_factory"}
+
+
 def _load_vlm_with_retry(factory, attempts: int = None, delay: float = None,
                          sleep=None):
     """Call `factory` up to `attempts` times, sleeping `delay` seconds between
@@ -79,24 +98,28 @@ def get_backend() -> OCRBackend:
     global _fallback_reason
     _fallback_reason = None
     choice = os.getenv("OCR_BACKEND", "tesseract").lower()
-    if choice != "vlm":
+    if choice not in _GPU_BACKENDS:
         _log("active backend: Tesseract")
         return TesseractBackend()
 
     if not _gpu_available():
-        _fallback_reason = ("OCR_BACKEND=vlm requested but no CUDA GPU was "
-                            "detected")
+        _fallback_reason = (f"OCR_BACKEND={choice} requested but no CUDA GPU "
+                            "was detected")
         _log(_fallback_reason + "; falling back to Tesseract")
         return TesseractBackend()
 
     try:
-        backend = _load_vlm_with_retry(_vlm_factory)
-        _log("active backend: VLM")
+        backend = _load_vlm_with_retry(globals()[_GPU_BACKENDS[choice]])
+        _log(f"active backend: {choice}")
         return backend
     except Exception as e:
         traceback.print_exc()
+        # The reason names the backend that was ASKED for, not "the VLM": it
+        # reaches the auto-balloon error and the health endpoint, and on a host
+        # where both serving stacks are plausible a wrong name sends the reader
+        # to the wrong code.
         _fallback_reason = (
-            "OCR_BACKEND=vlm requested but the VLM backend failed to load "
+            f"OCR_BACKEND={choice} requested but that backend failed to load "
             f"({e!r}) — the GPU is likely out of memory (another job holding "
             "the card). Free the GPU or lower VLM_MODEL_ID, then retry.")
         _log(_fallback_reason + "; falling back to Tesseract")
