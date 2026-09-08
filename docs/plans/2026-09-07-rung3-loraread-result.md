@@ -222,6 +222,36 @@ being compared against a checkpoint Qwen calibrated properly. Fix memory by
 placement. With the model on CPU the cards sit at ~40 GiB of 79 and autoawq's
 defaults run unmodified at ~81 s/block, ~1h50m for 80 blocks.
 
+### 5b-ii. STOPPED: autoawq cannot quantise this model in 80 GB. Three fixes failed
+
+As of 2026-09-08 08:36 UTC the merge route is **blocked at quantisation**. Both
+137 GB bf16 merges are complete and on disk (`/models/merged/{zero-scale,
+read-lora-v1}`, 31 shards each); nothing beyond them exists. No predict has ever
+started, so `r3-mergedcontrol` and `r3-loramerged` do not exist and cannot be
+pulled.
+
+| # | fix | outcome |
+|---|---|---|
+| 1 | `n_parallel_calib_samples=8` | `apply_multimodal_rotary_pos_emb`: "tensor a (8) must match tensor b (59)" — chunks hidden states, not mrope position embeddings. Unusable on this architecture. |
+| 2 | `device_map="cpu"` | OOM at block 18/80. Correctly diagnosed the *first* OOM (device_map="auto" put ~57.5 GiB of model on the card) but exposed a second: `quantizer.py:129-137` moves each CPU-resident block onto the card and never returns it. |
+| 3 | `offloading_quantizer` via `quantize(quantizer_cls=...)` | **No effect.** Memory readings byte-identical to fix 2 at every block (54930 / 59810 / 69850 MiB at blocks 7 / 9 / 12), then OOM at block 18 with 77.92 GiB *allocated* — real retained tensors, only 336 MiB reserved-unallocated, so not fragmentation. Why the override did not take is **not established**. |
+
+The `offloading_quantizer` code and its tests remain in the tree. **It does not
+solve this problem** — do not read its presence as a working mitigation.
+
+**The architectural fact that should decide the next move:** AutoAWQ prints, on
+every import, that it *"is officially deprecated and will no longer be
+maintained"* and redirects to **llm-compressor** (the vLLM project). It has no
+offload path for a model that does not fit the card, and a 72B accumulating
+~2.2 GiB per block over 80 blocks does not fit in 79 GiB. A fourth patch against
+an unmaintained tool is the wrong shape of effort.
+
+**Method note, recorded because it cost evidence:** fix 2's run was killed at
+block 12 on a *projection* that it would OOM. It had not yet failed, and killing
+it destroyed the only observation that would have separated a real leak from the
+allocator holding a high-water mark. The projection turned out correct, which
+does not make the shortcut correct. Let a run reach its actual failure.
+
 ### 5c. A trap this run walked into, recorded before it is forgotten
 
 The first `merge_lora.py` as committed **could not have worked**. autoawq 0.2.8
