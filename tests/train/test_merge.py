@@ -172,3 +172,76 @@ def test_calibration_keeps_autoawq_defaults():
     Fix the memory by placement, not by weakening calibration."""
     assert CALIB["max_calib_samples"] == 128
     assert CALIB["max_calib_seq_len"] == 512
+
+
+# --- returning each block to CPU after it is quantised -----------------------
+# quantizer.py:129-137 moves a CPU-resident block onto the card and never moves
+# it back, so with device_map="cpu" the card accumulates ~2.6 GiB per block.
+# Measured on both cards: 40.7 GiB at block 1, 69.9 GiB at block 12, against a
+# 79.1 GiB capacity. autoawq takes a quantizer_cls, which is the supported way
+# to change this.
+
+from app.train.merge import offloading_quantizer
+
+
+class _Block:
+    def __init__(self):
+        self.device = "cuda:0"
+
+    def to(self, device):
+        self.device = device
+        return self
+
+
+class _FakeQuantizer:
+    """Stands in for awq.quantize.quantizer.AwqQuantizer, which cannot be
+    imported here -- awq is only in the quantisation image."""
+
+    def __init__(self):
+        self.quantised = []
+
+    def _apply_quant(self, module, named_linears):
+        self.quantised.append(module)
+
+
+def test_the_block_is_returned_to_cpu_once_it_has_been_quantised():
+    """_apply_quant is the last step the loop takes on a block; everything after
+    it works on the next one. Leaving it resident is what fills the card."""
+    q = offloading_quantizer(_FakeQuantizer)()
+    block = _Block()
+
+    q._apply_quant(block, {})
+
+    assert block.device == "cpu"
+
+
+def test_the_block_is_still_actually_quantised():
+    """An override that forgot super() would offload un-quantised blocks and
+    write out a checkpoint that is merely the base in AWQ packaging -- which
+    would pass every structural check and silently be the wrong model."""
+    q = offloading_quantizer(_FakeQuantizer)()
+    block = _Block()
+
+    q._apply_quant(block, {})
+
+    assert q.quantised == [block]
+
+
+def test_quantisation_happens_before_the_offload_not_after():
+    """Offloading first would quantise on CPU: astronomically slow, and
+    _apply_quant explicitly moves layers to the best device anyway."""
+    order = []
+
+    class _Recording(_FakeQuantizer):
+        def _apply_quant(self, module, named_linears):
+            order.append("quantise")
+            super()._apply_quant(module, named_linears)
+
+    class _RecordingBlock(_Block):
+        def to(self, device):
+            order.append(f"to:{device}")
+            return super().to(device)
+
+    offloading_quantizer(_Recording)()._apply_quant(_RecordingBlock(), {})
+
+    assert order == ["quantise", "to:cpu"]

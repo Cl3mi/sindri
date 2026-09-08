@@ -29,7 +29,8 @@ import sys
 from pathlib import Path
 
 from app.train.merge import (AWQ_LOAD, CALIB, assert_quantisable,
-                             check_merge_target, zero_lora_scaling)
+                             check_merge_target, offloading_quantizer,
+                             zero_lora_scaling)
 
 _BASE = "Qwen/Qwen2.5-VL-72B-Instruct"
 
@@ -125,6 +126,7 @@ def main(argv=None) -> int:
             return 0
 
     from awq import AutoAWQForCausalLM
+    from awq.quantize.quantizer import AwqQuantizer
     from transformers import AutoTokenizer
     # The same quantisation production already serves: 4-bit, group 128, GEMM.
     # Any departure here would be a second variable on top of the merge.
@@ -133,7 +135,9 @@ def main(argv=None) -> int:
     awq_out = args.out.parent / (args.out.name + "-awq")
     awq_model = AutoAWQForCausalLM.from_pretrained(str(args.out), **AWQ_LOAD)
     awq_model.quantize(AutoTokenizer.from_pretrained(args.base),
-                       quant_config=quant, **CALIB)
+                       quant_config=quant,
+                       quantizer_cls=offloading_quantizer(AwqQuantizer),
+                       **CALIB)
     awq_model.save_quantized(str(awq_out))
     AutoProcessor.from_pretrained(args.base).save_pretrained(str(awq_out))
     print(f"AWQ checkpoint written to {awq_out}")

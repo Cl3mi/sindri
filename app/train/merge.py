@@ -130,3 +130,32 @@ def check_merge_target(out, quantise_only: bool) -> None:
             f"resume a failed quantisation over this merge, pass "
             f"--quantise-only.")
     return None
+
+
+def offloading_quantizer(base_cls):
+    """Subclass `base_cls` (autoawq's AwqQuantizer) so each block returns to CPU
+    once it has been quantised.
+
+    autoawq's loop moves a CPU-resident block onto the card
+    (quantize/quantizer.py:129-137) and never moves it back, so with the model on
+    CPU the card accumulates every block it has finished with. Measured on both
+    H100s: 40.7 GiB at block 1, 69.9 GiB at block 12, against 79.1 GiB of
+    capacity -- an OOM around block 15 of 80.
+
+    `_apply_quant` is the last thing the loop does with a block; the steps after
+    it operate on the next one, and `self.inps` was already computed before
+    quantisation. So offloading here is safe, and it happens AFTER the parent
+    runs: quantising on CPU would be astronomically slow, and `_apply_quant`
+    moves each layer to the best device itself.
+
+    Passed via `quantize(quantizer_cls=...)`, which is autoawq's own extension
+    point -- not a patch of its source."""
+
+    class _OffloadingQuantizer(base_cls):
+        def _apply_quant(self, module, named_linears):
+            super()._apply_quant(module, named_linears)
+            module.to("cpu")
+            return None
+
+    _OffloadingQuantizer.__name__ = f"Offloading{base_cls.__name__}"
+    return _OffloadingQuantizer
