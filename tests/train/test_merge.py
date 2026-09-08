@@ -101,3 +101,43 @@ def test_the_supported_types_are_named_so_the_fix_is_obvious():
 def test_a_supported_model_passes_quietly():
     assert assert_quantisable("qwen2_5_vl",
                               ["qwen2_vl", "qwen2_5_vl"]) is None
+
+
+# --- resuming after a failed quantisation ------------------------------------
+# The merge writes 137 GB and takes minutes; quantisation takes hours and is
+# what OOM'd. Both merged checkpoints survived intact, so a retry must reuse
+# them -- but preflight refuses a non-empty --out, which would abort the retry
+# and force 137 GB to be written again for nothing.
+
+from app.train.merge import check_merge_target
+
+
+def test_an_existing_checkpoint_blocks_a_fresh_merge(tmp_path):
+    """Unchanged: the arm and its zero-scale control differ in nothing a
+    directory listing shows, so silently merging over one is unrecoverable."""
+    out = tmp_path / "zero-scale"
+    out.mkdir()
+    (out / "model-00001-of-00031.safetensors").write_text("x")
+
+    with pytest.raises(SystemExit, match="not empty"):
+        check_merge_target(out, quantise_only=False)
+
+
+def test_quantise_only_REQUIRES_the_merged_checkpoint_to_be_there(tmp_path):
+    """Resuming into an empty directory would quantise nothing and write a
+    checkpoint named as if it were the arm."""
+    with pytest.raises(SystemExit, match="no merged checkpoint"):
+        check_merge_target(tmp_path / "absent", quantise_only=True)
+
+
+def test_quantise_only_accepts_the_checkpoint_the_failed_run_left(tmp_path):
+    """The whole point of the retry: reuse the 137 GB that is already on disk."""
+    out = tmp_path / "zero-scale"
+    out.mkdir()
+    (out / "model-00001-of-00031.safetensors").write_text("x")
+
+    assert check_merge_target(out, quantise_only=True) is None
+
+
+def test_a_fresh_merge_into_an_empty_directory_is_fine(tmp_path):
+    assert check_merge_target(tmp_path / "new", quantise_only=False) is None

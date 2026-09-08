@@ -25,6 +25,9 @@ WHICH="${2:-}"
 IMAGE="${IMAGE:-sindri-quant}"
 LOGDIR="${LOGDIR:-$HOME/rung3-logs}"
 ADAPTER="${ADAPTER:-/models/adapters/read-lora-v1}"
+# Set to 1 to reuse a merged checkpoint already on disk and redo only the
+# quantisation — what a failed AWQ pass leaves behind is 137 GB worth reusing.
+QUANTISE_ONLY="${QUANTISE_ONLY:-0}"
 
 case "$WHICH" in
     control) NAME="zero-scale"; EXTRA="--zero-scale" ;;
@@ -52,13 +55,20 @@ if podman run --rm --entrypoint "" -v sindri-models:/models "$IMAGE" \
     exit 0
 fi
 
-log "building $NAME on gpu $GPU_INDEX (merge -> quantise); image=$IMAGE"
+RESUME=""
+[ "$QUANTISE_ONLY" = "1" ] && RESUME="--quantise-only"
+
+log "building $NAME on gpu $GPU_INDEX (merge -> quantise); image=$IMAGE ${RESUME:-}"
+# expandable_segments: the first attempt died wanting 9.22 GiB with 6.24 GiB
+# free while holding 14.75 GiB reserved-but-unallocated. Chunked calibration is
+# the real fix; this reclaims the fragmentation on top of it.
 podman run --rm --device "nvidia.com/gpu=$GPU_INDEX" \
     -v sindri-models:/models \
     -e HF_HOME=/models \
+    -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
     "$IMAGE" \
     python merge_lora.py --adapter "$ADAPTER" \
-        --out "/models/merged/$NAME" $EXTRA 2>&1 | tee -a "$LOG"
+        --out "/models/merged/$NAME" $EXTRA $RESUME 2>&1 | tee -a "$LOG"
 rc=${PIPESTATUS[0]}
 
 if [ "$rc" -ne 0 ]; then

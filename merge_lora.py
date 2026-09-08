@@ -28,12 +28,14 @@ import json
 import sys
 from pathlib import Path
 
-from app.train.merge import assert_quantisable, zero_lora_scaling
+from app.train.merge import (CALIB, assert_quantisable, check_merge_target,
+                             zero_lora_scaling)
 
 _BASE = "Qwen/Qwen2.5-VL-72B-Instruct"
 
 
-def preflight(base: str, adapter: Path, out: Path) -> dict:
+def preflight(base: str, adapter: Path, out: Path,
+              quantise_only: bool = False) -> dict:
     """Everything checkable before the 145 GB load, for the reason
     train_lora.py has --shape-check: two separate bugs there were each worth a
     whole run, and both were visible without a model."""
@@ -41,15 +43,37 @@ def preflight(base: str, adapter: Path, out: Path) -> dict:
     if not cfg.is_file():
         raise SystemExit(f"no adapter_config.json under {adapter}")
     conf = json.loads(cfg.read_text())
-    if out.exists() and any(out.iterdir()):
-        raise SystemExit(
-            f"{out} is not empty. Refusing to write a checkpoint over another "
-            f"one: the arm and its zero-scale control differ in nothing a "
-            f"directory listing shows, and mixing them is unrecoverable.")
+    check_merge_target(out, quantise_only)
     return {"base": base,
             "adapter_base": conf.get("base_model_name_or_path"),
             "target_modules": sorted(conf.get("target_modules") or []),
             "r": conf.get("r"), "alpha": conf.get("lora_alpha")}
+
+
+def _merge(args) -> int:
+    """Fold the adapter into bf16 and write the checkpoint. Returns 0.
+
+    bf16, not NF4: merging into a quantised base would fold the adapter into
+    already-lossy weights and then quantise again, so the checkpoint would carry
+    two rounds of quantisation error and the delta would measure that."""
+    import torch
+    from peft import PeftModel
+    from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+
+    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        args.base, torch_dtype=torch.bfloat16, device_map="cpu")
+    model = PeftModel.from_pretrained(model, str(args.adapter))
+
+    if args.zero_scale:
+        print(f"zeroed {zero_lora_scaling(model)} LoRA layers (CONTROL run)")
+
+    merged = model.merge_and_unload()
+    args.out.mkdir(parents=True, exist_ok=True)
+    merged.save_pretrained(str(args.out), safe_serialization=True)
+    AutoProcessor.from_pretrained(args.base).save_pretrained(str(args.out))
+    print(f"merged checkpoint written to {args.out}")
+    del model, merged
+    return 0
 
 
 def main(argv=None) -> int:
@@ -65,12 +89,18 @@ def main(argv=None) -> int:
     ap.add_argument("--merge-only", action="store_true",
                     help="stop after the bf16 merge (minutes); quantisation is "
                          "the hours-long half")
+    ap.add_argument("--quantise-only", action="store_true",
+                    help="skip the merge and quantise the checkpoint already at "
+                         "--out; resumes a run whose quantisation failed without "
+                         "rewriting 137 GB")
     ap.add_argument("--dry-run", action="store_true",
                     help="preflight only, no model load")
     args = ap.parse_args(argv)
 
-    facts = preflight(args.base, args.adapter, args.out)
-    print(json.dumps({**facts, "zero_scale": args.zero_scale}, indent=1))
+    facts = preflight(args.base, args.adapter, args.out, args.quantise_only)
+    print(json.dumps({**facts, "zero_scale": args.zero_scale,
+                      "quantise_only": args.quantise_only,
+                      "calibration": CALIB}, indent=1))
 
     if not args.merge_only:
         # BEFORE the 137 GB load: the merge half succeeds for any architecture,
@@ -85,29 +115,15 @@ def main(argv=None) -> int:
     if args.dry_run:
         return 0
 
-    import torch
-    from peft import PeftModel
-    from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+    from transformers import AutoProcessor
 
-    # bf16, not NF4: merging into a quantised base would fold the adapter into
-    # already-lossy weights and then quantise again, so the checkpoint would
-    # carry two rounds of quantisation error and the delta would measure that.
-    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        args.base, torch_dtype=torch.bfloat16, device_map="cpu")
-    model = PeftModel.from_pretrained(model, str(args.adapter))
+    if args.quantise_only:
+        print(f"reusing the merged checkpoint at {args.out}")
+    else:
+        _merge(args)
+        if args.merge_only:
+            return 0
 
-    if args.zero_scale:
-        print(f"zeroed {zero_lora_scaling(model)} LoRA layers (CONTROL run)")
-
-    merged = model.merge_and_unload()
-    args.out.mkdir(parents=True, exist_ok=True)
-    merged.save_pretrained(str(args.out), safe_serialization=True)
-    AutoProcessor.from_pretrained(args.base).save_pretrained(str(args.out))
-    print(f"merged checkpoint written to {args.out}")
-    if args.merge_only:
-        return 0
-
-    del model, merged
     from awq import AutoAWQForCausalLM
     from transformers import AutoTokenizer
     # The same quantisation production already serves: 4-bit, group 128, GEMM.
@@ -117,7 +133,7 @@ def main(argv=None) -> int:
     awq_out = args.out.parent / (args.out.name + "-awq")
     awq_model = AutoAWQForCausalLM.from_pretrained(str(args.out))
     awq_model.quantize(AutoTokenizer.from_pretrained(args.base),
-                       quant_config=quant)
+                       quant_config=quant, **CALIB)
     awq_model.save_quantized(str(awq_out))
     AutoProcessor.from_pretrained(args.base).save_pretrained(str(awq_out))
     print(f"AWQ checkpoint written to {awq_out}")

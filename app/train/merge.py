@@ -66,3 +66,50 @@ def assert_quantisable(model_type: str, supported) -> None:
             f"load, the fold and the save before failing. Build the "
             f"quantisation image (Dockerfile.quant, autoawq>=0.2.9) and run "
             f"there; the pinned serving image must NOT move.")
+
+
+# Calibration settings for the AWQ pass. CONSTANTS, deliberately not CLI flags:
+# the arm and its zero-scale control must be quantised identically or the delta
+# measures the calibration instead of the adapter, and a flag is exactly how the
+# two would drift apart.
+#
+# autoawq's default n_parallel_calib_samples is None, which forwards all 128
+# calibration samples in ONE pass. On a 72B that OOM'd both cards ~20 minutes in
+# (9.22 GiB wanted, 6.24 GiB free, plus 14.75 GiB reserved-but-unallocated).
+# Chunking to 8 cuts that activation ~16x and leaves a wide margin; it changes
+# throughput, not the objective being optimised.
+CALIB = {"n_parallel_calib_samples": 8,
+         "max_calib_samples": 128,
+         "max_calib_seq_len": 512}
+
+
+def check_merge_target(out, quantise_only: bool) -> None:
+    """Decide whether `out` may be written, or must already hold a merge.
+
+    Two different failures, and only one of them is about overwriting:
+
+    * a fresh merge into a populated directory silently mixes the arm with its
+      control, which differ in nothing a directory listing shows;
+    * a --quantise-only retry into an EMPTY directory would quantise nothing and
+      still write a checkpoint under the arm's name.
+
+    The retry path exists because the merge writes 137 GB in minutes while
+    quantisation runs for hours -- when the latter fails, refusing to reuse the
+    former costs the whole merge again for nothing."""
+    populated = out.is_dir() and any(out.iterdir())
+    if quantise_only:
+        if not populated:
+            raise SystemExit(
+                f"no merged checkpoint at {out} to quantise. --quantise-only "
+                f"resumes a failed quantisation; it cannot create the merge it "
+                f"needs, and writing an empty result under this name would pass "
+                f"as the real checkpoint.")
+        return None
+    if populated:
+        raise SystemExit(
+            f"{out} is not empty. Refusing to write a checkpoint over another "
+            f"one: the arm and its zero-scale control differ in nothing a "
+            f"directory listing shows, and mixing them is unrecoverable. To "
+            f"resume a failed quantisation over this merge, pass "
+            f"--quantise-only.")
+    return None
