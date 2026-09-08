@@ -21,6 +21,15 @@
 # proves a checkpoint built here loads correctly there is r3-mergedcontrol.
 FROM python:3.11-slim
 
+# A C compiler, and it is NOT optional. llm-compressor's AWQ pass goes through
+# Triton, which JIT-compiles its kernels at run time and shells out to cc; on
+# this slim base there is none, so the first quantised layer dies with
+# "RuntimeError: Failed to find C compiler". Measured: the run reached
+# "Applying quantization config 306/560" and then failed ~60 s in.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN pip install --no-cache-dir \
       --index-url https://download.pytorch.org/whl/cu126 \
       --extra-index-url https://pypi.org/simple \

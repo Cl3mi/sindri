@@ -105,6 +105,15 @@ ARCHITECTURE = "Qwen2_5_VLForConditionalGeneration"
 # official Qwen AWQ one, and smoothing it anyway would move it regardless.
 #
 # The four pairs themselves are unchanged from what llm-compressor registered.
+#
+# Three of them smooth. The v_proj -> o_proj pair resolves 80 sets and produces
+# none: this model is GQA (64 query heads, 8 key/value), so v_proj is 1024 wide
+# against o_proj's 8192 and `_check_layers_are_compatible` drops every set. It
+# is kept anyway because autoawq excludes the same pairing on the same grounds,
+# so dropping it here is what reproduces Qwen's own AWQ checkpoint rather than a
+# departure from it. check_smoothing_survives is what makes that visible instead
+# of assumed.
+
 # q, k, v, o, gate, up, down. What AWQ_IGNORE is supposed to leave standing once
 # the vision tower and lm_head are excluded, and the number that says it did.
 LINEARS_PER_DECODER_LAYER = 7
@@ -202,8 +211,36 @@ def check_mapping_coverage(counts: dict, layers: int) -> None:
       still writes a complete 4-bit checkpoint, which is indistinguishable from
       a good one until it is scored.
 
+    The two guards before that comparison are there because a per-entry check
+    over nothing reports success: no counts at all, and no layers to compare
+    them against, are both the quiet failure wearing the guard's own clothes.
+
     Cheap enough to run in --dry-run: the counts come from the architecture
-    built on the meta device, which reads no weights at all."""
+    built on the meta device, which reads no weights at all. Resolving is not
+    smoothing, though -- check_smoothing_survives is the half of this that
+    llmcompressor's own filters decide."""
+    # Before the per-entry comparison, because both of these make it VACUOUS --
+    # there is nothing for it to object to, and it reports success. `layers` is
+    # the denominator of check_quantised_scope too, so at zero both guards agree
+    # that nothing smoothed and nothing quantised is exactly right.
+    if layers < 1:
+        raise SystemExit(
+            f"no decoder layers were found ({layers}), so there is nothing to "
+            f"reconcile these counts against. Every mapping resolving to zero "
+            f"sets would then agree with zero layers and the quantised-scope "
+            f"check would agree that 0 == 0 x {LINEARS_PER_DECODER_LAYER}: both "
+            f"guards pass and AWQ writes a checkpoint it neither smoothed nor "
+            f"quantised. resolve_on_meta reads this off "
+            f"model.model.language_model.layers.")
+
+    # The same vacuum from the other side: no entries, nothing to object to.
+    if not counts:
+        raise SystemExit(
+            f"no smoothing mapping was resolved at all, against "
+            f"{len(AWQ_MAPPINGS)} in AWQ_MAPPINGS. AWQ's failure mode for an "
+            f"empty map is to smooth nothing and still write a complete 4-bit "
+            f"checkpoint, so this is the loudest this can be made.")
+
     wrong = {pattern: n for pattern, n in counts.items() if n != layers}
     if wrong:
         raise SystemExit(
@@ -212,6 +249,58 @@ def check_mapping_coverage(counts: dict, layers: int) -> None:
             f"the vision tower was swept in; fewer means the map no longer "
             f"matches this transformers' module names, and AWQ would smooth "
             f"nothing while still writing a checkpoint.")
+
+    # Last, because the per-entry check above says more about a map that IS
+    # there. Counts are keyed by the smooth pattern, so a missing entry is
+    # either a mapping that was never resolved or two that collapsed onto one
+    # key -- and the collapsed one is never checked by anything.
+    if len(counts) != len(AWQ_MAPPINGS):
+        raise SystemExit(
+            f"the coverage check got {len(counts)} counts for "
+            f"{len(AWQ_MAPPINGS)} mappings, so one was never resolved or two "
+            f"share a smooth layer and collapsed onto one key. An unchecked "
+            f"mapping is one AWQ may silently smooth nothing for.")
+    return None
+
+
+def check_smoothing_survives(smoothed: dict, layers: int) -> None:
+    """Refuse unless the mappings that resolved will actually smooth something.
+
+    Resolving a set and smoothing it are two different things, and
+    check_mapping_coverage only sees the first. llmcompressor resolves a set and
+    then drops it if the smooth layer's output width does not match the balance
+    layer's input width (`_check_layers_are_compatible`) or if nothing in the
+    set is targeted for quantisation -- the first at `logger.debug` per set with
+    one aggregate warning, the second at `logger.warning`, both buried in a
+    calibration log thousands of lines long.
+
+    A mapping dropped for ALL layers is tolerated, because one is, correctly:
+    Qwen2.5-VL-72B is GQA, v_proj is 1024 wide against o_proj's 8192, and
+    v_proj -> o_proj is dropped on all 80 layers. autoawq excludes that same
+    pairing, so Qwen's own AWQ checkpoint -- the one r3-awqcontrol's 170.05 was
+    measured on -- was built without it too.
+
+    What is refused is a mapping surviving on SOME layers, which quantises the
+    decoder to two different qualities down its own depth, and a map where
+    nothing survives at all, which is 4-bit with no smoothing: the exact
+    degradation AWQ exists to prevent, in a checkpoint that is complete,
+    correctly shaped, and only measurable hours later in review cost."""
+    partial = {pattern: n for pattern, n in smoothed.items()
+               if n not in (0, layers)}
+    if partial:
+        raise SystemExit(
+            f"these smoothing mappings survive on some decoder layers and not "
+            f"others ({layers} layers): {partial}. llmcompressor skips a set "
+            f"whose shapes do not line up at debug level, so the layers that "
+            f"lost would be quantised unsmoothed while their neighbours were "
+            f"not, and nothing downstream reports it.")
+
+    if not any(n == layers for n in smoothed.values()):
+        raise SystemExit(
+            f"every smoothing mapping was dropped, so AWQ would smooth nothing "
+            f"and quantise to 4 bits regardless: {smoothed}. The checkpoint "
+            f"would still be complete and correctly shaped -- the only symptom "
+            f"is review cost, ~9 hours after this point.")
     return None
 
 
@@ -272,20 +361,66 @@ def resolve_on_meta(checkpoint: Path) -> dict:
 
     The meta device allocates no storage, so building the 72B here is seconds
     and needs neither the shards nor a card -- which is what lets the whole
-    recipe be validated in --dry-run instead of an hour into the real run."""
+    recipe be validated in --dry-run instead of an hour into the real run.
+
+    Two counts per mapping, because they differ and only the second is what AWQ
+    does: `mapping_sets` is what `match_modules_set` resolves, `smoothed_sets`
+    is what survives the filters `_set_resolved_mappings` applies afterwards.
+    Measured on the real 72B, one mapping scores 80 and 0."""
     import torch
     from compressed_tensors.utils import match_modules_set, match_named_modules
+    from torch.utils._pytree import tree_leaves
     from transformers import AutoConfig, Qwen2_5_VLForConditionalGeneration
+    # llmcompressor's OWN shape rule, imported and not restated, for the same
+    # reason quantization_kwargs imports AWQ_IGNORE: a second copy would drift
+    # from the code it predicts and the drift would be invisible. Private, so a
+    # rename breaks this import -- in --dry-run, seconds in, which is where a
+    # break belongs.
+    from llmcompressor.modifiers.transform.awq.base import (
+        _check_layers_are_compatible)
+    from llmcompressor.utils.pytorch.module import get_module_to_name_dict
 
     config = AutoConfig.from_pretrained(str(checkpoint))
     with torch.device("meta"):
         model = Qwen2_5_VLForConditionalGeneration(config)
 
-    counts = {}
+    quantised = quantization_kwargs()
+    names = get_module_to_name_dict(model)
+    # Which modules QuantizationModifier will attach a scheme to. AWQ skips a
+    # set none of whose layers is being quantised, and it decides that by
+    # looking for `quantization_scheme` -- an attribute nothing has this early,
+    # so the membership test has to stand in for it. Same targets, same ignore
+    # list, so it answers the same question one step ahead of time.
+    targeted = {name for name, _ in
+                match_named_modules(model, quantised["targets"],
+                                    quantised["ignore"])}
+
+    counts, smoothed = {}, {}
     for smooth, balance in AWQ_MAPPINGS:
+        resolved = survives = 0
         try:
-            counts[smooth] = sum(1 for _ in
-                                 match_modules_set(model, (smooth, *balance)))
+            for smooth_layers, *nested in match_modules_set(
+                    model, (smooth, *balance)):
+                resolved += 1
+                # The same three tests _set_resolved_mappings applies, in its
+                # order. It raises on the first and logs the other two.
+                if len(smooth_layers) > 1:
+                    raise SystemExit(
+                        f"the AWQ smoothing mapping {smooth!r} matched "
+                        f"{len(smooth_layers)} smooth layers in one set, and "
+                        f"AWQ needs exactly one. This is the registry map's "
+                        f"louder failure: an unscoped pattern collapsing every "
+                        f"layer's norm into a single set.")
+                balance_layers = tree_leaves(nested)
+                balance_names = [names.get(layer) for layer in balance_layers]
+                if not _check_layers_are_compatible(
+                        smooth_layers[0], names.get(smooth_layers[0]),
+                        balance_layers, balance_names):
+                    continue
+                if balance_layers and any(name in targeted for name in
+                                          [names.get(smooth_layers[0])]
+                                          + balance_names):
+                    survives += 1
         except ValueError as exc:
             # match_modules_set raises when it ends holding a partial set, which
             # is the same class of fault as the wrong count and deserves the
@@ -293,13 +428,12 @@ def resolve_on_meta(checkpoint: Path) -> dict:
             raise SystemExit(
                 f"the AWQ smoothing mapping {smooth!r} cannot be resolved "
                 f"against this checkpoint: {exc}") from exc
+        counts[smooth], smoothed[smooth] = resolved, survives
 
-    quantised = quantization_kwargs()
     return {"decoder_layers": len(model.model.language_model.layers),
             "mapping_sets": counts,
-            "quantised_linears": sum(
-                1 for _ in match_named_modules(model, quantised["targets"],
-                                               quantised["ignore"]))}
+            "smoothed_sets": smoothed,
+            "quantised_linears": len(targeted)}
 
 
 def _calibration_dataset():
@@ -386,6 +520,8 @@ def main(argv=None) -> int:
     check_architecture(facts["architecture"])
     coverage = resolve_on_meta(args.checkpoint)
     check_mapping_coverage(coverage["mapping_sets"], coverage["decoder_layers"])
+    check_smoothing_survives(coverage["smoothed_sets"],
+                             coverage["decoder_layers"])
     check_quantised_scope(coverage["quantised_linears"],
                           coverage["decoder_layers"])
     print(json.dumps(coverage, indent=1))

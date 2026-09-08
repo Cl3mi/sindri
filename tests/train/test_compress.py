@@ -145,7 +145,13 @@ def test_the_four_smoothing_pairs_are_the_ones_llm_compressor_registered():
 
 
 def test_a_map_that_resolves_to_one_set_per_decoder_layer_passes():
-    assert check_mapping_coverage({"re:.*q$": 80, "re:.*k$": 80}, 80) is None
+    """Built from AWQ_MAPPINGS rather than from two invented patterns: the
+    counts the guard is handed are keyed by the smooth pattern, and a toy dict
+    with fewer keys than there are mappings is the failure two tests below,
+    not the passing case. Measured on the real 72B: 80 sets each, all four."""
+    counts = {smooth: 80 for smooth, _ in AWQ_MAPPINGS}
+
+    assert check_mapping_coverage(counts, 80) is None
 
 
 def test_a_mapping_that_sweeps_in_extra_layers_is_refused():
@@ -162,8 +168,113 @@ def test_a_mapping_that_resolves_to_nothing_is_refused():
     when a target never matches, so a map that has gone stale against a new
     transformers layout smooths NOTHING and still writes a complete 4-bit
     checkpoint -- indistinguishable from a good one except in review cost."""
-    with pytest.raises(SystemExit, match="0"):
+    with pytest.raises(SystemExit, match="up_proj\\$': 0"):
         check_mapping_coverage({"re:.*language_model.*up_proj$": 0}, 80)
+
+
+def test_a_map_that_resolves_nothing_at_all_is_refused():
+    """The empty dict is the same silent failure with no survivor to report it.
+
+    `resolve_on_meta` builds its counts by iterating AWQ_MAPPINGS, so an empty
+    result means the iteration produced nothing -- AWQ_MAPPINGS emptied by an
+    edit, or a future resolve that filters before counting. A per-entry check
+    has no entries to object to and waves it through; AWQ then runs with an
+    empty mapping list, smooths nothing, and writes a checkpoint that is 4-bit,
+    complete, structurally identical to a good one and worse only in review
+    cost. Nothing else in the pipeline looks at this again."""
+    with pytest.raises(SystemExit, match="no smoothing mapping"):
+        check_mapping_coverage({}, 80)
+
+
+def test_counts_that_do_not_account_for_every_mapping_are_refused():
+    """The aggregate must reconcile against a count that already exists, and
+    the one that exists is len(AWQ_MAPPINGS).
+
+    `resolve_on_meta` keys its counts by the SMOOTH pattern, so two mappings
+    that share a smooth layer collapse onto one dict key and the second is
+    silently never checked -- and that is not hypothetical for AWQ, whose maps
+    routinely smooth on `up_proj` and on `v_proj` twice over. Four mappings
+    that produce three counts means one of them was never resolved at all."""
+    counts = {smooth: 80 for smooth, _ in AWQ_MAPPINGS[:-1]}
+
+    with pytest.raises(SystemExit, match="3 counts for 4 mappings"):
+        check_mapping_coverage(counts, 80)
+
+
+def test_a_model_with_no_decoder_layers_is_refused():
+    """`layers` is the denominator of both guards, and at zero it makes both of
+    them vacuous at once: every mapping resolving to 0 sets equals 0 layers, and
+    `check_quantised_scope(0, 0)` agrees that 0 == 0 x 7. A run that reaches
+    the recipe having smoothed nothing and quantised nothing would pass every
+    structural check and produce a bf16-sized "AWQ" checkpoint.
+
+    Reachable rather than theoretical: `resolve_on_meta` reads the layer count
+    off `model.model.language_model.layers`, and a transformers that moves the
+    decoder stack under another attribute is exactly the upgrade this whole
+    file is defending against -- AWQ_IGNORE already carries two spellings of
+    the vision tower for one such rename."""
+    counts = {smooth: 0 for smooth, _ in AWQ_MAPPINGS}
+
+    with pytest.raises(SystemExit, match="no decoder layers"):
+        check_mapping_coverage(counts, 0)
+
+
+# --- resolving is not smoothing ---------------------------------------------
+
+from compress_lora import check_smoothing_survives
+
+
+def test_a_mapping_dropped_for_incompatible_shapes_is_reported_not_refused():
+    """Resolving a set and smoothing it are two different things, and on THIS
+    model one of the four mappings does the first and not the second.
+
+    Qwen2.5-VL-72B is GQA: 64 query heads against 8 key/value heads, so
+    v_proj.out_features is 1024 while o_proj.in_features is 8192. AWQ cannot
+    fold a per-channel scale across that, and llmcompressor's
+    `_check_layers_are_compatible` drops the v_proj -> o_proj mapping for it --
+    measured on the real config, 80 sets resolved and 0 survive. It reports
+    that as one aggregate `logger.warning` among thousands of calibration
+    lines, so the coverage check above says a clean 80 for a mapping that will
+    smooth nothing.
+
+    This is CORRECT and must not be refused: autoawq excludes the same pairing
+    on the same grounds, so the checkpoint Qwen shipped and r3-awqcontrol's
+    170.05 was measured on had it dropped too. Refusing here would refuse the
+    only recipe that reproduces the reference."""
+    smoothed = {"re:.*language_model.*input_layernorm$": 80,
+                "re:.*language_model.*v_proj$": 0,
+                "re:.*language_model.*post_attention_layernorm$": 80,
+                "re:.*language_model.*up_proj$": 80}
+
+    assert check_smoothing_survives(smoothed, 80) is None
+
+
+def test_a_map_where_no_mapping_survives_is_refused():
+    """The whole point of the guard, one step past resolution. Every mapping
+    can resolve to exactly one set per layer and every one of them still be
+    dropped -- a transformers that reshapes the MLP the way GQA reshaped
+    attention would do it -- and AWQ would then quantise to 4 bits with no
+    smoothing at all, which is the degradation AWQ exists to avoid. It writes
+    the same 31 shards either way and nothing downstream can tell."""
+    smoothed = {smooth: 0 for smooth, _ in AWQ_MAPPINGS}
+
+    with pytest.raises(SystemExit, match="would smooth nothing"):
+        check_smoothing_survives(smoothed, 80)
+
+
+def test_a_mapping_that_survives_on_only_some_layers_is_refused():
+    """Partial survival means the decoder is not uniform -- some layers get a
+    smoothed MLP and others do not -- and the resulting checkpoint is quantised
+    to two different qualities down its own depth. llmcompressor skips the
+    losing layers per-layer at `logger.debug`, so the only visible trace is a
+    count nobody compares against the layer total."""
+    smoothed = {"re:.*language_model.*input_layernorm$": 80,
+                "re:.*language_model.*v_proj$": 0,
+                "re:.*language_model.*post_attention_layernorm$": 43,
+                "re:.*language_model.*up_proj$": 80}
+
+    with pytest.raises(SystemExit, match="43"):
+        check_smoothing_survives(smoothed, 80)
 
 
 # --- calibration: identical for the arm and the control, and not client data -
