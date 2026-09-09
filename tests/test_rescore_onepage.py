@@ -10,6 +10,10 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).parents[1] / "rescore_onepage.sh"
 TEXT = SCRIPT.read_text(encoding="utf-8")
+# Comments in this script quote the very flags under test, so counting over the
+# whole file double-counts them. Assertions about what the batch DOES must look
+# at executable lines only.
+CMDS = "\n".join(l for l in TEXT.splitlines() if not l.lstrip().startswith("#"))
 
 
 def test_script_is_syntactically_valid():
@@ -19,7 +23,7 @@ def test_script_is_syntactically_valid():
 def test_every_score_in_the_batch_is_filtered_to_one_sheet():
     """One unfiltered score here yields a report that silently will not compare
     against the rest of the batch -- _check_comparable raises on the doc set."""
-    assert TEXT.count("--max-pages 1") == TEXT.count("runner score")
+    assert CMDS.count("--max-pages 1") == CMDS.count("runner score")
 
 
 def test_the_filter_is_given_the_drawings_it_needs():
@@ -31,9 +35,17 @@ def test_the_filter_is_given_the_drawings_it_needs():
 def test_the_comparison_puts_the_control_first():
     """compare_runs reports b - a and experiment.py reads the control out of
     run_a. Reversed, the sign flips and the verdict inverts."""
-    after = TEXT.index("runner compare")
-    assert TEXT.index("r3-nf4control-1p", after) < TEXT.index("r3-loraread-1p",
-                                                              after)
+    # The batch now routes every comparison through one helper, so the ordering
+    # is enforced in a single place: the control is $1 and the arm is $2, and
+    # the compare must pass them in that order.
+    body = CMDS[CMDS.index("compare_pair()"):]
+    invocation = body[body.index("runner compare"):]
+    assert invocation.index("$1-scoped") < invocation.index("$2-scoped")
+    # ...and every call site puts the control first.
+    for line in CMDS.splitlines():
+        if line.startswith("compare_pair r3-"):
+            args = line.split()
+            assert "control" in args[1], line
 
 
 def test_no_protected_command_is_piped_or_chained():
@@ -46,3 +58,19 @@ def test_no_protected_command_is_piped_or_chained():
 def test_the_page_count_the_writeup_is_waiting_for_is_collected():
     """§5 of the result doc is marked PENDING on exactly this number."""
     assert "runner probe" in TEXT and "--summary" in TEXT
+
+
+def test_the_batch_applies_the_whole_scope_policy():
+    """Policy 2026-09-09: single-sheet AND a size the renderer handles at full
+    resolution. --max-pages alone leaves the four clamped drawings in, and they
+    carry 283.75 review cost at 0.371 recall against 141.62 at 0.728 for the
+    rest — so a batch with only half the policy reports a corpus the product
+    does not claim to support."""
+    assert CMDS.count("--exclude-clamped") == CMDS.count("runner score")
+
+
+def test_the_requested_dpi_is_passed_with_the_clamp_filter():
+    """--exclude-clamped compares each dump's effective dpi against the dpi the
+    run asked for; without --dpi it would silently compare against the default
+    and could keep or drop the wrong drawings."""
+    assert "--dpi" in TEXT
