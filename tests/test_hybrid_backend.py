@@ -98,3 +98,22 @@ def test_both_models_on_one_card_is_refused():
     with pytest.raises(ValueError, match="do not fit on one"):
         hb.hybrid_devices({"VLM_DETECT_DEVICE": "cuda:0",
                            "VLM_READ_DEVICE": "cuda:0"})
+
+
+# --- how each model is placed on its card -----------------------------------
+
+def test_no_device_keeps_the_load_path_every_measurement_was_taken_with():
+    """`device_map="auto"` is what produced the frozen baseline, r3-awqcontrol
+    and every other committed number. The hybrid must not change it for runs
+    that are not hybrids."""
+    from app.pipeline.ocr.vlm_backend import device_map_for
+    assert device_map_for(None) == "auto"
+
+
+def test_a_named_device_places_the_whole_model_on_that_card():
+    """Two models cannot both use "auto": the first would spread across both
+    visible cards and leave no room for the second. An explicit single-device
+    map is the only placement that holds, and with ONE visible card "auto"
+    resolves to exactly this, which is why it is measurement-neutral."""
+    from app.pipeline.ocr.vlm_backend import device_map_for
+    assert device_map_for("cuda:1") == {"": "cuda:1"}

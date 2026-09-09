@@ -269,6 +269,22 @@ def _cap_long_edge(image: Image.Image, max_long_edge: int = _MAX_READ_LONG_EDGE)
     return image.resize((max(1, int(w * s)), max(1, int(h * s))), Image.LANCZOS)
 
 
+def device_map_for(device=None):
+    """The `device_map` a load uses: "auto" by default, one named card when the
+    caller pins it.
+
+    "auto" is what produced the frozen baseline, r3-awqcontrol and every other
+    committed number, so it stays the default for every non-hybrid run. The
+    hybrid arm cannot use it: two checkpoints both asking for "auto" would let
+    the first spread across both visible cards and leave the second nowhere to
+    go. With ONE visible card "auto" already resolves to everything on cuda:0,
+    so pinning is the same placement expressed explicitly -- which, together
+    with greedy decoding (CLAUDE.md section 5: 16 unchanged documents gave
+    per-document deltas of exactly 0.0 across a GPU device change), is why it
+    does not need a control run of its own."""
+    return "auto" if device is None else {"": device}
+
+
 def _mean_token_confidence(step_probs) -> float:
     """Mean of per-token max-softmax probabilities; 0.0 for an empty sequence."""
     probs = list(step_probs)
@@ -278,7 +294,8 @@ def _mean_token_confidence(step_probs) -> float:
 class VLMBackend:
     """Local GPU vision-LLM doing constrained per-region reads only."""
 
-    def __init__(self, model_id: Optional[str] = None, max_new_tokens: int = 40):
+    def __init__(self, model_id: Optional[str] = None, max_new_tokens: int = 40,
+                 device: Optional[str] = None):
         # Imported lazily so the default (CPU) image needs no torch.
         import torch
         from transformers import AutoModelForImageTextToText, AutoProcessor
@@ -286,6 +303,10 @@ class VLMBackend:
         self.torch = torch
         self.max_new_tokens = max_new_tokens
         model_id = model_id or os.getenv("VLM_MODEL_ID", _DEFAULT_MODEL)
+        # None for an ordinary run, so the load below is byte-identical to the
+        # one every committed measurement was taken with. The hybrid arm pins
+        # each of its two checkpoints to its own card.
+        device_map = device_map_for(device)
         self.processor = AutoProcessor.from_pretrained(model_id)
         # TWO load paths, deliberately separate. The float16 reasoning below is
         # AWQ-specific, so the 4-bit path is a branch rather than an edit to it:
@@ -298,7 +319,7 @@ class VLMBackend:
             # helped" -- which is why Rung 3 runs a zero-shot NF4 control.
             from transformers import BitsAndBytesConfig
             self.model = AutoModelForImageTextToText.from_pretrained(
-                model_id, device_map="auto",
+                model_id, device_map=device_map,
                 quantization_config=BitsAndBytesConfig(
                     load_in_4bit=True, bnb_4bit_quant_type="nf4",
                     bnb_4bit_compute_dtype=torch.bfloat16,
@@ -309,7 +330,7 @@ class VLMBackend:
             # config defaults to bfloat16, so torch_dtype="auto" picks the
             # unsupported dtype for AWQ checkpoints; force float16 instead.
             self.model = AutoModelForImageTextToText.from_pretrained(
-                model_id, torch_dtype=torch.float16, device_map="auto"
+                model_id, torch_dtype=torch.float16, device_map=device_map
             )
         self.model.eval()
 
