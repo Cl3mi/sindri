@@ -636,6 +636,19 @@ def _cmd_score(args):
     if orphan_gold:
         print(f"WARNING: gold docs without dumps (excluded): "
               f"{[anon(d) for d in orphan_gold]}", file=sys.stderr)
+    if getattr(args, "exclude_clamped", False):
+        # scale is render pixels per PDF point, so effective dpi is scale * 72.
+        # A page the renderer had to clamp comes back below the dpi asked for.
+        # The tolerance absorbs the rounding in that conversion; it is not a
+        # judgement about how much clamping is acceptable.
+        want = float(getattr(args, "dpi", 300))
+        clamped = [d for d in doc_ids if dumps[d].scale * 72.0 < want - 1.0]
+        doc_ids = [d for d in doc_ids if d not in set(clamped)]
+        if clamped:
+            print(f"excluded {len(clamped)} oversized (render-clamped) "
+                  f"drawing(s) as out of scope: {[anon(d) for d in clamped]}",
+                  file=sys.stderr)
+
     scores = [score_doc(dumps[d], gold[d], weights, params) for d in doc_ids]
     if len(scores) == 0:
         print("ERROR: no documents scored (no gold/dump overlap in selected "
@@ -650,7 +663,8 @@ def _cmd_score(args):
     config = dumps[doc_ids[0]].config
     report = aggregate(args.name, config, weights, params, scores,
                        splits_hash=sp_hash, split_used=sp_name,
-                       max_pages=max_pages)
+                       max_pages=max_pages,
+                       exclude_clamped=getattr(args, "exclude_clamped", False))
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(report.model_dump_json(indent=1),
                               encoding="utf-8")
@@ -787,6 +801,14 @@ def main(argv=None) -> int:
     p.add_argument("--pdfs", default=None,
                    help="source drawings, needed only to read page counts for "
                         "--max-pages")
+    p.add_argument("--dpi", type=int, default=300,
+                   help="the dpi the run REQUESTED; a dump rendered below it "
+                        "was clamped. Only read by --exclude-clamped.")
+    p.add_argument("--exclude-clamped", action="store_true",
+                   help="drop render-clamped (oversized) sheets as out of "
+                        "scope. render.py clamps any page over the pixel "
+                        "budget, and raising that budget was measured and lost, "
+                        "so these sheets need tiling that does not exist.")
     p.add_argument("--max-pages", type=int, default=None,
                    help="score only drawings with at most this many sheets. "
                         "render_page reads sheet 1 only, so gold on later "

@@ -248,6 +248,10 @@ class RunReport(_Versioned):
     # existed scored whatever the split held, and a default of 1 would claim
     # those runs excluded multi-sheet drawings when they did not.
     max_pages: Optional[int] = None
+    # True when render-clamped (oversized) sheets were excluded as out of
+    # scope. False means every document was scored, which is what every report
+    # written before this field existed did — so False never over-claims.
+    exclude_clamped: bool = False
     doc_scores: List[DocScore] = []
     mean_review_cost: float = 0.0
     micro_recall: float = 0.0

@@ -22,7 +22,8 @@ CLAMP_LIST_MAX = 25
 def aggregate(run_name: str, config: RunConfig, weights: ReviewCostWeights,
               match_params: MatchParams, doc_scores: List[DocScore],
               splits_hash: str = "", split_used: str = "all",
-              max_pages: Optional[int] = None) -> RunReport:
+              max_pages: Optional[int] = None,
+              exclude_clamped: bool = False) -> RunReport:
     n_gold = sum(d.n_gold for d in doc_scores)
     n_pred = sum(d.n_pred for d in doc_scores)
     matched_gold = sum(round(d.recall * d.n_gold) for d in doc_scores)
@@ -36,6 +37,7 @@ def aggregate(run_name: str, config: RunConfig, weights: ReviewCostWeights,
         run_name=run_name, config=config, weights=weights,
         match_params=match_params, splits_hash=splits_hash,
         split_used=split_used, max_pages=max_pages,
+        exclude_clamped=exclude_clamped,
         doc_scores=sorted(doc_scores, key=lambda d: d.doc_id),
         mean_review_cost=(sum(d.review_cost for d in doc_scores)
                           / len(doc_scores)) if doc_scores else 0.0,
