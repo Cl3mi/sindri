@@ -35,12 +35,20 @@ advisory, and it has been right every single time it fired.
 
 ## 2. Where things stand
 
-**Read `docs/plans/2026-09-07-rung3-loraread-result.md` first — it is the
-current state of play. Then `docs/plans/2026-09-05-session-handoff.md`, which
-still carries the production-facing error and effort rates but whose §3 verdict
-is superseded.** Everything below is the durable summary.
+**Read `docs/plans/2026-09-09-session-handoff.md` first — it is the current
+state of play, and it carries the SCOPE POLICY that defines what the product
+claims.** Then `2026-09-07-rung3-loraread-result.md`, then
+`2026-09-05-session-handoff.md`; both are superseded where they disagree.
+Everything below is the durable summary.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **648 passed, 2 skipped** (the 2
+**Scope policy (2026-09-09): single-sheet drawings at a size the renderer
+handles at full resolution** — `score --max-pages 1 --dpi 300
+--exclude-clamped`. Both OFF by default, so pre-policy numbers keep their
+meaning, and `_check_comparable` refuses a scoped report against an unscoped
+one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
+**0.7170**, missed **28.3%**, silent-wrong **22.8%**.
+
+Branch `worktree-eval-harness`, PR #2. Suite: **770 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). `SCHEMA_VERSION` = 1 — do not bump
 it. Split frozen at `6d174d5e4f1b9228` — do not regenerate it.
 
