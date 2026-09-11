@@ -111,9 +111,28 @@ def _probe_summary(records) -> dict:
     for rec in records:
         for name, n in (rec.get("annot_types") or {}).items():
             annot_types[name] = annot_types.get(name, 0) + n
+    # The scope policy's two exclusions, counted over the WHOLE corpus rather
+    # than the 20 documents that have gold -- `score` can only count them where
+    # it can score. A drawing can fail both tests, so the two exclusion counts
+    # do not sum to `excluded_docs`; `supported + excluded == n_docs` is the
+    # identity that holds, and it is the number the client asks for.
+    clamp_known = [r for r in records if "render_clamped" in r]
+    unmeasured = len(records) - len(clamp_known)
+    supported = sum(1 for r in clamp_known
+                    if not r["render_clamped"] and r.get("n_pages", 1) <= 1)
+    scope = ({"supported_docs": supported,
+              "excluded_docs": len(records) - supported} if not unmeasured
+             else {})
     return {
         "n_docs": len(records),
         "multi_page_docs": sum(1 for r in records if r.get("n_pages", 1) > 1),
+        "render_clamped_docs": sum(1 for r in clamp_known if r["render_clamped"]),
+        # Never a plausible-looking 0: a probe record predating the clamp test
+        # would otherwise be counted as "fits at full resolution", and
+        # supported_docs is withheld entirely rather than guessed. The defect
+        # DocScore.frame_origin_frac exists to prevent, in the other direction.
+        "render_clamped_not_measured": unmeasured,
+        **scope,
         "pages_per_doc": _spread(r.get("n_pages", 1) for r in records),
         "with_balloons": sum(1 for r in records if r["n_balloons"]),
         "with_annotations": sum(1 for r in records if r.get("n_annots")),

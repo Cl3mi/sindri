@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import List
 
 import fitz
+from app.pipeline.render import effective_dpi
 
 # Balloon radius window in points. Our own balloons are 9pt (ballooned_pdf.py);
 # client balloons should be the same order of magnitude. Tune from probe output.
@@ -264,6 +265,12 @@ def _annot_facts(page) -> dict:
             "n_annot_numbers": numbered}
 
 
+# The dpi the scope policy scores at (`score --dpi 300`). A probe taken at a
+# different one would report a corpus the product does not claim, so the two
+# move together or not at all.
+_SCOPE_DPI = 300
+
+
 def probe_pdf(pdf_path, page_index: int = 0) -> dict:
     """Day-one encoding inspection for one client PDF. Cheap, no model."""
     doc = fitz.open(pdf_path)
@@ -280,6 +287,19 @@ def probe_pdf(pdf_path, page_index: int = 0) -> dict:
         return {
             "pdf": str(Path(pdf_path).name),
             "n_pages": doc.page_count,
+            # The scope policy's SECOND exclusion, answerable from the drawing
+            # alone. `score --exclude-clamped` can only count it on the 20
+            # documents that have gold; this counts it over the whole corpus,
+            # which is the form the question "how many of our drawings do you
+            # support?" actually takes. Same 1.0 dpi tolerance score uses, so
+            # the two never disagree about the same drawing.
+            "page_w_pt": round(page.rect.width, 2),
+            "page_h_pt": round(page.rect.height, 2),
+            "effective_dpi": round(effective_dpi(page.rect.width,
+                                                 page.rect.height,
+                                                 _SCOPE_DPI), 4),
+            "render_clamped": effective_dpi(page.rect.width, page.rect.height,
+                                            _SCOPE_DPI) < _SCOPE_DPI - 1.0,
             "n_drawings": len(page.get_drawings()),
             "n_circles": len(circles),
             "n_shapes": len(shapes),

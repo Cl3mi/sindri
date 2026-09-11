@@ -47,6 +47,22 @@ def _budget_scale(w_pt: float, h_pt: float, scale: float, max_pixels: int) -> fl
     return clamped
 
 
+def effective_dpi(w_pt: float, h_pt: float, dpi: int = 300,
+                  max_pixels: int = MAX_RENDER_PIXELS) -> float:
+    """The dpi `render_page` would actually use for a page this size.
+
+    Public because the measurement harness has to answer "how many of these
+    drawings does the product support?" over a whole corpus, and rendering a
+    100 MP sheet to find out costs minutes per drawing. Pure arithmetic on the
+    page rectangle, so it costs nothing.
+
+    It exists rather than eval importing `_budget_scale` because the budget is a
+    tuning knob -- it was itself a Rung-1 arm -- and `app/eval` must not reach
+    into pipeline internals that move. This is the stable question eval is
+    allowed to ask; the answer stays wherever the renderer puts it."""
+    return _budget_scale(w_pt, h_pt, dpi / 72.0, max_pixels) * 72.0
+
+
 def render_page(pdf_path, dpi: int = 200, out_dir: Path = None, page_index: int = 0,
                 max_pixels: int = MAX_RENDER_PIXELS) -> RenderResult:
     out_dir = Path(out_dir or Path(pdf_path).parent)
