@@ -37,6 +37,17 @@ def _vllm_factory() -> OCRBackend:
     return VLLMBackend()
 
 
+def _hybrid_factory() -> OCRBackend:
+    """Construct the hybrid backend (the 32B localises, the 72B transcribes).
+
+    Isolated for the same reasons as the two above, and for one of its own: it
+    builds TWO checkpoints, so a failure here can mean either card. The reason
+    string names `hybrid` rather than "the VLM" precisely so the reader is not
+    sent to the single-model path that did not fail."""
+    from app.pipeline.ocr.hybrid_backend import HybridBackend
+    return HybridBackend()
+
+
 # The GPU backends, by the OCR_BACKEND value that selects each. Names are
 # matched EXACTLY: `vlm` and `vllm` differ by one character and mean different
 # serving stacks, which runner._serving_backend() records separately, so a loose
@@ -44,7 +55,8 @@ def _vllm_factory() -> OCRBackend:
 # indistinguishable. Values are attribute names rather than the functions
 # themselves so that a test substituting a failing factory on this module is
 # still what get_backend() calls.
-_GPU_BACKENDS = {"vlm": "_vlm_factory", "vllm": "_vllm_factory"}
+_GPU_BACKENDS = {"vlm": "_vlm_factory", "vllm": "_vllm_factory",
+                 "hybrid": "_hybrid_factory"}
 
 
 def _load_vlm_with_retry(factory, attempts: int = None, delay: float = None,

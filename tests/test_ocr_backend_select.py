@@ -125,3 +125,42 @@ def test_selecting_a_backend_imports_no_vllm():
 
     import app.pipeline.ocr.vllm_backend  # noqa: F401
     assert "vllm" not in sys.modules
+
+
+# --- OCR_BACKEND=hybrid: two checkpoints, one pipeline ----------------------
+#
+# The hybrid arm (handoff 2026-09-09 §3): the 32B localises, the 72B
+# transcribes. Selection has to name it exactly like the other two, because
+# runner._serving_backend() records the choice and a run served by the wrong
+# stack is a complete, plausible, wrong measurement.
+
+def test_hybrid_is_selected_by_its_own_name(monkeypatch):
+    """`vlm`, `vllm` and `hybrid` are three serving stacks. A loose match would
+    run one under another's run name, and RunConfig would record the lie."""
+    monkeypatch.setenv("OCR_BACKEND", "hybrid")
+    monkeypatch.setattr(ocr, "_gpu_available", lambda: True)
+    monkeypatch.setattr(ocr, "_hybrid_factory", lambda: "HYBRID-BACKEND")
+    monkeypatch.setattr(ocr, "_vlm_factory",
+                        lambda: pytest.fail("the hybrid must not build a single VLMBackend"))
+    monkeypatch.setattr(ocr, "_vllm_factory",
+                        lambda: pytest.fail("the hybrid is not route B"))
+
+    assert get_backend() == "HYBRID-BACKEND"
+    assert get_vlm_fallback_reason() is None
+
+
+def test_a_hybrid_that_cannot_load_names_itself_in_the_fallback_reason(monkeypatch):
+    """Two checkpoints need two free cards, and this host has 24+ other users.
+    The reason has to name `hybrid` so the reader goes to the right code and the
+    right card: a message saying "the VLM" would send them to the single-model
+    path, which is not what failed."""
+    monkeypatch.setenv("OCR_BACKEND", "hybrid")
+    monkeypatch.setattr(ocr, "_gpu_available", lambda: True)
+    monkeypatch.setattr(ocr.time, "sleep", lambda d: None)
+
+    def boom():
+        raise RuntimeError("CUDA out of memory")
+    monkeypatch.setattr(ocr, "_hybrid_factory", boom)
+
+    assert isinstance(get_backend(), TesseractBackend)
+    assert "OCR_BACKEND=hybrid" in get_vlm_fallback_reason()
