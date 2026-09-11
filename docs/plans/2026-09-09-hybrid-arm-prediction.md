@@ -24,6 +24,7 @@ only cheaper set of weights that moves it the right way: 70 missed against the
 | | 72B production | 32B | source |
 |---|---|---|---|
 | cost | 133.93 | 172.73 | handoff §2 |
+| (32B delta) | — | +38.80 | ci95 [25.53, 55.13], significant, 0 of 6 weightings better, all 15 documents worse — `docs/eval/32bawq-scoped-vs-awqcontrol-scoped.json`, 2026-09-11 |
 | recall | 0.7170 | 0.7749 | handoff §2 |
 | matched | 223 | 241 | recall x 311 |
 | missed | 88 | 70 | handoff §3 |
@@ -85,6 +86,24 @@ rather than empirical.** `n_pred` and `matched` are both near-fixed, so
 `false_detection` is near-fixed at 649, and 303 extra spurious boxes at `w=2`
 cost +606 against the +180 that 18 recovered values are worth. Saying this after
 the run would be hindsight; it is registered here instead.
+
+**It is predicted to lose under all six weightings in `report.WEIGHT_GRID`**,
+which is this repo's own encoding of plausible reviewer economics. Same deltas,
+repriced:
+
+| weighting (miss/escaped/false/flag) | predicted delta/doc |
+|---|---|
+| 10/5/2/1 — documented default | +30.67 |
+| 20/8/2/1 — misses dominate | **+19.87** |
+| 5/4/2/1 — flatter | +36.27 |
+| 10/5/4/2 — phantoms costly | +71.33 |
+| 8/8/1/1 — silent errors as bad | **+14.07** |
+| 3/2/1/1 — nearly flat | +17.67 |
+
+So `b_better_fraction` is predicted to be 0.0 and `robust` true — a robust LOSS,
+the same verdict shape the 32B itself earned. Under the grid's most
+miss-favourable weighting the hybrid would need to recover **33** misses, not
+18, to break even against 303 extra spurious boxes.
 
 **What would have to be true for it to win:**
 
