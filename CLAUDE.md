@@ -52,23 +52,29 @@ Branch `worktree-eval-harness`, PR #2. Suite: **802 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). `SCHEMA_VERSION` = 1 — do not bump
 it. Split frozen at `6d174d5e4f1b9228` — do not regenerate it.
 
-**The HYBRID arm is BUILT and its prediction is registered** (2026-09-11,
-`docs/plans/2026-09-09-hybrid-arm-prediction.md`). `OCR_BACKEND=hybrid` serves
-the 32B on every localisation and the 72B on every transcription
-(`app/pipeline/ocr/hybrid_backend.py`), one checkpoint per H100; the queue's
-one-card rule has this single exception and `run_gpu_queue.sh 0,1 hybrid` is how
-it launches. It is the first attack on `missed` since Rung 1, because the 32B is
-the only cheaper weights that move the bucket: 70 missed against the 72B's 88.
+**THE HYBRID ARM IS MEASURED AND LOST, and its finding is the biggest of the
+campaign** (2026-09-11, `docs/plans/2026-09-11-hybrid-arm-result.md`;
+prediction registered beforehand in `2026-09-09-hybrid-arm-prediction.md`).
+32B localising + 72B transcribing: **173.93, +40.00**, ci95 [26.07, 56.27],
+significant, **0 of 6 weightings better**, robust.
 
-**Its cost verdict was derivable before the run and is registered as a LOSS**
-(predicted 164.60 against production's 133.93): `n_pred` and `matched` are both
-near-fixed under greedy decoding, so `false_detection` is near-fixed at 649, and
-303 extra spurious boxes at `w=2` cost +606 against the +180 that 18 recovered
-values earn. It is run for the three things that are NOT derivable -- the
-ceiling on `missed` for any detector swap, whether the 32B's recall survives
-good reading, and what the 72B reads on the spurious boxes, which is the only
-thing that could size a filter. Void gates: `n_pred` exactly 890, `field_acc`
->= 0.40.
+**BOX FRAMING DOMINATES READ ACCURACY, BY ~5x OVER THE READER'S WEIGHTS.** Hold
+the reader and change the boxes: `field_acc` 0.4798 -> **0.2739** (-0.206). Hold
+the boxes and change the reader (32B -> 72B): **+0.013**. The best reader change
+ever measured on fixed boxes, `read-lora-v1`, is +0.039. And the boxes are in
+the right PLACE -- `misplaced_matches` 19.7% vs 19.9% -- so this is framing, not
+the matcher pairing gold with distant junk. `misplaced_matches` is the aggregate
+that settles that question; read it before proposing any box-related arm.
+
+**A better reader on bad boxes is HARMFUL**: 32B -> 72B on the same crops moved
+8 rows out of `flagged_error` and 5 into `escaped_error`, because the stronger
+model is more confident on a crop it is misreading. It removes the warning
+without fixing the value.
+
+**So the 32B's recall advantage is recall of BOXES, not of values.** It finds 18
+more gold rows and delivers **41 fewer fully-correct ones**, while shipping 34
+more silent errors -- a failure on the product goal that no reweighting can
+rescue. Never quote "recall 0.7749 vs 0.7170" as a quality improvement.
 
 Rung-0 baseline (dev split, 20 docs), the current reference:
 `mean_review_cost=173.05 micro_recall=0.646 micro_precision=0.371`,
@@ -264,6 +270,20 @@ GPU days.
   the merged checkpoint is not one any AWQ number was measured on, so its
   zero-scale control must reproduce 170.05 before any `loramerged` delta is
   attributable to the fine-tune.
+* **Swapping the DETECTOR for a cheaper model (the hybrid arm).** 32B AWQ
+  localising, 72B AWQ transcribing, one checkpoint per H100: **+40.00**, 0 of 6
+  weightings better, robust, and worse on the product goal regardless of
+  weights (silent errors 71 -> 105 while missed fell 88 -> 70, and fully-correct
+  values 107 -> 66). The detector's weights DID move the bucket they were aimed
+  at -- `missed_diagnosis` contended 19 -> 10 and isolated 58 -> 49, `unlocated`
+  untouched -- so the mechanism was real; the recovered rows simply arrive
+  attached to boxes nothing can read. Full result and the box-framing finding:
+  `docs/plans/2026-09-11-hybrid-arm-result.md`. **The registered `field_acc`
+  gate tripped and the arm was still valid**: the gate assumed read quality
+  follows the reader, and greedy determinism proves the reads DID run on the 72B
+  (had they not, the run would be bit-identical to `r3-32bawq`; it differs in
+  five taxonomy counts). Register the mechanism a gate assumes, not only its
+  threshold.
 * **The `char_type` bucket as a synonym-map problem.** `wrong:char_type` is the
   largest single failure mode (115 of 308 matched pairs), and the standing
   hypothesis was that gold's German labels were missing from

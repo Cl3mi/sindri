@@ -235,16 +235,14 @@ a deleted box.
    model differs, so state both models wherever it is quoted. Digest:
    `docs/eval/32bawq-scoped-vs-awqcontrol-scoped.json`. The lead was never the
    32B's cost -- it is its `missed`.
-3. **THE HYBRID ARM (§3). BUILT, and RUNNING since 2026-09-11 09:11Z** --
-   `run_gpu_queue.sh 0,1 hybrid`, tmux session `hybrid`, ~10 h, judged against
-   `r3-awqcontrol` under the scope policy. Both checkpoints loaded (32B on card
-   0 at 31.2 GB, 72B on card 1 at 41.7 GB, `active backend: hybrid`), which also
-   proves `device_map={"": "cuda:N"}` works for an AWQ checkpoint on
-   transformers 4.49.0. The prediction, the void gates (`n_pred` exactly 890,
-   `field_acc` >= 0.40), the per-weighting arithmetic and the launch procedure
-   are in `docs/plans/2026-09-09-hybrid-arm-prediction.md`, written BEFORE the
-   code. **It is predicted to lose under all six grid weightings**; §4 of that
-   document is why it is still worth the night.
+3. **THE HYBRID ARM (§3). MEASURED 2026-09-11 and LOST: 173.93, +40.00**,
+   ci95 [26.07, 56.27], significant, 0 of 6 weightings better, robust. Full
+   result, the scoring of the registered prediction, and the finding that
+   matters more than the verdict: `docs/plans/2026-09-11-hybrid-arm-result.md`.
+   **Box framing dominates read accuracy by ~5x over the reader's weights**, and
+   the 32B's recall advantage is recall of boxes, not of values -- 18 more gold
+   rows matched, 41 fewer fully-correct values delivered, 34 more silent errors.
+   The lead in §3 of this document is CLOSED; read §3 only for its history.
 4. **Surface the policy in the digest** (§5, last bullet).
 5. **Re-derive `weights.json` with the client** (§5, second bullet).
 6. **Balloon overlap is fixed** (`place.py`, commit `ea2dd8c`) and is

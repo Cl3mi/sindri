@@ -1,0 +1,55 @@
+{
+ "schema_version": 1,
+ "run_a": "r3-awqcontrol-scoped",
+ "run_b": "r3-hybrid-scoped",
+ "n_docs": 15,
+ "mean_delta": 40.0,
+ "ci95": [
+  26.0667,
+  56.2667
+ ],
+ "significant": true,
+ "per_doc_deltas": {
+  "8e5fb4d8": 57.0,
+  "1a3064de": 36.0,
+  "514ec627": 49.0,
+  "53c2a083": 35.0,
+  "acb2b8bc": 32.0,
+  "1a007bc4": 2.0,
+  "caf2afd1": 118.0,
+  "3a75ba3d": 31.0,
+  "6095d6ec": 57.0,
+  "c9395a33": 6.0,
+  "f1639571": 5.0,
+  "28b2c522": 24.0,
+  "01806166": 24.0,
+  "c3aa6a9e": 38.0,
+  "aa3592aa": 86.0
+ },
+ "headline": {
+  "r3-awqcontrol-scoped": {
+   "mean_review_cost": 133.93333333333334,
+   "recall": 0.7170418006430869,
+   "escaped_rate": 0.2282958199356913
+  },
+  "r3-hybrid-scoped": {
+   "mean_review_cost": 173.93333333333334,
+   "recall": 0.77491961414791,
+   "escaped_rate": 0.33762057877813506
+  }
+ },
+ "weight_sensitivity": {
+  "n_weight_vectors": 6,
+  "b_better_fraction": 0.0,
+  "mean_delta_per_weighting": [
+   40.0,
+   34.8,
+   43.7333,
+   80.6667,
+   29.0,
+   21.4
+  ],
+  "robust": true
+ },
+ "warnings": []
+}
