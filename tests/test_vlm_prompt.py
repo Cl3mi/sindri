@@ -264,3 +264,34 @@ def test_the_backend_is_read_from_the_real_environment_too(monkeypatch):
     assert _serving_backend() == "vllm"
     monkeypatch.setenv("OCR_BACKEND", "vlm")
     assert _serving_backend() is None
+
+
+def test_the_detect_model_reaches_the_dump_on_a_hybrid_run(monkeypatch):
+    """The hybrid arm serves TWO checkpoints, and RunConfig.model_id can only
+    name one -- it names the read model, because that is where the values come
+    from. Without `detect_model` the only thing separating a hybrid dump from a
+    plain 72B dump is serving_backend, which says the stack but not which
+    weights localised. git_sha is always "unknown" in the container, so this is
+    the only record of the variable the arm is about."""
+    from app.eval.runner import _predict_extra
+    monkeypatch.setenv("OCR_BACKEND", "hybrid")
+    monkeypatch.setenv("VLM_MODEL_ID", "Qwen/Qwen2.5-VL-72B-Instruct-AWQ")
+    monkeypatch.setenv("VLM_DETECT_MODEL_ID", "Qwen/Qwen2.5-VL-32B-Instruct-AWQ")
+
+    extra = _predict_extra(detect_only=False)
+    assert extra["detect_model"] == "Qwen/Qwen2.5-VL-32B-Instruct-AWQ"
+    assert extra["serving_backend"] == "hybrid"
+
+
+def test_a_single_model_run_records_no_detect_model(monkeypatch):
+    """Every dump in the campaign was predicted by one checkpoint. Emitting the
+    key for them would change their RunConfig and make _reusable_dump re-predict
+    the whole corpus for no measurement -- the same discipline that keeps
+    review_low_conf absent rather than 0.6 on pre-2026-09-02 dumps."""
+    from app.eval.runner import _predict_extra
+    monkeypatch.delenv("VLM_DETECT_MODEL_ID", raising=False)
+    monkeypatch.setenv("OCR_BACKEND", "vlm")
+
+    extra = _predict_extra(detect_only=False)
+    assert "detect_model" not in extra
+    assert "serving_backend" not in extra

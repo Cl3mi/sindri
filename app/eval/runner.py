@@ -445,11 +445,18 @@ def _reusable_dump(path: Path, config: RunConfig):
     return dump if dump.config == config else None
 
 
-def _cmd_predict(args):
-    import os
-    from app.pipeline.ocr import get_backend
-    backend = get_backend()
+def _predict_extra(detect_only: bool = False) -> dict:
+    """Everything RunConfig.extra must carry for a dump to be identifiable.
+
+    A function rather than an expression inside _cmd_predict so it can be
+    tested without loading a checkpoint. Every key here exists because two runs
+    were once indistinguishable without it, and _reusable_dump compares the
+    WHOLE RunConfig: a missing key does not merely lose information, it makes a
+    re-run skip documents as "already predicted" across the change being
+    measured.
+    """
     from app.pipeline.detect import active_knobs
+    from app.pipeline.ocr.hybrid_backend import active_hybrid_config
     from app.pipeline.ocr.vlm_backend import (active_adapter,
                                               active_adapter_scope,
                                               active_prompts, active_quant)
@@ -460,39 +467,49 @@ def _cmd_predict(args):
     # predicted" after a knob change. git_sha is always "unknown" in the
     # container (.git is dockerignored), so this is the only thing that tells
     # one arm's dumps from another's.
+    return {**active_knobs(), **active_prompts(),
+            # The needs-review threshold. Pipeline behaviour, not scoring
+            # policy, so it is baked into the dumps and nothing downstream can
+            # recover it -- and two runs either side of a change to it are
+            # otherwise indistinguishable in every field above.
+            **active_review_policy(),
+            # model_id cannot express HOW the weights were loaded, and Rung
+            # 3's control differs from its arm only in whether an adapter is
+            # attached. Without these two the runs would be indistinguishable
+            # in every report they produce.
+            **({"quant": active_quant()} if active_quant() else {}),
+            # Which serving stack produced these dumps. Only recorded when
+            # it is not the transformers path, so every historical dump keeps
+            # the config it already has and stays reusable.
+            **({"serving_backend": _serving_backend()}
+               if _serving_backend() else {}),
+            **({"adapter": active_adapter(),
+                # Which pass the adapter is served over. r3-lora72bnf4 served
+                # it over the whole model and the scoped arm serves it over
+                # the read pass; they agree in every other field here, so
+                # without this the void arm's dumps and the real one's are
+                # indistinguishable and _reusable_dump could skip a document
+                # as "already predicted" across the change being measured.
+                "adapter_scope": active_adapter_scope()}
+               if active_adapter() else {}),
+            # Which weights LOCALISED. model_id names the read model,
+            # because that is where the values come from, so on a hybrid run it
+            # is the only record of the variable the arm is about.
+            **active_hybrid_config(),
+            # A boxes-only dump carries no values and must never be scored.
+            # Recording it here is what stops a resume, a compare, or a human
+            # from mistaking one for a full run.
+            **({"detect_only": True} if detect_only else {})}
+
+
+def _cmd_predict(args):
+    import os
+    from app.pipeline.ocr import get_backend
+    backend = get_backend()
     config = RunConfig(
         model_id=os.environ.get("VLM_MODEL_ID", "default"), dpi=args.dpi,
         git_sha=_git_sha(), prompt_sha256=_prompt_sha256(),
-        extra={**active_knobs(), **active_prompts(),
-               # The needs-review threshold. Pipeline behaviour, not scoring
-               # policy, so it is baked into the dumps and nothing downstream can
-               # recover it -- and two runs either side of a change to it are
-               # otherwise indistinguishable in every field above.
-               **active_review_policy(),
-               # model_id cannot express HOW the weights were loaded, and Rung
-               # 3's control differs from its arm only in whether an adapter is
-               # attached. Without these two the runs would be indistinguishable
-               # in every report they produce.
-               **({"quant": active_quant()} if active_quant() else {}),
-               # Which serving stack produced these dumps. Only recorded when
-               # it is not the transformers path, so every historical dump keeps
-               # the config it already has and stays reusable.
-               **({"serving_backend": _serving_backend()}
-                  if _serving_backend() else {}),
-               **({"adapter": active_adapter(),
-                   # Which pass the adapter is served over. r3-lora72bnf4 served
-                   # it over the whole model and the scoped arm serves it over
-                   # the read pass; they agree in every other field here, so
-                   # without this the void arm's dumps and the real one's are
-                   # indistinguishable and _reusable_dump could skip a document
-                   # as "already predicted" across the change being measured.
-                   "adapter_scope": active_adapter_scope()}
-                  if active_adapter() else {}),
-               # A boxes-only dump carries no values and must never be scored.
-               # Recording it here is what stops a resume, a compare, or a human
-               # from mistaking one for a full run.
-               **({"detect_only": True} if getattr(args, "detect_only", False)
-                  else {})})
+        extra=_predict_extra(getattr(args, "detect_only", False)))
     pdfs = {p.stem: p for p in Path(args.pdfs).glob(_PDF_GLOB)}
     doc_ids, _, _ = _select_docs(pdfs, args.splits, args.split)
     # Must precede _anon(): constructing an Anonymizer mints the salt.
