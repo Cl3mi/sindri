@@ -13,11 +13,14 @@ import pytest
 SCRIPT = Path(__file__).parents[1] / "run_gpu_queue.sh"
 
 
-def _stub_env(tmp_path, podman_exit=0, gpu_used="1"):
+def _stub_env(tmp_path, podman_exit=0, gpu_used="1", gpu_used_1=None):
     """A PATH where podman and nvidia-smi are shell stubs.
 
     podman records each invocation so the test can count stages, and exits with
-    `podman_exit` so a failing stage can be simulated."""
+    `podman_exit` so a failing stage can be simulated. nvidia-smi answers per
+    CARD -- the hybrid stage claims two, and a queue that checked only the first
+    would launch a 72B onto a card another job holds, which falls back to
+    Tesseract and garbles every document while looking like it worked."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     calls = tmp_path / "podman-calls"
@@ -28,7 +31,11 @@ def _stub_env(tmp_path, podman_exit=0, gpu_used="1"):
         f"exit {podman_exit}\n")
     (bindir / "nvidia-smi").write_text(
         "#!/usr/bin/env bash\n"
-        f'echo "{gpu_used}"\n')
+        'idx="${!#}"\n'
+        "case \"$idx\" in\n"
+        f'  1) echo "{gpu_used if gpu_used_1 is None else gpu_used_1}" ;;\n'
+        f'  *) echo "{gpu_used}" ;;\n'
+        "esac\n")
     for f in ("podman", "nvidia-smi"):
         (bindir / f).chmod(0o755)
 
@@ -45,7 +52,12 @@ def _stub_env(tmp_path, podman_exit=0, gpu_used="1"):
 
 
 def _run(tmp_path, env, *stages):
-    return subprocess.run([str(SCRIPT), "0", *stages], env=env,
+    return _run_on(tmp_path, env, "0", *stages)
+
+
+def _run_on(tmp_path, env, gpus, *stages):
+    """The queue on a named card or cards. `gpus` is what reaches --device."""
+    return subprocess.run([str(SCRIPT), gpus, *stages], env=env,
                           capture_output=True, text=True, timeout=60)
 
 
@@ -347,3 +359,83 @@ def test_a_stage_that_does_not_set_the_backend_still_gets_the_default(tmp_path):
     assert _run(tmp_path, env, "awqcontrol").returncode == 0
     line = _podman_line(calls, "r3-awqcontrol")
     assert "OCR_BACKEND=vlm" in line, line
+
+
+# --- the hybrid arm: two checkpoints, two cards -----------------------------
+#
+# Handoff 2026-09-09 §3. The 32B localises and the 72B transcribes, which needs
+# ~44 GB and ~43 GB -- 87 GB does not fit on one 80 GB H100. This is the ONE
+# exception to the one-card-per-queue rule, and it is why the card argument
+# takes a list.
+
+def test_the_hybrid_stage_claims_both_cards(tmp_path):
+    """Both --device flags, or the second model lands on a card the container
+    cannot see and the run dies after a ~10 min load."""
+    env, calls = _stub_env(tmp_path)
+    r = _run_on(tmp_path, env, "0,1", "hybrid")
+    assert r.returncode == 0, r.stdout + r.stderr
+    line = _podman_line(calls, "r3-hybrid")
+    assert "--device nvidia.com/gpu=0" in line, line
+    assert "--device nvidia.com/gpu=1" in line, line
+
+
+def test_the_hybrid_stage_names_both_checkpoints(tmp_path):
+    """VLM_MODEL_ID is the READ model and must stay the 72B AWQ that
+    r3-awqcontrol -- the control this arm is judged against -- was served with.
+    VLM_DETECT_MODEL_ID is the 32B, and hybrid_backend refuses to start without
+    it rather than serving one model on both passes under the arm's name."""
+    env, calls = _stub_env(tmp_path)
+    assert _run_on(tmp_path, env, "0,1", "hybrid").returncode == 0
+    line = _podman_line(calls, "r3-hybrid")
+    assert "OCR_BACKEND=hybrid" in line, line
+    assert "OCR_BACKEND=vlm" not in line, line
+    assert "VLM_MODEL_ID=Qwen/Qwen2.5-VL-72B-Instruct-AWQ" in line, line
+    assert "VLM_DETECT_MODEL_ID=Qwen/Qwen2.5-VL-32B-Instruct-AWQ" in line, line
+    assert "--split dev" in line, line
+
+
+def test_the_hybrid_gate_serves_one_checkpoint_on_both_sides(tmp_path):
+    """The gate prices the hybrid MACHINERY -- two processes' worth of loading,
+    the device pinning, the delegation -- by serving the 72B on BOTH passes. It
+    must reproduce r3-awqcontrol with every per-document delta exactly 0.0,
+    exactly as awqgate priced the dependency change. Same role, same
+    discipline."""
+    env, calls = _stub_env(tmp_path)
+    assert _run_on(tmp_path, env, "0,1", "hybridgate").returncode == 0
+    line = _podman_line(calls, "r3-hybridgate")
+    assert "VLM_MODEL_ID=Qwen/Qwen2.5-VL-72B-Instruct-AWQ" in line, line
+    assert "VLM_DETECT_MODEL_ID=Qwen/Qwen2.5-VL-72B-Instruct-AWQ" in line, line
+
+
+def test_a_two_card_stage_checks_the_second_card_too(tmp_path):
+    """Card 0 free, card 1 held by another job. Checking only the first would
+    launch the read model onto an occupied card, and a 72B load that loses that
+    race falls back to Tesseract -- which fails or garbles every document while
+    the queue reports success."""
+    env, calls = _stub_env(tmp_path, gpu_used="1", gpu_used_1="65410")
+    r = _run_on(tmp_path, env, "0,1", "hybrid")
+    assert "STAGE FAILED" in r.stdout
+    assert "occupied" in r.stdout
+    assert not calls.exists(), "nothing may be launched onto an occupied card"
+
+
+def test_the_hybrid_refuses_to_start_on_a_single_card(tmp_path):
+    """87 GB of weights on an 80 GB card OOMs partway through the first
+    document, and extract._safe_read swallows read exceptions -- so it would not
+    crash, it would produce a full run of empty values that scores as a
+    catastrophically bad reader. Refuse before the load."""
+    env, calls = _stub_env(tmp_path)
+    r = _run_on(tmp_path, env, "0", "hybrid")
+    assert r.returncode == 2
+    assert "two cards" in r.stderr, r.stderr
+    assert not calls.exists()
+
+
+def test_a_single_model_stage_still_claims_exactly_one_card(tmp_path):
+    """The one-card rule holds for everything else: this host has 24+ other
+    users and a queue that quietly took both cards would be taking half the
+    machine."""
+    env, calls = _stub_env(tmp_path)
+    assert _run(tmp_path, env, "awqcontrol").returncode == 0
+    line = _podman_line(calls, "r3-awqcontrol")
+    assert line.count("--device") == 1, line

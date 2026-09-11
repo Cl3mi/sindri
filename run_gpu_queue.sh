@@ -7,10 +7,18 @@
 #   tmux new -d -s gate  '~/sindri/run_gpu_queue.sh 1 awqgate base72bnf4'
 #   tmux new -d -s ctl   '~/sindri/run_gpu_queue.sh 1 awqcontrol nf4control'
 #
-# ONE card per queue, always. The first argument is a single GPU index and it
-# reaches podman as `--device nvidia.com/gpu=$GPU_INDEX`, so a queue can never
-# occupy both cards -- this host has 24+ other users. Two queues at once means
-# two explicit launches naming different indices, which is a deliberate act.
+# ONE card per queue, with ONE exception. The first argument is a GPU index and
+# it reaches podman as `--device nvidia.com/gpu=$i`, so a queue can never occupy
+# both cards by accident -- this host has 24+ other users. Two queues at once
+# means two explicit launches naming different indices, which is a deliberate
+# act.
+#
+# The exception is the HYBRID arm, which serves two checkpoints at once: the 32B
+# localising (~44 GB) and the 72B transcribing (~43 GB) do not fit in one 80 GB
+# H100. It takes a COMMA-SEPARATED list -- `run_gpu_queue.sh 0,1 hybrid` -- and
+# the script refuses to start it on one card, because an OOM there does not
+# crash the run: extract._safe_read swallows read exceptions, so it would come
+# back as a full run of empty values.
 #
 # WHY THIS EXISTS SEPARATELY FROM run_experiment_gpu.sh
 # That script runs on the operator's machine and drives this host over ssh, so it
@@ -46,6 +54,11 @@ STAGES=("$@")
 RROOT="${RROOT:-$HOME/sindri-eval-data}"
 REPO="${REPO:-$HOME/sindri}"
 MODEL="${MODEL:-Qwen/Qwen2.5-VL-72B-Instruct-AWQ}"
+# The hybrid arm's LOCALISATION checkpoint. Under the scope policy the 32B is
+# the best detector and the worst reader measured -- missed 70 against the 72B's
+# 88, field_acc 0.2614 against 0.4798 -- and the detector's weights are the only
+# thing in the campaign that has ever moved `missed`.
+DETECT_MODEL="${DETECT_MODEL:-Qwen/Qwen2.5-VL-32B-Instruct-AWQ}"
 LOGDIR="${LOGDIR:-$HOME/rung3-logs}"
 # Which image each stage runs in. The train-split pass deliberately uses the
 # image that produced every existing measurement; the NF4 stages need the one
@@ -56,10 +69,18 @@ IMAGE_NEW="${IMAGE_NEW:-sindri-gpu-nf4}"
 IMAGE_VLLM="${IMAGE_VLLM:-sindri-vllm}"
 
 if [ -z "$GPU_INDEX" ] || [ ${#STAGES[@]} -eq 0 ]; then
-    echo "usage: run_gpu_queue.sh <gpu-index> <stage> [<stage>...]" >&2
-    echo "stages: trainpredict awqgate base72bnf4 awqcontrol nf4control lora72bnf4 lora72bawq loraread loramerged mergedcontrol vllmcontrol vllmlora" >&2
+    echo "usage: run_gpu_queue.sh <gpu-index>[,<gpu-index>] <stage> [<stage>...]" >&2
+    echo "stages: trainpredict awqgate base72bnf4 awqcontrol nf4control lora72bnf4 lora72bawq loraread loramerged mergedcontrol vllmcontrol vllmlora hybrid hybridgate" >&2
+    echo "  the hybrid stages serve two checkpoints and need two cards: 0,1" >&2
     exit 2
 fi
+
+# One entry per card, and one --device per entry. Built once: every stage in a
+# queue runs on the same cards, which is what makes the occupancy check below a
+# check on the whole queue rather than on one stage.
+IFS=, read -r -a GPUS <<< "$GPU_INDEX"
+DEVICE_ARGS=()
+for g in "${GPUS[@]}"; do DEVICE_ARGS+=(--device "nvidia.com/gpu=$g"); done
 
 mkdir -p "$LOGDIR"
 
@@ -76,7 +97,9 @@ stage_run()    { case "$1" in trainpredict) echo "r3-trainpredict" ;;
                               loramerged)   echo "r3-loramerged" ;;
                               mergedcontrol) echo "r3-mergedcontrol" ;;
                               vllmcontrol)  echo "r3-vllmcontrol" ;;
-                              vllmlora)     echo "r3-vllmlora" ;; esac; }
+                              vllmlora)     echo "r3-vllmlora" ;;
+                              hybrid)       echo "r3-hybrid" ;;
+                              hybridgate)   echo "r3-hybridgate" ;; esac; }
 stage_split()  { case "$1" in trainpredict) echo "train" ;; *) echo "dev" ;; esac; }
 stage_image()  { case "$1" in trainpredict) echo "$IMAGE_OLD" ;;
                               # vLLM cannot share the pinned image: that one is
@@ -93,7 +116,7 @@ stage_image()  { case "$1" in trainpredict) echo "$IMAGE_OLD" ;;
 # the vLLM arms would have run the transformers path against an AWQ checkpoint —
 # a complete, plausible, WRONG run under route B's name.
 stage_backend() { case "$1" in
-                    vllmcontrol|vllmlora) echo "" ;;
+                    vllmcontrol|vllmlora|hybrid|hybridgate) echo "" ;;
                     *) echo "-e OCR_BACKEND=vlm" ;; esac; }
 
 stage_env()    { case "$1" in
@@ -114,6 +137,15 @@ stage_env()    { case "$1" in
                      echo "-e OCR_BACKEND=vllm -e VLM_MODEL_ID=$MODEL -e SINDRI_ADAPTER=read-lora-v1" ;;
                    mergedcontrol)
                      echo "-e VLM_MODEL_ID=/models/merged/zero-scale-awq" ;;
+                   # VLM_MODEL_ID stays the READ model on both hybrid stages, so
+                   # RunConfig.model_id keeps naming the weights the VALUES came
+                   # from and the arm stays comparable to r3-awqcontrol, which
+                   # was served with exactly this checkpoint in exactly this
+                   # image.
+                   hybrid)
+                     echo "-e OCR_BACKEND=hybrid -e VLM_MODEL_ID=$MODEL -e VLM_DETECT_MODEL_ID=$DETECT_MODEL" ;;
+                   hybridgate)
+                     echo "-e OCR_BACKEND=hybrid -e VLM_MODEL_ID=$MODEL -e VLM_DETECT_MODEL_ID=$MODEL" ;;
                    *) echo "-e VLM_MODEL_ID=$MODEL" ;; esac; }
 stage_why()    { case "$1" in
     trainpredict) echo "60 train documents -> the boxes Rung 3's training crops come from. Never scored: train is the training split." ;;
@@ -127,11 +159,26 @@ stage_why()    { case "$1" in
     mergedcontrol) echo "THE CONTROL FOR loramerged, and it is not optional. Same merge and the same re-quantisation with the adapter contribution scaled to zero (merge_lora.py --zero-scale), so it is numerically the base but travels byte-identical code. PREDICTION: it reproduces r3-awqcontrol at 170.05. If it does NOT, the merge/quantisation round trip moved the model on its own and no delta from loramerged is attributable to the fine-tune. Run it FIRST." ;;
     vllmcontrol)  echo "ROUTE B's CONTROL, and it is not optional. Qwen's official AWQ checkpoint served through vLLM with NO adapter. vLLM's kernels are not transformers' kernels, so r3-awqcontrol (170.05) is NOT a valid baseline for a vLLM run: this prices the change of serving stack by itself, and only then can r3-vllmlora price the adapter. Run it FIRST." ;;
     vllmlora)     echo "ROUTE B: read-lora-v1 served at RUNTIME on the official AWQ checkpoint via vLLM's per-request LoRA. Nothing is quantised on this route -- no merge, no calibration, none of the failure class that cost days on route A. Detection issues requests with NO adapter and reads issue them with one, which is VLMBackend._base_weights() expressed the way vLLM expects. Judge vs r3-vllmcontrol, never vs r3-awqcontrol, and on field_acc plus escaped_rate, not review cost alone." ;;
+    hybrid)       echo "THE HYBRID: the 32B localises, the 72B transcribes. The 32B is the best detector and the worst reader measured -- missed 70 vs 88, recall 0.7749 vs 0.7170, field_acc 0.2614 vs 0.4798 -- and Rung 1 established that the detector's WEIGHTS are the only thing that has ever moved missed; its knobs and prompts never did. Judge vs r3-awqcontrol (133.93 scoped), never vs r3-32bawq, which differs in two variables at once. VOID GATES, registered in docs/plans/2026-09-09-hybrid-arm-prediction.md BEFORE this ran: n_pred must be EXACTLY 890 (detection is a pure function of the detect model) and field_acc must be >= 0.40 (below it the reads did not reach the 72B). PREDICTED 164.60, a LOSS of about +30: 18 recovered misses are worth -180 and the 303 extra false detections cost +606 at w=2. The arm is not run for its cost verdict, which is arithmetic; it is run for the ceiling on missed, for whether the 32B's recall survives good reading, and for what the 72B reads on the spurious boxes -- which is the only thing that could size a filter." ;;
+    hybridgate)   echo "THE HYBRID'\''S CONTROL, and it is only skippable by the rule the prediction registers. Serves the 72B on BOTH passes through the hybrid machinery, so it prices the two-card device pinning and the delegation layer by themselves. PREDICTION: it reproduces r3-awqcontrol with every per-document delta exactly 0.0, which app/eval/gate.py checks -- the same role awqgate played for the dependency change. Run it only if the hybrid'\''s field_acc lands outside [0.40, 0.52]; inside that band the device change cannot be the explanation, because decoding is greedy and CLAUDE.md section 5 records 16 documents at exactly 0.0 across a GPU device change." ;;
     lora72bawq)   echo "THE DEPLOYMENT QUESTION: an adapter attached to what production actually serves. Judge vs r3-awqcontrol (170.05). Trained on NF4 and served on AWQ, so this arm also measures that quantisation mismatch, whose size is unknown." ;;
   esac; }
 
+# The whole queue is validated before anything starts, so a typo or a wrong card
+# count costs nothing rather than being discovered after the first stage's ~10
+# minute model load.
+stage_cards()  { case "$1" in hybrid|hybridgate) echo 2 ;; *) echo 1 ;; esac; }
+
 for s in "${STAGES[@]}"; do
     [ -n "$(stage_run "$s")" ] || { echo "unknown stage: $s" >&2; exit 2; }
+    if [ "$(stage_cards "$s")" -gt "${#GPUS[@]}" ]; then
+        echo "stage $s serves two checkpoints and needs two cards, e.g." >&2
+        echo "  run_gpu_queue.sh 0,1 $s" >&2
+        echo "  (32B ~44 GB + 72B ~43 GB does not fit in one 80 GB H100, and an" >&2
+        echo "   OOM there does not crash the run -- _safe_read swallows read" >&2
+        echo "   exceptions, so it returns a full run of empty values.)" >&2
+        exit 2
+    fi
 done
 
 # Writes to stdout AND the current stage log. Deliberately NOT `{ ... } | tee`
@@ -140,7 +187,7 @@ done
 # would run every later stage after a failure and ignore completion markers.
 # Caught by tests/test_gpu_queue_behaviour.py, which executes this script for
 # real against stubbed podman/nvidia-smi.
-CURLOG="$LOGDIR/queue-gpu$GPU_INDEX.log"
+CURLOG="$LOGDIR/queue-gpu${GPU_INDEX//,/-}.log"
 log() {
     local line
     line="$(date -u +%Y-%m-%dT%H:%M:%SZ) $*"
@@ -159,7 +206,7 @@ for stage in "${STAGES[@]}"; do
 
     log "===== stage: $stage ====="
     log "why: $(stage_why "$stage")"
-    log "run=$run split=$split image=$image gpu=$GPU_INDEX"
+    log "run=$run split=$split image=$image gpu(s)=$GPU_INDEX"
 
     if [ -f "$marker" ]; then
         log "SKIPPED: $marker exists — this stage already finished"
@@ -167,18 +214,28 @@ for stage in "${STAGES[@]}"; do
     fi
 
     # A 72B load into an occupied card falls back to Tesseract and silently
-    # ruins every document, so refuse rather than produce garbage.
-    used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits \
-           -i "$GPU_INDEX" 2>/dev/null | tr -d ' ')
-    log "gpu $GPU_INDEX memory.used=${used:-unknown} MiB"
-    if [ -z "$used" ] || [ "$used" -gt 2000 ]; then
-        log "STAGE FAILED ($stage): gpu $GPU_INDEX is occupied (${used:-unknown} MiB)."
+    # ruins every document, so refuse rather than produce garbage. EVERY card
+    # the queue holds is checked: the hybrid loads its second checkpoint ~10
+    # minutes after the first, and a queue that checked only card 0 would
+    # discover card 1 was taken after paying for that load.
+    occupied=""
+    for g in "${GPUS[@]}"; do
+        used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits \
+               -i "$g" 2>/dev/null | tr -d ' ')
+        log "gpu $g memory.used=${used:-unknown} MiB"
+        if [ -z "$used" ] || [ "$used" -gt 2000 ]; then
+            occupied="$g (${used:-unknown} MiB)"
+            break
+        fi
+    done
+    if [ -n "$occupied" ]; then
+        log "STAGE FAILED ($stage): gpu $occupied is occupied."
         log "  A 72B load into an occupied card falls back to Tesseract."
         FAILED+=("$stage"); break
     fi
 
     mkdir -p "$outdir"
-    RUNCMD=(podman run --rm --device "nvidia.com/gpu=$GPU_INDEX"
+    RUNCMD=(podman run --rm "${DEVICE_ARGS[@]}"
       $(stage_backend "$stage") $(stage_env "$stage")
       -v sindri-models:/models
       -v "$RROOT":/data:Z
@@ -218,9 +275,9 @@ for stage in "${STAGES[@]}"; do
     date -u +%Y-%m-%dT%H:%M:%SZ > "$marker"
 done
 
-CURLOG="$LOGDIR/queue-gpu$GPU_INDEX.log"
+CURLOG="$LOGDIR/queue-gpu${GPU_INDEX//,/-}.log"
 {
-    log "===== queue finished on gpu $GPU_INDEX ====="
+    log "===== queue finished on gpu(s) $GPU_INDEX ====="
     if [ ${#FAILED[@]} -gt 0 ]; then
         log "FAILED stages: ${FAILED[*]}"
         log "The queue stopped rather than running later stages against missing"
