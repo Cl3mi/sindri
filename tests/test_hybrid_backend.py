@@ -117,3 +117,125 @@ def test_a_named_device_places_the_whole_model_on_that_card():
     resolves to exactly this, which is why it is measurement-neutral."""
     from app.pipeline.ocr.vlm_backend import device_map_for
     assert device_map_for("cuda:1") == {"": "cuda:1"}
+
+
+# --- the backend itself -----------------------------------------------------
+#
+# Doubles rather than checkpoints: __init__ otherwise loads ~62 GB of weights.
+# Same reasoning as tests/test_vlm_adapter_scope.py, which duck-types PEFT.
+
+from app.pipeline.ocr.base import OcrResult
+
+
+class _Recorder:
+    """One model. Records every pass it was asked to serve, in order."""
+
+    def __init__(self, name):
+        self.name = name
+        self.calls = []
+
+    def detect_regions(self, image):
+        self.calls.append("detect")
+        return []
+
+    def read_region(self, image):
+        self.calls.append("read")
+        return OcrResult(text="1,2", confidence=0.9)
+
+    def read_region_gdt(self, image):
+        self.calls.append("gdt")
+        return OcrResult(text="", confidence=0.0)
+
+    def read_notes_block(self, image):
+        self.calls.append("notes")
+        return OcrResult(text="[]", confidence=0.9)
+
+    def read_title_cell(self, image):
+        self.calls.append("title")
+        return OcrResult(text="{}", confidence=0.9)
+
+
+def _hybrid(monkeypatch, env=None):
+    """A HybridBackend over two recorders, with the builds recorded too."""
+    built = []
+    detect, read = _Recorder("detect"), _Recorder("read")
+
+    def build(model_id, device):
+        built.append((model_id, device))
+        return detect if len(built) == 1 else read
+
+    monkeypatch.setattr(hb, "_build_vlm", build)
+    monkeypatch.setenv("VLM_MODEL_ID", "Qwen/Qwen2.5-VL-72B-Instruct-AWQ")
+    monkeypatch.setenv("VLM_DETECT_MODEL_ID", "Qwen/Qwen2.5-VL-32B-Instruct-AWQ")
+    for k, v in (env or {}).items():
+        monkeypatch.setenv(k, v)
+    return hb.HybridBackend(), detect, read, built
+
+
+def test_each_checkpoint_is_built_from_its_own_id_on_its_own_card(monkeypatch):
+    """The detect model is built FIRST and on the first card. Order matters on a
+    contended host: whichever loads first takes what it needs, and the 32B is
+    the one this arm exists for -- a partial load must fail on the 72B, whose
+    absence is obvious, not on the 32B, whose absence would look like a working
+    run of 569 predictions."""
+    _, _, _, built = _hybrid(monkeypatch)
+    assert built == [("Qwen/Qwen2.5-VL-32B-Instruct-AWQ", "cuda:0"),
+                     ("Qwen/Qwen2.5-VL-72B-Instruct-AWQ", "cuda:1")]
+
+
+def test_detection_runs_on_the_detect_model_only(monkeypatch):
+    """The arm in one assertion: n_pred must be the 32B's 890, not the 72B's
+    569, and that is the registered void gate."""
+    backend, detect, read, _ = _hybrid(monkeypatch)
+    backend.detect_regions(_image())
+    assert detect.calls == ["detect"]
+    assert read.calls == []
+
+
+def test_every_transcription_runs_on_the_read_model_only(monkeypatch):
+    """The other half. The 32B reads at field_acc 0.2614 against the 72B's
+    0.4798, so a read that leaked to the detect model would report the worst
+    reader measured as the hybrid's -- and it would read as "the 32B's boxes
+    are unreadable", which is a conclusion, not a bug report."""
+    backend, detect, read, _ = _hybrid(monkeypatch)
+    backend.read_region(_image())
+    backend.read_region_gdt(_image())
+    backend.read_notes_block(_image())
+    backend.read_title_cell(_image())
+    assert read.calls == ["read", "gdt", "notes", "title"]
+    assert detect.calls == []
+
+
+def test_the_cards_can_be_swapped_at_launch(monkeypatch):
+    """Occupancy varies between the two H100s and the loser of that race falls
+    back to Tesseract, which garbles every document while looking like it
+    worked."""
+    _, _, _, built = _hybrid(monkeypatch, {"VLM_DETECT_DEVICE": "cuda:1",
+                                           "VLM_READ_DEVICE": "cuda:0"})
+    assert [d for _, d in built] == ["cuda:1", "cuda:0"]
+
+
+def _image():
+    from PIL import Image
+    return Image.new("RGB", (64, 64), "white")
+
+
+def test_a_whole_document_routes_every_localisation_to_the_detect_model(
+        sample_pdf, tmp_path, monkeypatch):
+    """The acceptance test, and the one that catches a MISSING delegation.
+
+    extract() calls detect_regions from three places -- the characteristic
+    detector, the notes locator and loose_text -- and reads from four. A method
+    the hybrid forgot to delegate would fall through to whichever model happens
+    to hold it, and nothing in a report would say so. Running the real pipeline
+    is the only check that covers all seven call sites at once."""
+    from app.pipeline.extract import extract
+
+    backend, detect, read, _ = _hybrid(monkeypatch)
+    extract(sample_pdf, work_dir=tmp_path, dpi=300, backend=backend)
+
+    assert detect.calls, "the detect model served nothing at all"
+    assert set(detect.calls) == {"detect"}, (
+        f"a transcription reached the detect model: {set(detect.calls)}")
+    assert "detect" not in read.calls, (
+        f"a localisation reached the read model: {set(read.calls)}")

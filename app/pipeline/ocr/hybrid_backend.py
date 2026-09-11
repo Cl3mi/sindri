@@ -17,6 +17,8 @@ docs/plans/2026-09-09-hybrid-arm-prediction.md, written before this file.
 """
 import os
 
+from app.pipeline.ocr.vlm_backend import _DEFAULT_MODEL
+
 # Which set of weights serves each pass. An explicit map with no default, for
 # the reason `vllm_backend._ADAPTED_PASSES` gives: a pass added later that
 # silently inherited either answer is invisible in the output. Routing a read to
@@ -111,3 +113,68 @@ def hybrid_devices(env=None):
             f"An OOM here does not crash the run -- _safe_read swallows it -- "
             f"so it would come back as a full run of empty reads.")
     return detect, read
+
+
+def _build_vlm(model_id: str, device: str):
+    """One transformers-backed checkpoint, pinned to one card.
+
+    A module-level function rather than an inline construction so a test can
+    substitute it without importing torch -- the same reason `_GPU_BACKENDS`
+    holds attribute NAMES instead of the factory functions themselves."""
+    from app.pipeline.ocr.vlm_backend import VLMBackend
+    return VLMBackend(model_id=model_id, device=device)
+
+
+class HybridBackend:
+    """The five passes of `VLMBackend`, served by TWO checkpoints.
+
+    Same interface and the same prompts as the single-model path -- the prompts
+    are imported by `VLMBackend` itself, so `runner._prompt_sha256` still hashes
+    the same five strings and this arm carries aa7659f1929184ea like every
+    other. The only intended difference is which weights answer which pass.
+
+    Nothing here disables an adapter: this arm serves two base checkpoints, and
+    an adapter belongs to a different experiment. `VLMBackend._base_weights()`
+    still applies inside each of them if one is ever selected."""
+
+    def __init__(self, detect_model_id=None, read_model_id=None):
+        detect_device, read_device = hybrid_devices()
+        # Resolved BEFORE either load: active_detect_model refuses an unset
+        # name, and finding that out after a ~10 min 72B load wastes the load --
+        # the reason VLLMBackend resolves its adapter first.
+        detect_model_id = detect_model_id or active_detect_model()
+        read_model_id = read_model_id or os.getenv("VLM_MODEL_ID",
+                                                   _DEFAULT_MODEL)
+        # The DETECT model loads first, deliberately. On a contended host
+        # whichever load runs first takes the memory it needs, and a partial
+        # load must fail on the 72B -- whose absence stops the run -- rather
+        # than on the 32B, whose absence would leave a complete-looking run of
+        # 569 predictions that reads as "the 32B's boxes changed nothing".
+        self.detect_backend = _build_vlm(model_id=detect_model_id,
+                                         device=detect_device)
+        self.read_backend = _build_vlm(model_id=read_model_id,
+                                       device=read_device)
+        self.detect_model_id = detect_model_id
+        self.read_model_id = read_model_id
+
+    def _for(self, pass_name: str):
+        """The checkpoint serving this pass. Goes through `model_for_pass` on
+        every call rather than caching a bound method, so a pass that is not in
+        the table raises here instead of silently reaching one of the two."""
+        return (self.detect_backend if model_for_pass(pass_name) == "detect"
+                else self.read_backend)
+
+    def detect_regions(self, image):
+        return self._for("detect").detect_regions(image)
+
+    def read_region(self, image):
+        return self._for("read").read_region(image)
+
+    def read_region_gdt(self, image):
+        return self._for("gdt").read_region_gdt(image)
+
+    def read_notes_block(self, image):
+        return self._for("notes").read_notes_block(image)
+
+    def read_title_cell(self, image):
+        return self._for("title").read_title_cell(image)
