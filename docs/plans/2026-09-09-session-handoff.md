@@ -47,8 +47,23 @@ faults, so scoring them measured a capability never claimed:
 Both are **OFF by default**, so every pre-policy number keeps its meaning, and
 `_check_comparable` refuses a scoped report against an unscoped one.
 
-**It keeps 15 of the 20 dev documents.** The split between multi-page and
-oversized is **STILL UNKNOWN** — see §6.
+**It keeps 15 of the 20 dev documents.**
+
+**The corpus is 99 drawings, and 91 of them are single-sheet** (measured
+2026-09-11, `probe --summary`): 110 pages over 99 documents, **8 multi-page**,
+median 1, max 4. So the first exclusion costs **8.1%** of the corpus.
+
+The second exclusion's corpus-wide count was unobtainable — `score
+--exclude-clamped` only reaches the 20 documents that have gold — and is now one
+command away: `probe --summary` computes the clamp from page size, dpi and the
+pixel budget, and reports `render_clamped_docs`, `supported_docs` and
+`excluded_docs` alongside `multi_page_docs`. **Re-run it to finish the answer.**
+
+Two other facts from that probe worth carrying: **17 of 99 drawings have no
+vector text at all** (`without_vector_text`), so the VLM is the only reader
+available on a sixth of the corpus; and 50 of 99 carry duplicate recovered
+balloon numbers, which is a property of the CV circle finder on clean originals,
+not of gold.
 
 ---
 
@@ -169,11 +184,12 @@ a deleted box.
 
 ## 6. Next steps, in order
 
-1. **Get the corpus counts.** Still missing after several attempts, and the
-   client will ask "how many of our drawings do you support?".
-   `python3 -m app.eval.runner probe <corpus>/originals --summary` →
-   `n_docs`, `multi_page_docs`, `pages_per_doc`. Needed to split the 5 excluded
-   dev documents into multi-page vs oversized.
+1. **Get the corpus counts. HALF DONE 2026-09-11** — 99 drawings, 8
+   multi-page, so 91 are single-sheet (§1). The oversized half was not
+   computable then and is now: re-run
+   `python3 -m app.eval.runner probe <corpus>/originals --summary` on current
+   code and read `render_clamped_docs`, `supported_docs`, `excluded_docs`.
+   That is the complete answer to "how many of our drawings do you support?".
 2. **Compare the 32B properly. DONE 2026-09-11.** `+38.80, ci95 [25.53,
    55.13]`, significant, **0 of 6 weightings better**, robust, and **all 15
    documents worse** (deltas +6 to +123). `compare_runs` warns that the base

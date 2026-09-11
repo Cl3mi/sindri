@@ -48,7 +48,7 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **798 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **802 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). `SCHEMA_VERSION` = 1 — do not bump
 it. Split frozen at `6d174d5e4f1b9228` — do not regenerate it.
 
@@ -142,7 +142,12 @@ unrecoverable miss at `w=10`. Use `score --pdfs <dir> --max-pages 1`. It is OFF
 by default because all four reference numbers were scored unfiltered, and
 `_check_comparable` already refuses a filtered report against an unfiltered one —
 so **every arm must be re-scored under the same setting before its delta means
-anything.** `probe --summary` reports `multi_page_docs` and `pages_per_doc`.
+anything.** `probe --summary` reports the policy over the WHOLE corpus —
+`multi_page_docs`, `render_clamped_docs`, `supported_docs`, `excluded_docs` —
+because the clamp is a pure function of page size, dpi and the pixel budget and
+needs no gold. **Measured 2026-09-11: 99 drawings, 110 pages, 8 multi-page, so
+91 are single-sheet.** `render.effective_dpi()` is the public entry point probe
+asks; do not copy the budget into `app/eval`.
 
 **Rung 3 background.** The 72B trains at 4-bit NF4 in
 **38.8 GB on one H100** — gate passed. Its GPU phase is done: the dependency
@@ -355,7 +360,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 798 passed, 2 skipped
+python -m pytest -q                          # 802 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```
