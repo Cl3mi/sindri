@@ -32,7 +32,7 @@ set -uo pipefail
 
 ROOT="${SINDRI_CLIENT_ROOT:-$HOME/sindri-client-data}"
 WEIGHTS="${WEIGHTS:-docs/eval/weights.json}"
-RUNS=("${@:-r3-awqcontrol r3-nf4control r3-loraread r3-vllmcontrol r3-vllmlora r3-7bawq}")
+RUNS=("${@:-r3-awqcontrol r3-nf4control r3-loraread r3-vllmcontrol r3-vllmlora r3-7bawq r3-32bawq r3-hybrid}")
 read -r -a RUNS <<< "${RUNS[*]}"
 
 [ -d "$ROOT" ] || { echo "no client root at $ROOT (set SINDRI_CLIENT_ROOT)" >&2; exit 1; }
@@ -70,6 +70,19 @@ compare_pair() {   # compare_pair <control> <arm> <out-name>
 compare_pair r3-nf4control  r3-loraread   loraread-scoped-vs-nf4control-scoped.json
 compare_pair r3-vllmcontrol r3-vllmlora   vllmlora-scoped-vs-vllmcontrol-scoped.json
 compare_pair r3-awqcontrol  r3-7bawq      7bawq-scoped-vs-awqcontrol-scoped.json
+# The 32B's +38.80 was quoted for a whole session with no comparison file behind
+# it: no ci95, no weight-robustness. It is the arm the hybrid is built on, so it
+# is the last one that should rest on a cost delta alone.
+compare_pair r3-awqcontrol  r3-32bawq     32bawq-scoped-vs-awqcontrol-scoped.json
+# The hybrid against the read stack it SHARES -- same 72B AWQ checkpoint, same
+# image, no adapter, and the only difference is which weights localised. Against
+# r3-32bawq it would move two variables at once and credit the reader's
+# contribution to the detector.
+compare_pair r3-awqcontrol  r3-hybrid     hybrid-scoped-vs-awqcontrol-scoped.json
+# The hybrid MACHINERY, priced against the run it must reproduce exactly. Feed
+# the output to `python3 -m app.eval.gate` -- every per-document delta must be
+# 0.0, as awqgate's was.
+compare_pair r3-awqcontrol  r3-hybridgate hybridgate-scoped-vs-awqcontrol-scoped.json
 
 echo
 echo "corpus page counts (the number the writeup is still waiting for):"

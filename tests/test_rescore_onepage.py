@@ -74,3 +74,20 @@ def test_the_requested_dpi_is_passed_with_the_clamp_filter():
     run asked for; without --dpi it would silently compare against the default
     and could keep or drop the wrong drawings."""
     assert "--dpi" in TEXT
+
+
+def test_the_32b_is_scored_and_compared_like_every_other_arm():
+    """Its +38.80 was quoted for a whole session with no comparison file behind
+    it, so it had no ci95 and no weight-robustness -- and CLAUDE.md §4 is
+    explicit that review cost alone has been wrong three times on this corpus.
+    An arm in the table but not in the batch is an arm nobody can re-derive."""
+    assert "r3-32bawq" in CMDS
+    assert "compare_pair r3-awqcontrol  r3-32bawq" in CMDS
+
+
+def test_the_hybrid_is_compared_against_the_read_stack_it_shares():
+    """r3-awqcontrol is the same 72B AWQ checkpoint, the same transformers
+    image and no adapter -- the ONLY difference is which weights localised.
+    Against r3-32bawq the comparison would move two variables at once and
+    credit the reader's contribution to the detector."""
+    assert "compare_pair r3-awqcontrol  r3-hybrid" in CMDS
