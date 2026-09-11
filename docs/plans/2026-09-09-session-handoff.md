@@ -49,15 +49,45 @@ Both are **OFF by default**, so every pre-policy number keeps its meaning, and
 
 **It keeps 15 of the 20 dev documents.**
 
-**The corpus is 99 drawings, and 91 of them are single-sheet** (measured
-2026-09-11, `probe --summary`): 110 pages over 99 documents, **8 multi-page**,
-median 1, max 4. So the first exclusion costs **8.1%** of the corpus.
+**THE ANSWER: the product claims 75 of the client's 99 drawings — 75.8%**
+(measured 2026-09-11, `probe --summary`, both exclusions over the whole corpus):
 
-The second exclusion's corpus-wide count was unobtainable — `score
---exclude-clamped` only reaches the 20 documents that have gold — and is now one
-command away: `probe --summary` computes the clamp from page size, dpi and the
-pixel budget, and reports `render_clamped_docs`, `supported_docs` and
-`excluded_docs` alongside `multi_page_docs`. **Re-run it to finish the answer.**
+| | docs | share |
+|---|---|---|
+| **supported** | **75** | **75.8%** |
+| oversized (render-clamped) | 19 | 19.2% |
+| multi-page | 8 | 8.1% |
+| both at once | 3 | 3.0% |
+| excluded (the union) | 24 | 24.2% |
+
+`supported + excluded == 99` exactly; the two exclusion counts do not sum to 24
+because 3 drawings fail both tests. 110 pages over 99 documents, median 1,
+max 4.
+
+**The oversized exclusion is 2.4x the multi-page one, and it was the invisible
+half.** Every earlier statement of scope leaned on `multi_page_docs`, which is
+the SMALLER problem. It is also the one with no built path: `--max-pages 1`
+excludes sheets the renderer could reach if `extract()` asked for them
+(`render_page` already takes `page_index`, and gold for those sheets exists and
+is currently charged as misses at `w=10`), whereas the clamped sheets need
+tiling that does not exist.
+
+**Do not read CLAUDE.md §3's "do not build tiled rendering" as covering this.**
+That dead end is about resolution recovering MISSES inside drawings already
+supported — 80 to 150 MP moved isolated misses 251 to 252 and lost. This is a
+COVERAGE question about 19 drawings that are out of claimed scope entirely, and
+it is a different proposition that has never been measured.
+
+**The dev split is representative on both axes**, which is what licenses
+quoting 133.93 / 0.7170 / 28.3% as the product's numbers rather than the dev
+split's: 4 of 20 clamped (20.0%) against 19.2% corpus-wide, and 1-2 of 20
+multi-page (5-10%) against 8.1%.
+
+**Excluded is not "fails".** The 19 oversized drawings still produce output, at
+recall 0.371 and 283.75 review cost against 0.728 and 141.62 for the rest --
+about half as good, not nothing. The 8 multi-page drawings lose everything after
+sheet 1 completely. Say it that way to the client; "we support 75 of 99" alone
+overstates the cliff.
 
 **And the dev split's own breakdown was already derivable from two numbers
 this repo had recorded separately.** `rescore_onepage.sh` records **4 clamped
@@ -193,12 +223,12 @@ a deleted box.
 
 ## 6. Next steps, in order
 
-1. **Get the corpus counts. HALF DONE 2026-09-11** — 99 drawings, 8
-   multi-page, so 91 are single-sheet (§1). The oversized half was not
-   computable then and is now: re-run
-   `python3 -m app.eval.runner probe <corpus>/originals --summary` on current
-   code and read `render_clamped_docs`, `supported_docs`, `excluded_docs`.
-   That is the complete answer to "how many of our drawings do you support?".
+1. **Get the corpus counts. DONE 2026-09-11: 75 of 99 supported** (§1). The
+   follow-on question is now a product decision rather than a measurement:
+   **19 drawings are excluded for size against 8 for page count**, and the size
+   exclusion has no built path. Worth putting to the client next to the
+   weights (§5) -- "half-quality on a fifth of your drawings" and "a fifth of
+   your drawings out of scope" are different products.
 2. **Compare the 32B properly. DONE 2026-09-11.** `+38.80, ci95 [25.53,
    55.13]`, significant, **0 of 6 weightings better**, robust, and **all 15
    documents worse** (deltas +6 to +123). `compare_runs` warns that the base

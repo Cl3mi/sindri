@@ -145,9 +145,13 @@ so **every arm must be re-scored under the same setting before its delta means
 anything.** `probe --summary` reports the policy over the WHOLE corpus —
 `multi_page_docs`, `render_clamped_docs`, `supported_docs`, `excluded_docs` —
 because the clamp is a pure function of page size, dpi and the pixel budget and
-needs no gold. **Measured 2026-09-11: 99 drawings, 110 pages, 8 multi-page, so
-91 are single-sheet.** `render.effective_dpi()` is the public entry point probe
-asks; do not copy the budget into `app/eval`.
+needs no gold. **Measured 2026-09-11 over all 99 client drawings: 75 supported
+(75.8%), 19 oversized, 8 multi-page, 3 both, 24 excluded.** The OVERSIZED
+exclusion is the larger one by 2.4x and every earlier statement of scope missed
+it, because only `multi_page_docs` existed. The dev split is representative on
+both axes (4 of 20 clamped = 20.0%; 1-2 of 20 multi-page), which is what lets
+the dev numbers be quoted as the product's. `render.effective_dpi()` is the
+public entry point probe asks; do not copy the budget into `app/eval`.
 
 **Rung 3 background.** The 72B trains at 4-bit NF4 in
 **38.8 GB on one H100** — gate passed. Its GPU phase is done: the dependency
