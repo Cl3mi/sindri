@@ -59,6 +59,15 @@ command away: `probe --summary` computes the clamp from page size, dpi and the
 pixel budget, and reports `render_clamped_docs`, `supported_docs` and
 `excluded_docs` alongside `multi_page_docs`. **Re-run it to finish the answer.**
 
+**And the dev split's own breakdown was already derivable from two numbers
+this repo had recorded separately.** `rescore_onepage.sh` records **4 clamped
+drawings in dev** ("the other sixteen"), and the policy keeps 15 of 20, so 5 are
+excluded. Since the exclusions overlap rather than sum, that fixes it: **exactly
+4 are oversized, and 1 or 2 are multi-page** — 2 only if one drawing is both.
+The corpus rate (8 of 99, 8.1%) predicts 1.6 in a 20-document split, so 1 is the
+likely answer. `score` prints both counts on separate `excluded N ...` lines, so
+the next `rescore_onepage.sh` confirms it without any new work.
+
 Two other facts from that probe worth carrying: **17 of 99 drawings have no
 vector text at all** (`without_vector_text`), so the VLM is the only reader
 available on a sixth of the corpus; and 50 of 99 carry duplicate recovered
