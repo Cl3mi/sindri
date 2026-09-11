@@ -48,9 +48,27 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **770 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **798 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). `SCHEMA_VERSION` = 1 — do not bump
 it. Split frozen at `6d174d5e4f1b9228` — do not regenerate it.
+
+**The HYBRID arm is BUILT and its prediction is registered** (2026-09-11,
+`docs/plans/2026-09-09-hybrid-arm-prediction.md`). `OCR_BACKEND=hybrid` serves
+the 32B on every localisation and the 72B on every transcription
+(`app/pipeline/ocr/hybrid_backend.py`), one checkpoint per H100; the queue's
+one-card rule has this single exception and `run_gpu_queue.sh 0,1 hybrid` is how
+it launches. It is the first attack on `missed` since Rung 1, because the 32B is
+the only cheaper weights that move the bucket: 70 missed against the 72B's 88.
+
+**Its cost verdict was derivable before the run and is registered as a LOSS**
+(predicted 164.60 against production's 133.93): `n_pred` and `matched` are both
+near-fixed under greedy decoding, so `false_detection` is near-fixed at 649, and
+303 extra spurious boxes at `w=2` cost +606 against the +180 that 18 recovered
+values earn. It is run for the three things that are NOT derivable -- the
+ceiling on `missed` for any detector swap, whether the 32B's recall survives
+good reading, and what the 72B reads on the spurious boxes, which is the only
+thing that could size a filter. Void gates: `n_pred` exactly 890, `field_acc`
+>= 0.40.
 
 Rung-0 baseline (dev split, 20 docs), the current reference:
 `mean_review_cost=173.05 micro_recall=0.646 micro_precision=0.371`,
@@ -337,7 +355,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 648 passed, 2 skipped
+python -m pytest -q                          # 798 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```

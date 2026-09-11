@@ -174,13 +174,17 @@ a deleted box.
    `python3 -m app.eval.runner probe <corpus>/originals --summary` →
    `n_docs`, `multi_page_docs`, `pages_per_doc`. Needed to split the 5 excluded
    dev documents into multi-page vs oversized.
-2. **Compare the 32B properly.** No comparison file exists, so its +38.80 has no
-   CI and no weight-robustness:
-   `compare <reports>/r3-awqcontrol-scoped.report.json <reports>/r3-32bawq-scoped.report.json --out docs/eval/32bawq-scoped-vs-awqcontrol-scoped.json`
-3. **THE HYBRID ARM (§3).** 32B detect + 72B read. Needs a backend that can hold
-   two models or two processes; both cards are free. Register a fresh run name.
-   Predict: recall and `missed` move toward the 32B's numbers while `field_acc`
-   stays near the 72B's — and `false_detection` is the risk.
+2. **Compare the 32B properly.** DONE as a batch entry (2026-09-11):
+   `rescore_onepage.sh` now scores `r3-32bawq` and compares it against
+   `r3-awqcontrol`, so its +38.80 stops resting on a bare cost delta. Re-run the
+   script.
+3. **THE HYBRID ARM (§3). BUILT 2026-09-11** — `OCR_BACKEND=hybrid`,
+   `run_gpu_queue.sh 0,1 hybrid`, judged against `r3-awqcontrol` under the scope
+   policy. The prediction, the void gates (`n_pred` exactly 890, `field_acc`
+   >= 0.40), the cost arithmetic and the launch procedure are all in
+   `docs/plans/2026-09-09-hybrid-arm-prediction.md`, written BEFORE the code.
+   **It is predicted to LOSE on review cost by about +30, arithmetically** —
+   the reasons it is still worth the night are in §4 of that document.
 4. **Surface the policy in the digest** (§5, last bullet).
 5. **Re-derive `weights.json` with the client** (§5, second bullet).
 6. **Balloon overlap is fixed** (`place.py`, commit `ea2dd8c`) and is
