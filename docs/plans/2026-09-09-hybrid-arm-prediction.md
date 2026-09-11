@@ -150,3 +150,68 @@ per-document deltas exactly 0.0, exactly as `awqgate` priced the dependency
 change. **Decision rule, registered now:** run `hybrid` first; run `hybridgate`
 only if `field_acc` lands outside [0.40, 0.52], which is the band the device
 change cannot explain.
+
+---
+
+## 7. Launching it
+
+Built 2026-09-11 on `worktree-eval-harness`: `OCR_BACKEND=hybrid`
+(`app/pipeline/ocr/hybrid_backend.py`), the `hybrid` / `hybridgate` stages, and
+the two-card queue. Suite **798 passed, 2 skipped**; guard **32 passed**;
+`_prompt_sha256` still **aa7659f1929184ea**, so this arm is comparable to every
+other.
+
+**No dependency changed.** Only `app/` and the shell drivers moved, so the pip
+layer of `sindri-gpu-nf4` is cached and untouched — `transformers==4.49.0` /
+`autoawq==0.2.8` are exactly what every committed measurement was taken with,
+and this needs no second `awqgate`.
+
+```bash
+# 1. the host cannot fetch from GitHub -- push into it over ssh (CLAUDE.md §5)
+git push ssh://4mehpc4_3/home/rebe_test3/sindri \
+    worktree-eval-harness:refs/heads/from-operator
+
+# 2. check out and rebuild. NEVER do this while a queue is running: bash reads
+#    a script incrementally and a checkout can corrupt the executing queue.
+ssh 4mehpc4_3 'cd ~/sindri && git checkout -f from-operator'
+ssh 4mehpc4_3 'cd ~/sindri && podman build -f Dockerfile.gpu -t sindri-gpu-nf4 .'
+
+# 3. PRE-FLIGHT: both cards free, and both usable with a REAL op inside the
+#    container. torch.cuda.is_available() returned True on this host while a
+#    matmul died with "driver too old", so availability is not proof. This also
+#    proves the two-device CDI passthrough, which is the one piece of new
+#    mechanism no test here can cover.
+ssh 4mehpc4_3 'nvidia-smi --query-gpu=index,memory.used --format=csv'
+ssh 4mehpc4_3 'podman unshare -- bash -c "
+    for _ in 1 2 3 4 5; do umount /etc/cdi/nvidia.yaml 2>/dev/null || break; done
+    mount --bind \$HOME/cdi/nvidia.yaml /etc/cdi/nvidia.yaml
+    exec podman run --rm --device nvidia.com/gpu=0 --device nvidia.com/gpu=1 \
+      sindri-gpu-nf4 python -c \"
+import torch
+print(\\\"devices:\\\", torch.cuda.device_count())
+for i in range(torch.cuda.device_count()):
+    a = torch.randn(512, 512, device=f\\\"cuda:{i}\\\")
+    print(i, float((a @ a).sum()))
+\""'
+
+# 4. the arm, in tmux ON the host -- ~8-10 h, and the operator's machine may go
+#    away (it has, twice). Resumable via .complete markers.
+ssh 4mehpc4_3 "tmux new -d -s hybrid '~/sindri/run_gpu_queue.sh 0,1 hybrid'"
+ssh 4mehpc4_3 'tail -f ~/rung3-logs/r3-hybrid.log'
+
+# 5. pull the dumps to the operator's machine, then score there -- gold is not
+#    on that host and must never be.
+./rescore_onepage.sh          # now includes r3-32bawq and r3-hybrid
+python3 -m app.eval.experiment
+```
+
+**A bad load fails fast, not silently.** If `device_map={"": "cuda:N"}` is
+rejected for an AWQ checkpoint, `get_backend()` records the reason and returns
+Tesseract, which has no `detect_regions` — so `extract()` raises with that
+reason attached and every document fails in the first minutes rather than
+producing 15 garbled dumps. The exposure is ~15 minutes, not a night.
+
+**Read the first document's log before walking away.** It must say
+`[sindri.ocr] active backend: hybrid`, and the stage log's `launching:` line
+must carry both `--device` flags, `OCR_BACKEND=hybrid`, and two different
+`VLM_*MODEL_ID` values.
