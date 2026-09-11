@@ -864,3 +864,40 @@ def test_char_type_confusion_never_forwards_an_unvetted_label():
         notes=["ctype:STANZGRATSEITE INNEN->Distance"]), lambda d: "hashed")
     assert "STANZGRAT" not in json.dumps(digest, ensure_ascii=False).upper()
     assert digest["char_type_confusion"] == {"chartype:other->Distance": 1}
+
+
+def test_a_comparison_across_DETECT_models_warns_too():
+    """The hybrid arm changes the detector and keeps the reader, so model_id --
+    which names the READ model -- is identical on both sides and the base-model
+    warning above stays silent. It was silent on r3-hybrid vs r3-awqcontrol, a
+    +40.00 comparison in which the detector was the entire treatment.
+
+    That is the same defect the base-model warning exists for, one field over:
+    the run differs in something larger than any knob measured on this corpus,
+    and nothing in the output says so."""
+    a = _run("a", [10.0, 12.0])
+    b = _run("b", [9.0, 11.0])
+    a.config = RunConfig(model_id="Qwen/Qwen2.5-VL-72B-Instruct-AWQ")
+    b.config = RunConfig(model_id="Qwen/Qwen2.5-VL-72B-Instruct-AWQ",
+                         extra={"detect_model": "Qwen/Qwen2.5-VL-32B-Instruct-AWQ",
+                                "serving_backend": "hybrid"})
+
+    cmp = compare_runs(a, b, seed=13)
+
+    assert any("detect model" in w for w in cmp["warnings"]), cmp["warnings"]
+    assert any("32B" in w for w in cmp["warnings"])
+    # The READ model is unchanged, so the base-model warning must NOT fire:
+    # two warnings for one difference would teach the reader to skim them.
+    assert not any("base model" in w for w in cmp["warnings"])
+
+
+def test_two_single_model_runs_produce_no_detect_warning():
+    """Absence of the key means "one checkpoint served everything", which is
+    every dump in the campaign before 2026-09-11. Warning on those would fire on
+    every historical comparison and be ignored within a day."""
+    a = _run("a", [10.0, 12.0])
+    b = _run("b", [9.0, 11.0])
+    for r in (a, b):
+        r.config = RunConfig(model_id="Qwen/Qwen2.5-VL-72B-Instruct-AWQ")
+    assert not any("detect model" in w
+                   for w in compare_runs(a, b, seed=13)["warnings"])

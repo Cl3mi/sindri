@@ -649,6 +649,20 @@ def compare_runs(a: RunReport, b: RunReport, seed: int = 13,
             f"base model differs: {a.config.model_id!r} -> {b.config.model_id!r}. "
             f"This delta includes the base-model change, not only the treatment. "
             f"State both models wherever this result is quoted.")
+    # The same defect one field over. A hybrid run keeps the READ model in
+    # model_id and changes only the detector, so the warning above stays silent
+    # on exactly the comparison where the detector IS the treatment -- as it did
+    # on r3-hybrid vs r3-awqcontrol, a +40.00 delta whose entire cause was the
+    # boxes. Absence of the key means one checkpoint served everything, which is
+    # every dump before 2026-09-11, so two single-model runs stay quiet.
+    det_a = (a.config.extra or {}).get("detect_model")
+    det_b = (b.config.extra or {}).get("detect_model")
+    if det_a != det_b:
+        warnings.append(
+            f"detect model differs: {det_a or a.config.model_id!r} -> "
+            f"{det_b or b.config.model_id!r}. Detection is a different stage "
+            f"from reading and this delta includes the change of detector. "
+            f"State which model localised wherever this result is quoted.")
 
     return {
         "schema_version": SCHEMA_VERSION,
