@@ -48,7 +48,7 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **802 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **826 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). `SCHEMA_VERSION` = 1 — do not bump
 it. Split frozen at `6d174d5e4f1b9228` — do not regenerate it.
 
@@ -75,6 +75,28 @@ without fixing the value.
 more gold rows and delivers **41 fewer fully-correct ones**, while shipping 34
 more silent errors -- a failure on the product goal that no reweighting can
 rescue. Never quote "recall 0.7749 vs 0.7170" as a quality improvement.
+
+**EVERY NUMBER IN THIS FILE IS FROM THE DEV SPLIT, AND DEV IS WHAT TEN-PLUS
+ARMS WERE SELECTED AGAINST.** `splits.py` reserves 20% as a frozen test set and
+forces the structurally atypical `variants` into it, explicitly so
+cross-template generalization stays visible — and **nothing has ever predicted
+or scored there** until the `awqtest` stage added 2026-09-14. Until that run
+lands, treat 133.93 / 0.7170 / 28.3% as an upper bound on what the client will
+see, not an estimate. `SPLIT=test ./rescore_onepage.sh r3-awqtest` scores it;
+`_check_comparable` refuses it against any dev report, correctly, because it is
+a different document set — it is a standalone number, not a delta.
+
+**The read crop is now a recorded knob** (`SINDRI_CROP_PAD` / `SINDRI_CROP_MIN_H`
+/ `SINDRI_CROP_MAX_UPSCALE`, `extract.active_crop_knobs`), because r3-hybrid
+made it the dominant term in read accuracy. All three keys are recorded or none,
+and nothing is recorded at the defaults, so every dump ever taken keeps its
+config. `app/train/dataset.py` resolves the SAME knob — a training crop that
+differs from an inference crop is the failure its docstring exists to prevent.
+The first arm on it is `cropctx`, registered in
+`docs/plans/2026-09-14-crop-context-arm-prediction.md` before the run.
+
+**What runs next and why, including what was rejected:**
+`docs/plans/2026-09-14-next-steps-decision.md`.
 
 Rung-0 baseline (dev split, 20 docs), the current reference:
 `mean_review_cost=173.05 micro_recall=0.646 micro_precision=0.371`,
@@ -384,7 +406,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 802 passed, 2 skipped
+python -m pytest -q                          # 826 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```

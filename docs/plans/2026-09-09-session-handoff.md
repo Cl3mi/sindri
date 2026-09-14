@@ -243,37 +243,16 @@ a deleted box.
    the 32B's recall advantage is recall of boxes, not of values -- 18 more gold
    rows matched, 41 fewer fully-correct values delivered, 34 more silent errors.
    The lead in §3 of this document is CLOSED; read §3 only for its history.
-4. **Surface the policy in the digest** (§5, last bullet).
-5. **Re-derive `weights.json` with the client** (§5, second bullet).
+4. **Everything after the hybrid is decided and written down**, including the
+   rejections: `docs/plans/2026-09-14-next-steps-decision.md`. In short —
+   **(a)** score the frozen TEST split (`awqtest`, built 2026-09-14; nothing has
+   ever run there and every client-facing number is from dev), with the
+   zero-GPU precursor of scoring the existing `r3-trainpredict` dumps;
+   **(b)** re-derive `weights.json` with the client, which is the single number
+   deciding whether `read-lora-v1` ships; **(c)** the `cropctx` arm, registered
+   in `docs/plans/2026-09-14-crop-context-arm-prediction.md`. Then route A
+   serving, multi-page coverage (+8 drawings), tiled rendering (+19).
+5. **Surface the policy in the digest** (§5, last bullet).
 6. **Balloon overlap is fixed** (`place.py`, commit `ea2dd8c`) and is
    measurement-neutral — `balloon_xy` appears nowhere in `app/eval`. Worth
    showing in a demo; it changes no number.
-
----
-
-## 7. Reference
-
-**Runs on the GPU host** (`~/sindri-eval-data/runs/`): `r3-awqcontrol`,
-`r3-nf4control`, `r3-loraread`, `r3-vllmcontrol`, `r3-vllmlora`, `r3-7bawq`,
-`r3-32bawq`, `cap40` (7B at a 40 GB cap, diagnostic only).
-
-**Images**: `sindri-gpu-nf4` (pinned serving, transformers 4.49.0 / autoawq
-0.2.8 — MUST NOT MOVE), `sindri-vllm` (vLLM 0.8.5.post1 + torch 2.6.0+cu124 —
-**0.28 cannot run here**, the driver is CUDA 12.4), `sindri-compress`
-(llm-compressor, torch 2.13.0+cu126), `sindri-gpu-ct` (pinned + compressed-tensors
-0.9.4).
-
-**Traps added this session**
-* `torch.cuda.is_available()` returned **True** on this host while a real matmul
-  failed with "driver too old". **Prove GPU usability with a real op.**
-* `podman ... | tee` with `&&` takes *tee's* exit status. A failed control
-  reported `EXIT=0` and launched the arm anyway. Use `${PIPESTATUS[0]}`.
-* vLLM V1 captures **67 CUDA-graph shapes up to batch 512** — still capturing at
-  49 minutes on a 72B. Cap `cudagraph_capture_sizes`; `enforce_eager` is the
-  only way to disable compilation, and it is measurement-neutral because both
-  control and arm carry it.
-* llm-compressor's registry mappings are **unscoped** for Qwen2.5-VL: the vision
-  blocks share `mlp.up_proj` names with the decoder, so `up_proj → down_proj`
-  resolved **112** sets (80 decoder + 32 vision) **silently**. And GQA makes
-  `v_proj → o_proj` resolve 80 and survive **0**. Resolution counts alone cannot
-  tell you whether AWQ smooths anything.
