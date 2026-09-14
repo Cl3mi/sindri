@@ -70,7 +70,7 @@ IMAGE_VLLM="${IMAGE_VLLM:-sindri-vllm}"
 
 if [ -z "$GPU_INDEX" ] || [ ${#STAGES[@]} -eq 0 ]; then
     echo "usage: run_gpu_queue.sh <gpu-index>[,<gpu-index>] <stage> [<stage>...]" >&2
-    echo "stages: trainpredict awqgate base72bnf4 awqcontrol nf4control lora72bnf4 lora72bawq loraread loramerged mergedcontrol vllmcontrol vllmlora hybrid hybridgate" >&2
+    echo "stages: trainpredict awqgate base72bnf4 awqcontrol nf4control lora72bnf4 lora72bawq loraread loramerged mergedcontrol vllmcontrol vllmlora hybrid hybridgate awqtest" >&2
     echo "  the hybrid stages serve two checkpoints and need two cards: 0,1" >&2
     exit 2
 fi
@@ -99,8 +99,14 @@ stage_run()    { case "$1" in trainpredict) echo "r3-trainpredict" ;;
                               vllmcontrol)  echo "r3-vllmcontrol" ;;
                               vllmlora)     echo "r3-vllmlora" ;;
                               hybrid)       echo "r3-hybrid" ;;
-                              hybridgate)   echo "r3-hybridgate" ;; esac; }
-stage_split()  { case "$1" in trainpredict) echo "train" ;; *) echo "dev" ;; esac; }
+                              hybridgate)   echo "r3-hybridgate" ;;
+                              awqtest)      echo "r3-awqtest" ;; esac; }
+# The ONLY stage that touches the frozen test split, and deliberately so: it is
+# spendable once per question, and a stage that wandered onto it by accident
+# would burn it while producing a report that merely looks incomparable.
+stage_split()  { case "$1" in trainpredict) echo "train" ;;
+                              awqtest)      echo "test" ;;
+                              *)            echo "dev" ;; esac; }
 stage_image()  { case "$1" in trainpredict) echo "$IMAGE_OLD" ;;
                               # vLLM cannot share the pinned image: that one is
                               # held at transformers 4.49.0 / autoawq 0.2.8
@@ -159,6 +165,7 @@ stage_why()    { case "$1" in
     mergedcontrol) echo "THE CONTROL FOR loramerged, and it is not optional. Same merge and the same re-quantisation with the adapter contribution scaled to zero (merge_lora.py --zero-scale), so it is numerically the base but travels byte-identical code. PREDICTION: it reproduces r3-awqcontrol at 170.05. If it does NOT, the merge/quantisation round trip moved the model on its own and no delta from loramerged is attributable to the fine-tune. Run it FIRST." ;;
     vllmcontrol)  echo "ROUTE B's CONTROL, and it is not optional. Qwen's official AWQ checkpoint served through vLLM with NO adapter. vLLM's kernels are not transformers' kernels, so r3-awqcontrol (170.05) is NOT a valid baseline for a vLLM run: this prices the change of serving stack by itself, and only then can r3-vllmlora price the adapter. Run it FIRST." ;;
     vllmlora)     echo "ROUTE B: read-lora-v1 served at RUNTIME on the official AWQ checkpoint via vLLM's per-request LoRA. Nothing is quantised on this route -- no merge, no calibration, none of the failure class that cost days on route A. Detection issues requests with NO adapter and reads issue them with one, which is VLMBackend._base_weights() expressed the way vLLM expects. Judge vs r3-vllmcontrol, never vs r3-awqcontrol, and on field_acc plus escaped_rate, not review cost alone." ;;
+    awqtest)      echo "THE HONEST NUMBER. Production -- the same AWQ checkpoint, image and settings r3-awqcontrol serves -- on the FROZEN TEST SPLIT, which nothing has ever predicted on. Every figure quoted to the client (133.93, recall 0.7170, 28.3% missed) comes from dev, and dev is the split ten-plus arms were selected against; splits.py also forces the structurally atypical `variants` into test on purpose, so cross-template generalization is visible here and nowhere else. This is NOT an arm and has no control: _check_comparable will refuse it against any dev report, correctly, because it is a different document set. It is a standalone number, and the question it answers is whether anything already shown to the client is optimistic. Score it under the same scope policy: SPLIT=test ./rescore_onepage.sh r3-awqtest." ;;
     hybrid)       echo "THE HYBRID: the 32B localises, the 72B transcribes. The 32B is the best detector and the worst reader measured -- missed 70 vs 88, recall 0.7749 vs 0.7170, field_acc 0.2614 vs 0.4798 -- and Rung 1 established that the detector's WEIGHTS are the only thing that has ever moved missed; its knobs and prompts never did. Judge vs r3-awqcontrol (133.93 scoped), never vs r3-32bawq, which differs in two variables at once. VOID GATES, registered in docs/plans/2026-09-09-hybrid-arm-prediction.md BEFORE this ran: n_pred must be EXACTLY 890 (detection is a pure function of the detect model) and field_acc must be >= 0.40 (below it the reads did not reach the 72B). PREDICTED 164.60, a LOSS of about +30: 18 recovered misses are worth -180 and the 303 extra false detections cost +606 at w=2. The arm is not run for its cost verdict, which is arithmetic; it is run for the ceiling on missed, for whether the 32B's recall survives good reading, and for what the 72B reads on the spurious boxes -- which is the only thing that could size a filter." ;;
     hybridgate)   echo "THE HYBRID'\''S CONTROL, and it is only skippable by the rule the prediction registers. Serves the 72B on BOTH passes through the hybrid machinery, so it prices the two-card device pinning and the delegation layer by themselves. PREDICTION: it reproduces r3-awqcontrol with every per-document delta exactly 0.0, which app/eval/gate.py checks -- the same role awqgate played for the dependency change. Run it only if the hybrid'\''s field_acc lands outside [0.40, 0.52]; inside that band the device change cannot be the explanation, because decoding is greedy and CLAUDE.md section 5 records 16 documents at exactly 0.0 across a GPU device change." ;;
     lora72bawq)   echo "THE DEPLOYMENT QUESTION: an adapter attached to what production actually serves. Judge vs r3-awqcontrol (170.05). Trained on NF4 and served on AWQ, so this arm also measures that quantisation mismatch, whose size is unknown." ;;

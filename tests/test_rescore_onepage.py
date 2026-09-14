@@ -91,3 +91,21 @@ def test_the_hybrid_is_compared_against_the_read_stack_it_shares():
     Against r3-32bawq the comparison would move two variables at once and
     credit the reader's contribution to the detector."""
     assert "compare_pair r3-awqcontrol  r3-hybrid" in CMDS
+
+
+def test_the_batch_can_score_a_split_other_than_dev():
+    """The test split is the only honest generalization number and nothing has
+    ever scored there, because this batch hard-coded `--split dev`. It stays the
+    default so every existing invocation is unchanged."""
+    assert '--split "$SPLIT"' in CMDS, "the split must be a variable, not literal dev"
+    assert 'SPLIT="${SPLIT:-dev}"' in CMDS, "dev must remain the default"
+
+
+def test_the_comparisons_are_skipped_off_dev():
+    """A test-split report against a dev report is a different document set, so
+    _check_comparable refuses it -- correctly. Running them anyway would print
+    NOT COMPARABLE once per pair and teach the operator to ignore that message,
+    which is the one message that must never become background noise."""
+    body = CMDS[CMDS.index("compare_pair()"):]
+    assert 'SPLIT" = dev' in body or 'SPLIT" != dev' in body, (
+        "the comparison block must be guarded on the split")

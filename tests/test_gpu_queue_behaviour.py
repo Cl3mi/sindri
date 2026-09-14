@@ -439,3 +439,50 @@ def test_a_single_model_stage_still_claims_exactly_one_card(tmp_path):
     assert _run(tmp_path, env, "awqcontrol").returncode == 0
     line = _podman_line(calls, "r3-awqcontrol")
     assert line.count("--device") == 1, line
+
+
+# --- the test split: the only honest generalization number -----------------
+#
+# splits.py reserves 20% as a frozen test set and forces the structurally
+# atypical `variants` into it, explicitly so cross-template generalization stays
+# visible. Nothing has ever run there: every stage above is --split dev, and dev
+# is the split ten-plus arms were selected against.
+
+def test_the_test_split_stage_actually_predicts_on_test(tmp_path):
+    """The whole point of the stage. Predicted on dev it would be a duplicate of
+    r3-awqcontrol under a name claiming otherwise -- and the duplicate would
+    LOOK right, because it would reproduce 133.93 exactly."""
+    env, calls = _stub_env(tmp_path)
+    assert _run(tmp_path, env, "awqtest").returncode == 0
+    line = _podman_line(calls, "r3-awqtest")
+    assert "--split test" in line, line
+    assert "--split dev" not in line, line
+
+
+def test_the_test_split_stage_serves_exactly_what_production_serves(tmp_path):
+    """It measures the SHIPPING configuration on unseen drawings, so every
+    serving variable must match r3-awqcontrol: same AWQ checkpoint, same image,
+    no adapter, no quantisation override. Any difference and the number prices
+    two things at once and answers neither."""
+    env, calls = _stub_env(tmp_path)
+    assert _run(tmp_path, env, "awqtest").returncode == 0
+    line = _podman_line(calls, "r3-awqtest")
+    assert "VLM_MODEL_ID=Qwen/Qwen2.5-VL-72B-Instruct-AWQ" in line, line
+    assert "OCR_BACKEND=vlm" in line, line
+    assert "SINDRI_QUANT" not in line, line
+    assert "SINDRI_ADAPTER" not in line, line
+    assert "sindri-gpu-nf4" in line, line
+    assert line.count("--device") == 1, line
+
+
+def test_no_other_stage_wanders_onto_the_test_split(tmp_path):
+    """The test split is frozen and spendable once per question. A stage that
+    predicted there by accident would burn it, and nothing downstream would say
+    so -- the report would simply be over a different document set, which
+    _check_comparable reports as an incomparability rather than as a mistake."""
+    env, calls = _stub_env(tmp_path)
+    assert _run(tmp_path, env, "awqcontrol", "nf4control", "hybrid"
+                ).returncode in (0, 2)
+    for line in (calls.read_text().splitlines() if calls.exists() else []):
+        if "r3-awqtest" not in line:
+            assert "--split test" not in line, line

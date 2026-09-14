@@ -32,6 +32,11 @@ set -uo pipefail
 
 ROOT="${SINDRI_CLIENT_ROOT:-$HOME/sindri-client-data}"
 WEIGHTS="${WEIGHTS:-docs/eval/weights.json}"
+# Which split to score. dev by default, so every existing invocation is
+# unchanged. `SPLIT=test ./rescore_onepage.sh r3-awqtest` is the only honest
+# generalization number in the project: nothing has ever scored on test, and dev
+# is the split ten-plus arms were selected against.
+SPLIT="${SPLIT:-dev}"
 RUNS=("${@:-r3-awqcontrol r3-nf4control r3-loraread r3-vllmcontrol r3-vllmlora r3-7bawq r3-32bawq r3-hybrid}")
 read -r -a RUNS <<< "${RUNS[*]}"
 
@@ -46,7 +51,7 @@ for run in "${RUNS[@]}"; do
         --pdfs "$ROOT/corpus/originals" \
         --max-pages 1 \
         --dpi 300 --exclude-clamped \
-        --splits "$ROOT/meta/splits.json" --split dev \
+        --splits "$ROOT/meta/splits.json" --split "$SPLIT" \
         --weights "$WEIGHTS" \
         --name "$run-scoped" \
         --out "$ROOT/reports/$run-scoped.report.json" || exit 1
@@ -58,7 +63,13 @@ done
 
 # The matched-control comparisons, control FIRST -- compare_runs reports b - a,
 # and experiment.py reads the control out of run_a.
+#
+# Skipped off dev, because every control here was scored on dev: a cross-split
+# pair is a different document set, _check_comparable refuses it, and printing
+# NOT COMPARABLE once per pair would teach the operator to ignore the one
+# message that must never become background noise.
 compare_pair() {   # compare_pair <control> <arm> <out-name>
+    [ "$SPLIT" = dev ] || return 0
     [ -f "$ROOT/reports/$1-scoped.report.json" ] || return 0
     [ -f "$ROOT/reports/$2-scoped.report.json" ] || return 0
     echo "=== ${2#r3-} vs ${1#r3-} (scoped) ==="
