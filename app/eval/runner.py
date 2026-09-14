@@ -475,6 +475,7 @@ def _predict_extra(detect_only: bool = False) -> dict:
     measured.
     """
     from app.pipeline.detect import active_knobs
+    from app.pipeline.extract import active_crop_knobs
     from app.pipeline.ocr.hybrid_backend import active_hybrid_config
     from app.pipeline.ocr.vlm_backend import (active_adapter,
                                               active_adapter_scope,
@@ -511,6 +512,11 @@ def _predict_extra(detect_only: bool = False) -> dict:
                 # as "already predicted" across the change being measured.
                 "adapter_scope": active_adapter_scope()}
                if active_adapter() else {}),
+            # What crop the reader was handed. r3-hybrid measured this as the
+            # dominant term in read accuracy (-0.206 for the boxes against
+            # +0.013 for the reader), and it is absent on every dump before
+            # 2026-09-14 -- which means "the defaults", not "unknown".
+            **active_crop_knobs(),
             # Which weights LOCALISED. model_id names the read model,
             # because that is where the values come from, so on a hybrid run it
             # is the only record of the variable the arm is about.

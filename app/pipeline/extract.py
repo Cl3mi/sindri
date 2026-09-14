@@ -1,3 +1,4 @@
+import os
 import re
 import uuid
 from pathlib import Path
@@ -71,15 +72,86 @@ _MIN_CROP_H = 40        # upscale crops shorter than this…
 _MAX_UPSCALE = 3.0      # …but never by more than this factor
 
 
-def _prep_crop(image, box, w, h, pad: int):
+# The three constants above are the DEFAULTS, and they are what the frozen
+# baseline, r3-awqcontrol, every arm in the campaign and read-lora-v1's training
+# crops were produced with. They became selectable because r3-hybrid measured
+# the crop, not the reader, as the dominant term in read accuracy: holding the
+# reader and changing the boxes moved field_acc -0.206, against +0.013 for
+# holding the boxes and changing the reader.
+#
+# Env-selected rather than edited in source, for the three reasons the prompt
+# registry gives: two arms differing only in a constant cannot run concurrently
+# on the single checkout the GPU host keeps; the value has to reach
+# RunConfig.extra or _reusable_dump skips every document as "already predicted"
+# across the change being measured; and a bad value must lose the arm rather
+# than quietly produce a control wearing the arm's run name.
+_CROP_KNOBS = (
+    ("crop_pad", "SINDRI_CROP_PAD", _CROP_PAD, int, 0, None),
+    ("crop_min_h", "SINDRI_CROP_MIN_H", _MIN_CROP_H, int, 0, None),
+    # Below 1.0 this would DOWNscale, inverting the knob's meaning while still
+    # looking like a number someone chose.
+    ("crop_max_upscale", "SINDRI_CROP_MAX_UPSCALE", _MAX_UPSCALE, float, 1.0, None),
+)
+
+
+def _crop_knob(env, name, key, default, cast, lo, hi):
+    raw = (os.environ if env is None else env).get(key)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = cast(raw)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"{key}={raw!r} is not a {cast.__name__}. Refusing to fall back to "
+            f"{default!r}: that serves the control configuration under a "
+            f"treatment arm's run name, and the result reads as 'the crop made "
+            f"no difference'.")
+    if value < lo or (hi is not None and value > hi):
+        raise ValueError(
+            f"{key}={raw!r} is out of range (>= {lo}"
+            + (f", <= {hi}" if hi is not None else "") + "). Same refusal: a "
+            f"silently corrected knob measures the default and reports the arm.")
+    return value
+
+
+def resolve_crop_knobs(env=None):
+    """(pad, min_h, max_upscale) in effect for this run."""
+    return tuple(_crop_knob(env, name, key, default, cast, lo, hi)
+                 for name, key, default, cast, lo, hi in _CROP_KNOBS)
+
+
+def active_crop_knobs(env=None) -> dict:
+    """The crop knobs for RunConfig.extra -- empty when all three are default.
+
+    All three or none: recording only the changed key would make a dump's
+    meaning depend on what the defaults were on the day it ran, and the defaults
+    are exactly what an arm moves. Empty at default, so every dump ever taken
+    keeps the config it has and stays reusable."""
+    values = resolve_crop_knobs(env)
+    defaults = tuple(k[2] for k in _CROP_KNOBS)
+    if values == defaults:
+        return {}
+    return {k[0]: v for k, v in zip(_CROP_KNOBS, values)}
+
+
+def _prep_crop(image, box, w, h, pad: int, min_h=None, max_upscale=None):
+    """Crop, pad, and upscale a small crop toward a legible size.
+
+    min_h/max_upscale resolve from the environment at call time so an arm does
+    not have to thread them through every call site -- the same reason
+    `read_prompt()` is called inside the backend rather than passed in."""
+    if min_h is None or max_upscale is None:
+        _, env_min_h, env_max_upscale = resolve_crop_knobs()
+        min_h = env_min_h if min_h is None else min_h
+        max_upscale = env_max_upscale if max_upscale is None else max_upscale
     x0, y0, x1, y1 = box
     if pad:
         x0, y0 = max(0, x0 - pad), max(0, y0 - pad)
         x1, y1 = min(w, x1 + pad), min(h, y1 + pad)
     crop = image.crop((x0, y0, x1, y1))
     ch = crop.height
-    if 0 < ch < _MIN_CROP_H:
-        scale = min(_MAX_UPSCALE, _MIN_CROP_H / ch)
+    if 0 < ch < min_h:
+        scale = min(max_upscale, min_h / ch)
         crop = crop.resize((max(1, int(crop.width * scale)),
                             max(1, int(ch * scale))), Image.LANCZOS)
     return crop
@@ -223,6 +295,9 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
 
     known_positions = ({n.pos for n in notes_obj.notes if n.parent_pos is None}
                        if notes_obj is not None else None)
+    # Resolved ONCE per document rather than per callout: a knob that changed
+    # mid-document would produce a dump whose crops came from two settings.
+    crop_pad = resolve_crop_knobs()[0]
     total = len(detections)
     emit("ocr", f"Reading {total} region{'' if total == 1 else 's'}", 0, total)
     results = []
@@ -236,7 +311,7 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
                            render.width, render.height)
         read_box = _clamp(d.inner_box, render.width, render.height) if d.inner_box else outer
         crop = _prep_crop(image, read_box, render.width, render.height,
-                          pad=0 if d.inner_box else _CROP_PAD)
+                          pad=0 if d.inner_box else crop_pad)
         if d.subtype == "gdt" and hasattr(backend, "read_region_gdt"):
             text, confidence = _safe_read(backend.read_region_gdt, crop)
             rotation_ambiguous = False

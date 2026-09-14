@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Dict, Iterable, Tuple
 
 from app.pipeline import boxes as bx
-from app.pipeline.extract import _CROP_PAD, _HINTS, _prep_crop
+from app.pipeline.extract import _HINTS, _prep_crop, resolve_crop_knobs
 from app.train.targets import UnrenderableRow, render_target
 
 
@@ -61,7 +61,12 @@ def build_pairs(gold, page_image, matched: Iterable[Tuple[int, object]],
                 counts[key] = counts.get(key, 0) + 1
                 continue
             box = bx.tighten_to_ink(page_image, region)
-            crop = _prep_crop(page_image, box, w, h, pad=_CROP_PAD)
+            # The RESOLVED pad, not the default constant. A training crop that
+            # differs from an inference crop is exactly what this module's
+            # docstring exists to prevent, and pinning the constant here would
+            # reintroduce it the first time an arm moved the knob.
+            crop = _prep_crop(page_image, box, w, h,
+                              pad=resolve_crop_knobs()[0])
             name = f"{gold.doc_id}-{balloon:04d}.png"
             crop.save(out / name)
             fh.write(json.dumps({"image": name, "target": target,
