@@ -393,9 +393,23 @@ GPU days.
   **outside** `~/sindri` (that is why `run_train_lora.sh` takes no `$REPO` and
   can run from `~`). Note also that the host **cannot fetch from GitHub** at
   all: its remote is credential-less HTTPS and its ssh key is a deploy key for
-  a different repo, so code arrives via
-  `git push ssh://<host>/home/rebe_test3/sindri <branch>:refs/heads/from-operator`
-  followed by a checkout of `from-operator`.
+  a different repo, so code arrives by push. **The obvious recipe works exactly
+  once and then blocks itself**: push to `from-operator`, check it out, and the
+  next push is refused with `refusing to update checked out branch` — git will
+  not update the branch a non-bare repo has checked out. The fix is to keep the
+  host's HEAD **detached**, so no branch is ever current:
+
+      # operator
+      git push ssh://<host>/home/rebe_test3/sindri <branch>:refs/heads/from-operator
+      # host — still detached afterwards, so the next push works too
+      ssh <host> 'cd ~/sindri && git checkout --detach from-operator'
+
+  If the host is already sitting on a branch, `git checkout --detach` once
+  first. Do NOT set `receive.denyCurrentBranch=updateInstead`: that makes a
+  bare `git push` rewrite the host's working tree, and a push is a far lighter
+  gesture than an ssh checkout — which is the opposite of what the
+  queue-corruption rule above needs. Deploying must stay a deliberate two-step
+  act with a place to check that no queue is running.
 * **The GPU host is unreliable, not merely slow.** 24+ users, load 80–200. In one
   evening it dropped an ssh channel mid-run, killed a container two documents from
   the end, and left the network for ~14 h *without rebooting*. Long runs belong in
