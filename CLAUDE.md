@@ -48,7 +48,7 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **826 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **831 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). `SCHEMA_VERSION` = 1 — do not bump
 it. Split frozen at `6d174d5e4f1b9228` — do not regenerate it.
 
@@ -410,6 +410,18 @@ GPU days.
   gesture than an ssh checkout — which is the opposite of what the
   queue-corruption rule above needs. Deploying must stay a deliberate two-step
   act with a place to check that no queue is running.
+* **A partial run used to score silently, and the warning that should have
+  caught it could not.** On 2026-09-14 two runs were pulled and scored while
+  still predicting — 5 of 15 documents and 7 of 19 — and printed headline numbers
+  that read like results (118.80 against a 133.93 control; it was an artefact of
+  which documents had finished). `score` now REFUSES when split members have no
+  dump, because the split is the contract for which documents a run covers.
+  `--allow-partial` overrides deliberately and records `missing_dumps` in the
+  report, so a partial number is never quotable later without its caveat.
+  The lesson generalises: `WARNING: gold docs without dumps` fires on EVERY
+  healthy dev score, naming the ~80 documents in other splits, so it could never
+  carry this signal. **A warning that fires identically on every healthy run is
+  not a warning.**
 * **The GPU host is unreliable, not merely slow.** 24+ users, load 80–200. In one
   evening it dropped an ssh channel mid-run, killed a container two documents from
   the end, and left the network for ~14 h *without rebooting*. Long runs belong in
@@ -420,7 +432,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 826 passed, 2 skipped
+python -m pytest -q                          # 831 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```
