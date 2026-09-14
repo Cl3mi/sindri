@@ -486,3 +486,32 @@ def test_no_other_stage_wanders_onto_the_test_split(tmp_path):
     for line in (calls.read_text().splitlines() if calls.exists() else []):
         if "r3-awqtest" not in line:
             assert "--split test" not in line, line
+
+
+# --- the crop-context arm ---------------------------------------------------
+
+def test_the_crop_arm_changes_the_crop_and_nothing_else(tmp_path):
+    """Single-variable, against r3-awqcontrol. Detection is upstream of the
+    crop, so n_pred must come back at exactly 569 -- the same identity gate that
+    proved loraread's scoping. Any serving difference would break that."""
+    env, calls = _stub_env(tmp_path)
+    assert _run(tmp_path, env, "cropctx").returncode == 0
+    line = _podman_line(calls, "r3-cropctx")
+    assert "SINDRI_CROP_PAD=24" in line, line
+    assert "VLM_MODEL_ID=Qwen/Qwen2.5-VL-72B-Instruct-AWQ" in line, line
+    assert "OCR_BACKEND=vlm" in line, line
+    assert "SINDRI_ADAPTER" not in line, line
+    assert "SINDRI_QUANT" not in line, line
+    assert "--split dev" in line, line
+    assert line.count("--device") == 1, line
+
+
+def test_no_other_stage_carries_a_crop_knob(tmp_path):
+    """Every committed measurement was taken at the default crop. A stage that
+    picked one up would silently stop being comparable to the number it is
+    judged against, and RunConfig.extra would be the only place it showed."""
+    env, calls = _stub_env(tmp_path)
+    _run(tmp_path, env, "awqcontrol", "awqtest", "hybrid")
+    for line in (calls.read_text().splitlines() if calls.exists() else []):
+        if "r3-cropctx" not in line:
+            assert "SINDRI_CROP" not in line, line
