@@ -51,5 +51,7 @@
   ],
   "robust": true
  },
- "warnings": []
+ "warnings": [
+  "detect model differs: 'Qwen/Qwen2.5-VL-72B-Instruct-AWQ' -> 'Qwen/Qwen2.5-VL-32B-Instruct-AWQ'. Detection is a different stage from reading and this delta includes the change of detector. State which model localised wherever this result is quoted."
+ ]
 }
