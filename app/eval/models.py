@@ -252,6 +252,12 @@ class RunReport(_Versioned):
     # scope. False means every document was scored, which is what every report
     # written before this field existed did — so False never over-claims.
     exclude_clamped: bool = False
+    # Split members that had no prediction dump. 0 means measured-and-complete;
+    # None means a report written before the check existed, which is every
+    # report in the campaign. A default of 0 would claim those runs were
+    # verified complete when nothing looked -- the same lie
+    # DocScore.frame_origin_frac exists to prevent.
+    missing_dumps: Optional[int] = None
     doc_scores: List[DocScore] = []
     mean_review_cost: float = 0.0
     micro_recall: float = 0.0

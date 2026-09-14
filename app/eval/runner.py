@@ -653,9 +653,33 @@ def _cmd_score(args):
               "drawings themselves, and there is nowhere else to read them",
               file=sys.stderr)
         return 1
-    doc_ids, sp_hash, sp_name = _select_docs(
-        set(gold) & set(dumps), args.splits, args.split)
+    # Split members come from GOLD, not from gold-intersect-dumps: a member with
+    # no dump has to survive selection to be COUNTED as missing. Intersecting
+    # first is what let two runs be scored mid-flight on 2026-09-14 -- 5 of 15
+    # documents and 7 of 19 -- and print headline numbers that read like
+    # results. The "gold docs without dumps" warning could not catch it: it is
+    # computed over the whole gold set, so on a dev run it always names the ~80
+    # documents that are simply in other splits, and a warning that fires
+    # identically on every healthy run carries no signal.
+    expected, sp_hash, sp_name = _select_docs(set(gold), args.splits, args.split)
     anon = _anon(args)
+    missing_preds = sorted(d for d in expected if d not in dumps)
+    # PARTIAL means some-but-not-all. A run with no overlapping dumps at all is
+    # a different fault -- an empty or mismatched run directory -- and the
+    # "no documents scored" error below names it better than "this run has not
+    # finished predicting" would.
+    if (missing_preds and len(missing_preds) < len(expected)
+            and not getattr(args, "allow_partial", False)):
+        print(f"ERROR: {len(missing_preds)} of {len(expected)} document(s) in split "
+              f"{sp_name!r} have no prediction dump — this run has not finished "
+              f"predicting. Scoring it would produce a number over a different "
+              f"document set than every control it will be compared against, "
+              f"and _check_comparable cannot catch that because the report "
+              f"would simply describe the smaller set. Wait for the run, or "
+              f"pass --allow-partial to score it deliberately. Missing: "
+              f"{[anon(d) for d in missing_preds]}", file=sys.stderr)
+        return 1
+    doc_ids = [d for d in expected if d in dumps]
     if max_pages is not None:
         pages = _page_counts(args.pdfs)
         unknown = [d for d in doc_ids if d not in pages]
@@ -670,10 +694,10 @@ def _cmd_score(args):
         if dropped:
             print(f"excluded {len(dropped)} drawing(s) over {max_pages} "
                   f"sheet(s): {[anon(d) for d in dropped]}", file=sys.stderr)
-    missing = sorted((set(gold) & set(dumps)) ^ set(dumps))
-    if missing:
+    orphan_dumps = sorted((set(gold) & set(dumps)) ^ set(dumps))
+    if orphan_dumps:
         print(f"WARNING: dumps without gold (excluded): "
-              f"{[anon(d) for d in missing]}", file=sys.stderr)
+              f"{[anon(d) for d in orphan_dumps]}", file=sys.stderr)
     orphan_gold = sorted(set(gold) - set(dumps))
     if orphan_gold:
         print(f"WARNING: gold docs without dumps (excluded): "
@@ -706,7 +730,8 @@ def _cmd_score(args):
     report = aggregate(args.name, config, weights, params, scores,
                        splits_hash=sp_hash, split_used=sp_name,
                        max_pages=max_pages,
-                       exclude_clamped=getattr(args, "exclude_clamped", False))
+                       exclude_clamped=getattr(args, "exclude_clamped", False),
+                       missing_dumps=len(missing_preds))
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(report.model_dump_json(indent=1),
                               encoding="utf-8")
@@ -846,6 +871,11 @@ def main(argv=None) -> int:
     p.add_argument("--dpi", type=int, default=300,
                    help="the dpi the run REQUESTED; a dump rendered below it "
                         "was clamped. Only read by --exclude-clamped.")
+    p.add_argument("--allow-partial", action="store_true",
+                   help="score a run that has not finished predicting. The "
+                        "count is recorded in the report as missing_dumps, "
+                        "because a partial number must never be quotable "
+                        "later without its caveat.")
     p.add_argument("--exclude-clamped", action="store_true",
                    help="drop render-clamped (oversized) sheets as out of "
                         "scope. render.py clamps any page over the pixel "
