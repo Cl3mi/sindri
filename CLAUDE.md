@@ -48,7 +48,7 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **847 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **852 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). `SCHEMA_VERSION` = 1 — do not bump
 it. Split frozen at `6d174d5e4f1b9228` — do not regenerate it.
 
@@ -129,6 +129,23 @@ narrows from 0.087 to **0.038**, and at dev's unlocated share the test cost
 would be ~149.7. `ingest --summary`'s `unlocated_kinds` settles what those rows
 are, and `_unlocated_kind_histogram`'s own docstring says they may be verbal
 requirements that never had a balloon.
+
+**GOLD COVERAGE, measured corpus-wide 2026-09-15** (`ingest --summary` to a
+throwaway `--out`): gold is **100 documents / 3594 sheet rows / 3103 balloons**.
+**621 rows have no usable position, and the decomposition is exact: 491 with no
+balloon at all + 130 whose balloon is on a later page.** By kind: `note` 401,
+**`dimension` 201**, unknown 19 — and only the dimension bucket is scored, so
+**201 of 2489 scored gold rows (8.1%)** have no position. **Dev's 3.5% is less
+than half the corpus rate and test's 10.6% is close to it, so DEV is the outlier
+on this axis.** `pdf_only_total` is 0: every balloon has a sheet row, so the
+client balloons a strict SUBSET of what they inspect — `unlocated_char_types`
+lists real dimensional characteristics among the unballooned (Abstand 42,
+Distance 26, Diameter 11). **`recovered_by_cv_total: 0` means NOT ATTEMPTED** —
+it is gated on `ingest --cv`. The digest's new `gold_coverage` key
+(`unlocated_gold`, `carried_by_value`, `not_measured`) says how many of those
+rows `matching.py` pairs by value anyway; it is a SIBLING of `missed_diagnosis`
+because those three buckets must keep partitioning `missed`. **Re-score any run
+to populate it — old reports report `not_measured`, never 0.**
 
 **What is NOT explained away: `field_acc` 0.4798 -> 0.3804**, computed on
 matched rows only, so unlocated gold cannot touch it. A 21% relative drop in
@@ -508,7 +525,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 847 passed, 2 skipped
+python -m pytest -q                          # 852 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```

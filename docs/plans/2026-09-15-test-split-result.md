@@ -75,6 +75,27 @@ to find. Each one costs `w=10`, the heaviest weight there is.
   than 165.18. So of the +31.25, roughly **+15.5 is gold coverage** and
   **+15.7 is genuine difficulty**.
 
+**MEASURED 2026-09-15, and it corrects the framing above: DEV is the outlier,
+not test.** The corpus-wide ingest says **201 of 2489 scored (dimension-bucket)
+gold rows have no position — 8.1%** — against dev's 3.5% and test's 10.6%. Dev
+sits at less than half the corpus rate, so part of what reads here as "test is
+adversarial" is really "dev is lucky".
+
+The ingest decomposition is exact: **621 rows without a usable position = 491
+with no balloon at all + 130 whose balloon is on a later page.** By kind, 401 of
+the 621 are `note` — verbal requirements that never had a balloon, exactly as
+`_unlocated_kind_histogram`'s docstring predicted — and only the 201 `dimension`
+rows reach scoring at all, since `score_kinds` is `["dimension"]`.
+
+**`pdf_only_total` is 0**: every balloon has an inspection-sheet row, so the
+stamping is a strict SUBSET of the sheet. The client balloons a subset of what
+they inspect, and `unlocated_char_types` shows real dimensional characteristics
+among the unballooned — Abstand 42, Distance 26, Diameter 11, Durchmesser 7.
+
+**`recovered_by_cv_total: 0` means NOT ATTEMPTED, not "failed".** It is gated on
+`ingest --cv`, which that run did not pass. Whether CV recovery can reach any of
+the 491 is unmeasured.
+
 **And `ingest` already knows how to settle what those rows are.**
 `_unlocated_kind_histogram` exists precisely for this, and its docstring says:
 *"a verbal requirement never had a balloon, so counting it as unlocated
