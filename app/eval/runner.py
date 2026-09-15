@@ -664,19 +664,43 @@ def _cmd_score(args):
     expected, sp_hash, sp_name = _select_docs(set(gold), args.splits, args.split)
     anon = _anon(args)
     missing_preds = sorted(d for d in expected if d not in dumps)
+    # A missing dump has two causes that need opposite answers, and telling them
+    # apart needs the drawings. On 2026-09-15 the test split was refused with
+    # "wait for the run" when the run had finished hours earlier: the split
+    # names 20 gold documents and the corpus holds a drawing for only 19, so the
+    # twentieth could never be predicted. `predict` selects on the drawings it
+    # can find, which is why it stopped at 19 and reported no failure.
+    if missing_preds and getattr(args, "pdfs", None):
+        drawn = {p.stem for p in Path(args.pdfs).glob(_PDF_GLOB)}
+        undrawable = [d for d in missing_preds if d not in drawn]
+        if undrawable:
+            # Structural, exactly like multi-sheet and oversized: charging these
+            # gold rows as missed at w=10 would measure a data-delivery gap
+            # rather than the model. Printed, never silent, so "we support N of
+            # M" stays answerable.
+            print(f"excluded {len(undrawable)} gold document(s) with no drawing "
+                  f"in --pdfs: {[anon(d) for d in undrawable]}", file=sys.stderr)
+            undrawable_set = set(undrawable)
+            expected = [d for d in expected if d not in undrawable_set]
+            missing_preds = [d for d in missing_preds if d not in undrawable_set]
     # PARTIAL means some-but-not-all. A run with no overlapping dumps at all is
     # a different fault -- an empty or mismatched run directory -- and the
     # "no documents scored" error below names it better than "this run has not
     # finished predicting" would.
     if (missing_preds and len(missing_preds) < len(expected)
             and not getattr(args, "allow_partial", False)):
+        cause = ("this run has not finished predicting"
+                 if getattr(args, "pdfs", None) else
+                 "either this run has not finished predicting or those gold "
+                 "documents have no drawing — pass --pdfs to tell the two "
+                 "apart, because they need opposite answers")
         print(f"ERROR: {len(missing_preds)} of {len(expected)} document(s) in split "
-              f"{sp_name!r} have no prediction dump — this run has not finished "
-              f"predicting. Scoring it would produce a number over a different "
-              f"document set than every control it will be compared against, "
-              f"and _check_comparable cannot catch that because the report "
-              f"would simply describe the smaller set. Wait for the run, or "
-              f"pass --allow-partial to score it deliberately. Missing: "
+              f"{sp_name!r} have no prediction dump — {cause}. Scoring it would "
+              f"produce a number over a different document set than every "
+              f"control it will be compared against, and _check_comparable "
+              f"cannot catch that because the report would simply describe the "
+              f"smaller set. Wait for the run, or pass --allow-partial to score "
+              f"it deliberately. Missing: "
               f"{[anon(d) for d in missing_preds]}", file=sys.stderr)
         return 1
     doc_ids = [d for d in expected if d in dumps]
