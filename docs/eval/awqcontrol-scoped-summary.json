@@ -40,8 +40,8 @@
  "misplaced_matches": 44,
  "field_failures": {
   "field:lower_tol": 81,
-  "field:nominal": 69,
   "field:upper_tol": 63,
+  "field:nominal": 69,
   "field:char_type": 57
  },
  "field_failure_signatures": {

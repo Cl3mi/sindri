@@ -252,6 +252,11 @@
   "isolated": 58,
   "unlocated": 11
  },
+ "gold_coverage": {
+  "not_measured": 0,
+  "unlocated_gold": 12,
+  "carried_by_value": 1
+ },
  "config": {
   "model_id": "Qwen/Qwen2.5-VL-72B-Instruct-AWQ",
   "dpi": 300,
