@@ -515,3 +515,16 @@ def test_no_other_stage_carries_a_crop_knob(tmp_path):
     for line in (calls.read_text().splitlines() if calls.exists() else []):
         if "r3-cropctx" not in line:
             assert "SINDRI_CROP" not in line, line
+
+
+def test_the_second_crop_dose_is_a_stage(tmp_path):
+    """Two points give a direction; a third says whether the curve is monotone
+    or peaked. The merge knobs were measured at two doses for exactly this
+    reason, and that is what showed no intermediate setting could win."""
+    env, calls = _stub_env(tmp_path)
+    assert _run(tmp_path, env, "cropctx48").returncode == 0
+    line = _podman_line(calls, "r3-cropctx48")
+    assert "SINDRI_CROP_PAD=48" in line, line
+    assert "VLM_MODEL_ID=Qwen/Qwen2.5-VL-72B-Instruct-AWQ" in line, line
+    assert "--split dev" in line, line
+    assert line.count("--device") == 1, line
