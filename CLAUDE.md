@@ -106,15 +106,38 @@ stage environment until the dose response (`cropctx48`) is known, then change th
 default ONCE, in a commit that also makes the recording compare against the
 frozen 6/40/3.0 baseline rather than against whatever the current default is.
 
-**EVERY NUMBER IN THIS FILE IS FROM THE DEV SPLIT, AND DEV IS WHAT TEN-PLUS
-ARMS WERE SELECTED AGAINST.** `splits.py` reserves 20% as a frozen test set and
-forces the structurally atypical `variants` into it, explicitly so
-cross-template generalization stays visible — and **nothing has ever predicted
-or scored there** until the `awqtest` stage added 2026-09-14. Until that run
-lands, treat 133.93 / 0.7170 / 28.3% as an upper bound on what the client will
-see, not an estimate. `SPLIT=test ./rescore_onepage.sh r3-awqtest` scores it;
-`_check_comparable` refuses it against any dev report, correctly, because it is
-a different document set — it is a standalone number, not a delta.
+**THE TEST SPLIT IS MEASURED, AND DEV WAS OPTIMISTIC BY +31.25**
+(2026-09-15, `docs/plans/2026-09-15-test-split-result.md`). Production's exact
+configuration on the frozen test split: **165.18** against dev's 133.93, recall
+**0.6301** against 0.7170, `field_acc` **0.3804** against 0.4798, missed
+**37.0%** against 28.3%. **Quote the product as a RANGE — ~134 on typical
+single-sheet drawings, ~165 on structurally atypical ones — never the dev number
+alone.**
+
+**But read the caveats before repeating the 165.** It is 11 documents, it is NOT
+a comparison (different doc set, so no `ci95`), and **the test split is
+deliberately adversarial rather than a sample**: `splits.py` forces the
+structurally atypical `variants` into it, and 6 of its 19 predicted documents
+are multi-page (32%) against 1 of 20 in dev and 8 of 99 corpus-wide. The 11 that
+survived the policy carry 28% more gold values per document than dev's 15.
+
+**Over half the recall gap is gold coverage, not the model.** `missed_unlocated`
+— a missed gold row whose BALLOON could not be located, so the pipeline was
+never given a position to find — is **31 of 292 test gold rows (10.6%) against
+11 of 311 (3.5%) on dev**, at `w=10` each. On located gold only the recall gap
+narrows from 0.087 to **0.038**, and at dev's unlocated share the test cost
+would be ~149.7. `ingest --summary`'s `unlocated_kinds` settles what those rows
+are, and `_unlocated_kind_histogram`'s own docstring says they may be verbal
+requirements that never had a balloon.
+
+**What is NOT explained away: `field_acc` 0.4798 -> 0.3804**, computed on
+matched rows only, so unlocated gold cannot touch it. A 21% relative drop in
+read quality on unfamiliar templates — and exactly what the crop/hybrid finding
+predicts, since an unfamiliar layout yields a worse crop without the model being
+any worse at reading.
+
+**Every future arm's headline must say which split it is from.** The dev number
+is not wrong; it answers a narrower question than a reader assumes.
 
 **The read crop is now a recorded knob** (`SINDRI_CROP_PAD` / `SINDRI_CROP_MIN_H`
 / `SINDRI_CROP_MAX_UPSCALE`, `extract.active_crop_knobs`), because r3-hybrid

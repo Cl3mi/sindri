@@ -1,0 +1,302 @@
+{
+ "run": "r3-awqtest-scoped",
+ "split": "test",
+ "splits_hash": "6d174d5e4f1b9228",
+ "n_docs": 11,
+ "n_gold": 292,
+ "n_pred": 358,
+ "mean_review_cost": 165.1818181818182,
+ "micro_recall": 0.6301369863013698,
+ "micro_precision": 0.5139664804469274,
+ "escaped_rate": 0.2191780821917808,
+ "taxonomy": {
+  "escaped_error": 64,
+  "flagged_error": 50,
+  "correct": 51,
+  "missed": 108,
+  "false_detection": 174,
+  "flagged_correct": 19
+ },
+ "error_causes": {
+  "misread": 80,
+  "misparse": 34
+ },
+ "error_cause_crosstab": {
+  "misread": {
+   "total": 80,
+   "misplaced": 27,
+   "on_target": 53,
+   "escaped": 41,
+   "flagged": 39
+  },
+  "misparse": {
+   "total": 34,
+   "misplaced": 2,
+   "on_target": 32,
+   "escaped": 23,
+   "flagged": 11
+  }
+ },
+ "misplaced_matches": 29,
+ "field_failures": {
+  "field:nominal": 77,
+  "field:char_type": 43,
+  "field:upper_tol": 69,
+  "field:lower_tol": 82
+ },
+ "field_failure_signatures": {
+  "fields:char_type+nominal": 8,
+  "fields:upper_tol+lower_tol": 14,
+  "fields:lower_tol": 14,
+  "fields:nominal+upper_tol+lower_tol": 23,
+  "fields:char_type+nominal+upper_tol": 4,
+  "fields:nominal": 15,
+  "fields:upper_tol": 3,
+  "fields:char_type+upper_tol+lower_tol": 2,
+  "fields:nominal+lower_tol": 2,
+  "fields:char_type": 2,
+  "fields:char_type+nominal+upper_tol+lower_tol": 23,
+  "fields:char_type+lower_tol": 2,
+  "fields:char_type+nominal+lower_tol": 2
+ },
+ "field_failure_modes": {
+  "wrong:char_type": 43,
+  "spurious:nominal": 5,
+  "spurious:upper_tol": 17,
+  "wrong:lower_tol": 32,
+  "missing:lower_tol": 36,
+  "missing:nominal": 10,
+  "missing:upper_tol": 20,
+  "wrong:nominal": 62,
+  "spurious:lower_tol": 14,
+  "wrong:upper_tol": 32
+ },
+ "field_failure_modes_not_measured": 0,
+ "char_type_confusion": {
+  "chartype:unmapped(none)->Material": 1,
+  "chartype:unmapped(Material)->Note": 1,
+  "chartype:unmapped(Distance)->Position": 1,
+  "chartype:Distance->Radius": 2,
+  "chartype:Distance->Diameter": 8,
+  "chartype:unmapped(none)->Diameter": 2,
+  "chartype:unmapped(Material)->Distance": 1,
+  "chartype:Radius->Distance": 3,
+  "chartype:Distance->Note": 2,
+  "chartype:Diameter->Distance": 5,
+  "chartype:unmapped(Diameter)->Distance": 3,
+  "chartype:unmapped(Position)->Distance": 1,
+  "chartype:unmapped(none)->Distance": 3,
+  "chartype:Radius->Flatness": 1,
+  "chartype:Distance->Theoretical": 1,
+  "chartype:unmapped(Flatness)->Note": 1,
+  "chartype:unmapped(none)->Note": 1,
+  "chartype:unmapped(Parallelism)->Distance": 1,
+  "chartype:unmapped(Material)->Diameter": 1,
+  "chartype:unmapped(Distance)->Note": 1,
+  "chartype:unmapped(Distance)->Material": 1,
+  "chartype:unmapped(none)->Flatness": 2
+ },
+ "char_type_confusion_not_measured": 0,
+ "confidence_by_taxonomy": {
+  ">=0.8": {
+   "escaped_error": 64,
+   "flagged_error": 13,
+   "correct": 51,
+   "flagged_correct": 19
+  },
+  "<0.2": {
+   "flagged_error": 9
+  },
+  "0.6-0.8": {
+   "flagged_error": 24
+  },
+  "0.4-0.6": {
+   "flagged_error": 3
+  },
+  "0.2-0.4": {
+   "flagged_error": 1
+  }
+ },
+ "confidence_not_measured": 0,
+ "dropped_tolerances": {
+  "rows": 38,
+  "not_measured": 0,
+  "docs": [
+   {
+    "doc": "69872454",
+    "rows": 10,
+    "distinct": 3
+   },
+   {
+    "doc": "ef4c0de1",
+    "rows": 8,
+    "distinct": 3
+   },
+   {
+    "doc": "b670d22a",
+    "rows": 4,
+    "distinct": 3
+   },
+   {
+    "doc": "dc48d088",
+    "rows": 4,
+    "distinct": 2
+   },
+   {
+    "doc": "106c200d",
+    "rows": 3,
+    "distinct": 3
+   },
+   {
+    "doc": "a0d5ed7c",
+    "rows": 3,
+    "distinct": 2
+   },
+   {
+    "doc": "9a66aa77",
+    "rows": 3,
+    "distinct": 2
+   },
+   {
+    "doc": "a46a1ade",
+    "rows": 3,
+    "distinct": 2
+   }
+  ]
+ },
+ "clamped_docs": [],
+ "clamped_vs_unclamped": {
+  "clamped": {
+   "n": 0,
+   "macro_mean_recall": null,
+   "mean_review_cost": null,
+   "missed_isolated": 0
+  },
+  "unclamped": {
+   "n": 11,
+   "macro_mean_recall": 0.5992,
+   "mean_review_cost": 165.18,
+   "missed_isolated": 38
+  },
+  "unknown_dpi": {
+   "n": 0,
+   "macro_mean_recall": null,
+   "mean_review_cost": null,
+   "missed_isolated": 0
+  }
+ },
+ "pred_kinds": {
+  "dimension": 275,
+  "note": 43,
+  "surface": 6,
+  "material": 5,
+  "gdt": 21,
+  "theoretical": 8
+ },
+ "false_detections_by_kind": {
+  "note": 37,
+  "surface": 5,
+  "gdt": 16,
+  "dimension": 106,
+  "material": 3,
+  "theoretical": 7
+ },
+ "matched_by_pred_kind": {
+  "material": 2,
+  "note": 6,
+  "dimension": 169,
+  "gdt": 5,
+  "theoretical": 1,
+  "surface": 1
+ },
+ "frame_mismatch": {
+  "n_docs_affected": 0,
+  "n_docs_frames_agree": 11,
+  "n_docs_not_measured": 0,
+  "max_frac": 0.0,
+  "micro_recall_frames_agree": 0.6301,
+  "micro_recall_frames_differ": null,
+  "docs": []
+ },
+ "missed_diagnosis": {
+  "contended": 39,
+  "isolated": 38,
+  "unlocated": 31
+ },
+ "config": {
+  "model_id": "Qwen/Qwen2.5-VL-72B-Instruct-AWQ",
+  "dpi": 300,
+  "git_sha": "unknown",
+  "prompt_sha256": "aa7659f1929184ea",
+  "extra": {
+   "tile": 1024,
+   "tile_overlap": 0.15,
+   "merge_x_tol": 20,
+   "merge_y_gap": 20,
+   "merge_max_lines": 2,
+   "read_prompt": "base",
+   "detect_prompt": "base",
+   "review_low_conf": 0.8
+  }
+ },
+ "weights": {
+  "miss": 10.0,
+  "escaped": 5.0,
+  "false": 2.0,
+  "flag": 1.0
+ },
+ "match_params": {
+  "max_geo_frac": 0.1,
+  "value_bonus": 0.35,
+  "misplaced_frac": 0.04,
+  "mode": "geometry",
+  "value_sim_min": 0.6,
+  "score_kinds": [
+   "dimension"
+  ],
+  "reconcile_frames": "none",
+  "assignment": "greedy"
+ },
+ "worst_docs": [
+  {
+   "doc": "9a66aa77",
+   "review_cost": 312.0
+  },
+  {
+   "doc": "70545598",
+   "review_cost": 299.0
+  },
+  {
+   "doc": "ef4c0de1",
+   "review_cost": 246.0
+  },
+  {
+   "doc": "a0d5ed7c",
+   "review_cost": 181.0
+  },
+  {
+   "doc": "b670d22a",
+   "review_cost": 180.0
+  },
+  {
+   "doc": "0dcb770f",
+   "review_cost": 139.0
+  },
+  {
+   "doc": "69872454",
+   "review_cost": 135.0
+  },
+  {
+   "doc": "106c200d",
+   "review_cost": 114.0
+  },
+  {
+   "doc": "dc48d088",
+   "review_cost": 90.0
+  },
+  {
+   "doc": "a46a1ade",
+   "review_cost": 67.0
+  }
+ ]
+}
