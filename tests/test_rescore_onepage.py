@@ -109,3 +109,13 @@ def test_the_comparisons_are_skipped_off_dev():
     body = CMDS[CMDS.index("compare_pair()"):]
     assert 'SPLIT" = dev' in body or 'SPLIT" != dev' in body, (
         "the comparison block must be guarded on the split")
+
+
+def test_the_crop_arm_is_compared_against_production():
+    """r3-cropctx is a single-variable arm against r3-awqcontrol -- same
+    checkpoint, same image, same prompts, only SINDRI_CROP_PAD moved -- and its
+    first score had no comparison file, so it had no ci95 and no
+    weight-robustness. That is the exact gap the 32B sat in for a whole session,
+    and CLAUDE.md §4 is explicit that review cost alone has been wrong three
+    times on this corpus."""
+    assert "compare_pair r3-awqcontrol  r3-cropctx" in CMDS

@@ -94,6 +94,10 @@ compare_pair r3-awqcontrol  r3-hybrid     hybrid-scoped-vs-awqcontrol-scoped.jso
 # the output to `python3 -m app.eval.gate` -- every per-document delta must be
 # 0.0, as awqgate's was.
 compare_pair r3-awqcontrol  r3-hybridgate hybridgate-scoped-vs-awqcontrol-scoped.json
+# The crop arm. Single variable against production -- same checkpoint, same
+# image, same prompts, only SINDRI_CROP_PAD moved -- and its first score had no
+# comparison file at all, which is the gap the 32B sat in for a session.
+compare_pair r3-awqcontrol  r3-cropctx    cropctx-scoped-vs-awqcontrol-scoped.json
 
 echo
 echo "corpus page counts (the number the writeup is still waiting for):"
