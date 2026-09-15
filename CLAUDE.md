@@ -48,7 +48,7 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **844 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **847 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). `SCHEMA_VERSION` = 1 — do not bump
 it. Split frozen at `6d174d5e4f1b9228` — do not regenerate it.
 
@@ -452,6 +452,17 @@ GPU days.
   healthy dev score, naming the ~80 documents in other splits, so it could never
   carry this signal. **A warning that fires identically on every healthy run is
   not a warning.**
+* **Gold covers one more document than `corpus/originals` contains** (100 vs
+  99, surfaced 2026-09-15 by the test split: 20 gold members, 19 drawings). A
+  gold document with no drawing can never be predicted — `predict` selects on
+  the drawings it can find, so it simply stops short and reports no failure.
+  `score` now EXCLUDES those and prints them, like multi-sheet and oversized,
+  because charging their gold rows as missed at `w=10` would measure a
+  data-delivery gap rather than the model. It needs `--pdfs` to tell that apart
+  from an unfinished run; without it the two are indistinguishable and the
+  message says so. **The first version of the partial-run guard asserted the
+  timing cause and told the operator to wait for a run that had finished hours
+  earlier** — a guard that misdiagnoses costs what the warning it replaced cost.
 * **A NaN confidence makes a dump WRITE-ONLY, and dodges flagging on the way.**
   pydantic accepts NaN at construction, `model_dump_json` serialises it as
   `null`, and reloading that null raises — so `r3-awqtest` cost nine GPU hours
@@ -474,7 +485,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 844 passed, 2 skipped
+python -m pytest -q                          # 847 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```
