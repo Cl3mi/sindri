@@ -48,7 +48,7 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **831 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **833 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). `SCHEMA_VERSION` = 1 — do not bump
 it. Split frozen at `6d174d5e4f1b9228` — do not regenerate it.
 
@@ -75,6 +75,36 @@ without fixing the value.
 more gold rows and delivers **41 fewer fully-correct ones**, while shipping 34
 more silent errors -- a failure on the product goal that no reweighting can
 rescue. Never quote "recall 0.7749 vs 0.7170" as a quality improvement.
+
+**THE CROP ARM WON, and it is the campaign's first FREE win** (2026-09-15,
+`docs/plans/2026-09-15-crop-context-arm-result.md`). `SINDRI_CROP_PAD` 6 -> 24
+px: **131.87 against 133.93**, better under **6 of 6** weightings, `field_acc`
+0.4798 -> **0.5291**. That **+0.049 is larger than `read-lora-v1`'s +0.039**,
+which needs a trained adapter, an NF4 base costing +6.35 to serve, and a
+deployment route blocked three failures deep. This is a constant.
+
+**Cleanest single-variable arm in the campaign**: detection came back
+BIT-IDENTICAL — `n_pred` 569, `missed` 88, `false_detection` 346, `pred_kinds`,
+`matched_by_pred_kind` and `missed_diagnosis` all term for term — where even
+`loraread`'s gate moved `false_detection` by one. The whole delta is **7 silent
+errors converted for 4 extra flags**, reconciling exactly to `5(-7) + 1(+4) =
+-31`, ÷15.
+
+**The registered mechanism was the smaller half.** Of the 11 rows that became
+fully correct, ~4 are tolerance-only; the rest were wrong in other fields, and
+`wrong:nominal`, `wrong:char_type` and all-four-wrong all fell too. The crop was
+starving the reader of context generally. **Together with the hybrid this is the
+campaign's central finding: the INPUT to the read holds the remaining quality,
+not the model doing the reading** — degrading the boxes costs -0.206, improving
+what the reader sees of the same boxes buys +0.049.
+
+**The default is deliberately NOT changed yet**, and the reason is a trap:
+`active_crop_knobs` records nothing at the default, so moving `_CROP_PAD` to 24
+would make every historical dump (implicit pad 6, no key) silently match the new
+default and `_reusable_dump` would reuse them across the change. Ship it via the
+stage environment until the dose response (`cropctx48`) is known, then change the
+default ONCE, in a commit that also makes the recording compare against the
+frozen 6/40/3.0 baseline rather than against whatever the current default is.
 
 **EVERY NUMBER IN THIS FILE IS FROM THE DEV SPLIT, AND DEV IS WHAT TEN-PLUS
 ARMS WERE SELECTED AGAINST.** `splits.py` reserves 20% as a frozen test set and
@@ -432,7 +462,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 831 passed, 2 skipped
+python -m pytest -q                          # 833 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```
