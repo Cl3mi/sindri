@@ -193,6 +193,17 @@ class DocScore(_Versioned):
     missed_contended: int = 0
     missed_isolated: int = 0
     missed_unlocated: int = 0
+    # The DENOMINATOR missed_unlocated was always missing. Without it nobody can
+    # tell a handicap the value-matching path absorbs from dead weight charged at
+    # w=10 -- and 201 of 2489 scored gold rows corpus-wide (8.1%) have no
+    # position, against 3.5% on dev and 10.6% on test.
+    #
+    # None, not 0. Every report written before this field would otherwise claim
+    # "no unlocated gold" while carrying a non-zero missed_unlocated, which
+    # makes the derived `unlocated_carried` NEGATIVE -- and a plausible-looking
+    # 0 on historical data is the exact defect DocScore.frame_origin_frac
+    # exists to prevent. Re-score to fill it in.
+    n_gold_unlocated: Optional[int] = None
     # Matched rows where the pipeline produced NO tolerance and gold has one
     # (score._failure_modes tagged missing:upper_tol / missing:lower_tol), and
     # how many DISTINCT gold (upper, lower) pairs those rows use in THIS

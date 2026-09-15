@@ -407,6 +407,12 @@ def test_summary_aggregates_why_the_misses_happened():
     diag = digest["missed_diagnosis"]
 
     assert diag == {"contended": 5, "isolated": 11, "unlocated": 1}
+    # Gold coverage lives in a SIBLING key precisely so the partition identity
+    # asserted below keeps holding. These DocScores predate n_gold_unlocated, so
+    # the denominator is UNMEASURED rather than 0 -- folding a missing
+    # denominator in as 0 would report carried_by_value = -1 and claim a
+    # coverage the run never had.
+    assert digest["gold_coverage"] == {"not_measured": 2}
     # The three buckets partition the misses, so no cause is double-counted and
     # none is silently dropped.
     assert sum(diag.values()) == digest["taxonomy"]["missed"]

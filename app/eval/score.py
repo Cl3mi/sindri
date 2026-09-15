@@ -292,6 +292,10 @@ def score_doc(dump: PredictionDump, gold: GoldDoc,
                     if diag else 0.0)
 
     pred_centers = [_center_pt(c, dump) for c in preds]
+    # Over ALL scored gold, not only the missed rows: an unlocated row that
+    # matched by value is still an unlocated row, and it is the difference
+    # between the two counts that says whether the value path is carrying them.
+    n_gold_unlocated = sum(1 for g in scored_gold if gold_pos(g) is None)
     contended = isolated = unlocated = 0
     for b in missed:
         pos = gold_pos(gold_by_num[b])
@@ -313,7 +317,7 @@ def score_doc(dump: PredictionDump, gold: GoldDoc,
         pred_kinds=pred_kinds, false_kinds=false_kinds,
         matched_kinds=matched_kinds,
         missed_contended=contended, missed_isolated=isolated,
-        missed_unlocated=unlocated,
+        missed_unlocated=unlocated, n_gold_unlocated=n_gold_unlocated,
         dropped_tol_rows=dropped_tol_rows,
         dropped_tol_distinct=len(dropped_tol_values),
         frame_origin_frac=round(frame_origin, 6),

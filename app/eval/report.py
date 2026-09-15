@@ -49,6 +49,31 @@ def aggregate(run_name: str, config: RunConfig, weights: ReviewCostWeights,
     )
 
 
+def _unlocated_coverage(report: RunReport) -> Dict:
+    """How many scored gold rows had no position, and how many paired anyway.
+
+    `missed_unlocated` has always been reported without its denominator, so the
+    question it exists to answer could not be asked: an unlocated gold row has
+    no position, `matching.py` pairs it on value similarity ALONE, and
+    `unlocated_carried` is how many that rescues. The remainder is either a
+    fixable gold-coverage defect or the residue of a mechanism already working,
+    and those route to completely different work.
+
+    Reports predating the field carry None, and a missing denominator is
+    reported as `*_not_measured` rather than folded in as 0 -- which would make
+    `unlocated_carried` negative and claim a coverage the run never had."""
+    known = [d for d in report.doc_scores if d.n_gold_unlocated is not None]
+    unmeasured = len(report.doc_scores) - len(known)
+    out = {"not_measured": unmeasured}
+    if unmeasured:
+        return out
+    unlocated_gold = sum(d.n_gold_unlocated for d in known)
+    out["unlocated_gold"] = unlocated_gold
+    out["carried_by_value"] = unlocated_gold - sum(d.missed_unlocated
+                                                   for d in known)
+    return out
+
+
 def _note_counts(report: RunReport) -> Tuple[Dict[str, int], int]:
     """Aggregate the tags scoring left on matched pairs.
 
@@ -523,6 +548,12 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
             "isolated": sum(d.missed_isolated for d in report.doc_scores),
             "unlocated": sum(d.missed_unlocated for d in report.doc_scores),
         },
+        # SIBLING to missed_diagnosis, never inside it: those three buckets
+        # partition `missed` and the digest's whole credibility rests on that
+        # identity holding. Coverage is a different question about the same
+        # rows -- how many scored gold rows had no position at all, and how many
+        # of those the value-matching path paired anyway.
+        "gold_coverage": _unlocated_coverage(report),
         "config": report.config.model_dump(),
         "weights": report.weights.model_dump(),
         "match_params": report.match_params.model_dump(),
