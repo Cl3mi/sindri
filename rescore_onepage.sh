@@ -37,7 +37,7 @@ WEIGHTS="${WEIGHTS:-docs/eval/weights.json}"
 # generalization number in the project: nothing has ever scored on test, and dev
 # is the split ten-plus arms were selected against.
 SPLIT="${SPLIT:-dev}"
-RUNS=("${@:-r3-awqcontrol r3-nf4control r3-loraread r3-vllmcontrol r3-vllmlora r3-7bawq r3-32bawq r3-hybrid}")
+RUNS=("${@:-r3-awqcontrol r3-nf4control r3-loraread r3-vllmcontrol r3-vllmlora r3-7bawq r3-32bawq r3-hybrid r3-cropctx}")
 read -r -a RUNS <<< "${RUNS[*]}"
 
 [ -d "$ROOT" ] || { echo "no client root at $ROOT (set SINDRI_CLIENT_ROOT)" >&2; exit 1; }

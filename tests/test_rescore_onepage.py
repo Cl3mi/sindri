@@ -119,3 +119,17 @@ def test_the_crop_arm_is_compared_against_production():
     and CLAUDE.md §4 is explicit that review cost alone has been wrong three
     times on this corpus."""
     assert "compare_pair r3-awqcontrol  r3-cropctx" in CMDS
+
+
+def test_every_measured_arm_is_in_the_default_batch():
+    """A measured run left out of the defaults gets a STALE digest: the batch
+    refreshes everything else, the missing one keeps whatever fields it had when
+    it was last scored, and `runner summary` then shows defaults for fields that
+    report never carried. That is CLAUDE.md §4's "re-score, don't just
+    re-summarise" happening by omission rather than by choice -- r3-cropctx was
+    the arm it happened to, which is how its gold_coverage came back absent
+    while every other arm had it."""
+    defaults = next(l for l in CMDS.splitlines() if l.startswith("RUNS="))
+    for run in ("r3-awqcontrol", "r3-nf4control", "r3-loraread", "r3-vllmcontrol",
+                "r3-vllmlora", "r3-7bawq", "r3-32bawq", "r3-hybrid", "r3-cropctx"):
+        assert run in defaults, f"{run} is measured but not in the default batch"

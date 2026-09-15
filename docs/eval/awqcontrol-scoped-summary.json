@@ -40,8 +40,8 @@
  "misplaced_matches": 44,
  "field_failures": {
   "field:lower_tol": 81,
-  "field:upper_tol": 63,
   "field:nominal": 69,
+  "field:upper_tol": 63,
   "field:char_type": 57
  },
  "field_failure_signatures": {
@@ -251,6 +251,11 @@
   "contended": 19,
   "isolated": 58,
   "unlocated": 11
+ },
+ "gold_coverage": {
+  "not_measured": 0,
+  "unlocated_gold": 12,
+  "carried_by_value": 1
  },
  "config": {
   "model_id": "Qwen/Qwen2.5-VL-72B-Instruct-AWQ",
