@@ -48,7 +48,7 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **852 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **853 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). `SCHEMA_VERSION` = 1 — do not bump
 it. Split frozen at `6d174d5e4f1b9228` — do not regenerate it.
 
@@ -121,14 +121,24 @@ structurally atypical `variants` into it, and 6 of its 19 predicted documents
 are multi-page (32%) against 1 of 20 in dev and 8 of 99 corpus-wide. The 11 that
 survived the policy carry 28% more gold values per document than dev's 15.
 
-**Over half the recall gap is gold coverage, not the model.** `missed_unlocated`
-— a missed gold row whose BALLOON could not be located, so the pipeline was
-never given a position to find — is **31 of 292 test gold rows (10.6%) against
-11 of 311 (3.5%) on dev**, at `w=10` each. On located gold only the recall gap
-narrows from 0.087 to **0.038**, and at dev's unlocated share the test cost
-would be ~149.7. `ingest --summary`'s `unlocated_kinds` settles what those rows
-are, and `_unlocated_kind_histogram`'s own docstring says they may be verbal
-requirements that never had a balloon.
+**About a THIRD of the dev/test gap is an artefact of how unlocated gold is
+priced** — an earlier note here said "over half"; that estimate was made before
+the denominator existed and is superseded. `missed_unlocated` is **31 of 292
+test gold rows against 11 of 311 on dev**, at `w=10` each, and on located gold
+only the recall gap narrows from 0.087 to **0.038**.
+
+**The mechanism, measured 2026-09-15: value matching rescues 1 unlocated row in
+12** (0 on the NF4/vLLM arms). That does NOT argue for excluding them. An
+unlocated row is not unreachable — the characteristic is still printed on the
+drawing, and an exact nominal match costs 0.0 in `matching.py`, cheaper than any
+geometric pair, so a correctly-read row WOULD pair. Eleven of twelve failing
+means the pipeline did not produce those values, which is a real miss.
+
+**What IS a distortion is the price.** A misread on a LOCATED row pairs
+geometrically and costs 5 as an escaped error; the identical misread on an
+unlocated row cannot pair and costs 10 as a miss. So unlocated gold converts
+read failures into misses at double weight. Bounding it by charging those rows
+at `w=5`: dev 133.93 → 130.27, test 165.18 → 151.09, gap −31.25 → **−20.8**.
 
 **GOLD COVERAGE, measured corpus-wide 2026-09-15** (`ingest --summary` to a
 throwaway `--out`): gold is **100 documents / 3594 sheet rows / 3103 balloons**.
@@ -525,7 +535,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 852 passed, 2 skipped
+python -m pytest -q                          # 853 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```
