@@ -66,7 +66,13 @@ def mean_confidence_from_logprobs(steps) -> float:
             "row and silently rewrite the review cost being measured.")
     per_step = [math.exp(max(lp.logprob for lp in step.values()))
                 for step in steps if step]
-    return float(sum(per_step) / len(per_step)) if per_step else 0.0
+    if not per_step:
+        return 0.0
+    # Guarded exactly as the transformers path is: review.LOW_CONF decides what
+    # gets flagged on BOTH stacks, and one guarded and one not would make them
+    # disagree about which rows are silent.
+    mean = float(sum(per_step) / len(per_step))
+    return mean if math.isfinite(mean) else 0.0
 
 
 # Which passes the adapter applies to. read-lora-v1 was trained on callout read

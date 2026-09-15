@@ -1,4 +1,5 @@
 import contextlib
+import math
 import os
 from pathlib import Path
 from typing import Optional
@@ -286,9 +287,18 @@ def device_map_for(device=None):
 
 
 def _mean_token_confidence(step_probs) -> float:
-    """Mean of per-token max-softmax probabilities; 0.0 for an empty sequence."""
+    """Mean of per-token max-softmax probabilities; 0.0 for an empty sequence.
+
+    Non-finite scores 0.0 rather than propagating. float16 AWQ can yield a
+    degenerate logits row whose softmax is NaN, and a NaN confidence is worse
+    than a low one in two ways: pydantic serialises it as `null` and the dump
+    then cannot be read back at all, and `conf < review.LOW_CONF` is False for
+    NaN, so the row is never flagged and ships as a silent error."""
     probs = list(step_probs)
-    return float(sum(probs) / len(probs)) if probs else 0.0
+    if not probs:
+        return 0.0
+    mean = float(sum(probs) / len(probs))
+    return mean if math.isfinite(mean) else 0.0
 
 
 class VLMBackend:

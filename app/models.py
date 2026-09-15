@@ -1,5 +1,37 @@
-from typing import List, Optional, Tuple
-from pydantic import BaseModel
+import math
+from typing import Annotated, List, Optional, Tuple
+from pydantic import BaseModel, BeforeValidator
+
+
+def _finite_or_zero(value):
+    """Confidence, with NaN/inf/None collapsed to 0.0 at the model boundary.
+
+    A NaN confidence made a whole nine-hour run unscoreable on 2026-09-15:
+    pydantic ACCEPTS NaN at construction, `model_dump_json` serialises it as
+    `null`, and reloading that null raises -- so the dump was write-only and
+    nothing said so until someone tried to score it. float16 AWQ can produce a
+    degenerate logits row whose softmax is NaN, and the test split is where the
+    structurally atypical drawings that trigger it live.
+
+    0.0 rather than a refusal, for two reasons. It is what
+    `extract._safe_read` already returns for a failed read, so the meaning is
+    consistent; and it puts the row BELOW `review.LOW_CONF`, where a reviewer
+    sees it. NaN would do the opposite: every comparison against NaN is False,
+    so `conf < LOW_CONF` never fires and the row ships as a SILENT error --
+    quietly worse than the crash that exposed it.
+
+    None is accepted because the dumps already on disk carry it. Refusing them
+    would mean re-predicting nine GPU hours to recover a number already there.
+    """
+    if value is None:
+        return 0.0
+    try:
+        return 0.0 if not math.isfinite(float(value)) else value
+    except (TypeError, ValueError):
+        return value        # let pydantic produce its own error message
+
+
+Confidence = Annotated[float, BeforeValidator(_finite_or_zero)]
 
 
 class Characteristic(BaseModel):
@@ -9,7 +41,7 @@ class Characteristic(BaseModel):
     upper_tol: str = ""
     lower_tol: str = ""
     raw_text: str = ""
-    confidence: float = 0.0
+    confidence: Confidence = 0.0
     id: str = ""                 # stable per-row id for the review UI
     kind: str = ""               # detector kind: dimension|gdt|surface|note|material
     subtype: str = ""            # box sub-type: gdt|theoretical|reference|note_ref
@@ -29,7 +61,7 @@ class Note(BaseModel):
     text_de: str = ""
     raw_text: str = ""
     box: Optional[Tuple[float, float, float, float]] = None
-    confidence: float = 0.0
+    confidence: Confidence = 0.0
     needs_review: bool = False
     review_reasons: List[str] = []
 
@@ -59,7 +91,7 @@ class TitleField(BaseModel):
     label_de: str = ""
     value: str = ""
     box: Optional[Tuple[float, float, float, float]] = None
-    confidence: float = 0.0
+    confidence: Confidence = 0.0
     needs_review: bool = False
     review_reasons: List[str] = []   # e.g. ["empty value", "missing caption"]
 
