@@ -184,3 +184,63 @@ def test_a_run_pinned_BACK_to_the_baseline_records_nothing():
     dumps taken before the knob existed, because that is exactly what it is."""
     assert ex.active_crop_knobs({"SINDRI_CROP_PAD": "6"}) == {}
     assert ex.resolve_crop_knobs({"SINDRI_CROP_PAD": "6"}) == (6, 40, 3.0)
+
+
+# --- the height-dependent pad -----------------------------------------------
+#
+# Measured 2026-09-16 (docs/plans/2026-09-16-crop-height-diagnostic.md §5): the
+# pad response is not spread across tall boxes, it is ONE band. Across pads
+# 6/24/48 the 120-200 px bucket went 0.391 -> 0.523 -> 0.578, monotone and still
+# climbing, while 40-80 was flat (+0.011), >=200 was flat to three decimals, and
+# 80-120 gained nothing and gave back what little it had at 48. A single global
+# pad therefore has to split the difference, which is why 48 read better
+# everywhere it mattered and still cost more.
+
+def test_by_default_there_is_no_height_dependence():
+    """Every dump ever taken used one pad for every box. The default must stay
+    byte-identical to that, or the knob changes behaviour for runs that never
+    asked for it."""
+    for h in (10.0, 60.0, 119.0, 120.0, 500.0):
+        assert ex.crop_pad_for(h, env={}) == 24
+
+
+def test_a_tall_box_gets_the_tall_pad():
+    env = {"SINDRI_CROP_PAD_TALL": "48"}
+    assert ex.crop_pad_for(119.0, env=env) == 24
+    assert ex.crop_pad_for(120.0, env=env) == 48      # threshold is inclusive
+    assert ex.crop_pad_for(500.0, env=env) == 48
+
+
+def test_the_threshold_is_settable():
+    """120 px is where the responding band starts, but it is a bucket boundary
+    rather than a measured knee -- the arm must be able to move it without a
+    code change."""
+    env = {"SINDRI_CROP_PAD_TALL": "48", "SINDRI_CROP_TALL_H": "200"}
+    assert ex.crop_pad_for(150.0, env=env) == 24
+    assert ex.crop_pad_for(200.0, env=env) == 48
+
+
+def test_a_bad_tall_value_loses_the_arm_rather_than_the_measurement():
+    for env in ({"SINDRI_CROP_PAD_TALL": "wide"}, {"SINDRI_CROP_TALL_H": "-5"}):
+        try:
+            ex.crop_pad_for(150.0, env=env)
+        except ValueError:
+            continue
+        raise AssertionError(f"{env} should have been refused")
+
+
+def test_no_height_dependence_records_nothing_extra():
+    """The tall knobs did not exist before 2026-09-16, and their default means
+    "one pad for every box" -- which is exactly what every historical dump did.
+    Recording them by default would change the RunConfig of a run that behaves
+    identically to its predecessors."""
+    assert "crop_pad_tall" not in ex.active_crop_knobs({})
+
+
+def test_a_height_dependent_run_records_BOTH_tall_knobs():
+    """All or none, for the reason the first three follow: a dump that recorded
+    the pad without the threshold would not say which boxes got it."""
+    got = ex.active_crop_knobs({"SINDRI_CROP_PAD_TALL": "48"})
+    assert got["crop_pad_tall"] == 48
+    assert got["crop_tall_h"] == 120
+    assert got["crop_pad"] == 24        # the base knobs still travel with it

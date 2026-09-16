@@ -104,6 +104,23 @@ _CROP_KNOBS = (
 )
 
 
+# The height-dependent pad, added 2026-09-16. The pad response is not spread
+# across tall boxes, it is ONE band: across pads 6/24/48 the 120-200 px bucket
+# went 0.391 -> 0.523 -> 0.578, monotone and still climbing, while 40-80 was flat
+# (+0.011), >=200 flat to three decimals, and 80-120 gained nothing and gave back
+# what little it had at 48. A single global pad has to split that difference,
+# which is why pad 48 read better where it mattered and still cost more overall.
+#
+# Defaults are "no height dependence": the tall pad falls back to the base pad,
+# so an unconfigured run is byte-identical to every dump ever taken, and the
+# recording stays silent for it.
+_CROP_TALL_H = 120          # px; where the responding band starts
+_TALL_KNOBS = (
+    ("crop_pad_tall", "SINDRI_CROP_PAD_TALL", None, int, 0, None),
+    ("crop_tall_h", "SINDRI_CROP_TALL_H", _CROP_TALL_H, int, 1, None),
+)
+
+
 def _crop_knob(env, name, key, default, cast, lo, hi):
     raw = (os.environ if env is None else env).get(key)
     if raw is None or raw == "":
@@ -130,6 +147,24 @@ def resolve_crop_knobs(env=None):
                  for name, key, default, cast, lo, hi in _CROP_KNOBS)
 
 
+def resolve_tall_pad(env=None):
+    """(tall_pad, threshold_px), with tall_pad None when height dependence is off."""
+    return tuple(_crop_knob(env, *k) for k in _TALL_KNOBS)
+
+
+def crop_pad_for(height_px: float, env=None) -> int:
+    """The pad for a read box of this height.
+
+    Threshold is INCLUSIVE, so `crop_tall_h` names the first height that gets
+    the tall pad -- which is how the measured band is described (`120-200`), and
+    an exclusive reading would silently exclude its own boundary."""
+    base = resolve_crop_knobs(env)[0]
+    tall, threshold = resolve_tall_pad(env)
+    if tall is None:
+        return base
+    return tall if height_px >= threshold else base
+
+
 def active_crop_knobs(env=None) -> dict:
     """The crop knobs for RunConfig.extra -- empty when all three are default.
 
@@ -138,9 +173,18 @@ def active_crop_knobs(env=None) -> dict:
     are exactly what an arm moves. Empty at default, so every dump ever taken
     keeps the config it has and stays reusable."""
     values = resolve_crop_knobs(env)
-    if values == _BASELINE_CROP_KNOBS:
-        return {}
-    return {k[0]: v for k, v in zip(_CROP_KNOBS, values)}
+    tall, threshold = resolve_tall_pad(env)
+    out = {} if values == _BASELINE_CROP_KNOBS else {
+        k[0]: v for k, v in zip(_CROP_KNOBS, values)}
+    if tall is not None:
+        # All or none, for the reason the base three follow: a dump recording
+        # the tall pad without its threshold would not say WHICH boxes got it.
+        # And the base knobs travel with it even at the baseline, because a
+        # height-dependent run is not a baseline run whatever its base pad is.
+        out = {k[0]: v for k, v in zip(_CROP_KNOBS, values)}
+        out["crop_pad_tall"] = tall
+        out["crop_tall_h"] = threshold
+    return out
 
 
 def _prep_crop(image, box, w, h, pad: int, min_h=None, max_upscale=None):
@@ -304,9 +348,11 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
 
     known_positions = ({n.pos for n in notes_obj.notes if n.parent_pos is None}
                        if notes_obj is not None else None)
-    # Resolved ONCE per document rather than per callout: a knob that changed
+    # Resolved ONCE per document rather than per callout: a bad value must fail
+    # before any read, not part-way through, and a knob that changed
     # mid-document would produce a dump whose crops came from two settings.
-    crop_pad = resolve_crop_knobs()[0]
+    resolve_crop_knobs()
+    resolve_tall_pad()
     total = len(detections)
     emit("ocr", f"Reading {total} region{'' if total == 1 else 's'}", 0, total)
     results = []
@@ -319,8 +365,13 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
             outer = _clamp(bx.tighten_to_ink(image, outer),
                            render.width, render.height)
         read_box = _clamp(d.inner_box, render.width, render.height) if d.inner_box else outer
+        # Height-dependent: the crop pad is resolved from THIS box's height,
+        # because the measured response lives in one band rather than across
+        # tall boxes generally. Falls back to the flat pad when the tall knob is
+        # unset, which is the default.
         crop = _prep_crop(image, read_box, render.width, render.height,
-                          pad=0 if d.inner_box else crop_pad)
+                          pad=0 if d.inner_box
+                          else crop_pad_for(read_box[3] - read_box[1]))
         if d.subtype == "gdt" and hasattr(backend, "read_region_gdt"):
             text, confidence = _safe_read(backend.read_region_gdt, crop)
             rotation_ambiguous = False
