@@ -131,5 +131,15 @@ def test_every_measured_arm_is_in_the_default_batch():
     while every other arm had it."""
     defaults = next(l for l in CMDS.splitlines() if l.startswith("RUNS="))
     for run in ("r3-awqcontrol", "r3-nf4control", "r3-loraread", "r3-vllmcontrol",
-                "r3-vllmlora", "r3-7bawq", "r3-32bawq", "r3-hybrid", "r3-cropctx"):
+                "r3-vllmlora", "r3-7bawq", "r3-32bawq", "r3-hybrid", "r3-cropctx",
+                "r3-cropctx48"):
         assert run in defaults, f"{run} is measured but not in the default batch"
+
+
+def test_the_second_crop_dose_is_compared_against_production():
+    """Same control as the first dose -- r3-awqcontrol -- because the two doses
+    are points on ONE curve. Comparing 48 against 24 would price the STEP rather
+    than the setting, and the decision rule registered in
+    docs/plans/2026-09-15-crop-context-arm-result.md reads both against
+    production."""
+    assert "compare_pair r3-awqcontrol  r3-cropctx48" in CMDS

@@ -5,8 +5,9 @@ Measured 2026-09-15, run `r3-awqtest`: production's exact serving configuration
 on the frozen test split. **Nothing had ever predicted or scored there.**
 
 **One line: 165.18 against dev's 133.93 — +31.25, or +23% more reviewer effort
-on drawings nothing was tuned against. Roughly half of that gap is gold
-coverage rather than the model, and the half that is not is read quality.**
+on drawings nothing was tuned against. About a THIRD of that gap is an artefact
+of how unlocated gold is priced (§3, measured — an earlier draft of this file
+said "over half", before the denominator existed); the rest is read quality.**
 
 ---
 
@@ -54,7 +55,7 @@ Quoting either alone overstates something.
 
 ---
 
-## 3. The decomposition — over half the recall gap is not the model
+## 3. The decomposition — about a third of the gap is a pricing artefact
 
 `missed_diagnosis` splits the misses, and the split differs sharply:
 
@@ -71,9 +72,9 @@ to find. Each one costs `w=10`, the heaviest weight there is.
 
 * **Recall on located gold only: dev 0.7433, test 0.7050.** The gap narrows from
   0.087 to **0.038** — less than half of what the headline shows.
-* At dev's unlocated share of missed, the test cost would be **~149.7** rather
-  than 165.18. So of the +31.25, roughly **+15.5 is gold coverage** and
-  **+15.7 is genuine difficulty**.
+* At dev's unlocated share of missed, the test cost would be ~149.7 rather than
+  165.18 — **but that framing assumed unlocated rows were unreachable, and they
+  are not.** See the measured answer below.
 
 **MEASURED 2026-09-15, and it corrects the framing above: DEV is the outlier,
 not test.** The corpus-wide ingest says **201 of 2489 scored (dimension-bucket)
@@ -96,12 +97,29 @@ among the unballooned — Abstand 42, Distance 26, Diameter 11, Durchmesser 7.
 `ingest --cv`, which that run did not pass. Whether CV recovery can reach any of
 the 491 is unmeasured.
 
-**And `ingest` already knows how to settle what those rows are.**
-`_unlocated_kind_histogram` exists precisely for this, and its docstring says:
-*"a verbal requirement never had a balloon, so counting it as unlocated
-understates how well the DIMENSIONS are covered."* `ingest --summary` reports
-`unlocated_kinds` and `unlocated_char_types`. Running it is GPU-free — but see
-the warning in §4 before pointing it at the real gold directory.
+**ANSWERED 2026-09-16: the value-matching path rescues 1 unlocated row in 12 on
+dev and 1 in 32 on test** — and 0 or 1 on all ten scored runs, across models
+from 7B to 72B, two serving stacks, with and without an adapter. It is
+effectively dead, and no model change moves it.
+
+**That does NOT make unlocated rows unreachable, which is where the earlier
+"over half" estimate went wrong.** The characteristic is still printed on the
+drawing, and an exact nominal match costs 0.0 in `matching.py` — cheaper than
+any geometric pair — so a correctly-read unlocated row WOULD pair. Eleven of
+twelve failing means the pipeline did not produce those values. That is a real
+miss.
+
+**The artefact is the PRICE.** A misread on a LOCATED row pairs geometrically
+and costs 5 as an escaped error; the identical misread on an unlocated row
+cannot pair and costs 10 as a miss. Unlocated gold converts read failures into
+misses at double weight. Bounding it by charging those rows at `w=5`: dev
+133.93 -> 130.27, test 165.18 -> 151.09, and the gap **-31.25 -> -20.8**.
+
+**And the tax scales with the split's sample, not the pipeline**: unlocated
+share of scored gold is 3.9% on dev, 11.0% on test, **8.1% corpus-wide**. Dev
+sits 13 gold rows below the corpus rate, worth ~131 cost — so a
+corpus-representative production number is roughly **142.7** against dev's
+133.93 from this effect alone, before any template-difficulty effect.
 
 ---
 
@@ -140,12 +158,11 @@ and it is defensible.
 
 **For the campaign.** Three things, in order:
 
-1. **Settle the unlocated rows** (GPU-free, one command, throwaway `--out`). If
-   they are verbal requirements that never had balloons, the test gap is
-   materially smaller than 165 suggests and the harness is charging `w=10` for
-   rows no detector could ever find. If they are dimensions, gold coverage is a
-   real defect worth fixing before any further arm is judged on `missed`.
-2. **`cropctx48`** — already registered and built, unaffected by any of this.
+1. **Settle the unlocated rows — DONE 2026-09-16** (§3). They are a real miss
+   mispriced at double weight, not an unreachable row, and the tax scales with
+   the split's sample. `gold_coverage` in the digest now carries the numbers.
+2. **`cropctx48`** — predicted 2026-09-15, run complete 2026-09-16, awaiting
+   score.
 3. **Re-measure the crop win on test** once the dose is settled. A -2.07 that
    only exists on the tuned split is worth much less than one that survives here,
    and this is the split where a context change should matter MOST, because
