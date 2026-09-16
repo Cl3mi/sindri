@@ -35,11 +35,10 @@ advisory, and it has been right every single time it fired.
 
 ## 2. Where things stand
 
-**Read `docs/plans/2026-09-09-session-handoff.md` first — it is the current
-state of play, and it carries the SCOPE POLICY that defines what the product
-claims.** Then `2026-09-07-rung3-loraread-result.md`, then
-`2026-09-05-session-handoff.md`; both are superseded where they disagree.
-Everything below is the durable summary.
+**Read `docs/plans/2026-09-16-session-handoff.md` first — it is the current
+state of play.** It supersedes `2026-09-09-session-handoff.md` entirely; every
+older handoff is one or more policies behind. Everything below is the durable
+summary.
 
 **Scope policy (2026-09-09): single-sheet drawings at a size the renderer
 handles at full resolution** — `score --max-pages 1 --dpi 300
