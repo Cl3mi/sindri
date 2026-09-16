@@ -48,7 +48,7 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **853 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **857 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). `SCHEMA_VERSION` = 1 — do not bump
 it. Split frozen at `6d174d5e4f1b9228` — do not regenerate it.
 
@@ -98,13 +98,31 @@ campaign's central finding: the INPUT to the read holds the remaining quality,
 not the model doing the reading** — degrading the boxes costs -0.206, improving
 what the reader sees of the same boxes buys +0.049.
 
-**The default is deliberately NOT changed yet**, and the reason is a trap:
-`active_crop_knobs` records nothing at the default, so moving `_CROP_PAD` to 24
-would make every historical dump (implicit pad 6, no key) silently match the new
-default and `_reusable_dump` would reuse them across the change. Ship it via the
-stage environment until the dose response (`cropctx48`) is known, then change the
-default ONCE, in a commit that also makes the recording compare against the
-frozen 6/40/3.0 baseline rather than against whatever the current default is.
+**SHIPPED 2026-09-16: `_CROP_PAD` is 24.** The dose response settled it and the
+curve is **peaked** — `cropctx48` (pad 48) reads MORE accurately and costs MORE:
+132.73 with `field_acc` 0.5426 and `escaped_rate` 0.2154, against pad 24's
+131.87 / 0.5291 / 0.2058. Three rows moved into fully-correct and three into
+`escaped_error` between the doses, and a silent error is worth 5 where the flag
+it displaced was worth 1. **The hybrid's finding from the other side: extra
+context makes the reader more confident, and on a row it is still misreading,
+confidence removes the warning without fixing the value.** Do not test 96.
+
+**`active_crop_knobs` compares against a FROZEN `_BASELINE_CROP_KNOBS` of
+6/40/3.0, not against the current default** — so a run at today's shipped 24
+records its knobs out loud, and `SINDRI_CROP_PAD=6` still reproduces every
+pre-2026-09-16 dump config and all. Comparing against the default instead would
+make a pad-24 run look identical in `RunConfig` to every pad-6 dump on disk and
+`_reusable_dump` would reuse them straight across the change.
+
+**THE REGISTERED DECISION RULE FOR THAT DOSE WAS WRONG, and it is the lesson.**
+It said "`field_acc` up AND `misplaced_matches` <= 46 -> take 48". **Both
+conditions held** and 48 is the worse setting. The rule failed because
+`misplaced_matches` never moved at all (42 at both doses) while the real damage
+landed in the flagged/silent split, which the rule never looked at. Second
+registered gate in three arms whose PREMISE was the flawed part.
+**A damage counter must be one the treatment can actually move — check it
+responded to the PREVIOUS dose before registering it.** `misplaced_matches` was
+already flat at 44 -> 42, so the evidence was on the table beforehand.
 
 **THE TEST SPLIT IS MEASURED, AND DEV WAS OPTIMISTIC BY +31.25**
 (2026-09-15, `docs/plans/2026-09-15-test-split-result.md`). Production's exact
@@ -166,14 +184,13 @@ any worse at reading.
 **Every future arm's headline must say which split it is from.** The dev number
 is not wrong; it answers a narrower question than a reader assumes.
 
-**The read crop is now a recorded knob** (`SINDRI_CROP_PAD` / `SINDRI_CROP_MIN_H`
-/ `SINDRI_CROP_MAX_UPSCALE`, `extract.active_crop_knobs`), because r3-hybrid
-made it the dominant term in read accuracy. All three keys are recorded or none,
-and nothing is recorded at the defaults, so every dump ever taken keeps its
-config. `app/train/dataset.py` resolves the SAME knob — a training crop that
-differs from an inference crop is the failure its docstring exists to prevent.
-The first arm on it is `cropctx`, registered in
-`docs/plans/2026-09-14-crop-context-arm-prediction.md` before the run.
+**The read crop is a recorded knob** (`SINDRI_CROP_PAD` / `SINDRI_CROP_MIN_H` /
+`SINDRI_CROP_MAX_UPSCALE`, `extract.active_crop_knobs`). All three keys are
+recorded or none, relative to the frozen baseline above. `app/train/dataset.py`
+resolves the SAME knob — a training crop that differs from an inference crop is
+the failure its docstring exists to prevent. **`_MIN_CROP_H` (40),
+`_MAX_UPSCALE` (3.0) and `boxes.tighten_to_ink`'s own `pad=3` are still
+untested**, and each is a separate variable.
 
 **What runs next and why, including what was rejected:**
 `docs/plans/2026-09-14-next-steps-decision.md`.
@@ -535,7 +552,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 853 passed, 2 skipped
+python -m pytest -q                          # 857 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```

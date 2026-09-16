@@ -141,3 +141,56 @@ banked win for a maybe.
 * **Not the other crop knobs yet.** `_MIN_CROP_H` (40) and `_MAX_UPSCALE` (3.0)
   are untested, and so is `boxes.tighten_to_ink`'s own `pad=3`. Each is a
   separate variable and none should ride along with a pad dose.
+
+
+---
+
+## 6. The second dose — measured 2026-09-16, and the curve is PEAKED
+
+`r3-cropctx48` (`SINDRI_CROP_PAD` 48), 20 documents, same control:
+
+| | production | pad 24 | **pad 48** |
+|---|---|---|---|
+| review cost | 133.93 | **131.87** | 132.73 |
+| delta / ci95 | — | -2.07 / [-5.33, 0.47] | -1.20 / [-3.8, 0.8] |
+| weightings better | — | 6 of 6 | 6 of 6 |
+| `field_acc` | 0.4798 | 0.5291 | **0.5426** |
+| `escaped_rate` | 0.2283 | **0.2058** | 0.2154 |
+| `misplaced_matches` | 44 | 42 | 42 |
+| `n_pred` | 569 | 569 | 569 |
+
+**Identity gate passed at both doses** — `n_pred` 569, `missed` 88,
+`false_detection` 346, unchanged. Detection is upstream of the crop and stayed
+that way.
+
+**48 reads MORE accurately and costs MORE.** Between the doses, three rows moved
+into fully-correct (118 → 121) and three into `escaped_error` (64 → 67). A
+silent error is worth 5 and the flag it displaced was worth 1, so the trade
+loses. By `experiment.py`'s three criteria — cost, `field_acc`, `escaped_rate` —
+**24 beats 48 on two of three**, and 24 ships.
+
+That is the hybrid's finding arriving from the other side: **extra context makes
+the reader more confident, and on a row it is still misreading, confidence
+removes the warning without fixing the value.**
+
+### The registered decision rule was WRONG, and that is the lesson
+
+§4 registered: *"`field_acc` up AND `misplaced_matches` <= 46 -> take 48, and
+test 96 next."* **Both conditions held.** `field_acc` rose to 0.5426 and
+`misplaced_matches` was 42. The rule says take 48. The rule is wrong.
+
+It is wrong because **`misplaced_matches` never moved at all** — 42 at both
+doses — so the damage counter was insensitive to the treatment, while the real
+damage appeared somewhere the rule never looked: the flagged/silent split.
+
+This is the second registered gate in three arms whose PREMISE was the flawed
+part, after the hybrid's `field_acc` gate. The generalisation worth keeping:
+
+> **A damage counter must be one the treatment can actually move.** Before
+> registering it, check that it responded to the previous dose. `misplaced_matches`
+> was already flat between production and pad 24 (44 → 42) — the evidence that it
+> was the wrong counter was on the table before the rule was written.
+
+**Do not test 96.** The curve turned between 24 and 48 on both metrics that
+decide, and the mechanism that turned it — confidence outrunning accuracy — gets
+worse with more context, not better.
