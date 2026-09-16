@@ -258,9 +258,19 @@
     "field_acc": 0.5824
    },
    {
-    "range": ">=80",
-    "n": 127,
-    "field_acc": 0.4409
+    "range": "80-120",
+    "n": 39,
+    "field_acc": 0.2051
+   },
+   {
+    "range": "120-200",
+    "n": 55,
+    "field_acc": 0.5455
+   },
+   {
+    "range": ">=200",
+    "n": 33,
+    "field_acc": 0.5455
    }
   ],
   "not_measured": 0

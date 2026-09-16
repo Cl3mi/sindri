@@ -41,6 +41,9 @@ should be near-empty and is.)*
 
 ## 2. What the same table found instead
 
+> **Read §5 before acting on this section.** `>=80` turned out to hide three
+> different populations, and "taller is worse" is wrong.
+
 **126 of 223 matched rows (56.5%) are boxes ≥80 px tall, and they read at
 0.3968 against 0.5909 for the 40-80 px band.** That is the single largest
 identified read-quality deficit on the corpus, and it is a property of the BOX,
@@ -71,6 +74,12 @@ has to split the difference.**
 ---
 
 ## 3. The lead this opens, and what it still needs
+
+> **SUPERSEDED BY §5, same day.** Splitting the tall bucket showed accuracy is
+> NOT monotone in height and that the pad response lives in ONE band
+> (`120-200`), not across `>=80`. The mechanism below survives; the threshold
+> and the predicted bucket do not. Kept because the reasoning is what §5
+> corrects.
 
 **A height-dependent pad.** Pad proportional to box height, or simply a larger
 pad above a height threshold. The evidence for it is unusually direct:
@@ -111,3 +120,57 @@ boundaries — would place it, and that is another GPU-free re-score.
 * **Not `tighten_to_ink`'s `pad=3`.** It is the same CONTEXT lever as
   `_CROP_PAD`, whose curve is already peaked globally. It would only make sense
   as part of the height-dependent proposal, not beside it.
+
+
+---
+
+## 5. The knee, placed — and it is U-shaped
+
+Re-scored 2026-09-16 with the tall bucket split. The published `>=80` figure
+reconciles exactly (126 rows, 0.3968 = the sum of the three new buckets), so
+everything in §1-§3 still checks out.
+
+| bucket | n | pad 6 | pad 24 | pad 48 | 6 → 48 |
+|---|---|---|---|---|---|
+| `40-80` | 88 | 0.591 | 0.598 | 0.602 | +0.011 |
+| **`80-120`** | 33 | **0.242** | 0.273 | 0.242 | **+0.000** |
+| **`120-200`** | 64 | 0.391 | 0.523 | **0.578** | **+0.187** |
+| `>=200` | 29 | 0.586 | 0.586 | 0.586 | +0.000 |
+
+**Accuracy is not monotone in height.** It collapses at 80-120 px (0.242, the
+worst on the page), partially recovers at 120-200, and returns to single-line
+levels at `>=200`. So "taller is worse" — the reading §2 offered — is wrong, and
+`>=80` was hiding three different populations.
+
+**The pad win is ONE band.** All of it is `120-200`: +0.187, monotone, **still
+climbing at pad 48**. `40-80` was flat, `>=200` is *exactly* flat at 0.586 for
+every pad, and `80-120` gained nothing and gave back what little it had at 48.
+
+That rewrites the lead. It is not "pad more for tall boxes":
+
+* **`120-200` (64 rows, 29% of matched) are CLIPPED** and padding is still
+  recovering them at 48. This is where the global pad-48 gain came from, and why
+  it kept rising after `40-80` had flattened.
+* **`80-120` (33 rows, 15%) are the worst bucket at 0.242 and padding does not
+  touch them.** A different fault entirely, and the largest single unexplained
+  deficit left on the corpus.
+* **`>=200` (29 rows) read fine and are context-INSENSITIVE** — identical to
+  three decimals at every pad. Worth checking whether they are mostly `gdt` or
+  `note` boxes, which go through their own prompts (`_GDT_PROMPT`,
+  `_NOTES_PROMPT`) rather than the one-line dimension prompt. That would explain
+  both the recovery and the flatness, and it needs a height x kind cross-tab
+  that does not exist yet.
+
+### The arm this justifies
+
+**A pad that is larger only in the band that responds.** Keep 24 everywhere and
+use 48 above a threshold of ~120 px. Expected: `120-200` rises from 0.523 toward
+0.578 — about **3.5 more fully-correct rows** — *without* the `80-120` regression
+and the extra silent errors that made a global pad 48 cost more.
+
+**Damage counter: `escaped_error`**, which moved 71 → 64 → 67 across the three
+global doses and is therefore responsive, as §4 requires. `misplaced_matches`
+stays disqualified (44 → 42 → 42).
+
+**Registered prediction and gates live in
+`docs/plans/2026-09-16-tall-pad-arm-prediction.md`, written before the run.**
