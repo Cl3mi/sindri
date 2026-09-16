@@ -25,19 +25,20 @@ def _img():
 
 # --- defaults: every historical dump must keep the config it has -------------
 
-def test_the_defaults_are_exactly_what_every_measurement_was_taken_with():
-    """6 px of context, a 40 px floor, at most 3x upscaling. The frozen
-    baseline, r3-awqcontrol, the LoRA's training crops and every arm in the
-    campaign were produced with these."""
-    assert ex.resolve_crop_knobs({}) == (6, 40, 3.0)
+def test_the_frozen_baseline_is_what_every_pre_2026_09_16_dump_implies():
+    """6 px of context, a 40 px floor, at most 3x upscaling. The frozen Rung-0
+    baseline, r3-awqcontrol, the LoRA's training crops and every arm up to
+    2026-09-16 were produced with these, and the recording is relative to them
+    for as long as those dumps exist."""
+    assert ex._BASELINE_CROP_KNOBS == (6, 40, 3.0)
 
 
-def test_an_unchanged_run_records_nothing():
-    """Emitting these keys unconditionally would change the RunConfig of every
-    dump ever taken and force a re-predict of the whole corpus for no
+def test_a_run_at_the_baseline_records_nothing():
+    """Emitting these keys for a baseline run would change the RunConfig of
+    every dump ever taken and force a re-predict of the whole corpus for no
     measurement -- the same discipline that keeps `quant`, `adapter`,
     `serving_backend` and `detect_model` absent when they do not apply."""
-    assert ex.active_crop_knobs({}) == {}
+    assert ex.active_crop_knobs({"SINDRI_CROP_PAD": "6"}) == {}
 
 
 # --- a changed run records ALL of them --------------------------------------
@@ -84,12 +85,15 @@ def test_the_pad_knob_changes_the_crop_the_reader_gets(monkeypatch):
     """A resolver nothing reads is worse than no resolver: it would record a
     knob in RunConfig that the pipeline ignored, and the arm would report a
     treatment it never applied."""
-    base = ex._prep_crop(_img(), (40, 40, 140, 140), 200, 200, pad=ex._CROP_PAD)
-    monkeypatch.setenv("SINDRI_CROP_PAD", "24")
-    wide = ex._prep_crop(_img(), (40, 40, 140, 140), 200, 200,
-                         pad=ex.resolve_crop_knobs()[0])
-    assert base.size == (112, 112)          # 100 + 2*6
-    assert wide.size == (148, 148)          # 100 + 2*24
+    # An 80x80 box with room for the largest pad on every side: _prep_crop
+    # clamps at the page edge, so a box near the border would measure the clamp
+    # rather than the knob.
+    box = (60, 60, 140, 140)
+    base = ex._prep_crop(_img(), box, 200, 200, pad=ex._BASELINE_CROP_KNOBS[0])
+    monkeypatch.setenv("SINDRI_CROP_PAD", "48")
+    wide = ex._prep_crop(_img(), box, 200, 200, pad=ex.resolve_crop_knobs()[0])
+    assert base.size == (92, 92)            # 80 + 2*6
+    assert wide.size == (176, 176)          # 80 + 2*48
 
 
 def test_the_upscale_knobs_reach_prep_crop(monkeypatch):
@@ -138,8 +142,45 @@ def test_the_knobs_reach_the_dump(monkeypatch):
     assert extra["crop_min_h"] == 40
 
 
-def test_an_unchanged_run_still_has_no_crop_keys(monkeypatch):
-    for k in ("SINDRI_CROP_PAD", "SINDRI_CROP_MIN_H", "SINDRI_CROP_MAX_UPSCALE"):
+def test_a_baseline_pinned_run_has_no_crop_keys_in_the_dump(monkeypatch):
+    """The dump of a run pinned back to 6/40/3.0 must be indistinguishable from
+    the dumps taken before the knob existed -- that is what lets an old arm be
+    re-run and its documents legitimately reused."""
+    for k in ("SINDRI_CROP_MIN_H", "SINDRI_CROP_MAX_UPSCALE"):
         monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("SINDRI_CROP_PAD", "6")
     from app.eval.runner import _predict_extra
     assert "crop_pad" not in _predict_extra(detect_only=False)
+
+
+# --- shipping pad 24 --------------------------------------------------------
+#
+# Measured 2026-09-16 over two doses against r3-awqcontrol (133.93):
+#   pad 24 -> 131.87, field_acc 0.5291, escaped_rate 0.2058
+#   pad 48 -> 132.73, field_acc 0.5426, escaped_rate 0.2154
+# 48 reads more accurately and costs MORE, because three rows moved into
+# fully-correct and three into silent errors at w=5. 24 is the setting.
+
+def test_the_default_is_the_measured_setting():
+    """Shipping is a default change, not a launch flag: app/main.py and the
+    training crop builder both read the resolver, and neither sets an env."""
+    assert ex.resolve_crop_knobs({}) == (24, 40, 3.0)
+
+
+def test_a_default_run_RECORDS_its_knobs():
+    """The trap this ordering exists to avoid. `active_crop_knobs` compares
+    against the FROZEN 6/40/3.0 baseline, not against whatever the default
+    happens to be -- so a run at the new default records its knobs instead of
+    looking identical to every dump predicted at pad 6. Comparing against the
+    current default would make _reusable_dump reuse pad-6 dumps straight across
+    the change being measured."""
+    assert ex.active_crop_knobs({}) == {"crop_pad": 24, "crop_min_h": 40,
+                                        "crop_max_upscale": 3.0}
+
+
+def test_a_run_pinned_BACK_to_the_baseline_records_nothing():
+    """The other half, and it is what keeps every historical dump reusable: a
+    run explicitly set to the old values is byte-identical in RunConfig to the
+    dumps taken before the knob existed, because that is exactly what it is."""
+    assert ex.active_crop_knobs({"SINDRI_CROP_PAD": "6"}) == {}
+    assert ex.resolve_crop_knobs({"SINDRI_CROP_PAD": "6"}) == (6, 40, 3.0)

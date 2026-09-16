@@ -67,7 +67,7 @@ def _clamp(box, w, h):
 # box and upscale small crops so faint sub-mm text and stacked tolerances read
 # consistently instead of "sometimes". Frame-stripped CV inner boxes are read
 # with pad=0 (padding would re-introduce the border the crop deliberately removed).
-_CROP_PAD = 6           # px of context added around a VLM read box
+_CROP_PAD = 24          # px of context added around a VLM read box
 _MIN_CROP_H = 40        # upscale crops shorter than this…
 _MAX_UPSCALE = 3.0      # …but never by more than this factor
 
@@ -85,6 +85,16 @@ _MAX_UPSCALE = 3.0      # …but never by more than this factor
 # RunConfig.extra or _reusable_dump skips every document as "already predicted"
 # across the change being measured; and a bad value must lose the arm rather
 # than quietly produce a control wearing the arm's run name.
+# What every dump predicted BEFORE 2026-09-16 was produced with, frozen. The
+# recording below compares against THIS, not against the defaults above, and the
+# distinction is load-bearing: comparing against the current default would make
+# a run at pad 24 record nothing and therefore look identical in RunConfig to
+# every pad-6 dump on disk -- so _reusable_dump would reuse them straight across
+# the change being measured. Pinning SINDRI_CROP_PAD=6 still reproduces those
+# dumps byte-for-byte, config included, which is what makes an old arm
+# re-runnable.
+_BASELINE_CROP_KNOBS = (6, 40, 3.0)
+
 _CROP_KNOBS = (
     ("crop_pad", "SINDRI_CROP_PAD", _CROP_PAD, int, 0, None),
     ("crop_min_h", "SINDRI_CROP_MIN_H", _MIN_CROP_H, int, 0, None),
@@ -128,8 +138,7 @@ def active_crop_knobs(env=None) -> dict:
     are exactly what an arm moves. Empty at default, so every dump ever taken
     keeps the config it has and stays reusable."""
     values = resolve_crop_knobs(env)
-    defaults = tuple(k[2] for k in _CROP_KNOBS)
-    if values == defaults:
+    if values == _BASELINE_CROP_KNOBS:
         return {}
     return {k[0]: v for k, v in zip(_CROP_KNOBS, values)}
 
