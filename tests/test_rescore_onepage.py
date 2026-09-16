@@ -45,7 +45,8 @@ def test_the_comparison_puts_the_control_first():
     for line in CMDS.splitlines():
         if line.startswith("compare_pair r3-"):
             args = line.split()
-            assert "control" in args[1], line
+            assert ("control" in args[1]
+                    or args[1] in _CONTROLS_WITHOUT_THE_WORD), line
 
 
 def test_no_protected_command_is_piped_or_chained():
@@ -143,3 +144,22 @@ def test_the_second_crop_dose_is_compared_against_production():
     docs/plans/2026-09-15-crop-context-arm-result.md reads both against
     production."""
     assert "compare_pair r3-awqcontrol  r3-cropctx48" in CMDS
+
+
+# The shipped configuration became a CONTROL when _CROP_PAD moved to 24: a fresh
+# run with no environment now reproduces r3-cropctx exactly, config included. So
+# a control need not have "control" in its name any more.
+_CONTROLS_WITHOUT_THE_WORD = {"r3-cropctx"}
+
+
+def test_the_tall_pad_arm_is_compared_against_the_SHIPPED_pad():
+    """r3-awqcontrol would be the wrong control: it ran at pad 6, so the delta
+    would price the shipped pad change AND the height dependence together.
+    r3-cropctx is pad 24 everywhere, which is exactly this arm minus its one
+    variable."""
+    assert "compare_pair r3-cropctx    r3-tallpad" in CMDS
+
+
+def test_the_tall_pad_arm_is_in_the_default_batch():
+    defaults = next(l for l in CMDS.splitlines() if l.startswith("RUNS="))
+    assert "r3-tallpad" in defaults

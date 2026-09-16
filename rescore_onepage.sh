@@ -37,7 +37,7 @@ WEIGHTS="${WEIGHTS:-docs/eval/weights.json}"
 # generalization number in the project: nothing has ever scored on test, and dev
 # is the split ten-plus arms were selected against.
 SPLIT="${SPLIT:-dev}"
-RUNS=("${@:-r3-awqcontrol r3-nf4control r3-loraread r3-vllmcontrol r3-vllmlora r3-7bawq r3-32bawq r3-hybrid r3-cropctx r3-cropctx48}")
+RUNS=("${@:-r3-awqcontrol r3-nf4control r3-loraread r3-vllmcontrol r3-vllmlora r3-7bawq r3-32bawq r3-hybrid r3-cropctx r3-cropctx48 r3-tallpad}")
 read -r -a RUNS <<< "${RUNS[*]}"
 
 [ -d "$ROOT" ] || { echo "no client root at $ROOT (set SINDRI_CLIENT_ROOT)" >&2; exit 1; }
@@ -102,6 +102,11 @@ compare_pair r3-awqcontrol  r3-cropctx    cropctx-scoped-vs-awqcontrol-scoped.js
 # one curve: comparing 48 against 24 would price the step rather than the
 # setting, and the registered decision rule reads both against production.
 compare_pair r3-awqcontrol  r3-cropctx48  cropctx48-scoped-vs-awqcontrol-scoped.json
+# The height-dependent pad, against the SHIPPED pad rather than production.
+# r3-awqcontrol ran at pad 6, so comparing there would price the shipped pad
+# change and the height dependence together; r3-cropctx is pad 24 everywhere,
+# which is this arm minus its one variable.
+compare_pair r3-cropctx    r3-tallpad    tallpad-scoped-vs-cropctx-scoped.json
 
 echo
 echo "corpus page counts (the number the writeup is still waiting for):"
