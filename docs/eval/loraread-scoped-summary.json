@@ -39,8 +39,8 @@
  },
  "misplaced_matches": 57,
  "field_failures": {
-  "field:lower_tol": 84,
   "field:upper_tol": 81,
+  "field:lower_tol": 84,
   "field:nominal": 73,
   "field:char_type": 62
  },
@@ -239,6 +239,31 @@
   "not_measured": 0,
   "unlocated_gold": 12,
   "carried_by_value": 0
+ },
+ "read_accuracy_by_crop_height": {
+  "buckets": [
+   {
+    "range": "<28",
+    "n": 1,
+    "field_acc": 0.0
+   },
+   {
+    "range": "28-40",
+    "n": 8,
+    "field_acc": 0.75
+   },
+   {
+    "range": "40-80",
+    "n": 91,
+    "field_acc": 0.5824
+   },
+   {
+    "range": ">=80",
+    "n": 127,
+    "field_acc": 0.4409
+   }
+  ],
+  "not_measured": 0
  },
  "config": {
   "model_id": "Qwen/Qwen2.5-VL-72B-Instruct",

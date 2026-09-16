@@ -39,9 +39,9 @@
  },
  "misplaced_matches": 33,
  "field_failures": {
-  "field:nominal": 46,
-  "field:upper_tol": 46,
   "field:lower_tol": 53,
+  "field:upper_tol": 46,
+  "field:nominal": 46,
   "field:char_type": 48
  },
  "field_failure_signatures": {
@@ -240,6 +240,31 @@
   "not_measured": 0,
   "unlocated_gold": 12,
   "carried_by_value": 1
+ },
+ "read_accuracy_by_crop_height": {
+  "buckets": [
+   {
+    "range": "<28",
+    "n": 3,
+    "field_acc": 0.0
+   },
+   {
+    "range": "28-40",
+    "n": 6,
+    "field_acc": 0.1667
+   },
+   {
+    "range": "40-80",
+    "n": 39,
+    "field_acc": 0.2051
+   },
+   {
+    "range": ">=80",
+    "n": 33,
+    "field_acc": 0.1818
+   }
+  ],
+  "not_measured": 0
  },
  "config": {
   "model_id": "Qwen/Qwen2.5-VL-7B-Instruct-AWQ",

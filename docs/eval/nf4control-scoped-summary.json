@@ -265,6 +265,31 @@
   "unlocated_gold": 12,
   "carried_by_value": 0
  },
+ "read_accuracy_by_crop_height": {
+  "buckets": [
+   {
+    "range": "<28",
+    "n": 1,
+    "field_acc": 0.0
+   },
+   {
+    "range": "28-40",
+    "n": 8,
+    "field_acc": 0.75
+   },
+   {
+    "range": "40-80",
+    "n": 91,
+    "field_acc": 0.5385
+   },
+   {
+    "range": ">=80",
+    "n": 127,
+    "field_acc": 0.4094
+   }
+  ],
+  "not_measured": 0
+ },
  "config": {
   "model_id": "Qwen/Qwen2.5-VL-72B-Instruct",
   "dpi": 300,

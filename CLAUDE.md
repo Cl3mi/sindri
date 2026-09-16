@@ -123,6 +123,26 @@ registered gate in three arms whose PREMISE was the flawed part.
 responded to the PREVIOUS dose before registering it.** `misplaced_matches` was
 already flat at 44 -> 42, so the evidence was on the table beforehand.
 
+**THE LARGEST REMAINING READ DEFICIT IS TALL BOXES** (2026-09-16,
+`docs/plans/2026-09-16-crop-height-diagnostic.md`). **126 of 223 matched rows
+(56.5%) are boxes >=80 px tall and they read at 0.3968**, against 0.5909 for the
+40-80 px band. At 300 dpi 80 px is 6.8 mm, so these span more than one line — a
+nominal with stacked tolerances, a multi-cell GD&T frame, or a swallowed
+neighbour.
+
+**And the crop-pad win was almost entirely theirs**: `>=80` went 0.3968 ->
+0.4724 -> 0.4921 across pads 6/24/48 (**+0.095**) while 40-80 moved +0.011.
+**That says WHICH WAY tall boxes are wrong — they are CLIPPED, not
+over-filled**, because more context helps them monotonically and was still
+helping at 48. It also explains the dose response: the optimum differs by box
+height and a single global pad splits the difference.
+
+**The lead is a HEIGHT-DEPENDENT pad**, and its damage counter is `escaped_error`
+(71 -> 64 -> 67 across the three pads — responsive, unlike `misplaced_matches`
+which was flat at 44 -> 42 -> 42 and is disqualified by §4). Still missing: the
+80 px threshold is a bucket boundary, not a measured knee — one more GPU-free
+re-score with finer boundaries would place it.
+
 **THE TEST SPLIT IS MEASURED, AND DEV WAS OPTIMISTIC BY +31.25**
 (2026-09-15, `docs/plans/2026-09-15-test-split-result.md`). Production's exact
 configuration on the frozen test split: **165.18** against dev's 133.93, recall
@@ -406,6 +426,15 @@ GPU days.
   (had they not, the run would be bit-identical to `r3-32bawq`; it differs in
   five taxonomy counts). Register the mechanism a gate assumes, not only its
   threshold.
+* **The crop-RESOLUTION knobs (`_MIN_CROP_H`, `_MAX_UPSCALE`). Refuted without
+  a GPU run** (2026-09-16, `docs/plans/2026-09-16-crop-height-diagnostic.md`),
+  by the `read_accuracy_by_crop_height` aggregate built for the decision. Two
+  independent reasons: only **9 of 223 matched rows (4.0%)** sit below
+  `_MIN_CROP_H` at all, so the knobs cannot reach 96% of the corpus; and
+  accuracy **falls** with crop height (0.71 at 28-40 px, 0.59 at 40-80, **0.40
+  at >=80**), so "more pixels helps the reader" is backwards, not merely small.
+  `boxes.tighten_to_ink`'s `pad=3` is not in this family — it is the same
+  CONTEXT lever as `_CROP_PAD`, whose curve is already peaked.
 * **The `char_type` bucket as a synonym-map problem.** `wrong:char_type` is the
   largest single failure mode (115 of 308 matched pairs), and the standing
   hypothesis was that gold's German labels were missing from
