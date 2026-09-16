@@ -450,6 +450,21 @@ GPU days.
 * **Never judge a change on review cost alone.** An arm must also hold field
   accuracy on matched rows and not raise `escaped_rate`. `app/eval/experiment.py`
   encodes this; `weights.miss=10 > weights.escaped=5` makes cost gameable.
+* **Register the MECHANISM a gate assumes, not only its threshold — and pick a
+  damage counter the treatment can actually move.** Two of the last three arms
+  had a registered gate whose premise was the flawed part, and in both cases the
+  arm's own data had to overrule the rule that was supposed to decide it:
+  - the hybrid's `field_acc >= 0.40` gate assumed read quality follows the
+    READER. It tripped, and the arm was valid anyway — greedy determinism proved
+    the reads had run on the 72B.
+  - the crop dose's rule said "`field_acc` up AND `misplaced_matches` <= 46 ->
+    take 48". Both held; 48 is the worse setting. `misplaced_matches` never
+    moved (42 at both doses) while the damage landed in the flagged/silent
+    split, which the rule never looked at.
+
+  **The check is cheap: did the counter respond to the PREVIOUS dose?**
+  `misplaced_matches` was already flat at 44 -> 42 before that rule was written.
+  A counter that has never moved cannot falsify anything.
 * **Comment the *why*, not the what.** This codebase explains the trade a line
   makes and what breaks without it. Match that density.
 * Commits: imperative subject, body explaining *why*, trailer
