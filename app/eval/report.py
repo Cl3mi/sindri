@@ -57,8 +57,17 @@ def aggregate(run_name: str, config: RunConfig, weights: ReviewCostWeights,
 #   >=80   comfortably resolved
 # The boundaries ARE the settings a crop-resolution arm would move, so a shift
 # between adjacent buckets reads as "that knob would have reached these rows".
+# Re-cut 2026-09-16 after the resolution knobs were refuted. The first three
+# boundaries are unchanged so every number already published stays reproducible
+# -- the old ">=80" is the sum of the three tall buckets. The tall end is split
+# because it is 56% of matched rows at the worst accuracy on the page, and
+# whether accuracy keeps FALLING with height decides the shape of the
+# height-dependent pad: still falling means the pad should scale with height,
+# flattening means one threshold is enough. At 300 dpi these are roughly
+# 2, 3 and 5+ lines of callout text.
 _CROP_H_BUCKETS = ((None, 28.0, "<28"), (28.0, 40.0, "28-40"),
-                   (40.0, 80.0, "40-80"), (80.0, None, ">=80"))
+                   (40.0, 80.0, "40-80"), (80.0, 120.0, "80-120"),
+                   (120.0, 200.0, "120-200"), (200.0, None, ">=200"))
 
 
 def _read_accuracy_by_crop_height(report: RunReport) -> Dict:
