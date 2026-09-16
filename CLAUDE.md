@@ -47,7 +47,7 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **857 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **861 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). `SCHEMA_VERSION` = 1 — do not bump
 it. Split frozen at `6d174d5e4f1b9228` — do not regenerate it.
 
@@ -189,7 +189,11 @@ recorded or none, relative to the frozen baseline above. `app/train/dataset.py`
 resolves the SAME knob — a training crop that differs from an inference crop is
 the failure its docstring exists to prevent. **`_MIN_CROP_H` (40),
 `_MAX_UPSCALE` (3.0) and `boxes.tighten_to_ink`'s own `pad=3` are still
-untested**, and each is a separate variable.
+untested**, and each is a separate variable. **They also cannot be PROPOSED
+until the digest's `read_accuracy_by_crop_height` has numbers in it** — it is
+the bucket §2 and §4 require, it is GPU-free, and if short crops are not
+over-represented among wrong rows it closes the whole family for nothing.
+Re-score any run to populate it; older reports say `not_measured`.
 
 **What runs next and why, including what was rejected:**
 `docs/plans/2026-09-14-next-steps-decision.md`.
@@ -566,7 +570,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 857 passed, 2 skipped
+python -m pytest -q                          # 861 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```

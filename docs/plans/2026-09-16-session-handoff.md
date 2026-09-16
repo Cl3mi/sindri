@@ -16,13 +16,13 @@ dev numbers everyone has been quoting are **optimistic by +31.25**.
 
 ```bash
 cd /home/clemi/mci/sindri/.claude/worktrees/eval-harness
-python -m pytest -q                          # 857 passed, 2 skipped
+python -m pytest -q                          # 861 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # 32 passed, 0 failed
 python3 -c "from app.eval.runner import _prompt_sha256; print(_prompt_sha256())"
                                              # aa7659f1929184ea — must not move
 ```
 
-Branch `worktree-eval-harness`, **86 commits ahead of origin, unpushed**. Both
+Branch `worktree-eval-harness`, **89 commits ahead of origin, unpushed**. Both
 H100s idle. `SCHEMA_VERSION` = 1. Split frozen at `6d174d5e4f1b9228`.
 
 **NDA unchanged.** `score` / `compare` / `summary` / `probe` / `ingest` are the
@@ -127,13 +127,18 @@ model change moves it.
    ships (it needs a silent error to cost ≥9.4× a wasted re-check against
    today's 5×), AND it prices the flagged/silent trade that turned the crop dose
    response. Two open questions, one number.
-2. **Size the crop-resolution lever before running it.** `_MIN_CROP_H` (40),
-   `_MAX_UPSCALE` (3.0) and `boxes.tighten_to_ink`'s own `pad=3` are untested,
-   but `CLAUDE.md` §2 forbids proposing a knob without a bucket that predicts
-   the move — and §4 now adds that the bucket must be one the treatment can
-   actually move. **There is no such aggregate today**: nothing relates read
-   accuracy to crop SIZE. Build that diagnostic first (GPU-free); if small crops
-   are not over-represented in failures, the whole family is closed for free.
+2. **Size the crop-resolution lever before running it. The diagnostic is BUILT
+   (2026-09-16) and needs one re-score to fill in.** `read_accuracy_by_crop_height`
+   splits field accuracy on matched rows by the crop's height in render pixels,
+   bucketed at the knobs' own boundaries (`<28` the patch floor, `28-40` upscaled,
+   `40-80` passed through, `>=80`). Run `./rescore_onepage.sh` and read it:
+   - short buckets materially worse → `_MIN_CROP_H` / `_MAX_UPSCALE` have a
+     mechanism and a predicted bucket, and an arm can be registered;
+   - flat across buckets → **the whole crop-resolution family is refuted for
+     free**, with no GPU night spent.
+   `boxes.tighten_to_ink`'s `pad=3` is a CONTEXT lever, not a resolution one, so
+   it belongs with `_CROP_PAD` — and that curve is already peaked, which argues
+   against it.
 3. **Re-measure the crop win on test** once (2) settles. A −2.07 that exists
    only on the tuned split is worth much less than one that survives where
    layouts are unfamiliar — and §1 predicts the effect should be LARGER there.
