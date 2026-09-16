@@ -151,6 +151,16 @@ class MatchedPair(BaseModel):
     taxonomy: str = ""                # correct|flagged_correct|flagged_error|
                                       # escaped_error (+ cause/misplaced tags in notes)
     notes: List[str] = []
+    # Height of the prediction box in RENDER PIXELS -- what the reader actually
+    # saw. Pixels, not points: `_prep_crop`, `_MIN_CROP_H` and `_MAX_UPSCALE` all
+    # work in pixels, Qwen's patch factor of 28 is a pixel floor, and a
+    # render-clamped sheet draws the same callout at fewer pixels -- which is
+    # precisely the effect the crop-resolution knobs would target.
+    #
+    # None, not 0: pairs written before this field would otherwise all land in
+    # the `<28` bucket and invent the exact signal the aggregate exists to
+    # detect. Re-score to fill it in.
+    pred_box_h_px: Optional[float] = None
 
 
 class DocScore(_Versioned):

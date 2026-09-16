@@ -49,6 +49,55 @@ def aggregate(run_name: str, config: RunConfig, weights: ReviewCostWeights,
     )
 
 
+# Crop-height buckets, tied to the knobs rather than to round numbers:
+#   <28    below Qwen's patch factor -- the model refuses a crop this short, and
+#          `_prep_crop` / `title_block._prep_cell` upscale to clear it
+#   28-40  above that floor but below `_MIN_CROP_H`, so still upscaled
+#   40-80  passed through untouched
+#   >=80   comfortably resolved
+# The boundaries ARE the settings a crop-resolution arm would move, so a shift
+# between adjacent buckets reads as "that knob would have reached these rows".
+_CROP_H_BUCKETS = ((None, 28.0, "<28"), (28.0, 40.0, "28-40"),
+                   (40.0, 80.0, "40-80"), (80.0, None, ">=80"))
+
+
+def _read_accuracy_by_crop_height(report: RunReport) -> Dict:
+    """Field accuracy on matched rows, split by how tall the crop was.
+
+    Nothing related read accuracy to crop SIZE, and without that `_MIN_CROP_H`
+    and `_MAX_UPSCALE` cannot be proposed at all: CLAUDE.md section 2 requires a
+    bucket that predicts the move, and section 4 requires it to be one the
+    treatment can actually move -- the lesson from the crop dose, whose
+    registered damage counter was flat before it was ever registered.
+
+    GPU-free, and it can CLOSE the family for nothing: if short crops are not
+    over-represented among wrong rows, raising the floor cannot help.
+
+    Pairs predating `pred_box_h_px` count as not_measured rather than bucketing
+    at 0, which would put every one of them in `<28` and manufacture the very
+    signal this exists to detect."""
+    counts = {label: [0, 0] for _, _, label in _CROP_H_BUCKETS}   # [n, correct]
+    unmeasured = 0
+    for d in report.doc_scores:
+        for p in d.pairs:
+            h = p.pred_box_h_px
+            if h is None:
+                unmeasured += 1
+                continue
+            for lo, hi, label in _CROP_H_BUCKETS:
+                if (lo is None or h >= lo) and (hi is None or h < hi):
+                    counts[label][0] += 1
+                    counts[label][1] += int(p.fields_correct)
+                    break
+    return {
+        "buckets": [{"range": label, "n": n,
+                     "field_acc": round(ok / n, 4) if n else None}
+                    for _, _, label in _CROP_H_BUCKETS
+                    for n, ok in [counts[label]]],
+        "not_measured": unmeasured,
+    }
+
+
 def _unlocated_coverage(report: RunReport) -> Dict:
     """How many scored gold rows had no position, and how many paired anyway.
 
@@ -554,6 +603,9 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
         # rows -- how many scored gold rows had no position at all, and how many
         # of those the value-matching path paired anyway.
         "gold_coverage": _unlocated_coverage(report),
+        # Read accuracy against the SIZE of the crop -- the only thing that
+        # can justify, or refute, a crop-resolution arm.
+        "read_accuracy_by_crop_height": _read_accuracy_by_crop_height(report),
         "config": report.config.model_dump(),
         "weights": report.weights.model_dump(),
         "match_params": report.match_params.model_dump(),

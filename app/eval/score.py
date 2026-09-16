@@ -243,10 +243,13 @@ def score_doc(dump: PredictionDump, gold: GoldDoc,
         else:
             taxonomy = "flagged_correct" if p.needs_review else "correct"
         bump(taxonomy)
+        box = p.target_region
         pairs.append(MatchedPair(
             gold_balloon=gk, pred_pos=pk, distance_frac=round(dist, 5),
             fields_correct=not errors, field_errors=errors,
-            flagged=p.needs_review, taxonomy=taxonomy, notes=notes))
+            flagged=p.needs_review, taxonomy=taxonomy, notes=notes,
+            pred_box_h_px=(round(abs(box[3] - box[1]), 3)
+                           if box is not None else None)))
 
     matched_g = {gk for _, gk, _ in pairs_raw}
     matched_p = {pk for pk, _, _ in pairs_raw}
