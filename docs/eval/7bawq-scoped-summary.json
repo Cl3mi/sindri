@@ -39,8 +39,8 @@
  },
  "misplaced_matches": 33,
  "field_failures": {
-  "field:lower_tol": 53,
   "field:upper_tol": 46,
+  "field:lower_tol": 53,
   "field:nominal": 46,
   "field:char_type": 48
  },
@@ -246,32 +246,63 @@
    {
     "range": "<28",
     "n": 3,
-    "field_acc": 0.0
+    "field_acc": 0.0,
+    "kinds": {
+     "dimension": 3
+    }
    },
    {
     "range": "28-40",
     "n": 6,
-    "field_acc": 0.1667
+    "field_acc": 0.1667,
+    "kinds": {
+     "dimension": 4,
+     "gdt": 1,
+     "note": 1
+    }
    },
    {
     "range": "40-80",
     "n": 39,
-    "field_acc": 0.2051
+    "field_acc": 0.2051,
+    "kinds": {
+     "dimension": 25,
+     "gdt": 6,
+     "note": 3,
+     "surface": 1,
+     "theoretical": 4
+    }
    },
    {
     "range": "80-120",
     "n": 17,
-    "field_acc": 0.1176
+    "field_acc": 0.1176,
+    "kinds": {
+     "dimension": 8,
+     "gdt": 7,
+     "note": 1,
+     "theoretical": 1
+    }
    },
    {
     "range": "120-200",
     "n": 6,
-    "field_acc": 0.3333
+    "field_acc": 0.3333,
+    "kinds": {
+     "dimension": 4,
+     "gdt": 2
+    }
    },
    {
     "range": ">=200",
     "n": 10,
-    "field_acc": 0.2
+    "field_acc": 0.2,
+    "kinds": {
+     "dimension": 7,
+     "gdt": 1,
+     "note": 1,
+     "theoretical": 1
+    }
    }
   ],
   "not_measured": 0

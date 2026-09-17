@@ -1,0 +1,55 @@
+{
+ "schema_version": 1,
+ "run_a": "r3-cropctx-scoped",
+ "run_b": "r3-tallpad-scoped",
+ "n_docs": 15,
+ "mean_delta": 0.6667,
+ "ci95": [
+  0.0,
+  1.5333
+ ],
+ "significant": false,
+ "per_doc_deltas": {
+  "8e5fb4d8": 4.0,
+  "1a3064de": 5.0,
+  "514ec627": 0.0,
+  "53c2a083": 0.0,
+  "acb2b8bc": 0.0,
+  "1a007bc4": 0.0,
+  "caf2afd1": 0.0,
+  "3a75ba3d": 0.0,
+  "6095d6ec": 0.0,
+  "c9395a33": 0.0,
+  "f1639571": 1.0,
+  "28b2c522": 0.0,
+  "01806166": 0.0,
+  "c3aa6a9e": 0.0,
+  "aa3592aa": 0.0
+ },
+ "headline": {
+  "r3-cropctx-scoped": {
+   "mean_review_cost": 131.86666666666667,
+   "recall": 0.7170418006430869,
+   "escaped_rate": 0.2057877813504823
+  },
+  "r3-tallpad-scoped": {
+   "mean_review_cost": 132.53333333333333,
+   "recall": 0.7170418006430869,
+   "escaped_rate": 0.21221864951768488
+  }
+ },
+ "weight_sensitivity": {
+  "n_weight_vectors": 6,
+  "b_better_fraction": 0.0,
+  "mean_delta_per_weighting": [
+   0.6667,
+   1.0667,
+   0.5333,
+   0.6667,
+   1.0667,
+   0.2667
+  ],
+  "robust": true
+ },
+ "warnings": []
+}

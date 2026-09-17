@@ -40,8 +40,8 @@
  "misplaced_matches": 57,
  "field_failures": {
   "field:lower_tol": 87,
-  "field:nominal": 74,
   "field:upper_tol": 70,
+  "field:nominal": 74,
   "field:char_type": 63
  },
  "field_failure_signatures": {
@@ -270,32 +270,63 @@
    {
     "range": "<28",
     "n": 1,
-    "field_acc": 0.0
+    "field_acc": 0.0,
+    "kinds": {
+     "note": 1
+    }
    },
    {
     "range": "28-40",
     "n": 8,
-    "field_acc": 0.75
+    "field_acc": 0.75,
+    "kinds": {
+     "dimension": 7,
+     "note": 1
+    }
    },
    {
     "range": "40-80",
     "n": 91,
-    "field_acc": 0.5385
+    "field_acc": 0.5385,
+    "kinds": {
+     "dimension": 83,
+     "gdt": 4,
+     "note": 2,
+     "surface": 1,
+     "theoretical": 1
+    }
    },
    {
     "range": "80-120",
     "n": 39,
-    "field_acc": 0.1795
+    "field_acc": 0.1795,
+    "kinds": {
+     "dimension": 14,
+     "gdt": 12,
+     "note": 5,
+     "surface": 2,
+     "theoretical": 6
+    }
    },
    {
     "range": "120-200",
     "n": 55,
-    "field_acc": 0.5091
+    "field_acc": 0.5091,
+    "kinds": {
+     "dimension": 50,
+     "gdt": 1,
+     "note": 3,
+     "theoretical": 1
+    }
    },
    {
     "range": ">=200",
     "n": 33,
-    "field_acc": 0.5152
+    "field_acc": 0.5152,
+    "kinds": {
+     "dimension": 32,
+     "note": 1
+    }
    }
   ],
   "not_measured": 0

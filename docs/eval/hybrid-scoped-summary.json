@@ -268,32 +268,61 @@
    {
     "range": "<28",
     "n": 4,
-    "field_acc": 0.0
+    "field_acc": 0.0,
+    "kinds": {
+     "dimension": 4
+    }
    },
    {
     "range": "28-40",
     "n": 6,
-    "field_acc": 0.1667
+    "field_acc": 0.1667,
+    "kinds": {
+     "dimension": 4,
+     "gdt": 1,
+     "note": 1
+    }
    },
    {
     "range": "40-80",
     "n": 87,
-    "field_acc": 0.3103
+    "field_acc": 0.3103,
+    "kinds": {
+     "dimension": 77,
+     "gdt": 10
+    }
    },
    {
     "range": "80-120",
     "n": 58,
-    "field_acc": 0.2414
+    "field_acc": 0.2414,
+    "kinds": {
+     "dimension": 40,
+     "gdt": 10,
+     "note": 3,
+     "surface": 1,
+     "theoretical": 4
+    }
    },
    {
     "range": "120-200",
     "n": 57,
-    "field_acc": 0.193
+    "field_acc": 0.193,
+    "kinds": {
+     "dimension": 51,
+     "gdt": 3,
+     "note": 2,
+     "theoretical": 1
+    }
    },
    {
     "range": ">=200",
     "n": 29,
-    "field_acc": 0.4483
+    "field_acc": 0.4483,
+    "kinds": {
+     "dimension": 28,
+     "gdt": 1
+    }
    }
   ],
   "not_measured": 0

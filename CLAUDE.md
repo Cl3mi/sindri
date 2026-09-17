@@ -143,6 +143,21 @@ which was flat at 44 -> 42 -> 42 and is disqualified by §4). Still missing: the
 80 px threshold is a bucket boundary, not a measured knee — one more GPU-free
 re-score with finer boundaries would place it.
 
+**THE WORST CROP-HEIGHT BAND IS A KIND EFFECT, NOT A HEIGHT ONE** (2026-09-17).
+`read_accuracy_by_crop_height` now reports composition, and `80-120` px — the
+worst band on the page at 0.242, which no pad could touch — is the ONLY mixed
+band: **61% non-dimension** (gdt 8, theoretical 7, surface 3, note 2 of 33)
+against 91-97% dimension in every other band. 80-120 px is simply the size of a
+GD&T frame or a surface-finish symbol. **The registered hypothesis that `>=200`
+recovers because those are gdt/note boxes on their own prompts is REFUTED** —
+that band is 28 of 29 plain `dimension`, reading at 0.586 and insensitive to
+every pad tried.
+
+**So the next diagnostic is field accuracy BY KIND**, which nothing reports:
+`matched_by_pred_kind` gives counts only. It is GPU-free — `pred_kind` is on
+every matched pair — and it is the same shape of question that closed the
+crop-resolution family for nothing.
+
 **THE TEST SPLIT IS MEASURED, AND DEV WAS OPTIMISTIC BY +31.25**
 (2026-09-15, `docs/plans/2026-09-15-test-split-result.md`). Production's exact
 configuration on the frozen test split: **165.18** against dev's 133.93, recall
@@ -435,6 +450,22 @@ GPU days.
   at >=80**), so "more pixels helps the reader" is backwards, not merely small.
   `boxes.tighten_to_ink`'s `pad=3` is not in this family — it is the same
   CONTEXT lever as `_CROP_PAD`, whose curve is already peaked.
+* **The HEIGHT-DEPENDENT crop pad** (`r3-tallpad`, 2026-09-17,
+  `docs/plans/2026-09-17-tall-pad-arm-result.md`). Pad 48 for boxes >=120 px,
+  24 elsewhere. **132.53 against r3-cropctx's 131.87, better under 0 of 6
+  weightings.** The most precisely targeted arm in the campaign — the
+  `120-200` band went 0.523 -> 0.585 and **every other band came back
+  bit-identical** — and it still lost. Do not re-run it, and do not try another
+  pad dose: three global doses plus this one have mapped the curve and the
+  lever is spent.
+
+  **The reason it lost is worth more than the arm, and it generalises.**
+  `flagged_error` and `flagged_correct` BOTH cost 1, so **fixing a read on a row
+  the reviewer was already going to check saves NOTHING**. This arm fixed 6
+  flagged rows (zero saving) and broke 2 unflagged ones (+5 each). Only
+  converting an ESCAPED error pays, which is exactly what `read-lora-v1`'s win
+  was made of. **Before proposing any read-quality change, ask which taxonomy
+  bucket the fixed rows are currently in.**
 * **The `char_type` bucket as a synonym-map problem.** `wrong:char_type` is the
   largest single failure mode (115 of 308 matched pairs), and the standing
   hypothesis was that gold's German labels were missing from
