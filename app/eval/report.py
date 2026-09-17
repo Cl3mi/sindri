@@ -86,6 +86,7 @@ def _read_accuracy_by_crop_height(report: RunReport) -> Dict:
     at 0, which would put every one of them in `<28` and manufacture the very
     signal this exists to detect."""
     counts = {label: [0, 0] for _, _, label in _CROP_H_BUCKETS}   # [n, correct]
+    kinds = {label: {} for _, _, label in _CROP_H_BUCKETS}
     unmeasured = 0
     for d in report.doc_scores:
         for p in d.pairs:
@@ -97,10 +98,15 @@ def _read_accuracy_by_crop_height(report: RunReport) -> Dict:
                 if (lo is None or h >= lo) and (hi is None or h < hi):
                     counts[label][0] += 1
                     counts[label][1] += int(p.fields_correct)
+                    # Composition, not accuracy: per-cell accuracy would be too
+                    # sparse to read, while counts settle both open questions.
+                    k = p.pred_kind or "unrecorded"
+                    kinds[label][k] = kinds[label].get(k, 0) + 1
                     break
     return {
         "buckets": [{"range": label, "n": n,
-                     "field_acc": round(ok / n, 4) if n else None}
+                     "field_acc": round(ok / n, 4) if n else None,
+                     "kinds": dict(sorted(kinds[label].items()))}
                     for _, _, label in _CROP_H_BUCKETS
                     for n, ok in [counts[label]]],
         "not_measured": unmeasured,

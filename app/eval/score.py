@@ -249,7 +249,8 @@ def score_doc(dump: PredictionDump, gold: GoldDoc,
             fields_correct=not errors, field_errors=errors,
             flagged=p.needs_review, taxonomy=taxonomy, notes=notes,
             pred_box_h_px=(round(abs(box[3] - box[1]), 3)
-                           if box is not None else None)))
+                           if box is not None else None),
+            pred_kind=(p.kind or None)))
 
     matched_g = {gk for _, gk, _ in pairs_raw}
     matched_p = {pk for pk, _, _ in pairs_raw}

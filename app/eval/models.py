@@ -161,6 +161,14 @@ class MatchedPair(BaseModel):
     # the `<28` bucket and invent the exact signal the aggregate exists to
     # detect. Re-score to fill it in.
     pred_box_h_px: Optional[float] = None
+    # The detector kind of the matched prediction, so a height band can be read
+    # for its COMPOSITION. Two bands are unexplained and both hypotheses are
+    # about kind: >=200 px is context-insensitive, which is what a `gdt` or
+    # `note` box on its own prompt would look like, and 80-120 px is the worst
+    # band on the page, which matters differently if it is all `dimension`.
+    # None for pairs written before the field -- never "" or "dimension", which
+    # would invent a composition the run never recorded.
+    pred_kind: Optional[str] = None
 
 
 class DocScore(_Versioned):

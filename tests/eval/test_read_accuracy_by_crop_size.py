@@ -140,3 +140,61 @@ def test_the_published_boundaries_remain_recoverable():
     by = {b["range"]: b["n"] for b in d["read_accuracy_by_crop_height"]["buckets"]}
     assert by["<28"] == 1 and by["28-40"] == 1 and by["40-80"] == 1
     assert by["80-120"] + by["120-200"] + by[">=200"] == 3   # the old ">=80"
+
+
+# --- which KIND of box sits in each band ------------------------------------
+#
+# Two bands are unexplained and both hypotheses are about kind:
+#   >=200 px reads at 0.586 and is flat to three decimals at every pad --
+#         context-insensitive, which is what a `gdt` or `note` box on its own
+#         prompt (_GDT_PROMPT, _NOTES_PROMPT) would look like, since those do
+#         not ask for one line of dimension text at all.
+#   80-120 px reads at 0.242, the worst on the page, and padding cannot touch
+#         it -- if it is overwhelmingly `dimension`, the fault is in the
+#         one-line read of a two-line box.
+# Counts per band settle both. Per-cell accuracy would be too sparse to read.
+
+def _kinded(*rows):
+    """(kind, box_height_px) per row; values always read correctly, because
+    this aggregate is about composition, not accuracy."""
+    gold, preds = [], []
+    for i, (kind, h_px) in enumerate(rows):
+        y = 100 + i * 100
+        gold.append(GoldCharacteristic(balloon=i + 1, position_pt=(200.0, float(y)),
+                                       char_type="Distance", nominal=str(10 + i)))
+        cx, cy = SCALE * 200, SCALE * y
+        preds.append(Characteristic(
+            pos=i + 1, char_type="Distance", nominal=str(10 + i),
+            raw_text=str(10 + i), kind=kind,
+            target_region=(cx - 50, cy - h_px / 2, cx + 50, cy + h_px / 2)))
+    gold_doc = GoldDoc(doc_id="D", pdf="d.pdf", excel="d.xlsx", page_rect=RECT,
+                       characteristics=gold)
+    dump = PredictionDump(doc_id="D", config=RunConfig(model_id="stub", dpi=300),
+                          scale=SCALE, page_rect=RECT,
+                          result=ExtractionResult(characteristics=preds))
+    s = score_doc(dump, gold_doc, ReviewCostWeights(), MatchParams())
+    report = aggregate("r", RunConfig(model_id="stub"), ReviewCostWeights(),
+                       MatchParams(), [s])
+    return summarize(report, lambda d: "hashed")
+
+
+def test_each_band_reports_what_kinds_of_box_are_in_it():
+    d = _kinded(("dimension", 60.0), ("gdt", 250.0), ("note", 250.0))
+    by = {b["range"]: b for b in d["read_accuracy_by_crop_height"]["buckets"]}
+    assert by["40-80"]["kinds"] == {"dimension": 1}
+    assert by[">=200"]["kinds"] == {"gdt": 1, "note": 1}
+
+
+def test_the_kind_counts_reconcile_against_the_band_count():
+    """Section 4 of the working notes: an aggregate that cannot be cross-checked
+    is a number asking to be trusted. A kind dropped here would understate
+    exactly the composition the band is being read for."""
+    d = _kinded(("dimension", 90.0), ("dimension", 100.0), ("gdt", 110.0))
+    for b in d["read_accuracy_by_crop_height"]["buckets"]:
+        assert sum(b["kinds"].values()) == b["n"], b
+
+
+def test_an_empty_band_has_no_kinds():
+    d = _kinded(("dimension", 60.0))
+    by = {b["range"]: b for b in d["read_accuracy_by_crop_height"]["buckets"]}
+    assert by[">=200"]["kinds"] == {}
