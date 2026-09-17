@@ -198,3 +198,72 @@ def test_an_empty_band_has_no_kinds():
     d = _kinded(("dimension", 60.0))
     by = {b["range"]: b for b in d["read_accuracy_by_crop_height"]["buckets"]}
     assert by[">=200"]["kinds"] == {}
+
+
+# --- how well does each KIND read, and is fixing it worth anything? ---------
+#
+# r3-tallpad taught the question that has to travel with any read-quality
+# aggregate: flagged_error and flagged_correct BOTH cost 1, so fixing a read on
+# an already-flagged row saves NOTHING. Accuracy per kind alone would therefore
+# route work to a kind whose errors are all flagged, which is exactly the
+# mistake that arm made -- it fixed six flagged rows for zero saving.
+#
+# So this reports the PAYABLE part too: escaped_error per kind is what a fix in
+# that kind could actually recover.
+
+def _rows(*rows):
+    """(kind, correct, flagged) per row."""
+    gold, preds = [], []
+    for i, (kind, ok, flagged) in enumerate(rows):
+        y = 100 + i * 100
+        gold.append(GoldCharacteristic(balloon=i + 1, position_pt=(200.0, float(y)),
+                                       char_type="Distance", nominal=str(10 + i)))
+        cx, cy = SCALE * 200, SCALE * y
+        preds.append(Characteristic(
+            pos=i + 1, char_type="Distance",
+            nominal=str(10 + i) if ok else "999",
+            raw_text=str(10 + i) if ok else "999", kind=kind,
+            needs_review=flagged,
+            review_reasons=["low OCR confidence"] if flagged else [],
+            target_region=(cx - 50, cy - 30, cx + 50, cy + 30)))
+    gold_doc = GoldDoc(doc_id="D", pdf="d.pdf", excel="d.xlsx", page_rect=RECT,
+                       characteristics=gold)
+    dump = PredictionDump(doc_id="D", config=RunConfig(model_id="stub", dpi=300),
+                          scale=SCALE, page_rect=RECT,
+                          result=ExtractionResult(characteristics=preds))
+    s = score_doc(dump, gold_doc, ReviewCostWeights(), MatchParams())
+    report = aggregate("r", RunConfig(model_id="stub"), ReviewCostWeights(),
+                       MatchParams(), [s])
+    return summarize(report, lambda d: "hashed")
+
+
+def test_each_kind_reports_its_read_accuracy():
+    """The number nothing has: matched_by_pred_kind gives counts only, and the
+    worst crop-height band turned out to be the one where non-dimension kinds
+    concentrate."""
+    d = _rows(("dimension", True, False), ("dimension", False, False),
+              ("gdt", False, False))
+    by = {k["kind"]: k for k in d["read_accuracy_by_kind"]["kinds"]}
+    assert by["dimension"]["n"] == 2 and by["dimension"]["field_acc"] == 0.5
+    assert by["gdt"]["n"] == 1 and by["gdt"]["field_acc"] == 0.0
+
+
+def test_it_reports_the_PAYABLE_part_not_just_accuracy():
+    """Two kinds, equally wrong, worth completely different amounts: one kind's
+    errors are already flagged and cost 1 whether fixed or not, the other's are
+    silent and cost 5. Accuracy alone cannot tell them apart, and r3-tallpad
+    lost precisely by fixing the first sort."""
+    d = _rows(("gdt", False, True), ("surface", False, False))
+    by = {k["kind"]: k for k in d["read_accuracy_by_kind"]["kinds"]}
+    assert by["gdt"]["field_acc"] == 0.0 and by["gdt"]["escaped_error"] == 0
+    assert by["surface"]["field_acc"] == 0.0 and by["surface"]["escaped_error"] == 1
+
+
+def test_the_kinds_reconcile_against_the_matched_count():
+    d = _rows(("dimension", True, False), ("gdt", False, True),
+              ("note", False, False))
+    cov = d["read_accuracy_by_kind"]
+    tx = d["taxonomy"]
+    matched = (tx.get("correct", 0) + tx.get("flagged_correct", 0)
+               + tx.get("flagged_error", 0) + tx.get("escaped_error", 0))
+    assert sum(k["n"] for k in cov["kinds"]) + cov["not_measured"] == matched

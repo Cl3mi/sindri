@@ -113,6 +113,41 @@ def _read_accuracy_by_crop_height(report: RunReport) -> Dict:
     }
 
 
+def _read_accuracy_by_kind(report: RunReport) -> Dict:
+    """How well each detector kind reads, and how much fixing it could recover.
+
+    `matched_by_pred_kind` has always given counts and never accuracy, and the
+    crop-height table showed why that matters: the worst band on the page
+    (80-120 px, 0.242) is the only one where non-dimension kinds concentrate --
+    61% against 91-97% dimension everywhere else. So the bottom of that curve is
+    a KIND effect, and nothing measured kinds.
+
+    `escaped_error` per kind is reported alongside accuracy because r3-tallpad
+    proved accuracy alone routes work wrongly. `flagged_error` and
+    `flagged_correct` both cost 1, so fixing a read on an already-flagged row
+    saves NOTHING -- that arm fixed six flagged rows for zero saving and lost.
+    Two kinds can be equally wrong and worth completely different amounts, and
+    this is the column that tells them apart."""
+    acc = {}
+    unmeasured = 0
+    for d in report.doc_scores:
+        for p in d.pairs:
+            if p.pred_kind is None:
+                unmeasured += 1
+                continue
+            slot = acc.setdefault(p.pred_kind, [0, 0, 0])   # [n, correct, escaped]
+            slot[0] += 1
+            slot[1] += int(p.fields_correct)
+            slot[2] += int(p.taxonomy == "escaped_error")
+    return {
+        "kinds": [{"kind": k, "n": n, "field_acc": round(ok / n, 4) if n else None,
+                   "escaped_error": esc}
+                  for k, (n, ok, esc) in sorted(acc.items(),
+                                                key=lambda kv: -kv[1][0])],
+        "not_measured": unmeasured,
+    }
+
+
 def _unlocated_coverage(report: RunReport) -> Dict:
     """How many scored gold rows had no position, and how many paired anyway.
 
@@ -621,6 +656,9 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
         # Read accuracy against the SIZE of the crop -- the only thing that
         # can justify, or refute, a crop-resolution arm.
         "read_accuracy_by_crop_height": _read_accuracy_by_crop_height(report),
+        # Per KIND, with the payable part: a kind whose errors are all
+        # flagged costs the same fixed or not.
+        "read_accuracy_by_kind": _read_accuracy_by_kind(report),
         "config": report.config.model_dump(),
         "weights": report.weights.model_dump(),
         "match_params": report.match_params.model_dump(),
