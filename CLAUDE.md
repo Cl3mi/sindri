@@ -35,10 +35,18 @@ advisory, and it has been right every single time it fired.
 
 ## 2. Where things stand
 
-**Read `docs/plans/2026-09-16-session-handoff.md` first — it is the current
-state of play.** It supersedes `2026-09-09-session-handoff.md` entirely; every
-older handoff is one or more policies behind. Everything below is the durable
-summary.
+**Read `docs/plans/2026-09-17-session-handoff.md` first — it is the current
+state of play, and it carries the device-setup steps a fresh clone needs.** It
+supersedes every earlier handoff. Everything below is the durable summary.
+
+**On a NEW MACHINE, run `./install-hooks.sh` before your first commit.** The
+client-data pre-commit guard is versioned in `hooks/` and wired up by that
+script; it used to live only in `.git/hooks`, which git neither clones nor
+tracks, so a fresh checkout had no guard and nothing said so. Three more things
+live outside the repo and are listed in §1 of the handoff — the protected-roots
+file, the agent's Bash guard, and **`~/.claude/sindri-doc-salt`, which must be
+copied by hand and never committed**: a different salt silently stops every
+hashed id in `docs/eval/` from joining to what is already published.
 
 **Scope policy (2026-09-09): single-sheet drawings at a size the renderer
 handles at full resolution** — `score --max-pages 1 --dpi 300

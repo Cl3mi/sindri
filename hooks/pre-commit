@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Block client documents and value-bearing eval artifacts from ever entering
+# git history. core.hooksPath points here, so this covers every worktree.
+#
+# Blocks:
+#   1. NEWLY ADDED files whose name matches a client-content pattern
+#      (modifications to already-tracked files such as tests/fixtures/sample.pdf
+#      still work — this guards new leaks, not existing history).
+#   2. Any staged path that resolves inside a protected client-data root
+#      (~/.claude/sindri-protected-paths), e.g. via a symlink into the repo.
+#   3. Staged .json whose CONTENT carries extracted client values
+#      (gold records, prediction dumps, un-redacted reports).
+#
+# Escape hatch for a deliberate, reviewed exception:
+#   SINDRI_ALLOW_DATA_COMMIT=1 git commit ...
+set -uo pipefail
+
+if [ "${SINDRI_ALLOW_DATA_COMMIT:-0}" = "1" ]; then
+    echo "pre-commit: client-data guard bypassed via SINDRI_ALLOW_DATA_COMMIT=1" >&2
+    exit 0
+fi
+
+ROOTS_FILE="$HOME/.claude/sindri-protected-paths"
+FAIL=0
+
+blocked_name() {
+    case "${1,,}" in
+        *.pdf|*.xlsx|*.xls|*.xlsm|*.xlsb|*.ods|*.csv) return 0 ;;
+        *.gold.json|*.pred.json|*.report.json)        return 0 ;;
+        *doc_id_map*)                                  return 0 ;;
+        *berichte/*|*gestempelte*|*orginalzeichnungen*|*originalzeichnungen*) return 0 ;;
+        *client_data/*|*client-data/*|*eval_data/*)   return 0 ;;
+    esac
+    return 1
+}
+
+# 1 + 2: staged paths
+added=$(git diff --cached --name-only --diff-filter=A)
+staged=$(git diff --cached --name-only)
+
+while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    if blocked_name "$f"; then
+        echo "BLOCKED (client-content filename): $f" >&2
+        FAIL=1
+    fi
+done <<< "$added"
+
+if [ -f "$ROOTS_FILE" ]; then
+    while IFS= read -r root; do
+        root="${root%%#*}"; root="$(echo "$root" | xargs)"
+        [ -z "$root" ] && continue
+        root="${root/#\~/$HOME}"
+        while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            real=$(readlink -f -- "$f" 2>/dev/null || echo "$f")
+            case "$real" in
+                "$root"|"$root"/*)
+                    echo "BLOCKED (resolves into protected client-data root): $f -> $real" >&2
+                    FAIL=1 ;;
+            esac
+        done <<< "$staged"
+    done < "$ROOTS_FILE"
+fi
+
+# 3: staged JSON content carrying extracted client values
+while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    case "${f,,}" in *.json) ;; *) continue ;; esac
+    if git show ":$f" 2>/dev/null | grep -qE '"(field_errors|raw_text|characteristics|position_pt|upper_tol|lower_tol)"'; then
+        echo "BLOCKED (JSON contains extracted client values): $f" >&2
+        FAIL=1
+    fi
+done <<< "$staged"
+
+if [ "$FAIL" -ne 0 ]; then
+    cat >&2 <<'EOF'
+
+Commit rejected by the client-data guard.
+
+Client drawings, inspection sheets, and anything derived from them
+(gold records, prediction dumps, un-redacted reports) must stay outside
+git. Keep them under the protected root instead.
+
+If this is a deliberate, reviewed exception:
+    SINDRI_ALLOW_DATA_COMMIT=1 git commit ...
+EOF
+    exit 1
+fi
+exit 0
