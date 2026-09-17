@@ -317,6 +317,41 @@
   ],
   "not_measured": 0
  },
+ "read_accuracy_by_kind": {
+  "kinds": [
+   {
+    "kind": "dimension",
+    "n": 189,
+    "field_acc": 0.6243,
+    "escaped_error": 41
+   },
+   {
+    "kind": "gdt",
+    "n": 17,
+    "field_acc": 0.1765,
+    "escaped_error": 11
+   },
+   {
+    "kind": "theoretical",
+    "n": 9,
+    "field_acc": 0.0,
+    "escaped_error": 8
+   },
+   {
+    "kind": "surface",
+    "n": 4,
+    "field_acc": 0.0,
+    "escaped_error": 4
+   },
+   {
+    "kind": "note",
+    "n": 4,
+    "field_acc": 0.0,
+    "escaped_error": 3
+   }
+  ],
+  "not_measured": 0
+ },
  "config": {
   "model_id": "Qwen/Qwen2.5-VL-72B-Instruct-AWQ",
   "dpi": 300,

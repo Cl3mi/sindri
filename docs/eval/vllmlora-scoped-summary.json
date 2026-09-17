@@ -39,9 +39,9 @@
  },
  "misplaced_matches": 52,
  "field_failures": {
-  "field:char_type": 58,
-  "field:nominal": 73,
   "field:upper_tol": 79,
+  "field:nominal": 73,
+  "field:char_type": 58,
   "field:lower_tol": 79
  },
  "field_failure_signatures": {
@@ -293,6 +293,41 @@
      "gdt": 1,
      "note": 1
     }
+   }
+  ],
+  "not_measured": 0
+ },
+ "read_accuracy_by_kind": {
+  "kinds": [
+   {
+    "kind": "dimension",
+    "n": 185,
+    "field_acc": 0.5892,
+    "escaped_error": 38
+   },
+   {
+    "kind": "gdt",
+    "n": 20,
+    "field_acc": 0.3,
+    "escaped_error": 12
+   },
+   {
+    "kind": "theoretical",
+    "n": 12,
+    "field_acc": 0.0,
+    "escaped_error": 10
+   },
+   {
+    "kind": "note",
+    "n": 3,
+    "field_acc": 0.0,
+    "escaped_error": 1
+   },
+   {
+    "kind": "surface",
+    "n": 3,
+    "field_acc": 0.0,
+    "escaped_error": 3
    }
   ],
   "not_measured": 0

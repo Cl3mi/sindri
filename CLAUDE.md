@@ -143,6 +143,34 @@ which was flat at 44 -> 42 -> 42 and is disqualified by §4). Still missing: the
 80 px threshold is a bucket boundary, not a measured knee — one more GPU-free
 re-score with finer boundaries would place it.
 
+**15% OF ROWS PRODUCE 41% OF THE SILENT ERRORS, AND THEY ARE WRONG BY
+CONSTRUCTION** (2026-09-17, `docs/plans/2026-09-17-read-accuracy-by-kind.md`).
+`read_accuracy_by_kind` on the shipped config: `dimension` 189 rows at **0.6085**,
+`gdt` 17 at **0.1765**, and `theoretical` (9), `surface` (4), `note` (4) at
+**exactly 0.0000**. The 34 non-dimension rows are 15.2% of matched and carry 26
+of the 64 escaped errors — **3 to 5x more likely to ship silently wrong per
+row**. `dimension` alone reads at 0.6085 against the 0.5291 headline, so a sixth
+of the corpus was dragging the whole number down.
+
+**It is a labelling collision, not a read failure.** `gold -> Theoretical`
+totals **exactly 9** — every `theoretical` prediction — and `gold -> Note`
+exactly 4. `parser.parse_value` sets `char_type = THEORETICAL` unconditionally
+for `hint == "theoretical"`, `char_type_equal` is strict equality, and **gold's
+vocabulary has no "Theoretical"**. So those rows can never score correct. It is
+a PRODUCT defect (the reviewer corrects every one), not a scoring artefact, and
+`subtype` already records that the dimension was boxed — so classifying from the
+text loses nothing.
+
+**Not the closed char_type dead end.** §3 closes SYNONYM-MAP additions, which
+are about gold's vocabulary. This is the prediction side, and §3 itself points
+here when it calls `parser.py` inferring Diameter from a leading Ø a read-stage
+fault.
+
+**`app/eval/reparse.py` prices a parser change in CPU SECONDS** from dumps
+already on disk — `score --reparse-check`, with `would_fix - would_break` as the
+bound. Use it before any parser arm. Bounded above at 4 of the 9 rows, because
+2 have gold `Flatness` and 3 have no mappable gold type.
+
 **THE WORST CROP-HEIGHT BAND IS A KIND EFFECT, NOT A HEIGHT ONE** (2026-09-17).
 `read_accuracy_by_crop_height` now reports composition, and `80-120` px — the
 worst band on the page at 0.242, which no pad could touch — is the ONLY mixed
