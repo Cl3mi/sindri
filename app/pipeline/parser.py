@@ -50,6 +50,24 @@ def _strip_sign(tok: str) -> str:
     return tok.lstrip("+")
 
 
+def _classify(text: str):
+    """Leading symbol -> (char_type, body with the class prefix stripped).
+
+    Shared by the untoleranced `theoretical` branch and the general path so the
+    two can never disagree about what a leading Ø means; the prefix is stripped
+    here because leaving it in would put a stray token in front of the number
+    parsing."""
+    is_diameter = text.startswith("Ø") or bool(re.match(r"^[O0]\s*\d", text))
+    is_radius = bool(re.match(r"^R\s*\d", text.upper()))
+    if text.startswith("Ø"):
+        return DIAMETER, text[1:]
+    if is_diameter:
+        return DIAMETER, re.sub(r"^[O0]\s*", "", text, count=1)
+    if is_radius:
+        return RADIUS, re.sub(r"^R\s*", "", text, count=1, flags=re.IGNORECASE)
+    return DISTANCE, text
+
+
 def parse_value(raw: str, hint: str = "") -> Characteristic:
     text = _clean(raw)
     c = Characteristic(pos=0, raw_text=raw)
@@ -73,8 +91,16 @@ def parse_value(raw: str, hint: str = "") -> Characteristic:
         c.nominal = text
         return c
     if hint == "theoretical":
-        nums = _NUM_RE.findall(text)
-        c.char_type = THEORETICAL
+        # The box means "this dimension carries no TOLERANCE" -- it is not a
+        # characteristic type of its own, so only the tolerance suppression is
+        # the hint's job. Emitting THEORETICAL as the char_type made every boxed
+        # row unscoreable by construction: the client's inspection sheet has no
+        # such value, so all 9 of them on the dev split read at field_acc 0.0000
+        # and 8 shipped as SILENT errors (2026-09-17 read-accuracy-by-kind).
+        # Nothing is lost by classifying the text instead -- `subtype` already
+        # records that the callout was boxed.
+        c.char_type, body = _classify(text)
+        nums = _NUM_RE.findall(body)
         c.nominal = _norm(_strip_sign(nums[0])) if nums else ""
         return c
 
@@ -90,26 +116,11 @@ def parse_value(raw: str, hint: str = "") -> Characteristic:
 
     # --- classify by leading symbol ---
     upper = text.upper()
-    is_diameter = text.startswith("Ø") or bool(re.match(r"^[O0]\s*\d", text))
-    is_radius = bool(re.match(r"^R\s*\d", upper))
-
-    # strip the class prefix so number parsing is clean
-    body = text
-    if text.startswith("Ø"):
-        body = text[1:]
-    elif is_diameter:
-        body = re.sub(r"^[O0]\s*", "", text, count=1)
-    elif is_radius:
-        body = re.sub(r"^R\s*", "", text, count=1, flags=re.IGNORECASE)
-
+    char_type, body = _classify(text)
     if hint == "flatness":
         c.char_type = FLATNESS
-    elif is_diameter:
-        c.char_type = DIAMETER
-    elif is_radius:
-        c.char_type = RADIUS
     else:
-        c.char_type = DISTANCE
+        c.char_type = char_type
 
     # --- symmetric tolerance: "5 ±0,1" / "5 ±0.1" ---
     sym = re.search(r"±\s*(\d+(?:[.,]\d+)?)", body)

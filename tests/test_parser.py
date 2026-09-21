@@ -88,15 +88,44 @@ def test_negative_single_tol_does_not_trigger_max_zero():
 
 
 def test_theoretical_boxed_value_nominal_only():
+    """The box means "no tolerance", so the box still suppresses both tols.
+
+    What it does NOT mean is a different characteristic type -- see
+    test_theoretical_box_classifies_from_the_text below."""
     c = parse_value("20", hint="theoretical")
-    assert c.char_type == THEORETICAL
     assert c.nominal == "20"
     assert c.upper_tol == "" and c.lower_tol == ""
 
 def test_theoretical_period_decimal():
     c = parse_value("12.5", hint="theoretical")
-    assert c.char_type == THEORETICAL
     assert c.nominal == "12,5"
+    assert c.upper_tol == "" and c.lower_tol == ""
+
+
+def test_theoretical_box_classifies_from_the_text_not_the_hint():
+    """A boxed dimension is a Distance/Diameter/Radius that carries no tolerance.
+
+    Emitting THEORETICAL as the char_type made every one of these rows
+    unscoreable: the client's inspection sheet has no such value, so all 9
+    `theoretical` predictions on the dev split read at field_acc 0.0000 and 8 of
+    them shipped as SILENT errors (2026-09-17 read-accuracy-by-kind). The fact
+    that the callout was boxed is not lost -- `subtype` already records it."""
+    assert parse_value("20", hint="theoretical").char_type == DISTANCE
+    assert parse_value("Ø20", hint="theoretical").char_type == DIAMETER
+    assert parse_value("R5", hint="theoretical").char_type == RADIUS
+
+def test_theoretical_diameter_strips_the_class_prefix_from_the_nominal():
+    c = parse_value("Ø12.5", hint="theoretical")
+    assert c.char_type == DIAMETER
+    assert c.nominal == "12,5"
+
+def test_theoretical_ignores_a_tolerance_the_box_says_is_not_there():
+    """The suppression is the POINT of the hint, and it must survive the
+    classification change: a boxed value with stray signed tokens in the crop is
+    still untoleranced, so a tolerance here would be an invention."""
+    c = parse_value("20 +0,1 -0,1", hint="theoretical")
+    assert c.char_type == DISTANCE
+    assert c.nominal == "20"
     assert c.upper_tol == "" and c.lower_tol == ""
 
 def test_reference_parenthesized_nominal_only():
