@@ -16,6 +16,10 @@ advisory, and it has been right every single time it fired.
 * Only the reviewed CLI may touch it: `python3 -m app.eval.runner
   <probe|headers|ingest|split|predict|score|compare|summary|variants>`, plus
   `setup_client_data.py` and `sync_client_data.sh`.
+* **`runner review-tally` is the OPERATOR's, and is deliberately NOT in that
+  allowlist.** It reads a worksheet `score --gdt-worksheet` writes inside the
+  protected root, full of client text. Only its `--out` counts file in
+  `docs/eval/` is for an agent. Do not add it to the guard.
 * **Single, unpiped, unchained commands only.** These are all denied and each one
   has actually cost time here: `cmd | tail`, `cmd && cmd`, `cmd > file`, a heredoc
   whose body mentions the root, and `ls` on the root itself. Run the sanctioned
@@ -55,7 +59,7 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **886 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **909 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). **`tesseract` is a device
 prerequisite** — without the binary six tests fail as `TesseractNotFoundError`
 and read as broken code. `SCHEMA_VERSION` = 1 — do not bump it. Split frozen
@@ -192,6 +196,18 @@ the crop win, with no GPU.** It is the next lead. Which SIDE is wrong is
 undetermined (gold labels with no recognised word vs `_gdt_type`'s `Flatness`
 default); see §5 of `docs/plans/2026-09-22-theoretical-parser-result.md`.
 **Read `wrong_fields` before proposing any fix to a kind.**
+
+**The prediction side is now settled: all 8 are GUESSES.** `char_type_only_confusion`
+says every one was predicted Flatness, and `--reparse-check`'s
+`gdt_char_type_only` says **0 of 8** transcriptions hold a symbol the parser
+knows — so every Flatness is `_gdt_type`'s default. Gold side: 3 labels the
+scorer reads as Position/Parallelism, 5 it reads as nothing. **What decides the
+fix is an OPERATOR review** (dropped symbol vs unmapped look-alike, and what the
+5 labels mean), prepared as a 10-minute worksheet by `score --gdt-worksheet`
+and tallied by `review-tally`. The decision table is registered in
+`docs/plans/2026-09-22-gdt-review.md`. **The worksheet holds client text: an
+agent never reads it, and the guard blocks every way to.** Read
+`docs/eval/gdt-review-tally.json` once the operator says "done".
 
 **These are now TWO separate closed dead ends, and they close for different
 reasons.** §3's synonym-map entry is about GOLD's vocabulary and closed because
@@ -712,7 +728,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 886 passed, 2 skipped
+python -m pytest -q                          # 909 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```

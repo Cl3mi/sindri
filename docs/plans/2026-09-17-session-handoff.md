@@ -198,8 +198,9 @@ read-stage fault.
    bounded at **zero** — its rows had a second fault under the labelling one.
    **Asked and answered for `gdt` the same day**: 8 of its 14 wrong rows are
    wrong in `char_type` ONLY, at least 5 escaped, worth at least −1.67. It is
-   now the strongest GPU-free lead. Which side of the char_type is wrong decides
-   the fix; see §5 of `2026-09-22-theoretical-parser-result.md`.
+   now the strongest GPU-free lead. The prediction side is settled — all 8
+   are the parser's Flatness default — and the rest waits on a 10-minute
+   OPERATOR review: `2026-09-22-gdt-review.md`.
 4. Unchanged from the 2026-09-14 decision doc: unblock route A serving,
    multi-page coverage (+8 drawings), tiled rendering (+19).
 

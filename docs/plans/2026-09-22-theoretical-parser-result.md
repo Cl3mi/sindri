@@ -163,9 +163,23 @@ against a predicted `Flatness`. And `parser._gdt_type` **defaults to
   seconds.
 
 **Telling those apart means looking at gold's labels, which are client text.**
-That is the operator's job, not an agent's. An agent-safe step first:
-`char_type_confusion` restricted to `gdt`'s char_type-only rows. It is the
-same closed vocabulary and says how many of the 8 are `unmapped(none)`.
+That is the operator's job, not an agent's. The agent-safe step first, **run
+the same day**:
+
+* `char_type_only_confusion` (new, per kind): the 8 are
+  `unmapped(Position) -> Flatness` 2, `unmapped(Parallelism) -> Flatness` 1,
+  `unmapped(none) -> Flatness` 5. **Every one predicted Flatness.**
+* `--reparse-check`'s new `gdt_char_type_only`: **0 of 8** transcriptions hold
+  a symbol in `parser._GDT_SYMBOLS`, so **all 8 Flatness predictions are the
+  parser's default** — the second bullet above is confirmed on every row.
+
+So the prediction side is settled as a GUESS, and the gold side is 3 labels the
+scorer already reads as a GD&T type (a correct prediction would match them) and
+5 it reads as nothing. What remains is whether the symbol reached the
+transcription in some unmapped form (a parser fix) or not at all (a read-stage
+fault), and what the 5 labels mean. That is the operator review, prepared as a
+10-minute worksheet with its decision table registered beforehand:
+`docs/plans/2026-09-22-gdt-review.md`.
 
 ---
 
