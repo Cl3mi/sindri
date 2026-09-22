@@ -339,6 +339,10 @@
      "fields:upper_tol+lower_tol": 9,
      "fields:char_type+upper_tol+lower_tol": 3,
      "fields:char_type+nominal+upper_tol": 1
+    },
+    "char_type_only_confusion": {
+     "chartype:unmapped(none)->Distance": 2,
+     "chartype:Distance->Diameter": 1
     }
    },
    {
@@ -353,6 +357,11 @@
      "fields:char_type+nominal+upper_tol": 1,
      "fields:upper_tol": 1,
      "fields:char_type+upper_tol": 2
+    },
+    "char_type_only_confusion": {
+     "chartype:unmapped(Position)->Flatness": 2,
+     "chartype:unmapped(Parallelism)->Flatness": 1,
+     "chartype:unmapped(none)->Flatness": 5
     }
    },
    {
@@ -364,7 +373,8 @@
      "fields:char_type+nominal+upper_tol+lower_tol": 7,
      "fields:char_type+nominal": 1,
      "fields:char_type+nominal+lower_tol": 1
-    }
+    },
+    "char_type_only_confusion": {}
    },
    {
     "kind": "surface",
@@ -374,7 +384,8 @@
     "wrong_fields": {
      "fields:char_type+nominal+upper_tol+lower_tol": 3,
      "fields:nominal+lower_tol": 1
-    }
+    },
+    "char_type_only_confusion": {}
    },
    {
     "kind": "note",
@@ -385,7 +396,8 @@
      "fields:char_type+nominal+lower_tol": 2,
      "fields:char_type+nominal": 1,
      "fields:char_type+nominal+upper_tol+lower_tol": 1
-    }
+    },
+    "char_type_only_confusion": {}
    }
   ],
   "not_measured": 0

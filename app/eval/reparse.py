@@ -20,7 +20,8 @@ Once a candidate parser edit is in place `identical` drops by design, and
 from typing import Dict, List
 
 from app.eval.normalize import char_type_equal, values_equal
-from app.pipeline.parser import parse_value
+from app.eval.report import is_char_type_only
+from app.pipeline.parser import _GDT_SYMBOLS, parse_value
 
 # Copy of extract._HINTS: detector kind -> parser hint. Duplicated so this
 # module never imports extract (which pulls in render/detect/ocr); the equality
@@ -29,6 +30,15 @@ _HINTS = {"material": "material", "note": "note", "gdt": "gdt",
           "theoretical": "theoretical"}
 
 _FIELDS = ("nominal", "upper_tol", "lower_tol")
+
+
+def gdt_symbol_recognised(raw_text: str) -> bool:
+    """Whether `parser._gdt_type` would find a GD&T symbol in this text. When it
+    does not, it returns Flatness anyway -- so a gdt char_type is either READ
+    or GUESSED, and this is the one test that tells them apart. Shared with
+    app.eval.review so the worksheet and the count agree row for row."""
+    text = (raw_text or "").replace("\n", " ")
+    return any(sym in text for sym in _GDT_SYMBOLS)
 
 
 def _matches_gold(c, gold) -> bool:
@@ -43,7 +53,7 @@ def _same_parse(a, b) -> bool:
             and all(getattr(a, f) == getattr(b, f) for f in _FIELDS))
 
 
-def reparse_report(dumps: Dict, golds: Dict, scores: List) -> Dict[str, int]:
+def reparse_report(dumps: Dict, golds: Dict, scores: List) -> Dict:
     """Counts only — never a value — over every matched pair in `scores`.
 
     would_fix / would_break are the two directions that matter: a parser change
@@ -52,6 +62,12 @@ def reparse_report(dumps: Dict, golds: Dict, scores: List) -> Dict[str, int]:
     first would miss."""
     out = {"n_pairs": 0, "identical": 0, "would_fix": 0, "would_break": 0,
            "still_wrong": 0, "still_correct": 0}
+    # parser._gdt_type falls back to Flatness when it recognises no symbol, so
+    # a gdt char_type is either READ or GUESSED. On the rows wrong in char_type
+    # alone that split routes the fix: a guessed type points at the read or the
+    # parser, a read one that still disagrees points at the scorer's vocabulary.
+    gdt = {"n": 0, "symbol_recognised": 0, "parser_defaulted": 0}
+    out["gdt_char_type_only"] = gdt
     for score in scores:
         dump, gold = dumps[score.doc_id], golds[score.doc_id]
         preds = {c.pos: c for c in dump.result.characteristics}
@@ -62,6 +78,12 @@ def reparse_report(dumps: Dict, golds: Dict, scores: List) -> Dict[str, int]:
             if p is None or g is None:
                 continue
             out["n_pairs"] += 1
+            if p.kind == "gdt" and is_char_type_only(pair):
+                gdt["n"] += 1
+                if gdt_symbol_recognised(p.raw_text):
+                    gdt["symbol_recognised"] += 1
+                else:
+                    gdt["parser_defaulted"] += 1
             fresh = parse_value(p.raw_text or "",
                                hint=_HINTS.get(p.kind or "", ""))
             if _same_parse(fresh, p):

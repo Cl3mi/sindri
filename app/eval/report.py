@@ -135,7 +135,14 @@ def _read_accuracy_by_kind(report: RunReport) -> Dict:
     fix looked like it would free all of it -- and it freed nothing, because the
     rows were wrong in their values too. A fix pays only when it is the LAST
     fault on the row, and field_acc cannot tell "wrong for one reason" from
-    "wrong for two". Its values sum to the kind's wrong rows."""
+    "wrong for two". Its values sum to the kind's wrong rows.
+
+    `char_type_only_confusion` narrows `char_type_confusion` to the rows that
+    are wrong in char_type ALONE -- the ones a char_type fix would free. Which
+    pair of types they confused is what says where that fix lives: a gold label
+    in words the synonym map does not know, or a parser that defaulted. The
+    global confusion mixes them with every multi-fault row and cannot answer
+    that. It sums to the kind's `fields:char_type` signature."""
     acc = {}
     unmeasured = 0
     for d in report.doc_scores:
@@ -143,19 +150,23 @@ def _read_accuracy_by_kind(report: RunReport) -> Dict:
             if p.pred_kind is None:
                 unmeasured += 1
                 continue
-            # [n, correct, escaped, wrong-field signatures]
-            slot = acc.setdefault(p.pred_kind, [0, 0, 0, {}])
+            # [n, correct, escaped, wrong-field signatures, ctype-only confusion]
+            slot = acc.setdefault(p.pred_kind, [0, 0, 0, {}, {}])
             slot[0] += 1
             slot[1] += int(p.fields_correct)
             slot[2] += int(p.taxonomy == "escaped_error")
             if not p.fields_correct:
                 key = _field_signature(_wrong_field_names(p))
                 slot[3][key] = slot[3].get(key, 0) + 1
+            if is_char_type_only(p):
+                ckey = _ctype_key(p) or "chartype:not_measured"
+                slot[4][ckey] = slot[4].get(ckey, 0) + 1
     return {
         "kinds": [{"kind": k, "n": n, "field_acc": round(ok / n, 4) if n else None,
-                   "escaped_error": esc, "wrong_fields": sig}
-                  for k, (n, ok, esc, sig) in sorted(acc.items(),
-                                                     key=lambda kv: -kv[1][0])],
+                   "escaped_error": esc, "wrong_fields": sig,
+                   "char_type_only_confusion": conf}
+                  for k, (n, ok, esc, sig, conf) in sorted(
+                      acc.items(), key=lambda kv: -kv[1][0])],
         "not_measured": unmeasured,
     }
 
@@ -315,16 +326,34 @@ def _char_type_confusion(report: RunReport) -> Tuple[Dict[str, int], int]:
             if not any(e.split(":", 1)[0].strip() == "char_type"
                        for e in p.field_errors):
                 continue
-            note = next((n.split(":", 1)[1] for n in p.notes
-                         if n.startswith("ctype:")), None)
-            if note is None:
+            key = _ctype_key(p)
+            if key is None:
                 not_measured += 1
                 continue
-            gold, _, pred = note.partition("->")
-            key = (f"chartype:{gold if gold in _CTYPE_VOCAB else 'other'}"
-                   f"->{pred if pred in _CTYPE_VOCAB else 'other'}")
             out[key] = out.get(key, 0) + 1
     return out, not_measured
+
+
+def _ctype_key(pair) -> Optional[str]:
+    """`chartype:<gold>-><pred>` from the pair's `ctype:` note, or None for a
+    report that predates the note. Both sides are closed-vocabulary labels
+    (score._ctype_label); anything else becomes `other`, never forwarded."""
+    note = next((n.split(":", 1)[1] for n in pair.notes
+                 if n.startswith("ctype:")), None)
+    if note is None:
+        return None
+    gold, _, pred = note.partition("->")
+    return (f"chartype:{gold if gold in _CTYPE_VOCAB else 'other'}"
+            f"->{pred if pred in _CTYPE_VOCAB else 'other'}")
+
+
+def is_char_type_only(pair) -> bool:
+    """Wrong in char_type and in NOTHING else: the only rows a char_type fix
+    can make fully correct. Public because app.eval.review selects its operator
+    worksheet with it -- the worksheet and this digest must name the same rows,
+    or the operator reviews a different set from the one the counts describe."""
+    return (not pair.fields_correct
+            and _wrong_field_names(pair) == {"char_type"})
 
 
 # The three ways score._failure_modes can describe a wrong field.

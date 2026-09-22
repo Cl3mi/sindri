@@ -332,3 +332,37 @@ def test_wrong_field_keys_are_namespaced_so_digests_stay_committable():
     d = _typed(("theoretical", "Theoretical", False))
     for k in d["read_accuracy_by_kind"]["kinds"]:
         assert all(key.startswith("fields:") for key in k["wrong_fields"])
+
+
+# --- for the rows a char_type fix WOULD free: which types were confused? -----
+#
+# `gdt` has 8 rows wrong in char_type ONLY -- the one bucket that passes the
+# last-fault test. Whether the fix lives in the synonym map (gold names the
+# type in words the scorer does not know) or the parser (`_gdt_type` defaults
+# to Flatness when it recognises no symbol) depends on WHICH pair of types each
+# row confused. The global char_type_confusion mixes those 8 with every
+# multi-fault row, so it cannot answer that.
+
+def test_each_kind_reports_the_confusion_of_its_char_type_ONLY_rows():
+    d = _typed(("gdt", "Flatness", True), ("gdt", "Flatness", True),
+               ("gdt", "Position", True))
+    by = {k["kind"]: k for k in d["read_accuracy_by_kind"]["kinds"]}
+    assert by["gdt"]["char_type_only_confusion"] == {
+        "chartype:Distance->Flatness": 2, "chartype:Distance->Position": 1}
+
+
+def test_rows_with_a_second_fault_are_left_out_of_it():
+    """A row also wrong in nominal cannot be freed by a char_type fix, so it
+    must not dilute the confusion that routes that fix."""
+    d = _typed(("gdt", "Flatness", True), ("gdt", "Position", False))
+    by = {k["kind"]: k for k in d["read_accuracy_by_kind"]["kinds"]}
+    assert by["gdt"]["char_type_only_confusion"] == {
+        "chartype:Distance->Flatness": 1}
+
+
+def test_it_reconciles_against_the_char_type_only_signature():
+    d = _typed(("gdt", "Flatness", True), ("gdt", "Flatness", False),
+               ("dimension", "Diameter", True), ("dimension", "Distance", False))
+    for k in d["read_accuracy_by_kind"]["kinds"]:
+        assert (sum(k["char_type_only_confusion"].values())
+                == k["wrong_fields"].get("fields:char_type", 0)), k["kind"]
