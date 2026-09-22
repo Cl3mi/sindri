@@ -5,6 +5,11 @@ Measured 2026-09-17 from `read_accuracy_by_kind`, built the day before after
 was spent.** Shipped configuration (`r3-cropctx`, pad 24), dev split, 223 matched
 rows.
 
+> **Update 2026-09-22:** the `theoretical` part of this analysis is corrected.
+> The labelling collision below is real, but fixing it is worth **zero rows**:
+> they are wrong in their values as well. Priced with `--reparse-check` and
+> reverted; see `docs/plans/2026-09-22-theoretical-parser-result.md`.
+
 **One line: every non-dimension kind reads at or near ZERO, and three of them at
 exactly 0.0000 — and the reason is not the model. The pipeline emits a
 `char_type` the client's inspection sheet never uses, so those rows are wrong by

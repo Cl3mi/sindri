@@ -9,6 +9,13 @@ to the read holds the remaining quality — and the sharpest routing signal yet
 says **15% of rows carry 41% of the silent errors, and they cannot score correct
 at all.** The next move is a CPU-seconds measurement, not a GPU night.
 
+> **Update 2026-09-22: §3's NEXT TASK is DONE and CLOSED.** The `theoretical`
+> fix was measured with `--reparse-check`: gate 223/223, bound
+> **`would_fix 0, would_break 0`**, reverted at `89e0375`. Those rows are wrong
+> in their values as well, so the "wrong by construction" reading below was
+> half the story. Do not redo §3; go straight to §4 item 1. Result:
+> `docs/plans/2026-09-22-theoretical-parser-result.md`.
+
 ---
 
 ## 0. Verified state
@@ -31,7 +38,7 @@ digest into `docs/eval/`, which is in the repo and is the sanctioned view — sa
 
 ## 1. PICKING THIS UP ON ANOTHER DEVICE
 
-The repo is self-contained for code. **Four things are not in it and must be set
+The repo is self-contained for code. **Five things are not in it and must be set
 up by hand**, and three of them fail *silently* if you skip them.
 
 ### 1. Install the git hooks — FIRST, before any commit
@@ -61,6 +68,12 @@ an AI context, and it has been right every time it fired. Copy both from the
 previous machine, then **verify `32 passed, 0 failed`**. Not versioned here
 because it is agent configuration rather than project code.
 
+**Do this BEFORE the corpus arrives on the machine, not after.** A missing guard
+fails silently in exactly the way this section warns about: commands naming the
+protected root simply run, and nothing says so. On 2026-09-21 a session ran on a
+machine with no guard; only the sanctioned CLI was used, so nothing improper
+happened, but nothing would have stopped it either.
+
 ### 4. `~/.claude/sindri-doc-salt` — the one that breaks quietly
 
 The doc-id salt. Every id in `docs/eval/*.json` is hashed with it. **A different
@@ -70,6 +83,14 @@ to everything already published** — `worst_docs`, `per_doc_deltas`,
 
 **Never commit it.** It is the anonymisation key: with it and the client's part
 numbers, the published digests become de-anonymisable.
+
+### 5. The `tesseract` binary
+
+A system package, not a pip dependency (`pytesseract` is only the wrapper).
+Without it the suite reads **`6 failed`**: five in
+`tests/eval/test_balloon_cv.py` and one in `tests/eval/test_ingest.py`, all
+`TesseractNotFoundError`. That looks like broken code and is not. With it:
+`883 passed, 2 skipped`.
 
 ### And the client corpus itself
 
@@ -135,6 +156,9 @@ value**. Those rows are wrong by construction. Full analysis:
 
 ### THE NEXT TASK, concretely
 
+> **DONE 2026-09-22, and the arm LOST: bound exactly zero, reverted.** Kept
+> below as the record of what was registered. See `docs/plans/2026-09-22-theoretical-parser-result.md`.
+
 1. **Take the reparse baseline** (CPU seconds, no GPU). `score --reparse-check`
    with an unmodified parser must report `identical == n_pairs` — that is the
    gate proving the offline reconstruction is sound. The command is in §3 of the
@@ -170,7 +194,12 @@ read-stage fault.
    layouts are unfamiliar — and §2 predicts the effect should be LARGER there.
 3. **`gdt`** — 17 rows at 0.1765, the largest non-dimension bucket, with a
    differently-shaped confusion (`gold → Flatness` totals 12, mostly from
-   unmapped gold). Measure the `theoretical` change first; it is the clean case.
+   unmapped gold). The `theoretical` change was measured first (2026-09-22) and
+   bounded at **zero** — its rows had a second fault under the labelling one.
+   **Asked and answered for `gdt` the same day**: 8 of its 14 wrong rows are
+   wrong in `char_type` ONLY, at least 5 escaped, worth at least −1.67. It is
+   now the strongest GPU-free lead. Which side of the char_type is wrong decides
+   the fix; see §5 of `2026-09-22-theoretical-parser-result.md`.
 4. Unchanged from the 2026-09-14 decision doc: unblock route A serving,
    multi-page coverage (+8 drawings), tiled rendering (+19).
 

@@ -5,6 +5,11 @@ Written 2026-09-21. **Read `CLAUDE.md` first, then
 the 2026-09-17 handoff — that one is still the state of play and carries the
 device-setup steps. This is a narrow continuation note for one task in flight.
 
+> **DONE 2026-09-22.** Both measurements ran on the machine with the corpus.
+> Gate 223/223, bound `0 - 0 = 0`, `874771c` reverted at `89e0375`. The §3
+> device notes are now in the 2026-09-17 handoff §1. Result:
+> `docs/plans/2026-09-22-theoretical-parser-result.md`.
+
 **One line:** §3's NEXT TASK is half done — the candidate parser edit is
 committed and green at `874771c`, but the two CPU-seconds measurements that
 decide whether it stays were **blocked on a machine with no client corpus**.

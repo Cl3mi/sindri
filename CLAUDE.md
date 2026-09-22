@@ -55,7 +55,7 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **883 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **886 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). **`tesseract` is a device
 prerequisite** — without the binary six tests fail as `TesseractNotFoundError`
 and read as broken code. `SCHEMA_VERSION` = 1 — do not bump it. Split frozen
@@ -173,7 +173,7 @@ vocabulary has no "Theoretical"**, so those rows could never score correct. It
 was fixed, priced with `--reparse-check`, and the bound came back
 **`would_fix 0, would_break 0`**. Reverted at `89e0375`.
 
-**It was MASKING a read failure, not standing in for one.** `identical` fell
+**It was MASKING a second fault, not standing in for one.** `identical` fell
 223 -> 214, exactly the 9 rows and no others, so the edit reached everything it
 aimed at; none flipped to correct because a `char_type` fix only pays when
 `nominal` and both tolerances already agree, and on these rows they do not.
@@ -181,6 +181,17 @@ aimed at; none flipped to correct because a `char_type` fix only pays when
 `r3-tallpad` lesson from the other direction, and neither `read_accuracy_by_kind`
 (0.0000) nor the escaped share (8 of 9) could tell "wrong for one reason" from
 "wrong for two". Do not re-propose a char_type fix for this bucket.
+
+**`read_accuracy_by_kind.wrong_fields` now answers that question up front**
+(`5262672`): the signature histogram of each kind's wrong rows. `theoretical`
+has **0** char_type-only rows, 7 of 9 wrong in all four fields, and 86% of its
+predictions are false detections. It is a detection-quality bucket and was
+never parser-reachable. **`gdt` has 8 of 14 wrong rows wrong in `char_type`
+ONLY, at least 5 of them escaped: at least −1.67 at today's weights, the size of
+the crop win, with no GPU.** It is the next lead. Which SIDE is wrong is
+undetermined (gold labels with no recognised word vs `_gdt_type`'s `Flatness`
+default); see §5 of `docs/plans/2026-09-22-theoretical-parser-result.md`.
+**Read `wrong_fields` before proposing any fix to a kind.**
 
 **These are now TWO separate closed dead ends, and they close for different
 reasons.** §3's synonym-map entry is about GOLD's vocabulary and closed because
@@ -214,10 +225,10 @@ recovers because those are gdt/note boxes on their own prompts is REFUTED** —
 that band is 28 of 29 plain `dimension`, reading at 0.586 and insensitive to
 every pad tried.
 
-**So the next diagnostic is field accuracy BY KIND**, which nothing reports:
-`matched_by_pred_kind` gives counts only. It is GPU-free — `pred_kind` is on
-every matched pair — and it is the same shape of question that closed the
-crop-resolution family for nothing.
+**Field accuracy BY KIND is now reported** (`read_accuracy_by_kind`, built
+2026-09-17, and since 2026-09-22 with `wrong_fields` per kind). It is what
+routed the `theoretical` arm, and then what explained why that arm was worth
+zero.
 
 **THE TEST SPLIT IS MEASURED, AND DEV WAS OPTIMISTIC BY +31.25**
 (2026-09-15, `docs/plans/2026-09-15-test-split-result.md`). Production's exact
@@ -701,7 +712,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 883 passed, 2 skipped
+python -m pytest -q                          # 886 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```

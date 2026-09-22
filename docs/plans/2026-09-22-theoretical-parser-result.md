@@ -48,7 +48,8 @@ are wrong too.
 
 > **It is a labelling collision, not a read failure.**
 
-It is a labelling collision **on top of** a read failure. The collision was real
+It is a labelling collision **on top of** a second fault (§5 places that
+fault in detection rather than the read). The collision was real
 — `char_type = THEORETICAL` against a gold vocabulary with no such value made
 the rows unscoreable *by construction*, exactly as diagnosed — but it was
 **masking** a second, independent fault rather than substituting for one.
@@ -100,23 +101,75 @@ does nothing".
 
 **Closed.** The `theoretical` bucket is not reachable by a char_type fix. Do not
 re-propose one, and do not read `read_accuracy_by_kind`'s `theoretical: 0.0000`
-as a scoring artefact — it is a genuine read failure that a scoring artefact was
-sitting in front of.
+as a scoring artefact. It is a genuine failure that a scoring artefact was
+sitting in front of, and §5 places it in detection rather than the read.
 
-**Left open**, and now the better-shaped question: the 9 rows are wrong in
-`nominal` and/or the tolerances. `subtype` already records that the callout was
-boxed and the box means *untoleranced*, so a row whose gold carries tolerances is
-a different kind of disagreement from one whose nominal is misread. Splitting
-those two would say whether this bucket belongs with the read-quality work or is
-a gold-shape mismatch. It is GPU-free from the same dumps.
-
-**Unchanged by all of this**: `gdt` — 17 rows at 0.1765, the largest
-non-dimension bucket and now the only one of the three with an unexamined
-mechanism. The handoff's §4 list stands.
+**Answered the same day — see §5.** The open question was which fields the 9
+rows get wrong. The answer is: nearly all of them.
 
 ---
 
-## 5. Provenance
+## 5. Which fields, per kind — the aggregate that would have priced this first
+
+Built after the arm (`5262672`): `read_accuracy_by_kind` now carries
+`wrong_fields`, the signature histogram of each kind's wrong rows. Counts of
+field names only. Shipped config, dev, scoped:
+
+| kind | n | wrong | char_type ONLY | all four wrong | escaped |
+|---|---|---|---|---|---|
+| `dimension` | 189 | 74 | 3 | 16 | 38 |
+| `gdt` | 17 | 14 | **8** | 1 | 11 |
+| `theoretical` | 9 | 9 | **0** | **7** | 8 |
+| `surface` | 4 | 4 | 0 | 3 | 4 |
+| `note` | 4 | 4 | 0 | 1 | 3 |
+
+It reconciles both ways: per kind to the kind's wrong rows, and across kinds
+to the global `field_failure_signatures` (char_type-only 3 + 8 = 11, all-four
+16 + 1 + 7 + 3 + 1 = 28). The regenerated digest differs from the committed one
+by the new keys only.
+
+**`theoretical` is not a read problem at all.** No row is wrong in char_type
+alone, so no char_type fix could have freed one. That is the zero bound,
+explained completely. **Seven of nine are wrong in all four fields**, and
+`nominal` is wrong in all nine. A row wrong in every field is not a boxed
+dimension read slightly wrong. It looks like a prediction paired with the
+wrong gold row, or a callout that is not a dimension. The detector agrees:
+**54 of 63 `theoretical` predictions (86%) are false detections**, against 55%
+for `dimension`. So this bucket belongs with detection quality, and the parser
+was never going to reach it. That is a reading of aggregates rather than a
+measurement of mechanism, and it is stated as such.
+
+**`gdt` is the first bucket where a single-field fix passes the last-fault
+test.** 8 of its 14 wrong rows are wrong in `char_type` and nothing else, so
+fixing char_type alone would make each one fully correct. It has 11 escaped
+errors across 14 wrong rows, so at most 3 wrong rows are flagged, and **at
+least 5 of those 8 are escaped**. That is the bucket that pays. Priced at
+today's weights, that is at least 5 × (5 − 0) ÷ 15 = **−1.67** review cost, up
+to 8 × 5 ÷ 15 = −2.67 if all 8 are escaped. That is the size of the crop win
+(−2.07), with no GPU.
+
+**What is not known is which side of that `char_type` is wrong**, and it
+decides the fix. `char_type_confusion` shows `unmapped(none) -> Flatness` 7
+times. That means gold labels with no word the synonym map recognises, set
+against a predicted `Flatness`. And `parser._gdt_type` **defaults to
+`Flatness`** when it recognises no GD&T symbol. So each of those rows is one of:
+
+* gold's label is a GD&T type the map does not know. Then this is the
+  synonym-map territory §3 closed, reopened for a new reason: the closure was
+  "adding words moved nothing because whole-label matching hid them", and that
+  matching is now fixed.
+* the parser's `Flatness` is its default, not a reading. Then the fault is
+  `_gdt_type`, which is a parser change that `--reparse-check` prices in CPU
+  seconds.
+
+**Telling those apart means looking at gold's labels, which are client text.**
+That is the operator's job, not an agent's. An agent-safe step first:
+`char_type_confusion` restricted to `gdt`'s char_type-only rows. It is the
+same closed vocabulary and says how many of the 8 are `unmapped(none)`.
+
+---
+
+## 6. Provenance
 
 * Run: `r3-cropctx`, dev split, scope policy `--max-pages 1 --dpi 300
   --exclude-clamped`, 15 of 20 documents.
