@@ -623,6 +623,17 @@ def _serving_backend(env=None):
 
 
 def _cmd_score(args):
+    worksheet = getattr(args, "gdt_worksheet", None)
+    if worksheet:
+        # Checked BEFORE scoring: a bad path should fail in seconds, and a
+        # refusal that had already done the work would teach the operator to
+        # read it as a warning.
+        from app.eval.review import WorksheetRefused, check_worksheet_path
+        try:
+            check_worksheet_path(worksheet)
+        except WorksheetRefused as e:
+            print(f"ERROR: --gdt-worksheet refused: {e}", file=sys.stderr)
+            return 1
     gold = _load_gold_dir(args.gold)
     dumps = {d.doc_id: d for d in
              (load_dump(p) for p in sorted(Path(args.run).glob("*.pred.json")))}
@@ -769,6 +780,30 @@ def _cmd_score(args):
     if getattr(args, "reparse_check", False):
         from app.eval.reparse import reparse_report
         print(json.dumps(reparse_report(dumps, gold, scores), indent=1))
+    # The operator worksheet holds client text, so it goes to a file inside a
+    # protected root and only its row COUNT is printed -- this stdout may be an
+    # agent's context.
+    if worksheet:
+        from app.eval.review import collect_gdt_rows, write_worksheet
+        n = write_worksheet(worksheet, collect_gdt_rows(dumps, gold, scores))
+        print(f"gdt review worksheet: {n} row(s) written for a human reviewer. "
+              f"It contains client data -- open it yourself, never through an "
+              f"agent.")
+    return 0
+
+
+def _cmd_review_tally(args):
+    """For the OPERATOR's terminal: counts from a filled-in gdt worksheet.
+    Deliberately not in the agent guard's allowlist -- the worksheet lives in
+    a protected root. Its output is closed-vocabulary counts only, so it is the
+    one thing from the review that may be shared or committed."""
+    from app.eval.review import tally
+    out = json.dumps(tally(Path(args.worksheet).read_text(encoding="utf-8")),
+                     indent=1, ensure_ascii=False)
+    if args.out:
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.out).write_text(out + "\n", encoding="utf-8")
+    print(out)
     return 0
 
 
@@ -934,7 +969,20 @@ def main(argv=None) -> int:
                         "alter the written report. On an unmodified parser "
                         "identical must equal n_pairs -- anything else means the "
                         "hint reconstruction is wrong, not the parser.")
+    p.add_argument("--gdt-worksheet", default=None,
+                   help="write the operator's gdt review worksheet -- the gdt "
+                        "rows wrong in char_type ONLY -- to this path. It holds "
+                        "client text, so the path must be inside a protected "
+                        "root and must not exist yet. Only a row count is "
+                        "printed. Fill it in, then run review-tally.")
     p.set_defaults(fn=_cmd_score)
+
+    p = sub.add_parser("review-tally", parents=[common])
+    p.add_argument("worksheet")
+    p.add_argument("--out", default=None,
+                   help="write the counts here, e.g. docs/eval/"
+                        "gdt-review-tally.json -- counts only, safe to commit")
+    p.set_defaults(fn=_cmd_review_tally)
 
     p = sub.add_parser("compare", parents=[common])
     p.add_argument("report_a"); p.add_argument("report_b")
