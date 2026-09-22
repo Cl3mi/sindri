@@ -127,7 +127,15 @@ def _read_accuracy_by_kind(report: RunReport) -> Dict:
     `flagged_correct` both cost 1, so fixing a read on an already-flagged row
     saves NOTHING -- that arm fixed six flagged rows for zero saving and lost.
     Two kinds can be equally wrong and worth completely different amounts, and
-    this is the column that tells them apart."""
+    this is the column that tells them apart.
+
+    `wrong_fields` is the signature histogram of each kind's WRONG rows, and it
+    exists because of the `theoretical` arm (2026-09-22). That bucket read at
+    0.0000 with every row carrying a char_type gold never holds, so a char_type
+    fix looked like it would free all of it -- and it freed nothing, because the
+    rows were wrong in their values too. A fix pays only when it is the LAST
+    fault on the row, and field_acc cannot tell "wrong for one reason" from
+    "wrong for two". Its values sum to the kind's wrong rows."""
     acc = {}
     unmeasured = 0
     for d in report.doc_scores:
@@ -135,15 +143,19 @@ def _read_accuracy_by_kind(report: RunReport) -> Dict:
             if p.pred_kind is None:
                 unmeasured += 1
                 continue
-            slot = acc.setdefault(p.pred_kind, [0, 0, 0])   # [n, correct, escaped]
+            # [n, correct, escaped, wrong-field signatures]
+            slot = acc.setdefault(p.pred_kind, [0, 0, 0, {}])
             slot[0] += 1
             slot[1] += int(p.fields_correct)
             slot[2] += int(p.taxonomy == "escaped_error")
+            if not p.fields_correct:
+                key = _field_signature(_wrong_field_names(p))
+                slot[3][key] = slot[3].get(key, 0) + 1
     return {
         "kinds": [{"kind": k, "n": n, "field_acc": round(ok / n, 4) if n else None,
-                   "escaped_error": esc}
-                  for k, (n, ok, esc) in sorted(acc.items(),
-                                                key=lambda kv: -kv[1][0])],
+                   "escaped_error": esc, "wrong_fields": sig}
+                  for k, (n, ok, esc, sig) in sorted(acc.items(),
+                                                     key=lambda kv: -kv[1][0])],
         "not_measured": unmeasured,
     }
 
@@ -237,17 +249,31 @@ def _field_failure_counts(report: RunReport) -> Tuple[Dict[str, int],
         for p in d.pairs:
             if not p.field_errors:
                 continue
-            names = set()
-            for err in p.field_errors:
-                name = err.split(":", 1)[0].strip()
-                names.add(name if name in _FIELD_NAMES else "other")
+            names = _wrong_field_names(p)
             for n in names:
                 per_field[f"field:{n}"] = per_field.get(f"field:{n}", 0) + 1
-            # Fixed order, so the same combination always produces the same key.
-            key = "fields:" + "+".join(n for n in _FIELD_NAMES + ("other",)
-                                       if n in names)
+            key = _field_signature(names)
             signatures[key] = signatures.get(key, 0) + 1
     return per_field, signatures
+
+
+def _wrong_field_names(pair) -> set:
+    """The field NAMES a pair got wrong -- the text left of the first ":" --
+    never the values to the right of it."""
+    names = set()
+    for err in pair.field_errors:
+        name = err.split(":", 1)[0].strip()
+        names.add(name if name in _FIELD_NAMES else "other")
+    return names
+
+
+def _field_signature(names: set) -> str:
+    """Fixed order, so the same combination always produces the same key, and
+    namespaced for the pre-commit hook -- see _field_failure_counts. Shared with
+    _read_accuracy_by_kind so the two histograms can never disagree about what a
+    signature is."""
+    return "fields:" + "+".join(n for n in _FIELD_NAMES + ("other",)
+                                if n in names)
 
 
 # The closed vocabulary score._ctype_label may emit. Imported rather than

@@ -267,3 +267,68 @@ def test_the_kinds_reconcile_against_the_matched_count():
     matched = (tx.get("correct", 0) + tx.get("flagged_correct", 0)
                + tx.get("flagged_error", 0) + tx.get("escaped_error", 0))
     assert sum(k["n"] for k in cov["kinds"]) + cov["not_measured"] == matched
+
+
+# --- is a kind wrong for ONE reason, or for several? ------------------------
+#
+# The `theoretical` arm (2026-09-22) was built on "wrong by construction": every
+# boxed row carried char_type THEORETICAL, which gold never holds, so the fix
+# looked like it would free the whole bucket. It freed nothing -- the rows were
+# wrong in their values TOO, and a correctness fix pays only when it is the
+# LAST fault on the row. field_acc 0.0000 cannot tell "wrong for one reason"
+# from "wrong for two", so the arm had to be priced to find out. This is the
+# aggregate that would have answered it before the edit was written.
+
+def _typed(*rows):
+    """(kind, pred_char_type, nominal_ok) per row, against Distance / 10+i gold."""
+    gold, preds = [], []
+    for i, (kind, ctype, ok) in enumerate(rows):
+        y = 100 + i * 100
+        gold.append(GoldCharacteristic(balloon=i + 1, position_pt=(200.0, float(y)),
+                                       char_type="Distance", nominal=str(10 + i)))
+        cx, cy = SCALE * 200, SCALE * y
+        nom = str(10 + i) if ok else "999"
+        preds.append(Characteristic(
+            pos=i + 1, char_type=ctype, nominal=nom, raw_text=nom, kind=kind,
+            target_region=(cx - 50, cy - 30, cx + 50, cy + 30)))
+    gold_doc = GoldDoc(doc_id="D", pdf="d.pdf", excel="d.xlsx", page_rect=RECT,
+                       characteristics=gold)
+    dump = PredictionDump(doc_id="D", config=RunConfig(model_id="stub", dpi=300),
+                          scale=SCALE, page_rect=RECT,
+                          result=ExtractionResult(characteristics=preds))
+    s = score_doc(dump, gold_doc, ReviewCostWeights(), MatchParams())
+    report = aggregate("r", RunConfig(model_id="stub"), ReviewCostWeights(),
+                       MatchParams(), [s])
+    return summarize(report, lambda d: "hashed")
+
+
+def test_each_kind_says_WHICH_fields_its_wrong_rows_got_wrong():
+    """Two rows at field_acc 0.0, and only one of them a char_type fix could
+    free. That difference is the whole of the theoretical arm's result."""
+    d = _typed(("theoretical", "Theoretical", True),
+               ("theoretical", "Theoretical", False))
+    by = {k["kind"]: k for k in d["read_accuracy_by_kind"]["kinds"]}
+    assert by["theoretical"]["field_acc"] == 0.0
+    assert by["theoretical"]["wrong_fields"] == {
+        "fields:char_type": 1, "fields:char_type+nominal": 1}
+
+
+def test_wrong_fields_reconcile_against_the_wrong_rows_of_each_kind():
+    """Every wrong row lands in exactly one signature, so a kind's signatures
+    sum to its wrong rows -- the cross-check CLAUDE.md §4 requires."""
+    d = _typed(("dimension", "Distance", True), ("dimension", "Distance", False),
+               ("theoretical", "Theoretical", False), ("gdt", "Flatness", True))
+    for k in d["read_accuracy_by_kind"]["kinds"]:
+        wrong = k["n"] - round(k["field_acc"] * k["n"])
+        assert sum(k["wrong_fields"].values()) == wrong, k["kind"]
+    by = {k["kind"]: k for k in d["read_accuracy_by_kind"]["kinds"]}
+    assert by["dimension"]["wrong_fields"] == {"fields:nominal": 1}
+
+
+def test_wrong_field_keys_are_namespaced_so_digests_stay_committable():
+    """The pre-commit hook refuses a staged .json with a quoted bare tolerance
+    field name. A kind whose only fault is a single tolerance field would emit
+    exactly that key if the space were not prefixed."""
+    d = _typed(("theoretical", "Theoretical", False))
+    for k in d["read_accuracy_by_kind"]["kinds"]:
+        assert all(key.startswith("fields:") for key in k["wrong_fields"])

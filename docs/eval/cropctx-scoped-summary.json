@@ -327,31 +327,65 @@
     "kind": "dimension",
     "n": 189,
     "field_acc": 0.6085,
-    "escaped_error": 38
+    "escaped_error": 38,
+    "wrong_fields": {
+     "fields:lower_tol": 16,
+     "fields:nominal+lower_tol": 3,
+     "fields:char_type": 3,
+     "fields:nominal": 12,
+     "fields:nominal+upper_tol+lower_tol": 9,
+     "fields:char_type+nominal+upper_tol+lower_tol": 16,
+     "fields:char_type+nominal": 2,
+     "fields:upper_tol+lower_tol": 9,
+     "fields:char_type+upper_tol+lower_tol": 3,
+     "fields:char_type+nominal+upper_tol": 1
+    }
    },
    {
     "kind": "gdt",
     "n": 17,
     "field_acc": 0.1765,
-    "escaped_error": 11
+    "escaped_error": 11,
+    "wrong_fields": {
+     "fields:char_type+nominal+upper_tol+lower_tol": 1,
+     "fields:char_type": 8,
+     "fields:char_type+nominal+lower_tol": 1,
+     "fields:char_type+nominal+upper_tol": 1,
+     "fields:upper_tol": 1,
+     "fields:char_type+upper_tol": 2
+    }
    },
    {
     "kind": "theoretical",
     "n": 9,
     "field_acc": 0.0,
-    "escaped_error": 8
+    "escaped_error": 8,
+    "wrong_fields": {
+     "fields:char_type+nominal+upper_tol+lower_tol": 7,
+     "fields:char_type+nominal": 1,
+     "fields:char_type+nominal+lower_tol": 1
+    }
    },
    {
     "kind": "surface",
     "n": 4,
     "field_acc": 0.0,
-    "escaped_error": 4
+    "escaped_error": 4,
+    "wrong_fields": {
+     "fields:char_type+nominal+upper_tol+lower_tol": 3,
+     "fields:nominal+lower_tol": 1
+    }
    },
    {
     "kind": "note",
     "n": 4,
     "field_acc": 0.0,
-    "escaped_error": 3
+    "escaped_error": 3,
+    "wrong_fields": {
+     "fields:char_type+nominal+lower_tol": 2,
+     "fields:char_type+nominal": 1,
+     "fields:char_type+nominal+upper_tol+lower_tol": 1
+    }
    }
   ],
   "not_measured": 0
