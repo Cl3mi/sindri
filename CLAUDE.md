@@ -55,9 +55,11 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **861 passed, 2 skipped** (the 2
-skips need `RUN_GPU_TESTS=1` on a GPU host). `SCHEMA_VERSION` = 1 — do not bump
-it. Split frozen at `6d174d5e4f1b9228` — do not regenerate it.
+Branch `worktree-eval-harness`, PR #2. Suite: **883 passed, 2 skipped** (the 2
+skips need `RUN_GPU_TESTS=1` on a GPU host). **`tesseract` is a device
+prerequisite** — without the binary six tests fail as `TesseractNotFoundError`
+and read as broken code. `SCHEMA_VERSION` = 1 — do not bump it. Split frozen
+at `6d174d5e4f1b9228` — do not regenerate it.
 
 **THE HYBRID ARM IS MEASURED AND LOST, and its finding is the biggest of the
 campaign** (2026-09-11, `docs/plans/2026-09-11-hybrid-arm-result.md`;
@@ -160,24 +162,47 @@ of the 64 escaped errors — **3 to 5x more likely to ship silently wrong per
 row**. `dimension` alone reads at 0.6085 against the 0.5291 headline, so a sixth
 of the corpus was dragging the whole number down.
 
-**It is a labelling collision, not a read failure.** `gold -> Theoretical`
-totals **exactly 9** — every `theoretical` prediction — and `gold -> Note`
-exactly 4. `parser.parse_value` sets `char_type = THEORETICAL` unconditionally
-for `hint == "theoretical"`, `char_type_equal` is strict equality, and **gold's
-vocabulary has no "Theoretical"**. So those rows can never score correct. It is
-a PRODUCT defect (the reviewer corrects every one), not a scoring artefact, and
-`subtype` already records that the dimension was boxed — so classifying from the
-text loses nothing.
+**THE LABELLING COLLISION WAS REAL AND FIXING IT IS WORTH EXACTLY ZERO**
+(2026-09-22, `docs/plans/2026-09-22-theoretical-parser-result.md`). An earlier
+note here read "It is a labelling collision, not a read failure"; that is
+**refuted, and it was the premise of a whole arm.** The collision is exactly as
+diagnosed — `gold -> Theoretical` totals **exactly 9**, `gold -> Note` exactly
+4, `parser.parse_value` set `char_type = THEORETICAL` unconditionally for
+`hint == "theoretical"`, `char_type_equal` is strict equality, **gold's
+vocabulary has no "Theoretical"**, so those rows could never score correct. It
+was fixed, priced with `--reparse-check`, and the bound came back
+**`would_fix 0, would_break 0`**. Reverted at `89e0375`.
 
-**Not the closed char_type dead end.** §3 closes SYNONYM-MAP additions, which
-are about gold's vocabulary. This is the prediction side, and §3 itself points
-here when it calls `parser.py` inferring Diameter from a leading Ø a read-stage
-fault.
+**It was MASKING a read failure, not standing in for one.** `identical` fell
+223 -> 214, exactly the 9 rows and no others, so the edit reached everything it
+aimed at; none flipped to correct because a `char_type` fix only pays when
+`nominal` and both tolerances already agree, and on these rows they do not.
+**A correctness fix pays only when it is the LAST fault on the row** — the
+`r3-tallpad` lesson from the other direction, and neither `read_accuracy_by_kind`
+(0.0000) nor the escaped share (8 of 9) could tell "wrong for one reason" from
+"wrong for two". Do not re-propose a char_type fix for this bucket.
+
+**These are now TWO separate closed dead ends, and they close for different
+reasons.** §3's synonym-map entry is about GOLD's vocabulary and closed because
+the map was matching the wrong way. This one is the PREDICTION side and closed
+because the rows have a second fault. What §3 still points at as live is
+neither: the symmetric `Diameter <-> Distance` confusion over a leading Ø, 11
+each way, which is a read-stage fault and Rung 3's target.
 
 **`app/eval/reparse.py` prices a parser change in CPU SECONDS** from dumps
 already on disk — `score --reparse-check`, with `would_fix - would_break` as the
-bound. Use it before any parser arm. Bounded above at 4 of the 9 rows, because
-2 have gold `Flatness` and 3 have no mappable gold type.
+bound. Use it before any parser arm; it has now closed one for free. **Read the
+gate first**: `identical == n_pairs` on an UNMODIFIED parser, or the
+reconstruction is broken and no bound means anything. It held exactly (223/223)
+on 2026-09-22.
+
+**But it prices the PREDICTION path only, and a parser edit moves two paths.**
+`targets.render_target` verifies through `parse_value` under the same hint
+(`_verified`), so a parser change also decides which gold rows are renderable as
+TRAINING targets — which `reparse.py` never re-parses and cannot see. A zero
+bound does not mean "this change does nothing". Measure the target path on its
+own terms: `UnrenderableRow("not_round_tripping")` counts on a train-split
+build, with and without.
 
 **THE WORST CROP-HEIGHT BAND IS A KIND EFFECT, NOT A HEIGHT ONE** (2026-09-17).
 `read_accuracy_by_crop_height` now reports composition, and `80-120` px — the
@@ -517,6 +542,16 @@ GPU days.
   symmetric confusion over the leading Ø that `parser.py` infers Diameter from —
   a read-stage fault, which is Rung 3's target. `char_type_confusion` in the
   digest is the aggregate that settles this; read it before touching the map.
+* **Classifying boxed (`theoretical`) callouts from their text instead of
+  emitting `THEORETICAL`** (`874771c`, reverted `89e0375`, 2026-09-22,
+  `docs/plans/2026-09-22-theoretical-parser-result.md`). The defect it removed
+  was real and the edit was surgical — `identical` 223 -> 214, exactly the 9
+  boxed rows, `would_break 0` — and the bound is **`would_fix 0`**. Those rows
+  are wrong in their VALUES as well, so unblocking the `char_type` comparison
+  exposes them to scoring and they stay wrong. **Cheapest closed arm in the
+  campaign: two CPU-second re-scores, no GPU.** The commit stays in history
+  because it also made boxed gold rows renderable as TRAINING targets, which the
+  bound cannot price — cherry-pick it back if an adapter ever needs them.
 * **`predict --detect-only` as a way to cheapen the crop pass.** Detection is
   ~2/3 of per-document cost, not the reads: detection-only measured 10 m 55 s and
   23 m 45 s on dev documents 2 and 3 against a full-predict median of ~16 min, and
@@ -666,7 +701,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 861 passed, 2 skipped
+python -m pytest -q                          # 883 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```
