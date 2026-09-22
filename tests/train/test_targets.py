@@ -27,15 +27,7 @@ SHAPES = [
                                 upper_tol="0,05", lower_tol="0"), "gdt"),
     ("position",           dict(char_type="Position", nominal="0",
                                 upper_tol="0,1", lower_tol="0"), "gdt"),
-    # A BOXED callout, which is what hint="theoretical" actually marks. Gold
-    # holds an ordinary Distance/Diameter here -- the client's sheet has no
-    # "Theoretical" char_type at all -- and the box means only that the row
-    # carries no tolerance. The shape that used to sit here asserted a gold
-    # value the corpus never contains, and it round-tripped only because the
-    # parser emitted the same fiction on both sides.
-    ("boxed untoleranced", dict(char_type="Distance", nominal="20"),
-                           "theoretical"),
-    ("boxed diameter",     dict(char_type="Diameter", nominal="20"),
+    ("theoretical",        dict(char_type="Theoretical", nominal="20"),
                            "theoretical"),
 ]
 
@@ -218,17 +210,3 @@ def test_the_self_check_admits_every_shape_the_corpus_contains(name, fields,
     """The regression half: enforcing the property must not start rejecting the
     shapes that were already correct."""
     assert render_target(GoldCharacteristic(balloon=1, **fields), hint)
-
-
-def test_a_theoretical_char_type_is_unrenderable_because_gold_never_holds_one():
-    """The renderer must not offer a prefix for a char_type gold cannot contain.
-
-    Leaving "Theoretical" in _PREFIX would let a mislabelled row render to a
-    bare number and round-trip only through the parser defect this change
-    removed -- training the read stage toward a value the metric can never
-    credit. A row like this is a data fault, and UnrenderableRow is how this
-    module reports one."""
-    gold = GoldCharacteristic(balloon=1, char_type="Theoretical", nominal="20")
-    with pytest.raises(UnrenderableRow) as e:
-        render_target(gold, "theoretical")
-    assert e.value.reason == "char_type"

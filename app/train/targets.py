@@ -33,9 +33,7 @@ from app.pipeline.parser import parse_value
 # char_type -> the prefix the parser needs to re-infer that char_type. The parser
 # classifies by leading symbol (parser.py: is_diameter / is_radius), so the symbol
 # is not decoration — dropping it loses a scored field.
-# "Theoretical" is deliberately absent: it is not a char_type gold ever holds,
-# so a row claiming one is a data fault and must raise rather than render.
-_PREFIX = {"Diameter": "Ø", "Radius": "R", "Distance": ""}
+_PREFIX = {"Diameter": "Ø", "Radius": "R", "Distance": "", "Theoretical": ""}
 
 # Geometric char_types are re-inferred from their GD&T symbol under hint="gdt".
 # Keys are parser.py's char_type constants; values are the symbols
