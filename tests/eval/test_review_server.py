@@ -161,3 +161,65 @@ def test_the_page_is_self_contained_and_uses_only_the_served_routes(running):
     for external in ("http://", "https://", "//cdn", "<link"):
         assert external not in html, external
     assert "innerHTML" not in html
+
+
+def _dark_pixels(png: bytes) -> int:
+    pix = fitz.Pixmap(png)
+    return sum(1 for v in pix.samples[::pix.n] if v < 80)
+
+
+def _sheet(path, width, height, mark=None):
+    doc = fitz.open()
+    page = doc.new_page(width=width, height=height)
+    if mark:
+        page.draw_rect(fitz.Rect(mark), color=(0, 0, 0), fill=(0, 0, 0))
+    doc.save(path)
+    doc.close()
+
+
+def test_the_stamped_crop_follows_the_balloon_onto_a_differently_sized_sheet(
+        tmp_path, monkeypatch):
+    """The operator's report: on sheets of different size the stamped crop
+    showed an unrelated area. Here the stamped sheet is twice the original and
+    the balloon (a black mark) sits at the stamped coordinates ingest mapped
+    FROM -- the crop must contain it."""
+    from app.eval.review import ReviewRow
+    root = tmp_path / "client"
+    (root / "originals").mkdir(parents=True)
+    (root / "stamped").mkdir(parents=True)
+    _sheet(root / "originals" / "Q1.pdf", 842, 595)
+    _sheet(root / "stamped" / "Q1.pdf", 1684, 1190,
+           mark=(1390, 990, 1410, 1010))
+    _roots(tmp_path, monkeypatch, root)
+    row = ReviewRow(id="g1", doc_id="Q1", balloon=5, where="lower right",
+                    gold_pt=(700.0, 500.0), pred_box_pt=(650, 490, 690, 510),
+                    gold_label="x", transcription="x", predicted="Flatness",
+                    parser_defaulted=True, scorer_reads_gold_as="none",
+                    silent=True)
+    write_deck(root / "d.json", build_deck([row], "r", root / "originals",
+                                           root / "stamped"))
+    app = ReviewApp(root / "d.json", tmp_path / "docs" / "tally.json")
+    assert _dark_pixels(app.crop("g1", "stamped")) > 50
+    # Mapped exactly, so nothing about this crop is approximate any more.
+    assert app.deck_payload()["rows"][0]["stamped_approx"] is False
+
+
+def test_without_an_original_the_stamped_crop_is_marked_approximate(
+        tmp_path, monkeypatch):
+    """No original page means no transform to invert; the crop falls back to
+    raw coordinates and must say so."""
+    from app.eval.review import ReviewRow
+    root = tmp_path / "client"
+    (root / "stamped").mkdir(parents=True)
+    _sheet(root / "stamped" / "Q1.pdf", 1684, 1190)
+    _roots(tmp_path, monkeypatch, root)
+    row = ReviewRow(id="g1", doc_id="Q1", balloon=5, where="x",
+                    gold_pt=(700.0, 500.0), pred_box_pt=None, gold_label="x",
+                    transcription="x", predicted="Flatness",
+                    parser_defaulted=True, scorer_reads_gold_as="none",
+                    silent=True)
+    write_deck(root / "d.json", build_deck([row], "r", root / "originals",
+                                           root / "stamped"))
+    app = ReviewApp(root / "d.json", tmp_path / "docs" / "tally.json")
+    assert app.deck_payload()["rows"][0]["stamped_approx"] is True
+    assert app.crop("g1", "stamped").startswith(b"\x89PNG")

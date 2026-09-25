@@ -37,21 +37,21 @@ class ReviewApp:
         self.tally_out = review.check_tally_out(tally_out)
         self.token = secrets.token_urlsafe(18)
         self.rows = {r["id"]: r for r in self.deck["rows"]}
-        self.approx = {d: self._sizes_differ(d)
+        self.approx = {d: self._unmappable(d)
                        for d in {r["doc_id"] for r in self.deck["rows"]}}
 
     def drawing(self, which: str, doc_id: str) -> Path:
         key = "originals_dir" if which == "clean" else "stamped_dir"
         return Path(self.deck[key]) / f"{doc_id}.pdf"
 
-    def _sizes_differ(self, doc_id: str) -> bool:
-        """Gold positions are in the ORIGINAL's page space; on a stamped sheet
-        of a different size the same coordinates are only approximate."""
-        a = review_crops.page_rect(self.drawing("clean", doc_id))
-        b = review_crops.page_rect(self.drawing("stamped", doc_id))
-        if a is None or b is None:
-            return False
-        return any(abs(x - y) > 1.0 for x, y in zip(a, b))
+    def _unmappable(self, doc_id: str) -> bool:
+        """Gold positions are in the ORIGINAL's page space and the stamped crop
+        inverts ingest's transform to reach the stamped sheet -- which needs
+        the original's page. Without it the crop can only fall back to raw
+        coordinates, and the page says so."""
+        return (review_crops.page_rect(self.drawing("clean", doc_id)) is None
+                and review_crops.page_rect(
+                    self.drawing("stamped", doc_id)) is not None)
 
     def deck_payload(self):
         return {"kind": self.deck["kind"], "run": self.deck["run"],
@@ -66,10 +66,20 @@ class ReviewApp:
         page = review_crops.page_rect(path)
         if page is None:
             return review_crops.placeholder_png("drawing not available")
-        rect = review_crops.crop_rect(page, row["pred_box_pt"], row["gold_pt"])
+        clean = which == "clean"
+        # The region is chosen in the ORIGINAL's space, where the deck's
+        # geometry lives. The stamped sheet often has a different extent
+        # (14 of 20 dev documents), so its crop is carried over by inverting
+        # ingest's per-axis scale -- cutting it at original coordinates showed
+        # an unrelated part of the drawing.
+        orig = page if clean else review_crops.page_rect(
+            self.drawing("clean", row["doc_id"]))
+        rect = review_crops.crop_rect(orig or page, row["pred_box_pt"],
+                                      row["gold_pt"])
         if rect is None:
             return review_crops.placeholder_png("no position recorded")
-        clean = which == "clean"
+        if not clean and orig is not None:
+            rect = review_crops.map_rect(rect, orig, page)
         try:
             return review_crops.render_crop(
                 path, rect, row["pred_box_pt"] if clean else None,

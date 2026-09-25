@@ -68,3 +68,32 @@ def test_a_missing_drawing_is_a_crop_error_not_a_crash(tmp_path):
 
 def test_the_placeholder_is_a_png():
     assert placeholder_png("drawing not available").startswith(PNG)
+
+
+# --- a stamped sheet of a different size --------------------------------------
+#
+# Ingest maps each stamped balloon into the ORIGINAL's space with a per-axis
+# scale between the two page rects (ingest._to_target). On most dev documents
+# the sheets differ in extent, so the stamped crop must invert that same map --
+# cutting the stamped sheet at original-space coordinates shows an unrelated
+# part of the drawing (reported by the operator on 6 of 8 rows, 2026-09-25).
+
+from app.eval.review_crops import map_rect  # noqa: E402
+
+
+def test_map_rect_inverts_ingests_per_axis_scale():
+    orig, stamped = (0, 0, 842, 595), (0, 0, 1684, 1190)
+    assert map_rect((700, 500, 710, 510), orig, stamped) == pytest.approx(
+        (1400, 1000, 1420, 1020))
+
+
+def test_map_rect_honours_page_origins_and_unequal_axes():
+    orig, stamped = (10, 20, 110, 220), (0, 0, 300, 100)
+    # x: (60-10)*3 = 150; y: (120-20)*0.5 = 50
+    assert map_rect((60, 120, 60, 120), orig, stamped) == pytest.approx(
+        (150, 50, 150, 50))
+
+
+def test_map_rect_is_the_identity_on_equal_sheets():
+    page = (0, 0, 1191, 842)
+    assert map_rect((1, 2, 3, 4), page, page) == pytest.approx((1, 2, 3, 4))

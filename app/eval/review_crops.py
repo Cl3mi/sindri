@@ -66,6 +66,22 @@ def crop_rect(page, pred_box_pt, gold_pt) -> Optional[Tuple[float, ...]]:
     return (x0, y0, x1, y1)
 
 
+def map_rect(rect, src_page, dst_page) -> Tuple[float, float, float, float]:
+    """Carry a rect from one sheet's page space to another's by the per-axis
+    scale between the two page rects -- the inverse of what ingest applied
+    (ingest._to_target maps stamped -> original the same way). Gold positions
+    were produced by that transform, so inverting it lands on the balloon
+    exactly, not approximately."""
+    sw, sh = src_page[2] - src_page[0], src_page[3] - src_page[1]
+    sx = (dst_page[2] - dst_page[0]) / sw if sw else 1.0
+    sy = (dst_page[3] - dst_page[1]) / sh if sh else 1.0
+    x0, y0, x1, y1 = rect
+    return (dst_page[0] + (x0 - src_page[0]) * sx,
+            dst_page[1] + (y0 - src_page[1]) * sy,
+            dst_page[0] + (x1 - src_page[0]) * sx,
+            dst_page[1] + (y1 - src_page[1]) * sy)
+
+
 def page_rect(pdf_path) -> Optional[Tuple[float, float, float, float]]:
     try:
         with fitz.open(pdf_path) as doc:
