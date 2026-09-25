@@ -86,6 +86,7 @@ class Detection:
     inner_box: tuple = None     # frame-stripped read crop (boxed callouts only)
     cells: int = 1              # cell count for multi-cell GD&T frames
     subtype: str = None         # gdt|theoretical|note_ref (boxed callouts only)
+    source: str = "vlm"         # "vlm" | "proposal" (OCR, VLM-verified)
 
 
 def _starts(length: int, tile: int, step: int):
