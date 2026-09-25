@@ -623,6 +623,17 @@ def _serving_backend(env=None):
 
 
 def _cmd_score(args):
+    joint = None
+    if getattr(args, "policy_check", False):
+        from app.pipeline.policy_rules import DROP_RULES, FLAG_RULES
+        flags = tuple(n for n in args.flag_rules.split(",") if n)
+        drops = tuple(n for n in args.drop_rules.split(",") if n)
+        unknown = ([n for n in flags if n not in FLAG_RULES]
+                   + [n for n in drops if n not in DROP_RULES])
+        if unknown:
+            print(f"ERROR: unknown rule(s) {unknown}", file=sys.stderr)
+            return 1
+        joint = (flags, drops) if (flags or drops) else None
     deck_out = getattr(args, "review_deck", None)
     if deck_out:
         # Checked BEFORE scoring: a bad path fails in seconds, and a refusal
@@ -784,6 +795,17 @@ def _cmd_score(args):
     if getattr(args, "reparse_check", False):
         from app.eval.reparse import reparse_report
         print(json.dumps(reparse_report(dumps, gold, scores), indent=1))
+    # A DIAGNOSTIC like --reparse-check: prices each policy rule by re-scoring
+    # transformed copies of the dumps, and leaves the written report exactly
+    # as comparable as it was.
+    if getattr(args, "policy_check", False):
+        from app.eval.policy_check import policy_report
+        pr = policy_report(dumps, gold, doc_ids, weights, params, joint=joint)
+        blob = json.dumps(pr, indent=1)
+        if args.policy_out:
+            Path(args.policy_out).parent.mkdir(parents=True, exist_ok=True)
+            Path(args.policy_out).write_text(blob, encoding="utf-8")
+        print(blob)
     # The review deck holds client text, so it goes to a file inside a
     # protected root and only its row COUNT is printed -- this stdout may be an
     # agent's context.
@@ -992,6 +1014,16 @@ def main(argv=None) -> int:
                         "alter the written report. On an unmodified parser "
                         "identical must equal n_pairs -- anything else means the "
                         "hint reconstruction is wrong, not the parser.")
+    p.add_argument("--policy-check", action="store_true",
+                   help="price every flag/drop rule in policy_rules by "
+                        "re-scoring transformed dumps; the report is untouched")
+    p.add_argument("--policy-out", default=None,
+                   help="write the --policy-check JSON here (counts only) -- "
+                        "the guard denies '>' redirects")
+    p.add_argument("--flag-rules", default="",
+                   help="comma-separated flag rules to price as a JOINT set")
+    p.add_argument("--drop-rules", default="",
+                   help="comma-separated drop rules to price as a JOINT set")
     p.add_argument("--review-deck", default=None,
                    help="write the operator's review deck -- the gdt rows "
                         "wrong in char_type ONLY -- to this path. It holds "
