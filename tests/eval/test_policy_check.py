@@ -219,6 +219,26 @@ def test_duplicate_doc_ids_raises():
         policy_report(dumps, golds, ["D", "D"], ReviewCostWeights(), MatchParams())
 
 
+def test_error_messages_never_name_a_document():
+    """Doc ids can be client part numbers, and a traceback reaches terminals
+    and agent context without passing the anonymizer -- the rule
+    report._check_comparable already follows."""
+    dumps, golds = _setup()
+    secret = "PART-4711-XYZ"
+    dumps = {secret: dumps["D"].model_copy(update={"doc_id": secret})}
+    golds = {secret: golds["D"].model_copy(update={"doc_id": secret})}
+    with pytest.raises(ValueError) as dup:
+        policy_report(dumps, golds, [secret, secret], ReviewCostWeights(),
+                      MatchParams())
+    assert secret not in str(dup.value)
+    dumps[secret].config.extra = {"review_low_conf": _LOW_CONF}
+    dumps[secret].result.characteristics[1].confidence = 0.7
+    with pytest.raises(ValueError) as gate:
+        policy_report(dumps, golds, [secret], ReviewCostWeights(),
+                      MatchParams(), flag_rules=(), drop_rules=())
+    assert secret not in str(gate.value)
+
+
 def test_drop_rule_re_pairing_can_lower_cost_while_lowering_quality():
     """note_kind drops the correctly-matched, unflagged row (recast here as
     kind "note"); the only other candidate near its gold balloon is a WORSE,

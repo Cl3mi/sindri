@@ -246,7 +246,10 @@ def policy_report(dumps: Dict[str, PredictionDump], golds: Dict[str, GoldDoc],
     for i in doc_ids:
         (dupes if i in seen else seen).add(i)
     if dupes:
-        raise ValueError(f"policy_report: doc_ids has duplicates: {sorted(dupes)}")
+        # A count, never the ids: doc ids can be client part numbers, and a
+        # traceback reaches terminals and agent context without the anonymizer.
+        raise ValueError(f"policy_report: doc_ids has {len(dupes)} duplicate "
+                         f"id(s)")
 
     base_reflagged = 0
     n_docs_pre_low_conf = 0
@@ -265,7 +268,7 @@ def policy_report(dumps: Dict[str, PredictionDump], golds: Dict[str, GoldDoc],
         if orig.config.extra.get("review_low_conf") == _LOW_CONF:
             if n:
                 raise ValueError(
-                    f"doc {doc_id!r} is on current review policy "
+                    f"doc #{doc_ids.index(doc_id)} is on current review policy "
                     f"(review_low_conf={_LOW_CONF}) but base normalisation "
                     f"still reflagged {n} row(s) -- _LOW_CONF and "
                     f"review.LOW_CONF have diverged")
