@@ -179,3 +179,135 @@ def test_a_file_that_is_not_a_deck_is_refused(tmp_path):
     p.write_text(json.dumps({"version": 99, "kind": "other"}))
     with pytest.raises(ReviewRefused, match="not a"):
         load_deck(p)
+
+
+# --- answers and the tally ----------------------------------------------------
+
+from app.eval.review import (answers_path, check_tally_out,  # noqa: E402
+                             load_answers, save_answer, tally)
+
+
+def _deck3():
+    return build_deck(_rows3(), run="r", originals_dir="/o", stamped_dir="/s")
+
+
+def _a(drawing, symbol, gold):
+    return {"drawing_shows": drawing, "symbol_in_transcription": symbol,
+            "gold_label_means_it": gold}
+
+
+def test_nothing_answered_tallies_as_incomplete():
+    t = tally(_deck3(), {})
+    assert t["n_rows"] == 3 and t["answered"] == 0
+    assert t["incomplete"] == ["g1", "g2", "g3"]
+
+
+def test_the_tally_routes_each_answered_row_to_where_its_fix_lives():
+    """The decision the review exists for. A row is freed WITHOUT A GPU only
+    when the prediction side is a parser fix (the symbol IS in the
+    transcription, the parser just does not map it) AND the scorer already
+    reads gold's label as the same characteristic. A dropped symbol is a read-
+    stage fault; a gold label that disagrees with the drawing is a data fault."""
+    t = tally(_deck3(), {"g1": _a("Position", "glyph", "yes"),
+                         "g2": _a("Position", "none", "yes"),
+                         "g3": _a("Parallelism", "glyph", "no")})
+    assert t["answered"] == 3 and t["incomplete"] == [] and t["invalid"] == []
+    assert t["drawing_shows"] == {"Position": 2, "Parallelism": 1}
+    assert t["prediction_fix"] == {"parser": 2, "read_stage": 1}
+    assert t["gold_side"] == {"scorer_already_matches": 2,
+                              "gold_disagrees_with_drawing": 1}
+    assert t["freed_without_gpu"] == 1
+
+
+def test_a_label_the_scorer_cannot_read_needs_a_synonym_word():
+    """5 of the 8 real rows are `unmapped(none)`. If the operator says the label
+    DOES name the characteristic, the fix is a synonym-map word -- still CPU-
+    only, so the row is freed without a GPU when the parser fix applies too."""
+    rows = _collect(_doc("P1", [
+        (100, 100, dict(_GDT, raw_text="0,05 A"),
+         dict(GOLD_POSITION, char_type="Lagetoleranz zu A"))]))
+    deck = build_deck(rows, "r", "/o", "/s")
+    assert deck["rows"][0]["scorer_reads_gold_as"] == "none"
+    t = tally(deck, {"g1": _a("Position", "word", "yes")})
+    assert t["gold_side"] == {"needs_synonym_word": 1}
+    assert t["freed_without_gpu"] == 1
+
+
+def test_a_hand_edited_answer_outside_the_vocabulary_is_invalid():
+    t = tally(_deck3(), {"g1": _a("Positon", "glyph", "yes")})
+    assert t["invalid"] == ["g1"] and t["answered"] == 0
+
+
+def test_the_tally_is_values_blind_whatever_the_answers_file_holds():
+    """The tally is what reaches an agent, so nothing free-form passes through
+    it: not the operator's note, not the label or transcription, not the part
+    number."""
+    rows = _collect(_doc("PARTNO-4711", [
+        (100, 100, dict(_GDT, raw_text="0,05 SECRET-TEXT"),
+         dict(GOLD_POSITION, char_type="Position SECRET-LABEL"))]))
+    deck = build_deck(rows, "r", "/o", "/s")
+    answers = {"g1": dict(_a("Position", "glyph", "yes"), note="SECRET-NOTE")}
+    blob = json.dumps(tally(deck, answers), ensure_ascii=False)
+    for leak in ("SECRET", "PARTNO", "4711", "0,05"):
+        assert leak not in blob, leak
+
+
+def _saved(tmp_path, monkeypatch):
+    root = tmp_path / "client"
+    root.mkdir()
+    _roots(tmp_path, monkeypatch, root)
+    write_deck(root / "d.json", _deck3())
+    return root / "d.json", load_deck(root / "d.json")
+
+
+def test_answers_persist_merge_and_canonicalise(tmp_path, monkeypatch):
+    """One POST per click: each save merges into the row, and capitals or extra
+    spaces never create a second spelling of the same answer."""
+    path, deck = _saved(tmp_path, monkeypatch)
+    save_answer(path, deck, "g1", {"drawing_shows": "total  RUNOUT"})
+    save_answer(path, deck, "g1", {"symbol_in_transcription": "Glyph",
+                                   "note": "mine"})
+    assert load_answers(path, deck)["g1"] == {
+        "drawing_shows": "Total runout", "symbol_in_transcription": "glyph",
+        "note": "mine"}
+    assert answers_path(path).name == "d.answers.json"
+
+
+def test_a_blank_value_clears_an_answer(tmp_path, monkeypatch):
+    """Clicking the selected option again un-answers it -- it must not stick."""
+    path, deck = _saved(tmp_path, monkeypatch)
+    save_answer(path, deck, "g1", {"drawing_shows": "Position"})
+    save_answer(path, deck, "g1", {"drawing_shows": ""})
+    assert load_answers(path, deck)["g1"]["drawing_shows"] == ""
+
+
+def test_save_refuses_unknown_rows_fields_and_values(tmp_path, monkeypatch):
+    path, deck = _saved(tmp_path, monkeypatch)
+    for rid, ans in (("g9", {"drawing_shows": "Position"}),
+                     ("g1", {"colour": "red"}),
+                     ("g1", {"drawing_shows": "Positon"}),
+                     ("g1", {"note": "x" * 2001})):
+        with pytest.raises(ReviewRefused):
+            save_answer(path, deck, rid, ans)
+    assert load_answers(path, deck) == {}
+
+
+def test_answers_made_against_another_deck_are_refused(tmp_path, monkeypatch):
+    """A regenerated deck may number different callouts g1..g8; reading old
+    answers against it would attribute them to the wrong rows."""
+    path, deck = _saved(tmp_path, monkeypatch)
+    save_answer(path, deck, "g1", {"drawing_shows": "Position"})
+    with pytest.raises(ReviewRefused, match="different deck"):
+        load_answers(path, dict(deck, run="another"))
+
+
+def test_the_tally_may_not_be_written_into_a_protected_root(tmp_path,
+                                                            monkeypatch):
+    """It is the one output meant for an agent; inside a root no agent can
+    read it, so writing it there would silently lose the review."""
+    root = tmp_path / "client"
+    root.mkdir()
+    _roots(tmp_path, monkeypatch, root)
+    with pytest.raises(ReviewRefused):
+        check_tally_out(root / "tally.json")
+    assert check_tally_out(tmp_path / "docs" / "tally.json")

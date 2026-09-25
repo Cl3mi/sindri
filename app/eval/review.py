@@ -29,6 +29,7 @@ import json
 import os
 import re
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -224,3 +225,149 @@ def deck_sha(deck: Dict) -> str:
     regenerated deck whose row ids now mean different callouts."""
     blob = json.dumps(deck, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+# --- answers ------------------------------------------------------------------
+
+_NOTE_MAX = 2000
+
+
+def _norm(v: str) -> str:
+    return " ".join(v.split()).casefold()
+
+
+_OPTIONS = {q["key"]: {_norm(o["value"]): o["value"] for o in q["options"]}
+            for q in QUESTIONS}
+
+
+def _canon(key: str, value) -> Optional[str]:
+    """'' for blank, the canonical option for a valid answer, None otherwise."""
+    v = _norm(str(value or ""))
+    if not v:
+        return ""
+    return _OPTIONS[key].get(v)
+
+
+def answers_path(deck_path) -> Path:
+    p = Path(deck_path)
+    stem = p.name[:-5] if p.name.endswith(".json") else p.name
+    return p.with_name(stem + ".answers.json")
+
+
+def load_answers(deck_path, deck: Dict) -> Dict[str, Dict]:
+    ap = answers_path(deck_path)
+    if not ap.exists():
+        return {}
+    data = json.loads(ap.read_text(encoding="utf-8"))
+    if data.get("deck_sha") != deck_sha(deck):
+        raise ReviewRefused(
+            "the answers file belongs to a different deck; move one of them "
+            "away rather than mixing answers across decks")
+    return data.get("answers", {})
+
+
+def save_answer(deck_path, deck: Dict, rid: str,
+                answer: Dict) -> Dict[str, Dict]:
+    """Merge one row's answers and write atomically, so a crash mid-write can
+    never leave a half file that loses every earlier answer."""
+    if not inside_protected(deck_path):
+        raise ReviewRefused("answers are kept beside the deck, inside a "
+                            "protected root")
+    if rid not in {r["id"] for r in deck["rows"]}:
+        raise ReviewRefused(f"unknown row {rid!r}")
+    unknown = set(answer) - set(_KEYS) - {"note"}
+    if unknown:
+        raise ReviewRefused(f"unknown answer field(s): {sorted(unknown)}")
+    answers = load_answers(deck_path, deck)
+    row = dict(answers.get(rid, {}))
+    for k in _KEYS:
+        if k in answer:
+            c = _canon(k, answer[k])
+            if c is None:
+                raise ReviewRefused(f"{k}: not one of the allowed answers")
+            row[k] = c
+    if "note" in answer:
+        note = str(answer["note"] or "")
+        if len(note) > _NOTE_MAX:
+            raise ReviewRefused(f"note longer than {_NOTE_MAX} characters")
+        row["note"] = note
+    answers[rid] = row
+    ap = answers_path(deck_path)
+    tmp = ap.with_name(ap.name + ".tmp")
+    tmp.write_text(json.dumps(
+        {"deck_sha": deck_sha(deck), "answers": answers,
+         "updated": datetime.now(timezone.utc).isoformat(timespec="seconds")},
+        indent=1, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, ap)
+    return answers
+
+
+# --- the tally ----------------------------------------------------------------
+
+def _bump(d: Dict[str, int], k: str) -> None:
+    d[k] = d.get(k, 0) + 1
+
+
+def tally(deck: Dict, answers: Dict[str, Dict]) -> Dict:
+    """Counts only. Reads the three closed-vocabulary answers per row and the
+    deck's closed-vocabulary `scorer_reads_gold_as` -- never a label, a
+    transcription, a part number or a note.
+
+    A row is freed WITHOUT A GPU only when both halves of its fix are CPU
+    changes: the symbol reached the text (a parser mapping), and the scorer
+    already reads gold's label as that characteristic or would with one
+    synonym word the operator supplies."""
+    out = {"kind": deck["kind"], "run": deck["run"],
+           "n_rows": len(deck["rows"]), "answered": 0, "incomplete": [],
+           "invalid": [], "drawing_shows": {}, "prediction_fix": {},
+           "gold_side": {}, "freed_without_gpu": 0, "rows": {}}
+    for row in deck["rows"]:
+        rid, given = row["id"], answers.get(row["id"], {})
+        vals = {k: _canon(k, given.get(k)) for k in _KEYS}
+        if any(v is None for v in vals.values()):
+            out["invalid"].append(rid)
+            continue
+        if any(not v for v in vals.values()):
+            out["incomplete"].append(rid)
+            continue
+        out["answered"] += 1
+        shows, scorer = vals["drawing_shows"], row["scorer_reads_gold_as"]
+        pred_fix = ("read_stage" if vals["symbol_in_transcription"] == "none"
+                    else "parser")
+        means = vals["gold_label_means_it"]
+        if means == "no":
+            gold_side = "gold_disagrees_with_drawing"
+        elif means == "unsure":
+            gold_side = "unsure"
+        elif _norm(scorer) == _norm(shows):
+            gold_side = "scorer_already_matches"
+        elif scorer == "none":
+            gold_side = "needs_synonym_word"
+        else:
+            gold_side = "scorer_reads_it_differently"
+        freed = pred_fix == "parser" and gold_side in (
+            "scorer_already_matches", "needs_synonym_word")
+        _bump(out["drawing_shows"], shows)
+        _bump(out["prediction_fix"], pred_fix)
+        _bump(out["gold_side"], gold_side)
+        out["freed_without_gpu"] += int(freed)
+        out["rows"][rid] = {"drawing_shows": shows, "prediction_fix": pred_fix,
+                            "gold_side": gold_side, "freed_without_gpu": freed}
+    return out
+
+
+def check_tally_out(path) -> Path:
+    target = Path(path).resolve()
+    if inside_protected(target):
+        raise ReviewRefused(
+            "the tally is the output meant for the agent; inside a protected "
+            "root it could never be read -- write it under docs/eval/")
+    return target
+
+
+def write_tally(path, t: Dict) -> Path:
+    target = check_tally_out(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(t, indent=1, ensure_ascii=False) + "\n",
+                      encoding="utf-8")
+    return target
