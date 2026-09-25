@@ -17,6 +17,8 @@ import sys
 from pathlib import Path
 from typing import Dict
 
+from app.eval.report import auto_accept_precision
+
 # Tolerances, not zero: scoring is deterministic here (verified — 16 unchanged
 # documents gave per-document delta exactly 0.0 across a GPU device change), so
 # these bound "materially worse", not measurement noise.
@@ -28,10 +30,15 @@ ESCAPED_RATE_TOLERANCE = 0.02
 # LOSS on missed callouts", while this module tolerated it silently and printed
 # WIN. One number, one threshold.
 RECALL_TOLERANCE = 0.005
-# Precision of the unflagged rows (correct / (correct + escaped_error)). The
-# one condition that catches cost bought by flagging more: flag=1 < escaped=5
-# lowers cost for every extra flag, down to flagging everything, which
-# automates nothing. Same 0.02 as the other ratio guards.
+# Guards the unflagged set on two axes: precision (report.auto_accept_precision)
+# and rate (correct / n_gold). Cost falls by 4 whenever an ESCAPED error (w=5)
+# moves to flagged_error (w=1) -- that raises precision, a real win. Cost falls
+# by only 1 less when a CORRECT row moves to flagged_correct instead (w=1 for
+# both, but the reviewer now checks a row that needed no check) -- that LOWERS
+# precision, and is what precision alone can catch. But flagging at RANDOM,
+# correct and escaped moved out in the same proportion, leaves precision flat
+# while cost still falls and fewer rows are automated -- rate is what falls
+# then, and precision cannot see it. Same 0.02 as the other ratio guards.
 AUTO_ACCEPT_TOLERANCE = 0.02
 
 
@@ -41,7 +48,6 @@ def arm_row(name: str, digest: Dict) -> Dict:
     md = digest.get("missed_diagnosis", {})
     matched = digest["n_gold"] - t.get("missed", 0)
     correct = t.get("correct", 0)
-    escaped_error = t.get("escaped_error", 0)
     right = correct + t.get("flagged_correct", 0)
     return {
         "arm": name,
@@ -66,11 +72,16 @@ def arm_row(name: str, digest: Dict) -> Dict:
         # did it actually get right?
         "field_acc": round(right / matched, 4) if matched else 0.0,
         # Precision of the unflagged rows: of what the arm let through
-        # untouched, how much was actually correct? Cost falls whenever a
-        # correct row moves from escaped (weight 5) to flagged (weight 1), so
-        # this is the guard that catches an arm buying cost that way.
-        "auto_accept_precision": (round(correct / (correct + escaped_error), 4)
-                                   if (correct + escaped_error) else 0.0),
+        # untouched, how much was actually correct? None (never 0.0) when
+        # nothing is unflagged -- see report.auto_accept_precision, the single
+        # source of this formula.
+        "auto_accept_precision": auto_accept_precision(t),
+        # Rate: correct rows as a fraction of ALL gold, not just the unflagged
+        # ones. Flagging at random moves correct and escaped rows out of the
+        # unflagged set in the same proportion, so precision barely moves --
+        # rate is what falls, and it is the guard that catches that case.
+        "auto_accept_rate": round(correct / digest["n_gold"], 4)
+                             if digest["n_gold"] else None,
         "misplaced": digest.get("misplaced_matches", 0),
         "contended": md.get("contended", 0),
         "isolated": md.get("isolated", 0),
@@ -89,9 +100,25 @@ def verdict(row: Dict, control: Dict, comparison: Dict = None) -> Dict:
     d_acc = round(row["field_acc"] - control["field_acc"], 4)
     d_esc = round(row["escaped_rate"] - control["escaped_rate"], 4)
     d_rec = round(row["recall"] - control["recall"], 4)
-    d_aap = round(row["auto_accept_precision"]
-                  - control["auto_accept_precision"], 4)
     reasons = []
+    # None handling: an unmeasured or undefined precision is never treated as
+    # a pass. Control None means the baseline itself never left anything
+    # unflagged, so no comparison is possible; arm None (control measured)
+    # means the arm automated nothing at all -- both are named explicitly
+    # rather than silently skipped, and the delta stays None either way so it
+    # is never printed as a number that was not computed.
+    row_aap, ctl_aap = row["auto_accept_precision"], control["auto_accept_precision"]
+    if ctl_aap is None:
+        d_aap = None
+        reasons.append("auto-accept precision unmeasured on control")
+    elif row_aap is None:
+        d_aap = None
+        reasons.append("auto-accepts nothing — every matched row is flagged")
+    else:
+        d_aap = round(row_aap - ctl_aap, 4)
+    row_rate, ctl_rate = row["auto_accept_rate"], control["auto_accept_rate"]
+    d_rate = (round(row_rate - ctl_rate, 4)
+              if row_rate is not None and ctl_rate is not None else None)
     if d_cost >= 0:
         reasons.append(f"review cost did not improve ({d_cost:+.2f})")
     if d_acc < -FIELD_ACC_TOLERANCE:
@@ -108,10 +135,17 @@ def verdict(row: Dict, control: Dict, comparison: Dict = None) -> Dict:
         reasons.append(f"recall fell {d_rec:+.4f} — field accuracy can rise "
                        f"merely by losing matched rows to the miss bucket, "
                        f"which costs w=10 each")
-    if d_aap < -AUTO_ACCEPT_TOLERANCE:
+    if d_aap is not None and d_aap < -AUTO_ACCEPT_TOLERANCE:
         reasons.append(f"auto-accept precision fell {d_aap:+.4f} — cost "
                        f"bought by flagging more, which leaves the unflagged "
                        f"rows less trustworthy")
+    # Precision alone misses random flagging: correct and escaped rows leave
+    # the unflagged set in the same proportion, so precision holds steady
+    # while fewer rows are automated at all. The rate is what falls then.
+    if d_rate is not None and d_rate < -AUTO_ACCEPT_TOLERANCE:
+        reasons.append(f"auto-accept rate fell {d_rate:+.4f} — fewer rows "
+                       f"automated; precision alone cannot see flags spread "
+                       f"evenly over right and wrong rows")
     # Robustness last, so the taxonomy reasons above are always reported too.
     if comparison is None:
         reasons.append("robustness unmeasured — no vs-control comparison found, "
@@ -145,6 +179,7 @@ def verdict(row: Dict, control: Dict, comparison: Dict = None) -> Dict:
         "field_acc_delta": d_acc,
         "escaped_delta": d_esc,
         "auto_accept_delta": d_aap,
+        "auto_accept_rate_delta": d_rate,
         "contended_delta": row["contended"] - control["contended"],
         "isolated_delta": row["isolated"] - control["isolated"],
         "missed_delta": row["missed"] - control["missed"],

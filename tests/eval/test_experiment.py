@@ -302,12 +302,70 @@ def test_arm_row_derives_auto_accept_precision():
 
 
 def test_cost_bought_by_flagging_more_is_not_a_win():
-    """Flagging correct rows lowers cost (escaped 5 -> flagged 1) while making
-    the unflagged set LESS trustworthy. Same recall, same field_acc, cost down
-    -- and still a loss."""
+    """An arm whose flags land on correct rows, lowering precision, is not a
+    win even if cost fell for other reasons. (Cost falls when an ESCAPED
+    error moves to flagged_error, -4, and precision RISES; here a correct row
+    moves to flagged_correct instead, +1, and precision falls -- the losing
+    trade.)"""
     arm = _digest(170.0, 0.6457, 169, 82, 74, 20, 92, 129)
     v = verdict(arm_row("arm", arm), arm_row("control", CONTROL),
                 comparison={"weight_sensitivity": {"robust": True,
                             "b_better_fraction": 1.0, "n_weight_vectors": 6}})
     assert not v["win"]
     assert "auto-accept precision fell" in v["why"]
+
+
+def test_arm_row_reports_no_auto_accept_precision_when_nothing_is_unflagged():
+    """Zero unflagged rows is 'nothing automated', never a fabricated 0.0 --
+    the same rule report._auto_accept already enforces for the digest."""
+    flagged_all = _digest(150.0, 0.6457, 169, 82, 74, 0, 112, 0)
+    row = arm_row("flagall", flagged_all)
+    assert row["auto_accept_precision"] is None
+
+
+def test_arm_row_derives_auto_accept_rate():
+    """Rate is over ALL gold, not just matched rows -- it is what falls when
+    flagging is spread evenly and precision cannot see it (see the random-
+    flagging test below)."""
+    row = arm_row("control", CONTROL)
+    assert row["auto_accept_rate"] == round(72 / 477, 4)
+
+
+def test_flag_everything_is_not_a_win_even_with_lower_cost():
+    """Precision is undefined, not perfect, when nothing is left unflagged --
+    'auto-accepts nothing' must say so on its own, independent of the rate or
+    field_acc guards."""
+    flag_everything = _digest(150.0, 0.6457, 169, 82, 74, 0, 112, 0)
+    v = verdict(arm_row("flagall", flag_everything), arm_row("control", CONTROL),
+                comparison={"weight_sensitivity": {"robust": True,
+                            "b_better_fraction": 1.0, "n_weight_vectors": 6}})
+    assert not v["win"]
+    assert "auto-accepts nothing" in v["why"]
+    assert v["auto_accept_delta"] is None
+
+
+def test_control_with_zero_unflagged_is_unmeasured_not_perfect():
+    """An unmeasured condition is not a passing one -- the module's rule,
+    applied to a control that itself never left anything unflagged."""
+    null_control = _digest(174.3, 0.6457, 169, 82, 74, 0, 112, 0)
+    v = verdict(arm_row("arm", CONTROL), arm_row("control", null_control),
+                comparison={"weight_sensitivity": {"robust": True,
+                            "b_better_fraction": 1.0, "n_weight_vectors": 6}})
+    assert "auto-accept precision unmeasured on control" in v["why"]
+    assert v["auto_accept_delta"] is None
+
+
+def test_random_flagging_is_not_a_win_via_the_rate_guard():
+    """Flagging at RANDOM -- correct and escaped both cut by the same factor,
+    the rest moved to their flagged twins -- leaves precision flat (it may
+    even rise slightly) while cost falls and fewer rows are automated. Only
+    the rate guard, not the precision one, can catch this."""
+    # control: correct 72, escaped 129 (precision 72/201=0.3582)
+    # arm:     correct 36, escaped 64  (precision 36/100=0.3600 -- UP, not down)
+    random_flag = _digest(160.0, 0.6457, 169, 82, 74, 36, 76, 64)
+    v = verdict(arm_row("arm", random_flag), arm_row("control", CONTROL),
+                comparison={"weight_sensitivity": {"robust": True,
+                            "b_better_fraction": 1.0, "n_weight_vectors": 6}})
+    assert not v["win"]
+    assert "auto-accept precision fell" not in v["why"]
+    assert "auto-accept rate fell" in v["why"]

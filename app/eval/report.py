@@ -631,6 +631,15 @@ def _frame_mismatch(report: RunReport, anonymizer) -> Dict:
     }
 
 
+def auto_accept_precision(taxonomy: Dict[str, int]) -> Optional[float]:
+    """correct / (correct + escaped_error): precision of the unflagged matched
+    rows. None when nothing is unflagged -- an empty set has no precision, and
+    any number would lie (1.0 rewards flag-everything, 0.0 is invented)."""
+    correct = taxonomy.get("correct", 0)
+    n_auto = correct + taxonomy.get("escaped_error", 0)
+    return round(correct / n_auto, 4) if n_auto else None
+
+
 def _auto_accept(report: RunReport) -> Dict:
     """Precision and rate of the rows a reviewer is told NOT to check.
 
@@ -645,8 +654,8 @@ def _auto_accept(report: RunReport) -> Dict:
     n_auto = correct + escaped
     n_gold = sum(d.n_gold for d in report.doc_scores)
     return {"n_auto": n_auto, "correct": correct, "escaped": escaped,
-            "precision": round(correct / n_auto, 4) if n_auto else None,
-            "rate": round(correct / n_gold, 4) if n_gold else 0.0}
+            "precision": auto_accept_precision(t),
+            "rate": round(correct / n_gold, 4) if n_gold else None}
 
 
 def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
