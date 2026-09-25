@@ -17,6 +17,13 @@
   "missed": 88,
   "false_detection": 346
  },
+ "auto_accept": {
+  "n_auto": 137,
+  "correct": 73,
+  "escaped": 64,
+  "precision": 0.5328,
+  "rate": 0.2347
+ },
  "error_causes": {
   "misparse": 33,
   "misread": 72
@@ -251,6 +258,54 @@
   "contended": 19,
   "isolated": 58,
   "unlocated": 11
+ },
+ "false_diagnosis": {
+  "categories": {
+   "near_matched_gold": 157,
+   "inside_matched": 10,
+   "far_numeric": 158,
+   "far_other": 5,
+   "same_value_as_matched": 13,
+   "empty_read": 3
+  },
+  "by_kind": {
+   "dimension": {
+    "near_matched_gold": 102,
+    "far_numeric": 108,
+    "inside_matched": 8,
+    "far_other": 3,
+    "same_value_as_matched": 6
+   },
+   "gdt": {
+    "near_matched_gold": 7,
+    "inside_matched": 1,
+    "far_numeric": 8,
+    "same_value_as_matched": 3
+   },
+   "theoretical": {
+    "near_matched_gold": 25,
+    "far_numeric": 22,
+    "far_other": 2,
+    "same_value_as_matched": 3,
+    "empty_read": 2
+   },
+   "note": {
+    "near_matched_gold": 20,
+    "far_numeric": 16,
+    "inside_matched": 1,
+    "same_value_as_matched": 1
+   },
+   "surface": {
+    "far_numeric": 4,
+    "empty_read": 1,
+    "near_matched_gold": 2
+   },
+   "material": {
+    "near_matched_gold": 1
+   }
+  },
+  "total": 346,
+  "not_measured_docs": 0
  },
  "gold_coverage": {
   "not_measured": 0,

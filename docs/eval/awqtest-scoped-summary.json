@@ -17,6 +17,13 @@
   "false_detection": 174,
   "flagged_correct": 19
  },
+ "auto_accept": {
+  "n_auto": 115,
+  "correct": 51,
+  "escaped": 64,
+  "precision": 0.4435,
+  "rate": 0.1747
+ },
  "error_causes": {
   "misread": 80,
   "misparse": 34
@@ -41,8 +48,8 @@
  "field_failures": {
   "field:nominal": 77,
   "field:char_type": 43,
-  "field:lower_tol": 82,
-  "field:upper_tol": 69
+  "field:upper_tol": 69,
+  "field:lower_tol": 82
  },
  "field_failure_signatures": {
   "fields:char_type+nominal": 8,
@@ -223,10 +230,204 @@
   "isolated": 38,
   "unlocated": 31
  },
+ "false_diagnosis": {
+  "categories": {
+   "near_matched_gold": 107,
+   "far_numeric": 36,
+   "empty_read": 15,
+   "inside_matched": 10,
+   "same_value_as_matched": 6
+  },
+  "by_kind": {
+   "note": {
+    "near_matched_gold": 15,
+    "far_numeric": 10,
+    "empty_read": 9,
+    "inside_matched": 2,
+    "same_value_as_matched": 1
+   },
+   "surface": {
+    "near_matched_gold": 5
+   },
+   "gdt": {
+    "near_matched_gold": 15,
+    "same_value_as_matched": 1
+   },
+   "dimension": {
+    "near_matched_gold": 67,
+    "far_numeric": 23,
+    "inside_matched": 7,
+    "empty_read": 5,
+    "same_value_as_matched": 4
+   },
+   "material": {
+    "near_matched_gold": 3
+   },
+   "theoretical": {
+    "empty_read": 1,
+    "near_matched_gold": 2,
+    "far_numeric": 3,
+    "inside_matched": 1
+   }
+  },
+  "total": 174,
+  "not_measured_docs": 0
+ },
  "gold_coverage": {
   "not_measured": 0,
   "unlocated_gold": 32,
   "carried_by_value": 1
+ },
+ "read_accuracy_by_crop_height": {
+  "buckets": [
+   {
+    "range": "<28",
+    "n": 29,
+    "field_acc": 0.1034,
+    "kinds": {
+     "dimension": 28,
+     "gdt": 1
+    }
+   },
+   {
+    "range": "28-40",
+    "n": 21,
+    "field_acc": 0.1905,
+    "kinds": {
+     "dimension": 18,
+     "material": 1,
+     "note": 1,
+     "theoretical": 1
+    }
+   },
+   {
+    "range": "40-80",
+    "n": 77,
+    "field_acc": 0.4935,
+    "kinds": {
+     "dimension": 72,
+     "gdt": 1,
+     "material": 1,
+     "note": 3
+    }
+   },
+   {
+    "range": "80-120",
+    "n": 24,
+    "field_acc": 0.25,
+    "kinds": {
+     "dimension": 19,
+     "gdt": 2,
+     "note": 2,
+     "surface": 1
+    }
+   },
+   {
+    "range": "120-200",
+    "n": 15,
+    "field_acc": 0.6667,
+    "kinds": {
+     "dimension": 14,
+     "gdt": 1
+    }
+   },
+   {
+    "range": ">=200",
+    "n": 18,
+    "field_acc": 0.5,
+    "kinds": {
+     "dimension": 18
+    }
+   }
+  ],
+  "not_measured": 0
+ },
+ "read_accuracy_by_kind": {
+  "kinds": [
+   {
+    "kind": "dimension",
+    "n": 169,
+    "field_acc": 0.4142,
+    "escaped_error": 52,
+    "wrong_fields": {
+     "fields:upper_tol+lower_tol": 14,
+     "fields:lower_tol": 14,
+     "fields:nominal+upper_tol+lower_tol": 23,
+     "fields:char_type+nominal+upper_tol": 1,
+     "fields:nominal": 15,
+     "fields:upper_tol": 2,
+     "fields:char_type+upper_tol+lower_tol": 2,
+     "fields:nominal+lower_tol": 2,
+     "fields:char_type": 1,
+     "fields:char_type+nominal": 3,
+     "fields:char_type+nominal+upper_tol+lower_tol": 19,
+     "fields:char_type+lower_tol": 2,
+     "fields:char_type+nominal+lower_tol": 1
+    },
+    "char_type_only_confusion": {
+     "chartype:unmapped(Material)->Distance": 1
+    }
+   },
+   {
+    "kind": "note",
+    "n": 6,
+    "field_acc": 0.0,
+    "escaped_error": 5,
+    "wrong_fields": {
+     "fields:char_type+nominal": 4,
+     "fields:char_type+nominal+lower_tol": 1,
+     "fields:char_type+nominal+upper_tol": 1
+    },
+    "char_type_only_confusion": {}
+   },
+   {
+    "kind": "gdt",
+    "n": 5,
+    "field_acc": 0.0,
+    "escaped_error": 3,
+    "wrong_fields": {
+     "fields:char_type+nominal+upper_tol": 1,
+     "fields:upper_tol": 1,
+     "fields:char_type+nominal+upper_tol+lower_tol": 2,
+     "fields:char_type": 1
+    },
+    "char_type_only_confusion": {
+     "chartype:unmapped(none)->Flatness": 1
+    }
+   },
+   {
+    "kind": "material",
+    "n": 2,
+    "field_acc": 0.0,
+    "escaped_error": 2,
+    "wrong_fields": {
+     "fields:char_type+nominal": 1,
+     "fields:char_type+nominal+upper_tol": 1
+    },
+    "char_type_only_confusion": {}
+   },
+   {
+    "kind": "theoretical",
+    "n": 1,
+    "field_acc": 0.0,
+    "escaped_error": 1,
+    "wrong_fields": {
+     "fields:char_type+nominal+upper_tol+lower_tol": 1
+    },
+    "char_type_only_confusion": {}
+   },
+   {
+    "kind": "surface",
+    "n": 1,
+    "field_acc": 0.0,
+    "escaped_error": 1,
+    "wrong_fields": {
+     "fields:char_type+nominal+upper_tol+lower_tol": 1
+    },
+    "char_type_only_confusion": {}
+   }
+  ],
+  "not_measured": 0
  },
  "config": {
   "model_id": "Qwen/Qwen2.5-VL-72B-Instruct-AWQ",
