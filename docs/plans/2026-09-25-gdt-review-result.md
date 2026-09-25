@@ -1,13 +1,20 @@
-# gdt review — RESULT: the reader is fine, the parser has no profile symbols
+# gdt review — RESULT: the reader drops GD&T symbols; a Ø zone is never flatness
 
 Reviewed 2026-09-25 by the operator in the local review app (8 of 8 rows,
 none invalid). Decision table and prediction registered beforehand in
 `docs/plans/2026-09-22-gdt-review.md` §4. Tally: `docs/eval/gdt-review-tally.json`
 (counts only).
 
-**One line:** on all 8 rows the reader DID transcribe the GD&T symbol, and 5 of
-the 8 frames are PROFILE tolerances — a characteristic `parser._GDT_SYMBOLS`
-has no entry for, so `_gdt_type` silently calls every one of them Flatness.
+**One line (corrected the same day, §6-8):** the tally read as "the reader
+transcribes every symbol, the parser lacks profile entries" — a closed-
+vocabulary probe then showed the characteristic's symbol is absent from at
+least 6 of the 8 transcriptions, so that reading is withdrawn. What survives is
+one CPU-only fix the probe exposed: a gdt frame that opens with a Ø zone and
+no recognised symbol now defaults to Position, not the impossible Flatness —
+**2 silent errors fixed, would_break 0, −0.67 review cost on dev (derived)**.
+
+§1-5 are kept as written before the probe, because they are what the
+registered table was applied to; read them with §6.
 
 ---
 
@@ -147,3 +154,43 @@ gdt row), so it can falsify.
 
 **Rule:** keep iff `would_break` = 0 and `would_fix` ≥ 1; otherwise revert the
 single commit. A kept change still needs one scored run before it is quoted.
+
+## 8. The Ø-zone arm: measured and KEPT
+
+`49f0629`, measured with `score --reparse-check` on `r3-cropctx`, dev, scoped:
+
+| | registered | measured |
+|---|---|---|
+| identity gate (unmodified parser) | 223/223 | 223/223 |
+| `identical` drops by | ≥ 3 | **4** (g1, g2, g4 and one Ø-zone gdt row with other faults) |
+| `would_fix` | ≥ 2 | **2 — exactly g1 and g2** (`e771485` reports it per row) |
+| `would_break` | 0 | **0** |
+
+**Rule met: kept.** Both fixed rows are escaped errors (so are all 8 — "at
+least 5" in §3 was only a bound). Flagging (`review.review_flags`) depends on
+char_type only for the plain dimension types, which Flatness and Position are
+not, and matching uses the nominal, which stays "0" — so the change moves
+exactly these two rows from escaped to correct and nothing else:
+
+| (dev, scoped, derived) | before | after |
+|---|---|---|
+| mean review cost | 131.87 | **131.20** (−10 ÷ 15 = −0.67) |
+| `field_acc` | 118/223 = 0.5291 | **120/223 = 0.5381** |
+| `escaped_rate` | 64/311 = 0.2058 | **62/311 = 0.1994** |
+
+**Derived, not yet scored**: the registration asked for one scored run before
+the number is quoted. Any future `predict` carries the new parser; until then
+quote it as derived from the re-parse, with the argument above.
+
+**What this closes and opens.** Profile symbols: no parser arm (read-stage
+majority). The dropped GD&T symbol is now a concrete Rung-3 bucket — 6 of 8
+here. Still open: g5/g7's unidentified capital letter (2 rows); the 2
+gold-disagrees and 2 scorer-misreads for the client (§5); and the operator's
+g1/g2/g6/g7 answers, which conflict with the label words and may predate the
+stamped-crop fix.
+
+**Lesson for any future review:** a question an operator answers from the
+screen must name the traps the analyst already knows (here: Ø is usually the
+zone sign, and a stacked frame has two characteristics). And cross-check the
+answers against a closed-vocabulary probe before acting on them — it is what
+turned "4 fixable" into "2 fixed, by a different fix".

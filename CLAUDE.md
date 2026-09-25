@@ -62,7 +62,7 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **935 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **959 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). **`tesseract` is a device
 prerequisite** — without the binary six tests fail as `TesseractNotFoundError`
 and read as broken code. `SCHEMA_VERSION` = 1 — do not bump it. Split frozen
@@ -211,8 +211,23 @@ fix is an OPERATOR review** (dropped symbol vs unmapped look-alike, and what the
 the deck, the operator runs `review-serve` and answers one screen per row with
 drawing crops, and Finish writes the tally. The decision table is registered in
 `docs/plans/2026-09-22-gdt-review.md`. **The deck holds client text: an agent
-never reads it, and the guard blocks every file route to it.** Read
-`docs/eval/gdt-review-tally.json` once the operator says "done".
+never reads it, and the guard blocks every file route to it.**
+
+**DONE 2026-09-25, and the probe overturned the review's headline**
+(`docs/plans/2026-09-25-gdt-review-result.md`). The tally said the reader
+transcribes every symbol and 4 rows were parser-fixable. A closed-vocabulary
+probe (`vocab_probe`, in `score --reparse-check`, per deck row) showed the
+characteristic's symbol is ABSENT from at least 6 of 8 transcriptions —
+nothing before the value on 3, only the Ø zone sign on 3 — so it is a
+read-stage majority and **there is no profile-symbol parser arm**. What it
+exposed instead: `_gdt_type` defaulted Ø-zone frames to Flatness, which never
+has a cylindrical zone. **`49f0629` defaults them to Position: would_fix 2
+(exactly the two rows registered, both escaped), would_break 0 → kept, −0.67
+review cost on dev, DERIVED from the re-parse** (131.87 → 131.20, field_acc
+0.5381, escaped_rate 0.1994); quote it as derived until a predict run scores
+it. **Lesson: cross-check operator answers against a closed-vocabulary probe
+before acting on them, and write review questions that name the known traps
+(Ø is usually the zone sign; stacked frames carry two characteristics).**
 
 **These are now TWO separate closed dead ends, and they close for different
 reasons.** §3's synonym-map entry is about GOLD's vocabulary and closed because
@@ -733,7 +748,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 935 passed, 2 skipped
+python -m pytest -q                          # 959 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```
