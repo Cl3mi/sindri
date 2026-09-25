@@ -123,7 +123,7 @@ def reparse_report(dumps: Dict, golds: Dict, scores: List) -> Dict:
                         vocab_probe.glyph_set(p.raw_text or "")),
                     "label_words": vocab_probe.signature(vocab_probe.word_set(
                         g.char_type or "", vocab_probe.LABEL_WORDS)),
-                    "scorer": scorer_side(pair)}))
+                    "scorer": scorer_side(pair)}, pair))
             fresh = parse_value(p.raw_text or "",
                                hint=_HINTS.get(p.kind or "", ""))
             if _same_parse(fresh, p):
@@ -131,13 +131,18 @@ def reparse_report(dumps: Dict, golds: Dict, scores: List) -> Dict:
             was_right = pair.fields_correct
             now_right = _matches_gold(fresh, g)
             if was_right and not now_right:
-                out["would_break"] += 1
+                outcome = "would_break"
             elif not was_right and now_right:
-                out["would_fix"] += 1
+                outcome = "would_fix"
             elif was_right:
-                out["still_correct"] += 1
+                outcome = "still_correct"
             else:
-                out["still_wrong"] += 1
+                outcome = "still_wrong"
+            out[outcome] += 1
+            if by_row and by_row[-1][3] is pair:
+                # A fix pays only on a silent error (r3-tallpad), so the row
+                # carries its bucket beside what the reparse does to it.
+                by_row[-1][2].update(outcome=outcome, taxonomy=pair.taxonomy)
     by_row.sort(key=lambda t: (t[0], t[1]))
-    gdt["rows"] = {f"g{i}": sig for i, (_, _, sig) in enumerate(by_row, 1)}
+    gdt["rows"] = {f"g{i}": sig for i, (_, _, sig, _) in enumerate(by_row, 1)}
     return out

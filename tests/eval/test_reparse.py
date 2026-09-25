@@ -180,3 +180,13 @@ def test_the_probe_keys_each_row_by_the_review_decks_id():
     assert rows["g2"]["prefix"].startswith("U+00D8")             # P1 balloon 2
     assert rows["g3"]["prefix"] == "U+03A0 GREEK CAPITAL LETTER PI"  # P2
     assert rows["g3"]["scorer"] == "none"
+
+
+def test_each_probe_row_says_what_the_reparse_does_to_it_and_what_it_costs():
+    """A registered gate asked for would_fix 'row for row', and a fix only pays
+    on a silent error (r3-tallpad) -- so each row carries its reparse outcome
+    and its taxonomy bucket, both closed vocabulary."""
+    r = _case(dict(_GDT_ROW, raw_text="0,05 A"), _GDT_GOLD)
+    row = r["gdt_char_type_only"]["rows"]["g1"]
+    assert row["outcome"] == "still_wrong"
+    assert row["taxonomy"] in ("escaped_error", "flagged_error")
