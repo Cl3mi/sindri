@@ -132,11 +132,13 @@ Four units, each testable alone.
   point, padded 40 pt, at least 160 × 100 pt, clamped to the page.
 * Clean crop: red outline = pipeline box, blue dot = gold position. Overlays
   are drawn on an in-memory page and never saved to the file.
-* Stamped crop: the same region with no overlays. It assumes the stamped and
-  original sheets share page geometry, which holds on dev (`frame_mismatch`:
-  15 of 15 frames agree); when the two page sizes differ, the crop is labelled
-  "position approximate". If the gold point is missing, the row shows text
-  facts only.
+* Stamped crop: the same region, carried onto the stamped sheet by inverting
+  ingest's per-axis page scale (`review_crops.map_rect`), with no overlays.
+  **Corrected 2026-09-25:** this section first assumed the two sheets share
+  page geometry; on the real deck 6 of 8 rows did not, and the crop showed the
+  wrong area (`505a667`). The gold position was produced by that transform, so
+  the inverse lands on the printed balloon exactly. "Position approximate" now
+  appears only when there is no original page to map from.
 * Missing file or page → a clear error value; the server turns it into a
   placeholder image, never a stack trace.
 
