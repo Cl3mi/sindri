@@ -207,7 +207,9 @@ def test_other_drop_rules():
     assert not pr.DROP_RULES["repeated_value_nearby"](far, chars)
 
 
-def test_nothing_is_active_until_a_rule_is_kept():
-    """Behaviour changes only land when the plan's keep/revert rule keeps them."""
-    assert pr.ACTIVE_FLAG_RULES == ()
-    assert pr.ACTIVE_DROP_RULES == ()
+def test_active_sets_are_exactly_what_the_result_doc_kept():
+    """docs/plans/2026-09-25-policy-arms-result.md is the authority: each rule
+    passed train, dev and test individually and jointly. Change both together
+    or not at all."""
+    assert pr.ACTIVE_FLAG_RULES == ("nondim_kind", "no_tolerance")
+    assert pr.ACTIVE_DROP_RULES == ("contained_duplicate",)

@@ -18,8 +18,9 @@ Two invariants the counterfactual depends on:
     therefore depend on neither list position nor `pos`, and ties keep both
     rows rather than break by either.
 
-Nothing is active by default. A rule becomes active only when the keep/revert
-rule in docs/plans/2026-09-25-review-quality-arms-plan.md §1 keeps it."""
+A rule becomes active only when the keep/revert rule in
+docs/plans/2026-09-25-review-quality-arms-plan.md §1 keeps it -- see
+ACTIVE_FLAG_RULES / ACTIVE_DROP_RULES below for what is currently kept."""
 import math
 import re
 from typing import Callable, Dict, List, Sequence, Tuple
@@ -256,10 +257,12 @@ DROP_RULES: Dict[str, Callable[[Characteristic, Sequence[Characteristic]], bool]
     "theoretical_kind": _theoretical_kind,
 }
 
-# Filled ONLY by the keep/revert rule. Empty means the pipeline behaves
-# exactly as every dump on disk was produced.
-ACTIVE_FLAG_RULES: Tuple[str, ...] = ()
-ACTIVE_DROP_RULES: Tuple[str, ...] = ()
+# Kept 2026-09-25 (docs/plans/2026-09-25-policy-arms-result.md): each passed
+# train, dev and test on every guard, individually and jointly. Joint, derived
+# exactly from stored dumps: dev 131.87 -> 118.73, test 165.18 -> 149.73,
+# auto-accept precision 0.53 -> 0.80 (dev). r4-control must reproduce it.
+ACTIVE_FLAG_RULES: Tuple[str, ...] = ("nondim_kind", "no_tolerance")
+ACTIVE_DROP_RULES: Tuple[str, ...] = ("contained_duplicate",)
 
 
 def apply_flag_rules(c: Characteristic, names: Sequence[str]) -> List[str]:

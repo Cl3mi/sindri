@@ -12,6 +12,7 @@ from app.pipeline.place import number_characteristics, place_balloons
 from app.pipeline.parser import parse_value
 from app.pipeline.ocr import get_backend
 from app.pipeline.review import review_flags
+from app.pipeline import policy_rules as pr
 from app.pipeline import notes_block as nb
 from app.pipeline import marks_block as mb
 from app.pipeline import title_block as tb
@@ -229,6 +230,22 @@ def _regions_overlap(a, b, min_frac: float = 0.5) -> bool:
     return smaller > 0 and inter / smaller >= min_frac
 
 
+def _apply_active_policy(results):
+    """The kept flag and drop rules, through the SAME functions
+    app/eval/policy_check.py priced them with -- so the offline price and the
+    shipped behaviour cannot drift apart. Flags first on every row, then the
+    drop judged on the original list (drop rules are order-independent);
+    the offline counterfactual applies drops before flags, but no drop rule
+    reads needs_review/review_reasons and no flag rule touches a field a
+    drop rule reads, so the two orders agree."""
+    for c in results:
+        extra = pr.apply_flag_rules(c, pr.ACTIVE_FLAG_RULES)
+        if extra:
+            c.needs_review = True
+            c.review_reasons = [*c.review_reasons, *extra]
+    return pr.apply_drop_rules(results, pr.ACTIVE_DROP_RULES)
+
+
 def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
             detect_only: bool = False, progress=None) -> ExtractionResult:
     work_dir = Path(work_dir)
@@ -402,6 +419,13 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
         results.append(c)
         emit("ocr", "Reading regions", i + 1, total)
 
+    # The loose_text exclusion below must still cover DROPPED boxes, or their
+    # text resurfaces as title fields -- a side effect the offline price
+    # cannot see. So keep the pre-drop regions for it.
+    read_regions = [c.target_region for c in results
+                    if c.target_region is not None]
+    results = _apply_active_policy(results)
+
     emit("place", "Placing balloons")
     number_characteristics(results)
     # render.dpi, not the requested dpi: the gap is specified in PDF points and
@@ -416,7 +440,7 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
                            legend.outer_box if legend is not None else None,
                            region.outer_box if region is not None else None)
                if b is not None]
-    exclude += [c.target_region for c in results if c.target_region is not None]
+    exclude += read_regions
     title_fields += tb.loose_text(image, backend, exclude)
     return ExtractionResult(characteristics=results, notes=notes_obj,
                             title_block=title_fields, marks=marks_obj,

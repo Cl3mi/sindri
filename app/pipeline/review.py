@@ -25,7 +25,9 @@ LOW_CONF = 0.8
 
 
 def active_review_policy() -> dict:
-    """The review policy in effect, for `RunConfig.extra` at predict time.
+    """The review policy in effect, for `RunConfig.extra` at predict time:
+    the LOW_CONF threshold plus, when non-empty, `flag_rules` and
+    `drop_rules` (app.pipeline.policy_rules.ACTIVE_FLAG_RULES / _DROP_RULES).
 
     The same job `detect.active_knobs` does, and it exists for the same reason:
     two runs differing only in this threshold otherwise produce
@@ -39,7 +41,16 @@ def active_review_policy() -> dict:
     A dump with no `review_low_conf` key PREDATES the field; it does not mean
     0.6. Same discipline as `DocScore.frame_origin_frac` being None rather than
     a plausible-looking 0.0."""
-    return {"review_low_conf": LOW_CONF}
+    from app.pipeline import policy_rules as pr
+    out = {"review_low_conf": LOW_CONF}
+    # Recorded only when non-empty, so a run with no active rule keeps the
+    # RunConfig every existing dump has, and a run with rules can never be
+    # mistaken for one without them (the _reusable_dump failure, again).
+    if pr.ACTIVE_FLAG_RULES:
+        out["flag_rules"] = list(pr.ACTIVE_FLAG_RULES)
+    if pr.ACTIVE_DROP_RULES:
+        out["drop_rules"] = list(pr.ACTIVE_DROP_RULES)
+    return out
 
 
 def review_flags(c: Characteristic, rotation_ambiguous: bool,
