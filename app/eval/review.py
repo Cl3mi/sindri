@@ -1,4 +1,4 @@
-"""The operator's gdt review: a worksheet a human fills in, a tally an agent may read.
+"""The operator's gdt review: a deck a human reviews, a tally an agent may read.
 
 `gdt` has 8 rows wrong in char_type ONLY on the shipped config -- the one bucket
 where a single-field fix passes the last-fault test (2026-09-22,
@@ -9,28 +9,34 @@ is what the drawing shows, whether the symbol is in the transcription in some
 form the parser does not map, and whether gold's label names it. That needs
 the drawing and gold's label, which are client content.
 
-So this module is split along the data boundary, and the split is the design:
+So this module is split along the data boundary, and the split is the design
+(docs/plans/2026-09-25-gdt-review-ui-design.md):
 
-  * `write_worksheet` emits CLIENT TEXT -- the label, the transcription, the
-    part number -- and refuses any path outside a protected root, where the
-    agent's guard will not read it. It never overwrites, because re-running
-    `score` must not erase someone's answers.
-  * `tally` reads back only the three closed-vocabulary answers per row and the
-    generator's own closed-vocabulary metadata, and returns counts. Free text
-    the operator writes (`note:`) is never read at all, so nothing typed into
-    the worksheet can travel to an agent through the tally.
+  * the DECK (`write_deck`) carries CLIENT TEXT -- the label, the
+    transcription, the part number -- plus the geometry the review app crops
+    by, and the questions. It refuses any path outside a protected root, where
+    the agent's guard will not read it, and never overwrites: answers are
+    keyed to it.
+  * the TALLY reads back only the closed-vocabulary answers and the deck's
+    closed-vocabulary metadata, and returns counts. Notes are never read, so
+    nothing the operator types can travel to an agent through it.
 
 Rows are selected with `report.is_char_type_only`, the digest's own predicate,
 so the operator reviews exactly the rows the counts describe.
 """
+import hashlib
+import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from app.eval.reparse import gdt_symbol_recognised
 from app.eval.report import _ctype_key, is_char_type_only
+
+DECK_VERSION = 1
+KIND = "gdt-char-type-only"
 
 # ISO 1101 characteristics, with the symbol an operator looks for on the frame.
 # Wider than parser._GDT_SYMBOLS on purpose: a frame showing Straightness or a
@@ -43,26 +49,52 @@ DRAWING_SHOWS = (
     ("Perpendicularity", "⊥"), ("Angularity", "∠"), ("Position", "⌖"),
     ("Concentricity", "◎"), ("Symmetry", "⌯"), ("Runout", "↗"),
     ("Total runout", "⌰"), ("other", ""), ("unsure", ""))
-SYMBOL_IN_TRANSCRIPTION = ("glyph", "word", "none")
-GOLD_LABEL_MEANS_IT = ("yes", "no", "unsure")
 
-_QUESTIONS = ("drawing_shows", "symbol_in_transcription", "gold_label_means_it")
-_HEADER = "<!-- sindri-gdt-review v1 rows={n} -->"
+# The questions travel IN the deck, so the page renders whatever a deck asks
+# and a later review is a new deck rather than new UI code. Hotkeys are scoped
+# to the active question, which is why "n" can mean None here and No below.
+QUESTIONS = (
+    {"key": "drawing_shows", "prompt": "What does the frame show?",
+     "help": "The characteristic of the GD&T frame at this balloon.",
+     "filter": True,
+     "options": [{"value": n, "label": n, "symbol": s}
+                 for n, s in DRAWING_SHOWS]},
+    {"key": "symbol_in_transcription",
+     "prompt": "Is that symbol in the transcription?",
+     "help": "Compare the frame with what the reader transcribed.",
+     "options": [
+         {"value": "glyph", "label": "Glyph", "hotkey": "g",
+          "help": "a symbol is there, even a look-alike"},
+         {"value": "word", "label": "Word", "hotkey": "w",
+          "help": "the characteristic is written out"},
+         {"value": "none", "label": "None", "hotkey": "n",
+          "help": "the symbol is missing"}]},
+    {"key": "gold_label_means_it",
+     "prompt": "Does the inspection-sheet label mean it?",
+     "help": "Does the label name the same characteristic as your first answer?",
+     "options": [
+         {"value": "yes", "label": "Yes", "hotkey": "y"},
+         {"value": "no", "label": "No", "hotkey": "n"},
+         {"value": "unsure", "label": "Unsure", "hotkey": "u"}]},
+)
+_KEYS = tuple(q["key"] for q in QUESTIONS)
 
 
-class WorksheetRefused(RuntimeError):
-    """The worksheet would land somewhere an agent could read it, or on top of
-    one that may already hold answers."""
+class ReviewRefused(RuntimeError):
+    """A review file would land where an agent could read it, would replace
+    one that may hold answers, or does not belong to this deck."""
 
 
 @dataclass
 class ReviewRow:
+    id: str
     doc_id: str
-    drawing: str
     balloon: int
     where: str
-    gold_label: str             # client text -- worksheet only
-    transcription: str          # client text -- worksheet only
+    gold_pt: Optional[Tuple[float, float]]
+    pred_box_pt: Optional[Tuple[float, float, float, float]]
+    gold_label: str             # client text -- deck only
+    transcription: str          # client text -- deck only
     predicted: str              # parser constant
     parser_defaulted: bool
     scorer_reads_gold_as: str   # closed vocabulary, from score._ctype_label
@@ -93,10 +125,17 @@ def _scorer_side(pair) -> str:
     return m.group(1) if m else gold
 
 
+def _pt_box(region, scale):
+    """Render pixels -> PDF points: the crop is cut from the PDF itself."""
+    if not region or not scale:
+        return None
+    return tuple(round(v / scale, 2) for v in region)
+
+
 def collect_gdt_rows(dumps: Dict, golds: Dict, scores: List) -> List[ReviewRow]:
-    """The gdt rows wrong in char_type ONLY, grouped by drawing so each drawing
-    is opened once, balloons in order within it."""
-    rows = []
+    """The gdt rows wrong in char_type ONLY, grouped by document so each
+    drawing is looked at once, balloons in order within it."""
+    found = []
     for score in scores:
         dump, gold = dumps[score.doc_id], golds[score.doc_id]
         preds = {c.pos: c for c in dump.result.characteristics}
@@ -108,130 +147,28 @@ def collect_gdt_rows(dumps: Dict, golds: Dict, scores: List) -> List[ReviewRow]:
                 continue
             if not is_char_type_only(pair):
                 continue
-            rows.append(ReviewRow(
-                doc_id=score.doc_id, drawing=gold.pdf, balloon=g.balloon,
+            found.append((score.doc_id, g.balloon, dict(
+                doc_id=score.doc_id, balloon=g.balloon,
                 where=_where(g.position_pt, gold.page_rect),
+                gold_pt=tuple(g.position_pt) if g.position_pt else None,
+                pred_box_pt=_pt_box(p.target_region, dump.scale),
                 gold_label=g.char_type, transcription=p.raw_text or "",
                 predicted=p.char_type or "",
                 parser_defaulted=not gdt_symbol_recognised(p.raw_text),
                 scorer_reads_gold_as=_scorer_side(pair),
-                silent=pair.taxonomy == "escaped_error"))
-    rows.sort(key=lambda r: (r.doc_id, r.balloon))
-    return rows
+                silent=pair.taxonomy == "escaped_error")))
+    found.sort(key=lambda t: (t[0], t[1]))
+    return [ReviewRow(id=f"g{i}", **kw)
+            for i, (_, _, kw) in enumerate(found, 1)]
 
 
-def _cell(text: str) -> str:
-    """Client text inside a table cell: keep it verbatim, but never let it
-    break the table or close the code span it sits in."""
-    return "`" + " ".join(str(text).split()).replace("`", "'").replace(
-        "|", "\\|") + "`"
-
-
-def build_worksheet(rows: List[ReviewRow]) -> str:
-    n = len(rows)
-    guessed = sum(r.parser_defaulted for r in rows)
-    silent = sum(r.silent for r in rows)
-    key = "\n".join(f"  - `{name}`" + (f"  {sym}" if sym else "")
-                    for name, sym in DRAWING_SHOWS)
-    out = [
-        f"# gdt review — {n} rows, about {max(n, 1)} minutes",
-        "",
-        _HEADER.format(n=n),
-        "",
-        "> **This file contains client data.** Keep it inside the client-data "
-        "folder. Do not paste it, attach it, or show it to an AI agent. Only "
-        "the tally at the bottom may be shared.",
-        "",
-        "## Why these rows",
-        "",
-        f"Each row below is a GD&T callout the pipeline got right in every "
-        f"field except its TYPE. Fix the type and the row is fully correct, "
-        f"which no other bucket offers. On {guessed} of {n} the type is a "
-        f"GUESS: the parser found no GD&T symbol in what the reader "
-        f"transcribed and fell back to its default, Flatness. {silent} of {n} "
-        f"reach the customer today as silent errors. Your answers say where "
-        f"the fix lives: the parser, the reader, or the scorer's vocabulary.",
-        "",
-        "## How to do it (about a minute a row)",
-        "",
-        "1. Open the **stamped** drawing named in the row. The balloons are "
-        "printed on it. Find the balloon number; the rough location helps.",
-        "2. Look at the feature-control frame (the boxed GD&T callout) at that "
-        "balloon.",
-        "3. Fill in the three answer lines under the row. Leave a line blank if "
-        "you are not sure: a blank row is reported as unanswered, never "
-        "guessed.",
-        "4. Write only on the answer lines. `note:` is for you; the tally "
-        "never reads it.",
-        "",
-        "## Answer key",
-        "",
-        "**drawing_shows** — which characteristic the frame's symbol is:",
-        "",
-        key,
-        "",
-        "**symbol_in_transcription** — compare the frame with *What the reader "
-        "transcribed*:",
-        "",
-        "  - `glyph` — a symbol is there, even a look-alike. The parser just "
-        "did not recognise it.",
-        "  - `word` — the characteristic is written out as a word.",
-        "  - `none` — the symbol is missing from the transcription.",
-        "",
-        "**gold_label_means_it** — does the inspection-sheet label name the "
-        "same characteristic as `drawing_shows`? `yes`, `no` or `unsure`.",
-        "",
-        "Capitals and extra spaces do not matter.",
-    ]
-    for i, r in enumerate(rows, 1):
-        rid = f"g{i}"
-        cost = ("**silent error** — reaches the customer unflagged"
-                if r.silent else "flagged for review")
-        guess = ("a guess: no GD&T symbol recognised, so the parser fell back "
-                 "to its default" if r.parser_defaulted else
-                 "read from a symbol the parser recognised")
-        scorer = ("no type word it knows" if r.scorer_reads_gold_as == "none"
-                  else r.scorer_reads_gold_as)
-        out += [
-            "",
-            "---",
-            "",
-            f"## {rid} · {r.drawing} · balloon {r.balloon}",
-            "",
-            f"<!-- row {rid} scorer={r.scorer_reads_gold_as} -->",
-            "",
-            "| | |",
-            "|---|---|",
-            f"| Part | {_cell(r.doc_id)} — stamped drawing {_cell(r.drawing)}, "
-            f"sheet 1 |",
-            f"| Balloon | **{r.balloon}**, {r.where} of the sheet |",
-            f"| Inspection-sheet label | {_cell(r.gold_label)} |",
-            f"| What the reader transcribed | {_cell(r.transcription)} |",
-            f"| Predicted type | {r.predicted} — {guess} |",
-            f"| Scorer reads the label as | {scorer} |",
-            f"| Cost today | {cost} |",
-            "",
-            "drawing_shows:",
-            "symbol_in_transcription:",
-            "gold_label_means_it:",
-            "note:",
-        ]
-    out += [
-        "",
-        "---",
-        "",
-        "## When you are done",
-        "",
-        "Run this in your own terminal (not through an agent), then tell the "
-        "agent \"done\". It writes counts only, into the repo:",
-        "",
-        "```bash",
-        "python3 -m app.eval.runner review-tally <this file> "
-        "--out docs/eval/gdt-review-tally.json",
-        "```",
-        "",
-    ]
-    return "\n".join(out)
+def build_deck(rows: List[ReviewRow], run: str, originals_dir,
+               stamped_dir) -> Dict:
+    return {"version": DECK_VERSION, "kind": KIND, "run": run,
+            "originals_dir": str(originals_dir),
+            "stamped_dir": str(stamped_dir),
+            "questions": [dict(q) for q in QUESTIONS],
+            "rows": [asdict(r) for r in rows]}
 
 
 def _protected_roots() -> List[Path]:
@@ -244,104 +181,46 @@ def _protected_roots() -> List[Path]:
             if line.strip()]
 
 
-def check_worksheet_path(path) -> Path:
-    """Refuse unless `path` resolves INSIDE a protected root and is not already
-    there. Called before scoring too, so a bad path fails in seconds rather
-    than after a full re-score."""
+def inside_protected(path) -> bool:
     target = Path(path).resolve()
-    roots = _protected_roots()
-    if not any(target.is_relative_to(root) for root in roots):
-        raise WorksheetRefused(
-            "the gdt worksheet holds client text, so it may only be written "
+    return any(target.is_relative_to(root) for root in _protected_roots())
+
+
+def check_deck_path(path) -> Path:
+    """Inside a protected root and not already there. Called before scoring
+    too, so a bad path fails in seconds rather than after a re-score."""
+    target = Path(path).resolve()
+    if not inside_protected(target):
+        raise ReviewRefused(
+            "the review deck holds client text, so it may only be written "
             "inside a protected root (one listed in "
             "~/.claude/sindri-protected-paths, e.g. the client-data reports/ "
-            "folder)" + ("" if roots else " -- and no protected roots are "
-                         "configured on this machine"))
+            "folder)" + ("" if _protected_roots() else " -- and no protected "
+                         "roots are configured on this machine"))
     if target.exists():
-        raise WorksheetRefused(
-            "a worksheet already exists at that path and may hold answers; "
-            "move or delete it deliberately to regenerate")
+        raise ReviewRefused(
+            "a deck already exists at that path and its answers are keyed to "
+            "it; move it away deliberately to regenerate")
     return target
 
 
-def write_worksheet(path, rows: List[ReviewRow]) -> int:
-    target = check_worksheet_path(path)
+def write_deck(path, deck: Dict) -> int:
+    target = check_deck_path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(build_worksheet(rows), encoding="utf-8")
-    return len(rows)
+    target.write_text(json.dumps(deck, indent=1, ensure_ascii=False),
+                      encoding="utf-8")
+    return len(deck["rows"])
 
 
-def _norm(v: str) -> str:
-    return " ".join(v.split()).casefold()
+def load_deck(path) -> Dict:
+    deck = json.loads(Path(path).read_text(encoding="utf-8"))
+    if deck.get("version") != DECK_VERSION or deck.get("kind") != KIND:
+        raise ReviewRefused(f"not a {KIND} v{DECK_VERSION} review deck")
+    return deck
 
 
-_CANON = {
-    "drawing_shows": {_norm(n): n for n, _ in DRAWING_SHOWS},
-    "symbol_in_transcription": {v: v for v in SYMBOL_IN_TRANSCRIPTION},
-    "gold_label_means_it": {v: v for v in GOLD_LABEL_MEANS_IT},
-}
-_ROW_RE = re.compile(r"^## (g\d+) ", re.M)
-_META_RE = re.compile(r"<!-- row (g\d+) scorer=([^ ]*) -->")
-
-
-def _bump(d: Dict[str, int], k: str) -> None:
-    d[k] = d.get(k, 0) + 1
-
-
-def tally(text: str) -> Dict:
-    """Counts only. Reads each row's three answer lines and the generator's
-    closed-vocabulary `scorer=` tag -- nothing else in the file, so no label,
-    transcription, part number or note can reach the output."""
-    m = re.search(r"<!-- sindri-gdt-review v1 rows=(\d+) -->", text)
-    starts = [(mm.group(1), mm.start()) for mm in _ROW_RE.finditer(text)]
-    out = {"n_rows": int(m.group(1)) if m else len(starts), "answered": 0,
-           "incomplete": [], "invalid": [], "drawing_shows": {},
-           "prediction_fix": {}, "gold_side": {}, "freed_without_gpu": 0,
-           "rows": {}}
-    for i, (rid, start) in enumerate(starts):
-        end = starts[i + 1][1] if i + 1 < len(starts) else len(text)
-        block = text[start:end].split("\n## ", 1)[0]
-        meta = _META_RE.search(block)
-        scorer = meta.group(2) if meta and meta.group(1) == rid else "not_measured"
-        answers: Dict[str, Optional[str]] = {}
-        bad = False
-        for q in _QUESTIONS:
-            mm = re.search(rf"^{q}:[ \t]*(.*)$", block, re.M)
-            raw = _norm(mm.group(1)) if mm else ""
-            if not raw:
-                answers[q] = None
-            elif raw in _CANON[q]:
-                answers[q] = _CANON[q][raw]
-            else:
-                bad = True
-        if bad:
-            out["invalid"].append(rid)
-            continue
-        if any(a is None for a in answers.values()):
-            out["incomplete"].append(rid)
-            continue
-        out["answered"] += 1
-        shows = answers["drawing_shows"]
-        pred_fix = ("read_stage" if answers["symbol_in_transcription"] == "none"
-                    else "parser")
-        means = answers["gold_label_means_it"]
-        if means == "no":
-            gold_side = "gold_disagrees_with_drawing"
-        elif means == "unsure":
-            gold_side = "unsure"
-        elif _norm(scorer) == _norm(shows):
-            gold_side = "scorer_already_matches"
-        elif scorer == "none":
-            gold_side = "needs_synonym_word"
-        else:
-            gold_side = "scorer_reads_it_differently"
-        freed = (pred_fix == "parser"
-                 and gold_side in ("scorer_already_matches",
-                                   "needs_synonym_word"))
-        _bump(out["drawing_shows"], shows)
-        _bump(out["prediction_fix"], pred_fix)
-        _bump(out["gold_side"], gold_side)
-        out["freed_without_gpu"] += int(freed)
-        out["rows"][rid] = {"drawing_shows": shows, "prediction_fix": pred_fix,
-                            "gold_side": gold_side, "freed_without_gpu": freed}
-    return out
+def deck_sha(deck: Dict) -> str:
+    """Keys the answers file to its deck, so answers are never read against a
+    regenerated deck whose row ids now mean different callouts."""
+    blob = json.dumps(deck, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
