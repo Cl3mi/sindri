@@ -16,7 +16,7 @@ from typing import Dict, Optional, Sequence, Tuple
 from app.eval.experiment import (AUTO_ACCEPT_TOLERANCE, FIELD_ACC_TOLERANCE,
                                  RECALL_TOLERANCE)
 from app.eval.models import GoldDoc, MatchParams, PredictionDump, ReviewCostWeights
-from app.eval.report import WEIGHT_GRID, recompute_cost
+from app.eval.report import WEIGHT_GRID, auto_accept_precision, recompute_cost
 from app.eval.score import score_doc
 from app.pipeline.policy_rules import (DROP_RULES, FLAG_RULES,
                                        apply_drop_rules, apply_flag_rules)
@@ -81,11 +81,15 @@ def _stats(scores) -> Dict:
         "recall": round(matched / n_gold, 4) if n_gold else 0.0,
         "field_acc": round(right / matched, 4) if matched else 0.0,
         "escaped_rate": round(escaped / n_gold, 4) if n_gold else 0.0,
-        # 0.0 rather than None here only because these feed deltas between two
-        # states of the SAME documents; an empty unflagged set on both sides
-        # gives delta 0, which _passes_flag's strict > 0 already rejects.
-        "auto_accept_precision": (round(correct / (correct + escaped), 4)
-                                  if correct + escaped else 0.0),
+        # None (never 0.0) when nothing is unflagged -- report.py's own
+        # formula, reused rather than re-derived so the two callers can never
+        # disagree about what "unmeasured" means. Coercing this to 0.0 used to
+        # let a flag rule that empties the unflagged set entirely score a
+        # cost-free delta of exactly 0 against a base that was ALSO 0.0 (a
+        # coincidence, not a measurement), and let a drop rule that re-pairs
+        # onto an empty base show a fabricated +1.0. _delta below propagates
+        # the None instead.
+        "auto_accept_precision": auto_accept_precision(counts),
         "auto_accept_rate": round(correct / n_gold, 4) if n_gold else 0.0,
     }
 
@@ -95,7 +99,15 @@ _DELTA_KEYS = ("cost", "recall", "field_acc", "escaped_rate",
 
 
 def _delta(a: Dict, b: Dict) -> Dict:
-    return {k: round(b[k] - a[k], 4) for k in _DELTA_KEYS}
+    """None on EITHER side yields a None delta, never a value computed against
+    a stand-in 0.0 -- only `auto_accept_precision` can be None, and an
+    unmeasured precision on one side makes the delta itself unmeasured, not
+    zero and not the other side's raw number."""
+    out = {}
+    for k in _DELTA_KEYS:
+        av, bv = a[k], b[k]
+        out[k] = None if av is None or bv is None else round(bv - av, 4)
+    return out
 
 
 def _better_under(base_counts, new_counts) -> int:
@@ -108,17 +120,26 @@ def _passes_flag(d: Dict, better: int) -> bool:
     # a non-zero delta there means the offline reconstruction is broken.
     if d["recall"] != 0 or d["field_acc"] != 0:
         raise AssertionError(f"a flag rule moved matching: {d}")
+    aap = d["auto_accept_precision"]
+    # Unmeasured -- either side's unflagged set was empty -- is never a pass.
+    # A rule that flags the whole unflagged set away is not "infinitely
+    # precise"; it produced nothing to be confident about.
+    if aap is None:
+        return False
     return (d["cost"] < 0 and better == len(WEIGHT_GRID)
-            and d["auto_accept_precision"] > 0
+            and aap > 0
             and d["auto_accept_rate"] >= -AUTO_ACCEPT_TOLERANCE)
 
 
 def _passes_drop(d: Dict, better: int) -> bool:
+    aap = d["auto_accept_precision"]
+    if aap is None:
+        return False
     return (d["cost"] < 0 and better == len(WEIGHT_GRID)
             and d["recall"] >= -RECALL_TOLERANCE
             and d["field_acc"] >= -FIELD_ACC_TOLERANCE
             and d["escaped_rate"] <= 0
-            and d["auto_accept_precision"] >= 0
+            and aap >= 0
             and d["auto_accept_rate"] >= -AUTO_ACCEPT_TOLERANCE)
 
 
@@ -133,13 +154,21 @@ def _base_false_positions(base_scores, doc_ids) -> Dict[str, set]:
     return {doc_id: set(s.false_positions) for doc_id, s in zip(doc_ids, base_scores)}
 
 
-def _flagged_predicate(base_pair_tax, doc_id):
+def _flagged_predicate(base_pair_tax, base_false, doc_id):
     def _pred(base_by_pos, new_by_pos):
         for pos, base_c in base_by_pos.items():
             new_c = new_by_pos.get(pos)
             if new_c is None or base_c.needs_review or not new_c.needs_review:
                 continue
             key = base_pair_tax[doc_id].get(pos)
+            # A flagged row need not have paired with gold at all -- a flag
+            # rule fires on any Characteristic, matched or not. Without this,
+            # a newly-flagged false detection has no taxonomy entry, `key` is
+            # None, and the caller's `if key:` guard silently drops it from
+            # the histogram instead of counting it, for the same reason the
+            # drop histogram below names it explicitly.
+            if key is None and pos in base_false[doc_id]:
+                key = "false_detection"
             yield pos, key
     return _pred
 
@@ -157,14 +186,22 @@ def _dropped_predicate(base_pair_tax, base_false, doc_id):
     return _pred
 
 
+def _by_pos(dump: PredictionDump) -> Dict[int, object]:
+    # Regionless rows can never match or be scored as a false detection
+    # (score_doc filters them the same way), so they must not leak into a
+    # flag/drop histogram either -- keeping them would let a rule's touch on
+    # an unscoreable row masquerade as a taxonomy-bearing one.
+    return {c.pos: c for c in dump.result.characteristics
+            if c.target_region is not None}
+
+
 def _price_flag_rule(name: str, base_dumps, golds, doc_ids, weights, params,
-                     base_stats, base_pair_tax) -> Dict:
+                     base_stats, base_pair_tax, base_false) -> Dict:
     new_dumps = {i: _with_flags(base_dumps[i], (name,)) for i in doc_ids}
     hist: Dict[str, int] = {}
     for doc_id in doc_ids:
-        for pos, key in _flagged_predicate(base_pair_tax, doc_id)(
-                {c.pos: c for c in base_dumps[doc_id].result.characteristics},
-                {c.pos: c for c in new_dumps[doc_id].result.characteristics}):
+        for pos, key in _flagged_predicate(base_pair_tax, base_false, doc_id)(
+                _by_pos(base_dumps[doc_id]), _by_pos(new_dumps[doc_id])):
             if key:
                 hist[key] = hist.get(key, 0) + 1
     scores = _score_all(new_dumps, golds, doc_ids, weights, params)
@@ -172,6 +209,7 @@ def _price_flag_rule(name: str, base_dumps, golds, doc_ids, weights, params,
     d = _delta(base_stats, stats)
     better = _better_under(base_stats["counts"], stats["counts"])
     return {"newly_flagged": hist, "delta": d, "better_under": better,
+            "precision_unmeasured": d["auto_accept_precision"] is None,
             "passes": _passes_flag(d, better)}
 
 
@@ -181,8 +219,7 @@ def _price_drop_rule(name: str, base_dumps, golds, doc_ids, weights, params,
     hist: Dict[str, int] = {}
     for doc_id in doc_ids:
         for pos, key in _dropped_predicate(base_pair_tax, base_false, doc_id)(
-                {c.pos: c for c in base_dumps[doc_id].result.characteristics},
-                {c.pos: c for c in new_dumps[doc_id].result.characteristics}):
+                _by_pos(base_dumps[doc_id]), _by_pos(new_dumps[doc_id])):
             if key:
                 hist[key] = hist.get(key, 0) + 1
     scores = _score_all(new_dumps, golds, doc_ids, weights, params)
@@ -190,6 +227,7 @@ def _price_drop_rule(name: str, base_dumps, golds, doc_ids, weights, params,
     d = _delta(base_stats, stats)
     better = _better_under(base_stats["counts"], stats["counts"])
     return {"dropped": hist, "delta": d, "better_under": better,
+            "precision_unmeasured": d["auto_accept_precision"] is None,
             "passes": _passes_drop(d, better)}
 
 
@@ -202,12 +240,37 @@ def policy_report(dumps: Dict[str, PredictionDump], golds: Dict[str, GoldDoc],
                   ) -> Dict:
     """Price every named flag/drop rule (and, if given, a joint set) against a
     common, LOW_CONF-normalised base. Never mutates `dumps`."""
+    if not doc_ids:
+        raise ValueError("policy_report: doc_ids is empty -- nothing to price")
+    seen, dupes = set(), set()
+    for i in doc_ids:
+        (dupes if i in seen else seen).add(i)
+    if dupes:
+        raise ValueError(f"policy_report: doc_ids has duplicates: {sorted(dupes)}")
+
     base_reflagged = 0
+    n_docs_pre_low_conf = 0
     base_dumps: Dict[str, PredictionDump] = {}
     for doc_id in doc_ids:
-        d, n = _normalise_base(dumps[doc_id])
+        orig = dumps[doc_id]
+        d, n = _normalise_base(orig)
         base_dumps[doc_id] = d
         base_reflagged += n
+        # extra.review_low_conf == _LOW_CONF says this dump was ALREADY
+        # produced under today's threshold -- the mirror of review.py's own
+        # flagging, so a row there still needing a reflag means this copy and
+        # the pipeline's have diverged. That is a bug in this module, not a
+        # fact about the dump, and must raise rather than be quietly
+        # "corrected" the way a genuinely pre-2026-09-02 dump is.
+        if orig.config.extra.get("review_low_conf") == _LOW_CONF:
+            if n:
+                raise ValueError(
+                    f"doc {doc_id!r} is on current review policy "
+                    f"(review_low_conf={_LOW_CONF}) but base normalisation "
+                    f"still reflagged {n} row(s) -- _LOW_CONF and "
+                    f"review.LOW_CONF have diverged")
+        else:
+            n_docs_pre_low_conf += 1
 
     base_scores = _score_all(base_dumps, golds, doc_ids, weights, params)
     base_stats = _stats(base_scores)
@@ -218,9 +281,10 @@ def policy_report(dumps: Dict[str, PredictionDump], golds: Dict[str, GoldDoc],
         "n_docs": len(doc_ids),
         "base": base_stats,
         "base_low_conf_reflagged": base_reflagged,
+        "n_docs_pre_low_conf": n_docs_pre_low_conf,
         "flag_rules": {
             name: _price_flag_rule(name, base_dumps, golds, doc_ids, weights,
-                                   params, base_stats, base_pair_tax)
+                                   params, base_stats, base_pair_tax, base_false)
             for name in flag_rules
         },
         "drop_rules": {
@@ -238,11 +302,13 @@ def policy_report(dumps: Dict[str, PredictionDump], golds: Dict[str, GoldDoc],
         stats = _stats(scores)
         d = _delta(base_stats, stats)
         better = _better_under(base_stats["counts"], stats["counts"])
-        passes = _passes_drop(d, better) and (not flags
-                                              or d["auto_accept_precision"] > 0)
+        aap = d["auto_accept_precision"]
+        passes = _passes_drop(d, better) and (not flags or aap is not None
+                                              and aap > 0)
         out["joint"] = {
             "flag_rules": list(flags), "drop_rules": list(drops),
             "after": stats, "delta": d, "better_under": better,
+            "precision_unmeasured": aap is None,
             "passes": passes,
         }
 
