@@ -311,3 +311,69 @@ def test_the_tally_may_not_be_written_into_a_protected_root(tmp_path,
     with pytest.raises(ReviewRefused):
         check_tally_out(root / "tally.json")
     assert check_tally_out(tmp_path / "docs" / "tally.json")
+
+
+# --- the three entry points ---------------------------------------------------
+
+from app.eval.runner import main  # noqa: E402
+from tests.eval.test_score_scope_policy import _corpus  # noqa: E402
+
+
+def _score_args(tmp_path, run_dir, gold_dir, pdfs, deck):
+    return ["score", "--run", str(run_dir), "--gold", str(gold_dir),
+            "--pdfs", str(pdfs), "--name", "ws",
+            "--out", str(tmp_path / "scored.json"), "--review-deck", str(deck)]
+
+
+def test_score_refuses_a_deck_outside_a_protected_root_before_scoring(
+        tmp_path, monkeypatch):
+    """Fail in seconds, not after a full re-score, and write nothing either:
+    a refusal that still did the work would teach the operator to ignore it."""
+    _roots(tmp_path, monkeypatch, tmp_path / "client")
+    pdfs, gold_dir, run_dir = _corpus(tmp_path)
+    assert main(_score_args(tmp_path, run_dir, gold_dir, pdfs,
+                            tmp_path / "d.json")) == 1
+    assert not (tmp_path / "d.json").exists()
+    assert not (tmp_path / "scored.json").exists()
+
+
+def test_score_needs_pdfs_to_know_where_the_drawings_are(tmp_path,
+                                                         monkeypatch):
+    root = tmp_path / "client"
+    root.mkdir()
+    _roots(tmp_path, monkeypatch, root)
+    pdfs, gold_dir, run_dir = _corpus(tmp_path)
+    args = _score_args(tmp_path, run_dir, gold_dir, pdfs, root / "d.json")
+    i = args.index("--pdfs")
+    del args[i:i + 2]
+    assert main(args) == 1
+    assert not (root / "d.json").exists()
+
+
+def test_score_writes_the_deck_and_prints_only_a_count(tmp_path, monkeypatch,
+                                                       capsys):
+    root = tmp_path / "client"
+    root.mkdir()
+    _roots(tmp_path, monkeypatch, root)
+    pdfs, gold_dir, run_dir = _corpus(tmp_path)
+    deck = root / "reports" / "d.json"
+    assert main(_score_args(tmp_path, run_dir, gold_dir, pdfs, deck)) == 0
+    d = load_deck(deck)
+    assert d["originals_dir"] == str(pdfs)
+    assert d["stamped_dir"] == str(pdfs.parent / "stamped")
+    out = capsys.readouterr().out
+    assert "review deck:" in out and '"rows"' not in out
+
+
+def test_review_tally_reads_the_answers_beside_the_deck(tmp_path, monkeypatch):
+    path, deck = _saved(tmp_path, monkeypatch)
+    save_answer(path, deck, "g1", _a("Position", "glyph", "yes"))
+    out = tmp_path / "docs" / "tally.json"
+    assert main(["review-tally", str(path), "--out", str(out)]) == 0
+    assert json.loads(out.read_text())["freed_without_gpu"] == 1
+
+
+def test_review_serve_refuses_a_tally_path_inside_a_root(tmp_path, monkeypatch):
+    path, _ = _saved(tmp_path, monkeypatch)
+    assert main(["review-serve", str(path),
+                 "--tally-out", str(path.parent / "t.json")]) == 1
