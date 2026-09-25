@@ -42,9 +42,11 @@ advisory, and it has been right every single time it fired.
 
 ## 2. Where things stand
 
-**Read `docs/plans/2026-09-17-session-handoff.md` first — it is the current
-state of play, and it carries the device-setup steps a fresh clone needs.** It
-supersedes every earlier handoff. Everything below is the durable summary.
+**Read `docs/plans/2026-09-25-session-handoff.md` first — it is the current
+state of play: what changed through 2026-09-25, where the review cost now sits
+(79.5% detection at today's weights), and the open threads.** For device setup
+on a fresh clone, `docs/plans/2026-09-17-session-handoff.md` §1 still applies.
+Everything below is the durable summary.
 
 **On a NEW MACHINE, run `./install-hooks.sh` before your first commit.** The
 client-data pre-commit guard is versioned in `hooks/` and wired up by that
