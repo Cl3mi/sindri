@@ -32,10 +32,9 @@ ESCAPED_RATE_TOLERANCE = 0.02
 RECALL_TOLERANCE = 0.005
 # Guards the unflagged set on two axes: precision (report.auto_accept_precision)
 # and rate (correct / n_gold). Cost falls by 4 whenever an ESCAPED error (w=5)
-# moves to flagged_error (w=1) -- that raises precision, a real win. Cost falls
-# by only 1 less when a CORRECT row moves to flagged_correct instead (w=1 for
-# both, but the reviewer now checks a row that needed no check) -- that LOWERS
-# precision, and is what precision alone can catch. But flagging at RANDOM,
+# moves to flagged_error (w=1) -- that raises precision, a real win. A CORRECT
+# row moving to flagged_correct RAISES cost by 1 (w=0 -> w=1) and LOWERS
+# precision, which is what precision alone can catch. But flagging at RANDOM,
 # correct and escaped moved out in the same proportion, leaves precision flat
 # while cost still falls and fewer rows are automated -- rate is what falls
 # then, and precision cannot see it. Same 0.02 as the other ratio guards.
@@ -142,7 +141,10 @@ def verdict(row: Dict, control: Dict, comparison: Dict = None) -> Dict:
     # Precision alone misses random flagging: correct and escaped rows leave
     # the unflagged set in the same proportion, so precision holds steady
     # while fewer rows are automated at all. The rate is what falls then.
-    if d_rate is not None and d_rate < -AUTO_ACCEPT_TOLERANCE:
+    if d_rate is None:
+        # Only an empty run (n_gold 0) has no rate; unmeasured is not passing.
+        reasons.append("auto-accept rate unmeasured — a side has no gold rows")
+    elif d_rate < -AUTO_ACCEPT_TOLERANCE:
         reasons.append(f"auto-accept rate fell {d_rate:+.4f} — fewer rows "
                        f"automated; precision alone cannot see flags spread "
                        f"evenly over right and wrong rows")
