@@ -24,10 +24,28 @@ def test_flag_rules_fire_on_what_they_name():
     assert pr.FLAG_RULES["no_tolerance"](_c(kind="dimension", nominal="20"))
     assert not pr.FLAG_RULES["no_tolerance"](
         _c(kind="dimension", nominal="20", upper_tol="0,1"))
+    # Reference (Klammermaß) rows carry no tolerance by definition -- not a
+    # missing-tolerance fault.
+    assert not pr.FLAG_RULES["no_tolerance"](
+        _c(kind="dimension", char_type="Reference", nominal="20"))
     assert pr.FLAG_RULES["asymmetric_tol"](
-        _c(upper_tol="+0,2", lower_tol="-0,1"))
+        _c(kind="dimension", upper_tol="+0,2", lower_tol="-0,1"))
     assert not pr.FLAG_RULES["asymmetric_tol"](
-        _c(upper_tol="+0,1", lower_tol="-0,1"))
+        _c(kind="dimension", upper_tol="+0,1", lower_tol="-0,1"))
+
+
+def test_asymmetric_tol_is_dimension_only_and_numeric():
+    # GD&T rows carry upper_tol=<zone>, lower_tol="0" by construction -- that
+    # is a zone width, not a sign asymmetry, so the rule must never fire on
+    # a non-dimension row at all.
+    gdt_row = _c(kind="gdt", raw_text="⌖ Ø0,1 A", upper_tol="0,1", lower_tol="0")
+    assert not pr.FLAG_RULES["asymmetric_tol"](gdt_row)
+    # Formatting differences (leading "+", trailing zero) must not read as
+    # asymmetric: compare the values NUMERICALLY, not as strings.
+    assert not pr.FLAG_RULES["asymmetric_tol"](
+        _c(kind="dimension", upper_tol="+0,1", lower_tol="-0,10"))
+    assert pr.FLAG_RULES["asymmetric_tol"](
+        _c(kind="dimension", upper_tol="+0,2", lower_tol="-0,1"))
 
 
 def test_apply_flag_rules_returns_one_reason_per_rule_that_fired():
@@ -43,13 +61,53 @@ def test_contained_duplicate_drops_the_smaller_box_only():
     assert kept == [big]
 
 
+def test_contained_duplicate_requires_a_content_relation():
+    """Containment alone is not enough: an oversized phantom box (a detection
+    artefact, a title-block frame) must not silently swallow every real
+    callout that happens to fall inside it."""
+    frame = _c(pos=1, box=(0, 0, 200, 200), raw_text="frame border")
+    real = _c(pos=2, box=(10, 10, 50, 50), raw_text="20")
+    kept = pr.apply_drop_rules([frame, real], ("contained_duplicate",))
+    assert real in kept
+
+
+def test_contained_duplicate_chain_drops_only_up_to_the_largest():
+    """A subset-of B subset-of C, all naming the same value: each smaller box
+    is a duplicate of a still-larger one, but C has nothing bigger to defer
+    to and survives."""
+    c_box = _c(pos=3, box=(0, 0, 100, 100), nominal="20", raw_text="20")
+    b_box = _c(pos=2, box=(10, 10, 60, 60), nominal="20", raw_text="20")
+    a_box = _c(pos=1, box=(20, 20, 40, 40), nominal="20", raw_text="20")
+    kept = pr.apply_drop_rules([a_box, b_box, c_box], ("contained_duplicate",))
+    assert kept == [c_box]
+
+
 def test_equal_boxes_are_never_both_dropped():
-    """Ties keep both: an order-dependent tie-break would make the pipeline
-    (pre-numbering order) and the dump (numbered order) disagree, and the
-    offline price would stop being exact."""
+    """Ties keep both: `pos` is assigned by number_characteristics only AFTER
+    the drop rules run, and `extract` discards its return value, so the list
+    a rule sees is in raw detection order, not reading order -- no order is
+    guaranteed twice. An order-dependent tie-break would make one call site
+    disagree with another, and the offline price would stop being exact."""
     a = _c(pos=1, box=(0, 0, 100, 40))
     b = _c(pos=2, box=(0, 0, 100, 40))
     assert pr.apply_drop_rules([a, b], ("contained_duplicate",)) == [a, b]
+
+
+def test_drop_rules_do_not_depend_on_pos():
+    """pos is assigned strictly after the rules run, so a rule that reads
+    `c.pos` (or relies on list order matching it) would disagree between the
+    pipeline's pre-numbering call and a dump reloaded with pos already set."""
+    chars = [_c(pos=i, box=(i * 7 % 50, i * 3 % 40, i * 7 % 50 + 30 + i,
+                            i * 3 % 40 + 12), nominal=str(i % 3),
+                raw_text=str(i % 3), kind=("note", "dimension")[i % 2],
+                confidence=0.5 + (i % 4) / 10)
+             for i in range(1, 12)]
+    names = tuple(pr.DROP_RULES)
+    base_ids = {id(c) for c in pr.apply_drop_rules(chars, names)}
+    for c, new_pos in zip(chars, reversed(range(1, len(chars) + 1))):
+        c.pos = new_pos
+    renumbered_ids = {id(c) for c in pr.apply_drop_rules(chars, names)}
+    assert renumbered_ids == base_ids
 
 
 def test_drop_rules_are_order_independent():
@@ -65,6 +123,30 @@ def test_drop_rules_are_order_independent():
         shuffled = chars[:]
         rng.shuffle(shuffled)
         assert {c.pos for c in pr.apply_drop_rules(shuffled, names)} == base
+
+
+def test_repeated_value_nearby_requires_full_read_match():
+    """GD&T rows all carry nominal '0' by construction (no dimension value);
+    two stacked frames with different zones are different reads and must
+    not collide just because their nominal happens to coincide."""
+    a = _c(pos=1, box=(0, 0, 40, 20), kind="gdt", nominal="0",
+           upper_tol="0,1", lower_tol="0", confidence=0.90)
+    b = _c(pos=2, box=(0, 10, 40, 30), kind="gdt", nominal="0",
+           upper_tol="0,2", lower_tol="0", confidence=0.95)
+    assert not pr.DROP_RULES["repeated_value_nearby"](a, [a, b])
+    assert not pr.DROP_RULES["repeated_value_nearby"](b, [a, b])
+
+
+def test_repeated_value_nearby_is_non_transitive():
+    """Dropping must chase a LOCAL maximum, not any more-confident neighbour
+    transitively. row2 is more confident than row3 and within reach, but
+    row2 is itself shadowed by row1 -- so row3 has no surviving neighbour to
+    defer to and must be kept, even though naive transitivity would drop it."""
+    row1 = _c(pos=1, box=(0, 10, 40, 30), nominal="20", confidence=0.99)
+    row2 = _c(pos=2, box=(0, 60, 40, 80), nominal="20", confidence=0.90)
+    row3 = _c(pos=3, box=(0, 110, 40, 130), nominal="20", confidence=0.80)
+    kept = pr.apply_drop_rules([row1, row2, row3], ("repeated_value_nearby",))
+    assert kept == [row1, row3]
 
 
 def test_other_drop_rules():

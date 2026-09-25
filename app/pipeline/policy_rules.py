@@ -10,15 +10,19 @@ rotation scores) cannot be priced offline and does not belong here.
 Two invariants the counterfactual depends on:
   * flag rules only ADD flags, so stored flags + rules == what the pipeline
     would have produced;
-  * drop rules are ORDER-INDEPENDENT and evaluated against the original list,
-    because the pipeline applies them before numbering and the dump stores the
-    numbered order. Ties therefore keep both rows, never break by position.
+  * drop rules are ORDER-INDEPENDENT and evaluated against the original list.
+    `pos` is assigned by `place.number_characteristics` only AFTER the rules
+    would run, and `extract` discards that call's return value, so the list a
+    rule sees is in raw detection order, not reading order -- neither the
+    pipeline nor a dump reload can guarantee the same order twice. Rules must
+    therefore depend on neither list position nor `pos`, and ties keep both
+    rows rather than break by either.
 
 Nothing is active by default. A rule becomes active only when the keep/revert
 rule in docs/plans/2026-09-25-review-quality-arms-plan.md §1 keeps it."""
 import math
 import re
-from typing import Callable, Dict, List, Sequence
+from typing import Callable, Dict, List, Sequence, Tuple
 
 from app.models import Characteristic
 from app.pipeline.parser import _GDT_SYMBOLS
@@ -60,13 +64,19 @@ def _center(b):
 # ---- flag rules: Characteristic -> bool -----------------------------------
 
 def _nondim_kind(c):
+    # Also true of note_ref rows: extract.py rewrites a theoretical box whose
+    # text is a bare note number to kind "note" (subtype "note_ref"), and
+    # those inherit the same low read reliability as any other note. Leave
+    # that as is -- it is not a mislabel, it is the same bucket.
     return (c.kind or "") in NON_DIMENSION_KINDS
 
 
 def _gdt_guessed(c):
-    # parser._gdt_type returns Flatness when it recognises no symbol, so the
-    # char_type of such a row is a guess (0 of 8 char_type-only gdt rows on
-    # dev held a known symbol, 2026-09-22).
+    # parser._gdt_type recognises a symbol OR infers Position from a leading
+    # Ø-zone sign (2026-09-25); with neither present it falls back to
+    # Flatness. Both the Ø-inference and the Flatness default are GUESSES --
+    # only a row whose text holds a symbol _GDT_SYMBOLS knows is a real read
+    # (0 of 8 char_type-only gdt rows on dev held one, 2026-09-22).
     text = (c.raw_text or "").replace("\n", " ")
     return c.kind == "gdt" and not any(s in text for s in _GDT_SYMBOLS)
 
@@ -85,15 +95,26 @@ def _multiline(c):
 
 
 def _no_tolerance(c):
-    return c.kind == "dimension" and bool(c.nominal) \
-        and not c.upper_tol and not c.lower_tol
+    # Reference (Klammermaß) dimensions carry no tolerance by definition --
+    # informational only, so a missing tolerance there is not a fault.
+    return c.kind == "dimension" and c.char_type != "Reference" \
+        and bool(c.nominal) and not c.upper_tol and not c.lower_tol
 
 
 def _asymmetric_tol(c):
-    if not (c.upper_tol and c.lower_tol):
+    # GD&T rows are shaped upper_tol=<zone>, lower_tol="0" by parser
+    # construction -- a zone width, not a +/- pair, so this rule means
+    # nothing off `dimension`. Compare NUMERICALLY: "+0,1"/"-0,10" is
+    # formatting, not asymmetry, and a string compare flagged both that and
+    # every GD&T row (upper_tol never string-equals "0" reversed).
+    if c.kind != "dimension" or not (c.upper_tol and c.lower_tol):
         return False
-    return c.upper_tol.lstrip("+").replace(",", ".") \
-        != c.lower_tol.lstrip("-").replace(",", ".")
+    try:
+        upper = float(c.upper_tol.lstrip("+").replace(",", "."))
+        lower = float(c.lower_tol.replace(",", "."))
+    except ValueError:
+        return False
+    return upper != -lower
 
 
 FLAG_RULES: Dict[str, Callable[[Characteristic], bool]] = {
@@ -113,6 +134,18 @@ def _empty_read(c, chars):
     return not (c.raw_text or "").strip()
 
 
+def _content_related(small, big):
+    """Containment alone is not a duplicate: a single oversized box (a stray
+    detection artefact, a title-block frame) would otherwise swallow every
+    real callout that happens to fall inside it. Require the smaller row's
+    text to actually appear in the bigger one's, or the same non-empty
+    nominal -- either says they plausibly name the same value."""
+    text = (small.raw_text or "").strip()
+    if text and text in (big.raw_text or ""):
+        return True
+    return bool(small.nominal) and small.nominal == big.nominal
+
+
 def _contained_duplicate(c, chars):
     a = c.target_region
     if a is None or _area(a) == 0:
@@ -122,9 +155,40 @@ def _contained_duplicate(c, chars):
         if o is c or b is None:
             continue
         # STRICTLY larger: equal boxes keep both (see module docstring).
-        if _area(b) > _area(a) and _inter(a, b) / _area(a) >= CONTAINED_FRAC:
+        if _area(b) > _area(a) and _inter(a, b) / _area(a) >= CONTAINED_FRAC \
+                and _content_related(c, o):
             return True
     return False
+
+
+def _same_read(c, o):
+    """Two rows are "the same read, seen twice" only if kind, char_type,
+    nominal and both tolerances all agree -- GD&T rows all carry nominal "0"
+    by parser construction, so nominal alone collides two different frames
+    stacked on the same drawing."""
+    return bool(c.nominal) and (c.kind, c.char_type, c.nominal,
+                                c.upper_tol, c.lower_tol) == \
+        (o.kind, o.char_type, o.nominal, o.upper_tol, o.lower_tol)
+
+
+def _is_local_max(o, chars):
+    """o has no same-read neighbour within o's OWN reach that is strictly
+    more confident. This is what makes `_repeated_value_nearby` non-
+    transitive: a chain of three rows must not let the middle one's
+    confidence "carry" a drop onto a row it never actually competes with."""
+    a = o.target_region
+    if a is None:
+        return True
+    for p in chars:
+        if p is o or not _same_read(o, p):
+            continue
+        b = p.target_region
+        if b is None:
+            continue
+        reach = NEAR_HEIGHTS * max(_height(o), _height(p), 1.0)
+        if math.dist(_center(a), _center(b)) <= reach and p.confidence > o.confidence:
+            return False
+    return True
 
 
 def _repeated_value_nearby(c, chars):
@@ -133,13 +197,17 @@ def _repeated_value_nearby(c, chars):
         return False
     for o in chars:
         b = o.target_region
-        if o is c or b is None or o.nominal != c.nominal:
+        if o is c or b is None or not _same_read(c, o):
             continue
         reach = NEAR_HEIGHTS * max(_height(c), _height(o), 1.0)
         if math.dist(_center(a), _center(b)) > reach:
             continue
-        # Keep the more confident read; equal confidence keeps both.
-        if o.confidence > c.confidence:
+        # Keep the more confident read; equal confidence keeps both. The
+        # neighbour must be a LOCAL MAXIMUM, not merely more confident than
+        # `c` -- otherwise a drop chains transitively through a row that is
+        # itself about to be dropped, and the survivor of a stack of three
+        # can end up deferring to nobody.
+        if o.confidence > c.confidence and _is_local_max(o, chars):
             return True
     return False
 
@@ -153,6 +221,9 @@ def _theoretical_no_nominal(c, chars):
 
 
 def _note_kind(c, chars):
+    # Also catches note_ref rows (extract.py rewrites a theoretical box whose
+    # text is a bare note number to kind "note") -- intentional, not a gap:
+    # a note reference is exactly as unscoreable as any other note row.
     return c.kind == "note"
 
 
@@ -172,8 +243,8 @@ DROP_RULES: Dict[str, Callable[[Characteristic, Sequence[Characteristic]], bool]
 
 # Filled ONLY by the keep/revert rule. Empty means the pipeline behaves
 # exactly as every dump on disk was produced.
-ACTIVE_FLAG_RULES: tuple = ()
-ACTIVE_DROP_RULES: tuple = ()
+ACTIVE_FLAG_RULES: Tuple[str, ...] = ()
+ACTIVE_DROP_RULES: Tuple[str, ...] = ()
 
 
 def apply_flag_rules(c: Characteristic, names: Sequence[str]) -> List[str]:
