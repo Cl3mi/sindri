@@ -1,0 +1,30 @@
+# The pinned serving image PLUS compressed-tensors, as a SEPARATE tag.
+#
+# Route A's checkpoints are written by llm-compressor as
+# `quant_method: compressed-tensors`, not Qwen's `awq`/`gemm`. transformers
+# 4.49.0 knows the method name but the runtime package is absent, so
+# r3-mergedcontrol would have died at model load.
+#
+# sindri-gpu-nf4 is NOT modified. This is a new tag, so every committed
+# measurement keeps the exact image it was taken on, and the awqgate discipline
+# applies: re-run the AWQ path on dev in THIS image and require all 20
+# per-document deltas to be 0.0 before trusting anything served from it.
+#
+# --no-deps is load-bearing: compressed-tensors declares transformers and torch,
+# and resolving them would move the 4.49.0 pin that exists because 4.50+ breaks
+# AWQ dispatch for Qwen2.5-VL at inference.
+FROM sindri-gpu-nf4
+
+# Its pure-python deps, listed explicitly and also --no-deps. compressed-tensors
+# declares torch and transformers, so a normal resolve would move the 4.49.0
+# pin; installing it bare then failed on `ModuleNotFoundError: loguru`, so the
+# runtime ones it actually imports are named here instead.
+#
+# 0.9.4, not latest: current compressed-tensors imports
+# transformers.masking_utils, which does not exist in 4.49.0. Verified that
+# 0.9.4 imports against 4.49.0 AND parses route A's checkpoint config
+# (format "pack-quantized", one config group).
+RUN pip install --no-cache-dir --no-deps \
+        loguru frozendict "compressed-tensors==0.9.4"
+
+WORKDIR /app

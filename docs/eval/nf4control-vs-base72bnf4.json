@@ -1,0 +1,60 @@
+{
+ "schema_version": 1,
+ "run_a": "r3-base72bnf4-dev",
+ "run_b": "r3-nf4control-dev",
+ "n_docs": 20,
+ "mean_delta": -3.4,
+ "ci95": [
+  -6.2,
+  -1.2
+ ],
+ "significant": true,
+ "per_doc_deltas": {
+  "8e5fb4d8": 0.0,
+  "1a3064de": 0.0,
+  "514ec627": -4.0,
+  "a7994023": 0.0,
+  "53c2a083": -4.0,
+  "d01660e4": 0.0,
+  "acb2b8bc": 0.0,
+  "1a007bc4": -12.0,
+  "c32e79eb": 0.0,
+  "caf2afd1": 0.0,
+  "3a75ba3d": 0.0,
+  "6095d6ec": -8.0,
+  "c9395a33": 0.0,
+  "f1639571": 0.0,
+  "28b2c522": 0.0,
+  "7bd2fd06": -4.0,
+  "01806166": -8.0,
+  "c3aa6a9e": -4.0,
+  "961693d9": -24.0,
+  "aa3592aa": 0.0
+ },
+ "headline": {
+  "r3-base72bnf4-dev": {
+   "mean_review_cost": 179.8,
+   "recall": 0.6687631027253669,
+   "escaped_rate": 0.29350104821802936
+  },
+  "r3-nf4control-dev": {
+   "mean_review_cost": 176.4,
+   "recall": 0.6687631027253669,
+   "escaped_rate": 0.2578616352201258
+  }
+ },
+ "weight_sensitivity": {
+  "n_weight_vectors": 6,
+  "b_better_fraction": 1.0,
+  "mean_delta_per_weighting": [
+   -3.4,
+   -5.95,
+   -2.55,
+   -2.55,
+   -5.95,
+   -0.85
+  ],
+  "robust": true
+ },
+ "warnings": []
+}

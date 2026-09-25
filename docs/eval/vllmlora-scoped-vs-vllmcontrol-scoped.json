@@ -1,0 +1,55 @@
+{
+ "schema_version": 1,
+ "run_a": "r3-vllmcontrol-scoped",
+ "run_b": "r3-vllmlora-scoped",
+ "n_docs": 15,
+ "mean_delta": -2.4667,
+ "ci95": [
+  -6.6,
+  1.4
+ ],
+ "significant": false,
+ "per_doc_deltas": {
+  "8e5fb4d8": 5.0,
+  "1a3064de": 0.0,
+  "514ec627": -12.0,
+  "53c2a083": 0.0,
+  "acb2b8bc": -18.0,
+  "1a007bc4": -12.0,
+  "caf2afd1": 4.0,
+  "3a75ba3d": -5.0,
+  "6095d6ec": 1.0,
+  "c9395a33": 0.0,
+  "f1639571": -15.0,
+  "28b2c522": 0.0,
+  "01806166": 3.0,
+  "c3aa6a9e": 12.0,
+  "aa3592aa": 0.0
+ },
+ "headline": {
+  "r3-vllmcontrol-scoped": {
+   "mean_review_cost": 141.2,
+   "recall": 0.7202572347266881,
+   "escaped_rate": 0.24115755627009647
+  },
+  "r3-vllmlora-scoped": {
+   "mean_review_cost": 138.73333333333332,
+   "recall": 0.7170418006430869,
+   "escaped_rate": 0.2057877813504823
+  }
+ },
+ "weight_sensitivity": {
+  "n_weight_vectors": 6,
+  "b_better_fraction": 1.0,
+  "mean_delta_per_weighting": [
+   -2.4667,
+   -4.0,
+   -2.0667,
+   -1.9333,
+   -4.8667,
+   -0.8
+  ],
+  "robust": true
+ },
+ "warnings": []
+}

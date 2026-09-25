@@ -1,0 +1,54 @@
+# Quantisation image, route A. Builds AWQ checkpoints; never serves one.
+#
+# Replaces Dockerfile.quant, which cannot work: autoawq 0.2.8 has no qwen2_5_vl
+# wrapper, 0.2.9 adds one but has no offload path, and its quantizer moves each
+# block onto the card without returning it — measured at ~2.6 GiB per block,
+# OOM at block 18 of 80. AutoAWQ is also deprecated and points here itself.
+#
+# llm-compressor exposes `sequential_targets` and `sequential_offload_device`,
+# which is exactly the missing capability: quantise one decoder layer at a time
+# with the rest held off the card.
+#
+# ONE resolver pass with cu126 as the PRIMARY index. Two separate installs let
+# the second upgrade torch back to +cu130, and this host's driver
+# (550.163.01, CUDA 12.4) cannot run a CUDA-13 build — torch.cuda.is_available()
+# came back False. Verified in this image: torch 2.13.0+cu126, cuda avail True,
+# "NVIDIA H100 PCIe", transformers 5.14.1, llmcompressor 0.13.0.
+#
+# transformers 5.x here is FINE and deliberate: quantisation is an offline
+# transform. The SERVING image stays pinned at transformers 4.49.0 / autoawq
+# 0.2.8, because 4.50+ breaks AWQ dispatch for Qwen2.5-VL at inference. What
+# proves a checkpoint built here loads correctly there is r3-mergedcontrol.
+FROM python:3.11-slim
+
+# A C compiler, and it is NOT optional. llm-compressor's AWQ pass goes through
+# Triton, which JIT-compiles its kernels at run time and shells out to cc; on
+# this slim base there is none, so the first quantised layer dies with
+# "RuntimeError: Failed to find C compiler". Measured: the run reached
+# "Applying quantization config 306/560" and then failed ~60 s in.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir \
+      --index-url https://download.pytorch.org/whl/cu126 \
+      --extra-index-url https://pypi.org/simple \
+      llmcompressor
+
+# torchvision, and --no-deps is load-bearing. AutoProcessor for Qwen2.5-VL pulls
+# in Qwen2VLVideoProcessor, which hard-requires torchvision; without it
+# `AutoProcessor.from_pretrained` on either merged checkpoint dies at import and
+# the AWQ output would have no processor to serve with. But resolving
+# torchvision normally drags torch to 2.14.0+cu126 — measured, and llmcompressor
+# 0.13.0 declares torch<=2.13.0 — so the version is pinned to the 0.28 that
+# pairs with torch 2.13 and its dependencies are not resolved at all. Verified
+# after this line: torch 2.13.0+cu126, torchvision 0.28.0+cu126,
+# torch.cuda.is_available() True on an H100.
+RUN pip install --no-cache-dir --no-deps \
+      --index-url https://download.pytorch.org/whl/cu126 \
+      torchvision==0.28.0
+
+WORKDIR /app
+COPY app ./app
+COPY compress_lora.py ./
+ENV HF_HOME=/models

@@ -1,0 +1,57 @@
+{
+ "schema_version": 1,
+ "run_a": "r3-awqcontrol-scoped",
+ "run_b": "r3-32bawq-scoped",
+ "n_docs": 15,
+ "mean_delta": 38.8,
+ "ci95": [
+  25.5333,
+  55.1333
+ ],
+ "significant": true,
+ "per_doc_deltas": {
+  "8e5fb4d8": 55.0,
+  "1a3064de": 28.0,
+  "514ec627": 41.0,
+  "53c2a083": 31.0,
+  "acb2b8bc": 32.0,
+  "1a007bc4": 7.0,
+  "caf2afd1": 123.0,
+  "3a75ba3d": 31.0,
+  "6095d6ec": 48.0,
+  "c9395a33": 6.0,
+  "f1639571": 20.0,
+  "28b2c522": 16.0,
+  "01806166": 28.0,
+  "c3aa6a9e": 30.0,
+  "aa3592aa": 86.0
+ },
+ "headline": {
+  "r3-awqcontrol-scoped": {
+   "mean_review_cost": 133.93333333333334,
+   "recall": 0.7170418006430869,
+   "escaped_rate": 0.2282958199356913
+  },
+  "r3-32bawq-scoped": {
+   "mean_review_cost": 172.73333333333332,
+   "recall": 0.77491961414791,
+   "escaped_rate": 0.3215434083601286
+  }
+ },
+ "weight_sensitivity": {
+  "n_weight_vectors": 6,
+  "b_better_fraction": 0.0,
+  "mean_delta_per_weighting": [
+   38.8,
+   32.6,
+   42.8667,
+   79.9333,
+   26.8,
+   21.2
+  ],
+  "robust": true
+ },
+ "warnings": [
+  "base model differs: 'Qwen/Qwen2.5-VL-72B-Instruct-AWQ' -> 'Qwen/Qwen2.5-VL-32B-Instruct-AWQ'. This delta includes the base-model change, not only the treatment. State both models wherever this result is quoted."
+ ]
+}

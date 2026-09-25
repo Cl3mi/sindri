@@ -1,0 +1,174 @@
+# The TEST split — the first honest generalization number
+
+Measured 2026-09-15, run `r3-awqtest`: production's exact serving configuration
+(72B AWQ, same image, same prompts `aa7659f1929184ea`, no adapter, default crop)
+on the frozen test split. **Nothing had ever predicted or scored there.**
+
+**One line: 165.18 against dev's 133.93 — +31.25, or +23% more reviewer effort
+on drawings nothing was tuned against. About a THIRD of that gap is an artefact
+of how unlocated gold is priced (§3, measured — an earlier draft of this file
+said "over half", before the denominator existed); the rest is read quality.**
+
+---
+
+## 1. The numbers
+
+| | dev (`r3-awqcontrol`) | **TEST (`r3-awqtest`)** |
+|---|---|---|
+| documents scored | 15 | **11** |
+| gold values | 311 | 292 |
+| **review cost** | 133.93 | **165.18** |
+| recall | 0.7170 | **0.6301** |
+| missed | 28.3% | **37.0%** |
+| `field_acc` | 0.4798 | **0.3804** |
+| silently wrong | 22.8% | 21.9% |
+| silent per MATCHED row | 31.8% | **34.8%** |
+| gold values per document | 20.7 | **26.5** |
+
+Every identity reconciles: matched + missed = `n_gold` on both sides, and
+`missed_diagnosis` sums to `missed` on both.
+
+---
+
+## 2. Three caveats, all material
+
+**It is not a comparison.** Different document set, so `_check_comparable`
+refuses it against any dev report — correctly. There is no `ci95`, no
+weight-robustness, and no per-document pairing. It is a standalone number.
+
+**n = 11 documents**, after the scope policy dropped 6 multi-page and 2
+oversized, and after one gold document was excluded for having no drawing at
+all (§4).
+
+**The test split is DELIBERATELY adversarial and is not a sample of the
+corpus.** `splits.py` forces the structurally atypical `variants` into it. The
+evidence is in the exclusions: **6 of its 19 predicted documents are multi-page
+(32%)** against **1 of 20 in dev (5%)** and **8 of 99 corpus-wide (8.1%)** — so
+six of the corpus's eight multi-sheet drawings sit in this one split. And the 11
+that survived the policy carry **28% more gold values per document** than dev's
+15.
+
+So this is a stress number, not an unbiased estimate. **The honest range to
+quote is 134 to 165**: dev is representative of typical drawings (20.0% clamped
+against 19.2% corpus-wide, 5% multi-page against 8.1%), test is the hard end.
+Quoting either alone overstates something.
+
+---
+
+## 3. The decomposition — about a third of the gap is a pricing artefact
+
+`missed_diagnosis` splits the misses, and the split differs sharply:
+
+| | dev | TEST |
+|---|---|---|
+| contended | 19 | 39 |
+| isolated | 58 | 38 |
+| **unlocated** | **11 (3.5% of gold)** | **31 (10.6% of gold)** |
+
+`unlocated` is a missed gold row whose BALLOON could not be located
+(`score.py:298` — `gold_pos(...) is None`). It is a property of the ingest of
+the stamped drawings, not of detection: the pipeline was never given a position
+to find. Each one costs `w=10`, the heaviest weight there is.
+
+* **Recall on located gold only: dev 0.7433, test 0.7050.** The gap narrows from
+  0.087 to **0.038** — less than half of what the headline shows.
+* At dev's unlocated share of missed, the test cost would be ~149.7 rather than
+  165.18 — **but that framing assumed unlocated rows were unreachable, and they
+  are not.** See the measured answer below.
+
+**MEASURED 2026-09-15, and it corrects the framing above: DEV is the outlier,
+not test.** The corpus-wide ingest says **201 of 2489 scored (dimension-bucket)
+gold rows have no position — 8.1%** — against dev's 3.5% and test's 10.6%. Dev
+sits at less than half the corpus rate, so part of what reads here as "test is
+adversarial" is really "dev is lucky".
+
+The ingest decomposition is exact: **621 rows without a usable position = 491
+with no balloon at all + 130 whose balloon is on a later page.** By kind, 401 of
+the 621 are `note` — verbal requirements that never had a balloon, exactly as
+`_unlocated_kind_histogram`'s docstring predicted — and only the 201 `dimension`
+rows reach scoring at all, since `score_kinds` is `["dimension"]`.
+
+**`pdf_only_total` is 0**: every balloon has an inspection-sheet row, so the
+stamping is a strict SUBSET of the sheet. The client balloons a subset of what
+they inspect, and `unlocated_char_types` shows real dimensional characteristics
+among the unballooned — Abstand 42, Distance 26, Diameter 11, Durchmesser 7.
+
+**`recovered_by_cv_total: 0` means NOT ATTEMPTED, not "failed".** It is gated on
+`ingest --cv`, which that run did not pass. Whether CV recovery can reach any of
+the 491 is unmeasured.
+
+**ANSWERED 2026-09-16: the value-matching path rescues 1 unlocated row in 12 on
+dev and 1 in 32 on test** — and 0 or 1 on all ten scored runs, across models
+from 7B to 72B, two serving stacks, with and without an adapter. It is
+effectively dead, and no model change moves it.
+
+**That does NOT make unlocated rows unreachable, which is where the earlier
+"over half" estimate went wrong.** The characteristic is still printed on the
+drawing, and an exact nominal match costs 0.0 in `matching.py` — cheaper than
+any geometric pair — so a correctly-read unlocated row WOULD pair. Eleven of
+twelve failing means the pipeline did not produce those values. That is a real
+miss.
+
+**The artefact is the PRICE.** A misread on a LOCATED row pairs geometrically
+and costs 5 as an escaped error; the identical misread on an unlocated row
+cannot pair and costs 10 as a miss. Unlocated gold converts read failures into
+misses at double weight. Bounding it by charging those rows at `w=5`: dev
+133.93 -> 130.27, test 165.18 -> 151.09, and the gap **-31.25 -> -20.8**.
+
+**And the tax scales with the split's sample, not the pipeline**: unlocated
+share of scored gold is 3.9% on dev, 11.0% on test, **8.1% corpus-wide**. Dev
+sits 13 gold rows below the corpus rate, worth ~131 cost — so a
+corpus-representative production number is roughly **142.7** against dev's
+133.93 from this effect alone, before any template-difficulty effect.
+
+---
+
+## 4. What is NOT explained away
+
+**`field_acc` 0.4798 -> 0.3804.** It is computed on MATCHED rows only, so
+unlocated gold cannot touch it. That is a **21% relative drop in read quality**
+on unfamiliar templates, and it is the finding that should travel.
+
+It is also exactly what this campaign's central result predicts. `r3-hybrid` and
+`r3-cropctx` between them showed that read quality is dominated by what the
+reader is handed, not by the reader: degrading the boxes costs -0.206, and
+giving the same reader 18 more pixels of context buys +0.049. An unfamiliar
+template produces unfamiliar layouts, hence worse crops, hence worse reads —
+without the model being any worse at reading.
+
+**A corpus fact surfaced on the way:** gold covers **one more document than
+`corpus/originals` contains** (100 against 99). `predict` selects on the
+drawings it can find, so it stopped at 19 of 20 test documents and reported no
+failure; `score` now excludes and prints those. **Do not re-run `ingest` over
+the real gold directory to investigate this** — with a drawing missing, a
+re-ingest would silently drop that gold document and the frozen split
+(`6d174d5e4f1b9228`) would then name a document gold no longer has. Ingest to a
+throwaway `--out` instead.
+
+---
+
+## 5. What this changes
+
+**For the client.** The figures shown so far are dev figures, and dev is the
+split ten-plus arms were selected against. The product should be described with
+a range and a reason: **~134 review cost on typical single-sheet drawings,
+~165 on structurally atypical ones**, with 75 of 99 drawings in claimed scope
+at all. That is a better story than a single number, because it is the true one
+and it is defensible.
+
+**For the campaign.** Three things, in order:
+
+1. **Settle the unlocated rows — DONE 2026-09-16** (§3). They are a real miss
+   mispriced at double weight, not an unreachable row, and the tax scales with
+   the split's sample. `gold_coverage` in the digest now carries the numbers.
+2. **`cropctx48`** — predicted 2026-09-15, run complete 2026-09-16, awaiting
+   score.
+3. **Re-measure the crop win on test** once the dose is settled. A -2.07 that
+   only exists on the tuned split is worth much less than one that survives here,
+   and this is the split where a context change should matter MOST, because
+   unfamiliar layouts are where the crop is most likely to be starving the
+   reader.
+
+**For the harness.** Every future arm's headline should carry which split it is
+from. The dev number is not wrong; it is answering a narrower question than
+anyone reading it assumes.
