@@ -1,0 +1,267 @@
+{
+ "n_docs": 15,
+ "base": {
+  "cost": 131.8667,
+  "counts": {
+   "escaped_error": 64,
+   "correct": 73,
+   "flagged_correct": 45,
+   "flagged_error": 41,
+   "missed": 88,
+   "false_detection": 346
+  },
+  "recall": 0.717,
+  "field_acc": 0.5291,
+  "escaped_rate": 0.2058,
+  "auto_accept_precision": 0.5328,
+  "auto_accept_rate": 0.2347
+ },
+ "base_low_conf_reflagged": 0,
+ "n_docs_pre_low_conf": 0,
+ "flag_rules": {
+  "nondim_kind": {
+   "newly_flagged": {
+    "false_detection": 86,
+    "escaped_error": 26,
+    "correct": 3
+   },
+   "delta": {
+    "cost": -6.7334,
+    "recall": 0.0,
+    "field_acc": 0.0,
+    "escaped_rate": -0.0836,
+    "auto_accept_precision": 0.1153,
+    "auto_accept_rate": -0.0096
+   },
+   "better_under": 6,
+   "precision_unmeasured": false,
+   "passes": true
+  },
+  "gdt_guessed": {
+   "newly_flagged": {
+    "false_detection": 13,
+    "escaped_error": 11,
+    "correct": 1
+   },
+   "delta": {
+    "cost": -2.8667,
+    "recall": 0.0,
+    "field_acc": 0.0,
+    "escaped_rate": -0.0354,
+    "auto_accept_precision": 0.0432,
+    "auto_accept_rate": -0.0032
+   },
+   "better_under": 6,
+   "precision_unmeasured": false,
+   "passes": true
+  },
+  "tall_box": {
+   "newly_flagged": {
+    "false_detection": 117,
+    "correct": 15,
+    "escaped_error": 31
+   },
+   "delta": {
+    "cost": -7.2667,
+    "recall": 0.0,
+    "field_acc": 0.0,
+    "escaped_rate": -0.0997,
+    "auto_accept_precision": 0.1046,
+    "auto_accept_rate": -0.0482
+   },
+   "better_under": 6,
+   "precision_unmeasured": false,
+   "passes": false
+  },
+  "diameter_sign": {
+   "newly_flagged": {
+    "escaped_error": 17,
+    "false_detection": 50,
+    "correct": 10
+   },
+   "delta": {
+    "cost": -3.8667,
+    "recall": 0.0,
+    "field_acc": 0.0,
+    "escaped_rate": -0.0547,
+    "auto_accept_precision": 0.0399,
+    "auto_accept_rate": -0.0321
+   },
+   "better_under": 6,
+   "precision_unmeasured": false,
+   "passes": false
+  },
+  "multiline": {
+   "newly_flagged": {},
+   "delta": {
+    "cost": 0.0,
+    "recall": 0.0,
+    "field_acc": 0.0,
+    "escaped_rate": 0.0,
+    "auto_accept_precision": 0.0,
+    "auto_accept_rate": 0.0
+   },
+   "better_under": 0,
+   "precision_unmeasured": false,
+   "passes": false
+  },
+  "no_tolerance": {
+   "newly_flagged": {
+    "escaped_error": 21,
+    "false_detection": 78
+   },
+   "delta": {
+    "cost": -5.6,
+    "recall": 0.0,
+    "field_acc": 0.0,
+    "escaped_rate": -0.0675,
+    "auto_accept_precision": 0.0965,
+    "auto_accept_rate": 0.0
+   },
+   "better_under": 6,
+   "precision_unmeasured": false,
+   "passes": true
+  },
+  "asymmetric_tol": {
+   "newly_flagged": {
+    "false_detection": 7,
+    "correct": 7,
+    "escaped_error": 3
+   },
+   "delta": {
+    "cost": -0.3334,
+    "recall": 0.0,
+    "field_acc": 0.0,
+    "escaped_rate": -0.0097,
+    "auto_accept_precision": -0.0131,
+    "auto_accept_rate": -0.0225
+   },
+   "better_under": 4,
+   "precision_unmeasured": false,
+   "passes": false
+  }
+ },
+ "drop_rules": {
+  "empty_read": {
+   "dropped": {
+    "flagged_error": 1,
+    "false_detection": 3
+   },
+   "delta": {
+    "cost": -0.2667,
+    "recall": 0.0,
+    "field_acc": 0.0,
+    "escaped_rate": 0.0032,
+    "auto_accept_precision": -0.0038,
+    "auto_accept_rate": 0.0
+   },
+   "better_under": 5,
+   "precision_unmeasured": false,
+   "passes": false
+  },
+  "contained_duplicate": {
+   "dropped": {
+    "false_detection": 6
+   },
+   "delta": {
+    "cost": -0.8,
+    "recall": 0.0,
+    "field_acc": 0.0,
+    "escaped_rate": 0.0,
+    "auto_accept_precision": 0.0,
+    "auto_accept_rate": 0.0
+   },
+   "better_under": 6,
+   "precision_unmeasured": false,
+   "passes": true
+  },
+  "repeated_value_nearby": {
+   "dropped": {
+    "false_detection": 12,
+    "flagged_error": 1,
+    "escaped_error": 1
+   },
+   "delta": {
+    "cost": -1.4,
+    "recall": -0.0032,
+    "field_acc": 0.0024,
+    "escaped_rate": -0.0032,
+    "auto_accept_precision": 0.004,
+    "auto_accept_rate": 0.0
+   },
+   "better_under": 6,
+   "precision_unmeasured": false,
+   "passes": true
+  },
+  "no_digit": {
+   "dropped": {
+    "flagged_error": 1,
+    "false_detection": 5
+   },
+   "delta": {
+    "cost": -0.5334,
+    "recall": 0.0,
+    "field_acc": 0.0,
+    "escaped_rate": 0.0032,
+    "auto_accept_precision": -0.0038,
+    "auto_accept_rate": 0.0
+   },
+   "better_under": 5,
+   "precision_unmeasured": false,
+   "passes": false
+  },
+  "theoretical_no_nominal": {
+   "dropped": {
+    "flagged_error": 1,
+    "false_detection": 9
+   },
+   "delta": {
+    "cost": -1.0667,
+    "recall": 0.0,
+    "field_acc": 0.0,
+    "escaped_rate": 0.0032,
+    "auto_accept_precision": -0.0038,
+    "auto_accept_rate": 0.0
+   },
+   "better_under": 6,
+   "precision_unmeasured": false,
+   "passes": false
+  },
+  "note_kind": {
+   "dropped": {
+    "false_detection": 38,
+    "flagged_error": 1,
+    "escaped_error": 3
+   },
+   "delta": {
+    "cost": -5.3334,
+    "recall": 0.0,
+    "field_acc": 0.0,
+    "escaped_rate": 0.0032,
+    "auto_accept_precision": -0.0038,
+    "auto_accept_rate": 0.0
+   },
+   "better_under": 6,
+   "precision_unmeasured": false,
+   "passes": false
+  },
+  "theoretical_kind": {
+   "dropped": {
+    "false_detection": 54,
+    "flagged_error": 1,
+    "escaped_error": 8
+   },
+   "delta": {
+    "cost": -6.5334,
+    "recall": -0.0128,
+    "field_acc": 0.0097,
+    "escaped_rate": -0.0129,
+    "auto_accept_precision": 0.0161,
+    "auto_accept_rate": 0.0
+   },
+   "better_under": 6,
+   "precision_unmeasured": false,
+   "passes": false
+  }
+ }
+}
