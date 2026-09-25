@@ -28,6 +28,11 @@ ESCAPED_RATE_TOLERANCE = 0.02
 # LOSS on missed callouts", while this module tolerated it silently and printed
 # WIN. One number, one threshold.
 RECALL_TOLERANCE = 0.005
+# Precision of the unflagged rows (correct / (correct + escaped_error)). The
+# one condition that catches cost bought by flagging more: flag=1 < escaped=5
+# lowers cost for every extra flag, down to flagging everything, which
+# automates nothing. Same 0.02 as the other ratio guards.
+AUTO_ACCEPT_TOLERANCE = 0.02
 
 
 def arm_row(name: str, digest: Dict) -> Dict:
@@ -35,7 +40,9 @@ def arm_row(name: str, digest: Dict) -> Dict:
     t = digest["taxonomy"]
     md = digest.get("missed_diagnosis", {})
     matched = digest["n_gold"] - t.get("missed", 0)
-    right = t.get("correct", 0) + t.get("flagged_correct", 0)
+    correct = t.get("correct", 0)
+    escaped_error = t.get("escaped_error", 0)
+    right = correct + t.get("flagged_correct", 0)
     return {
         "arm": name,
         # The run name this digest records. It is the identity a comparison
@@ -58,6 +65,12 @@ def arm_row(name: str, digest: Dict) -> Dict:
         # The guard metric: of the rows this arm claims to have found, how many
         # did it actually get right?
         "field_acc": round(right / matched, 4) if matched else 0.0,
+        # Precision of the unflagged rows: of what the arm let through
+        # untouched, how much was actually correct? Cost falls whenever a
+        # correct row moves from escaped (weight 5) to flagged (weight 1), so
+        # this is the guard that catches an arm buying cost that way.
+        "auto_accept_precision": (round(correct / (correct + escaped_error), 4)
+                                   if (correct + escaped_error) else 0.0),
         "misplaced": digest.get("misplaced_matches", 0),
         "contended": md.get("contended", 0),
         "isolated": md.get("isolated", 0),
@@ -76,6 +89,8 @@ def verdict(row: Dict, control: Dict, comparison: Dict = None) -> Dict:
     d_acc = round(row["field_acc"] - control["field_acc"], 4)
     d_esc = round(row["escaped_rate"] - control["escaped_rate"], 4)
     d_rec = round(row["recall"] - control["recall"], 4)
+    d_aap = round(row["auto_accept_precision"]
+                  - control["auto_accept_precision"], 4)
     reasons = []
     if d_cost >= 0:
         reasons.append(f"review cost did not improve ({d_cost:+.2f})")
@@ -93,6 +108,10 @@ def verdict(row: Dict, control: Dict, comparison: Dict = None) -> Dict:
         reasons.append(f"recall fell {d_rec:+.4f} — field accuracy can rise "
                        f"merely by losing matched rows to the miss bucket, "
                        f"which costs w=10 each")
+    if d_aap < -AUTO_ACCEPT_TOLERANCE:
+        reasons.append(f"auto-accept precision fell {d_aap:+.4f} — cost "
+                       f"bought by flagging more, which leaves the unflagged "
+                       f"rows less trustworthy")
     # Robustness last, so the taxonomy reasons above are always reported too.
     if comparison is None:
         reasons.append("robustness unmeasured — no vs-control comparison found, "
@@ -125,6 +144,7 @@ def verdict(row: Dict, control: Dict, comparison: Dict = None) -> Dict:
         "recall_delta": d_rec,
         "field_acc_delta": d_acc,
         "escaped_delta": d_esc,
+        "auto_accept_delta": d_aap,
         "contended_delta": row["contended"] - control["contended"],
         "isolated_delta": row["isolated"] - control["isolated"],
         "missed_delta": row["missed"] - control["missed"],

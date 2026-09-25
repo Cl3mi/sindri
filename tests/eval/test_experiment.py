@@ -294,3 +294,20 @@ def test_a_digest_used_as_a_control_is_not_also_listed_as_an_arm(tmp_path,
     assert not any(line.strip().startswith(("WIN", "no"))
                    and " nf4control " in line
                    for line in verdicts.splitlines()), verdicts
+
+
+def test_arm_row_derives_auto_accept_precision():
+    row = arm_row("control", CONTROL)
+    assert row["auto_accept_precision"] == round(72 / (72 + 129), 4)
+
+
+def test_cost_bought_by_flagging_more_is_not_a_win():
+    """Flagging correct rows lowers cost (escaped 5 -> flagged 1) while making
+    the unflagged set LESS trustworthy. Same recall, same field_acc, cost down
+    -- and still a loss."""
+    arm = _digest(170.0, 0.6457, 169, 82, 74, 20, 92, 129)
+    v = verdict(arm_row("arm", arm), arm_row("control", CONTROL),
+                comparison={"weight_sensitivity": {"robust": True,
+                            "b_better_fraction": 1.0, "n_weight_vectors": 6}})
+    assert not v["win"]
+    assert "auto-accept precision fell" in v["why"]
