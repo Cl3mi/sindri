@@ -222,6 +222,22 @@ class DocScore(_Versioned):
     # 0 on historical data is the exact defect DocScore.frame_origin_frac
     # exists to prevent. Re-score to fill it in.
     n_gold_unlocated: Optional[int] = None
+    # Why each false detection is false -- the sibling of missed_diagnosis,
+    # and like it a partition: the categories sum to counts["false_detection"].
+    # First matching category wins, in this order:
+    #   empty_read              the read produced no text at all
+    #   inside_matched          >= 50% of its box inside a matched box, or the
+    #                           reverse: a fragment or duplicate of a match
+    #   same_value_as_matched   same nominal as a matched prediction within the
+    #                           match gate: one callout read twice
+    #   near_matched_gold       inside the gate of gold that paired elsewhere
+    #   near_missed_gold        inside the gate of gold nothing paired with
+    #   far_numeric              nothing gold nearby, but it parsed a nominal:
+    #                           unballooned real dimension, table or title text
+    #   far_other               nothing gold nearby, no nominal
+    # None = NOT MEASURED (reports written before the field). Re-score.
+    false_diagnosis: Optional[Dict[str, int]] = None
+    false_diagnosis_by_kind: Optional[Dict[str, Dict[str, int]]] = None
     # Matched rows where the pipeline produced NO tolerance and gold has one
     # (score._failure_modes tagged missing:upper_tol / missing:lower_tol), and
     # how many DISTINCT gold (upper, lower) pairs those rows use in THIS

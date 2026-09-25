@@ -196,6 +196,26 @@ def _unlocated_coverage(report: RunReport) -> Dict:
     return out
 
 
+def _false_diagnosis_totals(report: RunReport) -> Dict:
+    """Sum of DocScore.false_diagnosis. `total` must equal
+    taxonomy.false_detection whenever not_measured_docs is 0."""
+    cats: Dict[str, int] = {}
+    by_kind: Dict[str, Dict[str, int]] = {}
+    missing = 0
+    for d in report.doc_scores:
+        if d.false_diagnosis is None:
+            missing += 1
+            continue
+        for k, v in d.false_diagnosis.items():
+            cats[k] = cats.get(k, 0) + v
+        for kind, per in (d.false_diagnosis_by_kind or {}).items():
+            tgt = by_kind.setdefault(kind, {})
+            for k, v in per.items():
+                tgt[k] = tgt.get(k, 0) + v
+    return {"categories": cats, "by_kind": by_kind,
+            "total": sum(cats.values()), "not_measured_docs": missing}
+
+
 def _note_counts(report: RunReport) -> Tuple[Dict[str, int], int]:
     """Aggregate the tags scoring left on matched pairs.
 
@@ -745,6 +765,8 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
             "isolated": sum(d.missed_isolated for d in report.doc_scores),
             "unlocated": sum(d.missed_unlocated for d in report.doc_scores),
         },
+        # Sibling of missed_diagnosis: why each false detection is false.
+        "false_diagnosis": _false_diagnosis_totals(report),
         # SIBLING to missed_diagnosis, never inside it: those three buckets
         # partition `missed` and the digest's whole credibility rests on that
         # identity holding. Coverage is a different question about the same

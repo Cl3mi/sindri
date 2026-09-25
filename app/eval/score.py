@@ -172,6 +172,41 @@ def _reconcile_pos(pos, gold_rect, dump_rect, mode: str):
                      f"(expected none|scale|center)")
 
 
+def _frac_inside(a, b) -> float:
+    """Share of box a's area that lies inside box b."""
+    area = max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1])
+    w = min(a[2], b[2]) - max(a[0], b[0])
+    h = min(a[3], b[3]) - max(a[1], b[1])
+    return (w * h / area) if area > 0 and w > 0 and h > 0 else 0.0
+
+
+def _false_category(p, matched_preds, dump, gold_pts, matched_gold, diag,
+                    params) -> str:
+    """Why one false-detection prediction `p` is false. Read-only over
+    geometry score_doc has already computed; it moves no pairing. See
+    DocScore.false_diagnosis for the category order and meanings."""
+    if not (p.raw_text or "").strip():
+        return "empty_read"
+    box = p.target_region
+    for m in matched_preds:
+        if (_frac_inside(box, m.target_region) >= 0.5
+                or _frac_inside(m.target_region, box) >= 0.5):
+            return "inside_matched"
+    pc = _center_pt(p, dump)
+    if p.nominal:
+        for m in matched_preds:
+            if (values_equal(p.nominal, m.nominal)
+                    and math.dist(pc, _center_pt(m, dump)) / diag
+                    <= params.max_geo_frac):
+                return "same_value_as_matched"
+    near = [b for b, pos in gold_pts.items()
+            if math.dist(pc, pos) / diag <= params.max_geo_frac]
+    if near:
+        return ("near_matched_gold" if any(b in matched_gold for b in near)
+                else "near_missed_gold")
+    return "far_numeric" if canon_value(p.nominal) else "far_other"
+
+
 def score_doc(dump: PredictionDump, gold: GoldDoc,
               weights: ReviewCostWeights, params: MatchParams) -> DocScore:
     # Regionless rows can't be matched or counted as false detections; today
@@ -311,6 +346,23 @@ def score_doc(dump: PredictionDump, gold: GoldDoc,
         else:
             isolated += 1
 
+    # Why each false detection is false. Read-only over geometry already
+    # computed above (matched_preds, gold_pts, matched_gold); it moves no
+    # pairing and settles no count -- it is a partition of `false` alone.
+    matched_preds = [pred_by_pos[pk] for pk in matched_p]
+    gold_pts = {g.balloon: gold_pos(g) for g in scored_gold
+                if gold_pos(g) is not None}
+    false_diag: Dict[str, int] = {}
+    false_diag_kind: Dict[str, Dict[str, int]] = {}
+    for pk in false:
+        p = pred_by_pos[pk]
+        cat = _false_category(p, matched_preds, dump, gold_pts, matched_g,
+                              diag, params)
+        false_diag[cat] = false_diag.get(cat, 0) + 1
+        k = _kind(p)
+        per_kind = false_diag_kind.setdefault(k, {})
+        per_kind[cat] = per_kind.get(cat, 0) + 1
+
     n_gold, n_pred = len(gold_by_num), len(pred_by_pos)
     return DocScore(
         doc_id=gold.doc_id, gold_hash=gold.gold_hash(),
@@ -322,6 +374,7 @@ def score_doc(dump: PredictionDump, gold: GoldDoc,
         matched_kinds=matched_kinds,
         missed_contended=contended, missed_isolated=isolated,
         missed_unlocated=unlocated, n_gold_unlocated=n_gold_unlocated,
+        false_diagnosis=false_diag, false_diagnosis_by_kind=false_diag_kind,
         dropped_tol_rows=dropped_tol_rows,
         dropped_tol_distinct=len(dropped_tol_values),
         frame_origin_frac=round(frame_origin, 6),
