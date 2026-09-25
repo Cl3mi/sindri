@@ -44,3 +44,37 @@ def test_an_unlisted_symbol_is_counted_not_named():
     assert has_unlisted_symbol("★ 0,1") is True
     assert has_unlisted_symbol("⌒ 0,1 A") is False
     assert has_unlisted_symbol("± 0,1 ° Ø") is False
+
+
+# --- what stands before the value ---------------------------------------------
+#
+# First run on the real rows: no listed glyph, no listed word, and no symbol-
+# class character at all in any of the 8 transcriptions -- yet the operator saw
+# a symbol on every one. So it is written with letter- or value-class
+# characters. A frame's symbol precedes its tolerance value, so the probe looks
+# at the characters BEFORE the first digit: listed look-alikes by name, all
+# else by Unicode category only, never the character.
+
+from app.eval.vocab_probe import prefix_signature  # noqa: E402
+
+
+def test_a_listed_look_alike_before_the_value_is_named():
+    assert prefix_signature("Ø0,4 A") == (
+        "U+00D8 LATIN CAPITAL LETTER O WITH STROKE")
+    assert prefix_signature("⌒ 0,1 A") == "U+2312 ARC"
+
+
+def test_an_unlisted_character_is_reported_by_category_only():
+    assert prefix_signature("Xy 0,1") == "Lu · Ll"
+
+
+def test_no_characters_before_the_value():
+    assert prefix_signature("0,1 A B") == "(no prefix)"
+    assert prefix_signature("") == "(no prefix)"
+
+
+def test_a_long_prefix_is_capped_so_a_word_cannot_be_spelled_out():
+    """Four tokens at most: enough to see a symbol, too few to rebuild a word
+    from category runs and the few letters on the look-alike list."""
+    sig = prefix_signature("Kontrolle 0,1")
+    assert sig.count(" · ") == 4 and sig.endswith(" · …")

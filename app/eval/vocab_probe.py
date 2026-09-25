@@ -86,3 +86,31 @@ def signature(items: Set[str]) -> str:
     """A row's set of list members as one key, so co-occurrence survives
     aggregation (which words appear TOGETHER on a label)."""
     return "+".join(sorted(items)) if items else "(none listed)"
+
+
+# Latin and ASCII characters a transcription may use in place of a GD&T glyph:
+# a circle read as O, a semicircle as D or n, a stroke as | or /, the diameter
+# sign that precedes a cylindrical zone. Named when they stand before the value.
+_PREFIX_LOOK_ALIKES = GLYPHS | set("Øø⌀OoDUn∩^()|/\\<>~=-–—CIl") | set(
+    "ΠΩΛΔΘ∏П")  # Greek/Cyrillic capitals a model writes for an arc or segment
+_PREFIX_MAX_TOKENS = 4
+
+
+def prefix_signature(text: str) -> str:
+    """What stands before the first digit -- where a frame's symbol sits. Each
+    non-space character is its Unicode name if it is a listed look-alike, else
+    only its Unicode category ("Lu", "Ll", ...). Capped at four tokens so a
+    word can never be spelled out."""
+    tokens = []
+    for c in str(text or ""):
+        if c.isdigit():
+            break
+        if c.isspace():
+            continue
+        tokens.append(_key(c) if c in _PREFIX_LOOK_ALIKES
+                      else unicodedata.category(c))
+    if not tokens:
+        return "(no prefix)"
+    if len(tokens) > _PREFIX_MAX_TOKENS:
+        tokens = tokens[:_PREFIX_MAX_TOKENS] + ["…"]
+    return " · ".join(tokens)

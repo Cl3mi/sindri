@@ -63,6 +63,8 @@ def _probe_row(probe: Dict, transcription: str, label: str, side: str) -> None:
           vocab_probe.signature(vocab_probe.glyph_set(transcription)))
     _bump(probe["transcription_words"], vocab_probe.signature(
         vocab_probe.word_set(transcription, vocab_probe.TRANSCRIPTION_WORDS)))
+    _bump(probe["transcription_prefix"],
+          vocab_probe.prefix_signature(transcription))
     _bump(probe["label_words_by_scorer"].setdefault(side, {}),
           vocab_probe.signature(
               vocab_probe.word_set(label, vocab_probe.LABEL_WORDS)))
@@ -89,8 +91,13 @@ def reparse_report(dumps: Dict, golds: Dict, scores: List) -> Dict:
     # split by how the scorer reads the label today. Nothing outside the lists
     # can reach this output; unlisted symbols are only counted.
     probe = {"transcription_glyphs": {}, "transcription_words": {},
-             "label_words_by_scorer": {}, "unlisted_symbol_rows": 0}
+             "transcription_prefix": {}, "label_words_by_scorer": {},
+             "unlisted_symbol_rows": 0}
     gdt["probe"] = probe
+    # The same signatures per row, keyed by the review deck's id (document,
+    # then balloon, exactly as review.collect_gdt_rows numbers them), so each
+    # can be read beside the operator's answer for that row in the tally.
+    by_row = []
     out["gdt_char_type_only"] = gdt
     for score in scores:
         dump, gold = dumps[score.doc_id], golds[score.doc_id]
@@ -110,6 +117,13 @@ def reparse_report(dumps: Dict, golds: Dict, scores: List) -> Dict:
                     gdt["parser_defaulted"] += 1
                 _probe_row(probe, p.raw_text or "", g.char_type or "",
                            scorer_side(pair))
+                by_row.append((score.doc_id, g.balloon, {
+                    "prefix": vocab_probe.prefix_signature(p.raw_text or ""),
+                    "glyphs": vocab_probe.signature(
+                        vocab_probe.glyph_set(p.raw_text or "")),
+                    "label_words": vocab_probe.signature(vocab_probe.word_set(
+                        g.char_type or "", vocab_probe.LABEL_WORDS)),
+                    "scorer": scorer_side(pair)}))
             fresh = parse_value(p.raw_text or "",
                                hint=_HINTS.get(p.kind or "", ""))
             if _same_parse(fresh, p):
@@ -124,4 +138,6 @@ def reparse_report(dumps: Dict, golds: Dict, scores: List) -> Dict:
                 out["still_correct"] += 1
             else:
                 out["still_wrong"] += 1
+    by_row.sort(key=lambda t: (t[0], t[1]))
+    gdt["rows"] = {f"g{i}": sig for i, (_, _, sig) in enumerate(by_row, 1)}
     return out

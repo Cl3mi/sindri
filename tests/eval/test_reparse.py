@@ -140,3 +140,43 @@ def test_the_probe_never_carries_text_outside_its_lists():
               dict(_PROFILE_GOLD, char_type="Linienform Profil SECRETLABEL"))
     blob = json.dumps(r, ensure_ascii=False)
     assert "SECRET" not in blob and "0,05" not in blob
+
+
+def test_the_probe_reports_what_stands_before_the_value():
+    r = _case(dict(_GDT_ROW, raw_text="Xy 0,05 A"), _PROFILE_GOLD)
+    assert r["gdt_char_type_only"]["probe"]["transcription_prefix"] == {
+        "Lu · Ll": 1}
+
+
+def test_the_probe_keys_each_row_by_the_review_decks_id():
+    """So each row's closed-vocabulary signature can be read beside the
+    operator's answer for the same row in the tally -- which glyph goes with
+    which characteristic is exactly what a parser mapping needs. The ids must
+    be the deck's, or the join is silently wrong."""
+    from app.eval.models import (GoldCharacteristic, GoldDoc, MatchParams,
+                                 PredictionDump, ReviewCostWeights, RunConfig)
+    from app.eval.review import collect_gdt_rows
+    from app.models import Characteristic, ExtractionResult
+    dumps, golds, scores = {}, {}, []
+    for doc_id, xs in (("P2", [(100, 700, "Π 0,05 A")]),
+                       ("P1", [(900, 100, "0,05 A"), (100, 100, "Ø0,1 A")])):
+        gold = GoldDoc(doc_id=doc_id, pdf="d", excel="e", page_rect=RECT,
+                       characteristics=[GoldCharacteristic(
+                           balloon=i + 1, position_pt=(x, y), **_PROFILE_GOLD)
+                           for i, (x, y, _) in enumerate(xs)])
+        dump = PredictionDump(
+            doc_id=doc_id, config=RunConfig(model_id="stub", dpi=300),
+            scale=SCALE, page_rect=RECT,
+            result=ExtractionResult(characteristics=[
+                Characteristic(pos=i + 1, target_region=_pt_box(x, y),
+                               **dict(_GDT_ROW, raw_text=t))
+                for i, (x, y, t) in enumerate(xs)]))
+        dumps[doc_id], golds[doc_id] = dump, gold
+        scores.append(score_doc(dump, gold, ReviewCostWeights(), MatchParams()))
+    rows = reparse_report(dumps, golds, scores)["gdt_char_type_only"]["rows"]
+    deck_ids = [r.id for r in collect_gdt_rows(dumps, golds, scores)]
+    assert sorted(rows) == sorted(deck_ids) == ["g1", "g2", "g3"]
+    assert rows["g1"]["prefix"] == "(no prefix)"                 # P1 balloon 1
+    assert rows["g2"]["prefix"].startswith("U+00D8")             # P1 balloon 2
+    assert rows["g3"]["prefix"] == "U+03A0 GREEK CAPITAL LETTER PI"  # P2
+    assert rows["g3"]["scorer"] == "none"
