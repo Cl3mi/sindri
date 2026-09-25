@@ -16,10 +16,13 @@ advisory, and it has been right every single time it fired.
 * Only the reviewed CLI may touch it: `python3 -m app.eval.runner
   <probe|headers|ingest|split|predict|score|compare|summary|variants>`, plus
   `setup_client_data.py` and `sync_client_data.sh`.
-* **`runner review-tally` is the OPERATOR's, and is deliberately NOT in that
-  allowlist.** It reads a worksheet `score --gdt-worksheet` writes inside the
-  protected root, full of client text. Only its `--out` counts file in
-  `docs/eval/` is for an agent. Do not add it to the guard.
+* **`runner review-serve` and `review-tally` are the OPERATOR's, and are
+  deliberately NOT in that allowlist.** They read a review deck `score
+  --review-deck` writes inside the protected root, full of client text; only
+  the counts-only tally in `docs/eval/` is for an agent. Do not add them to
+  the guard. **The guard does not cover a plain `curl` to the running review
+  app** — its session token is the protection, so never ask for, or accept,
+  the link `review-serve` prints.
 * **Single, unpiped, unchained commands only.** These are all denied and each one
   has actually cost time here: `cmd | tail`, `cmd && cmd`, `cmd > file`, a heredoc
   whose body mentions the root, and `ls` on the root itself. Run the sanctioned
@@ -59,7 +62,7 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **909 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **935 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). **`tesseract` is a device
 prerequisite** — without the binary six tests fail as `TesseractNotFoundError`
 and read as broken code. `SCHEMA_VERSION` = 1 — do not bump it. Split frozen
@@ -203,10 +206,12 @@ says every one was predicted Flatness, and `--reparse-check`'s
 knows — so every Flatness is `_gdt_type`'s default. Gold side: 3 labels the
 scorer reads as Position/Parallelism, 5 it reads as nothing. **What decides the
 fix is an OPERATOR review** (dropped symbol vs unmapped look-alike, and what the
-5 labels mean), prepared as a 10-minute worksheet by `score --gdt-worksheet`
-and tallied by `review-tally`. The decision table is registered in
-`docs/plans/2026-09-22-gdt-review.md`. **The worksheet holds client text: an
-agent never reads it, and the guard blocks every way to.** Read
+5 labels mean). It is a **local review app** (2026-09-25,
+`docs/plans/2026-09-25-gdt-review-ui-design.md`): `score --review-deck` writes
+the deck, the operator runs `review-serve` and answers one screen per row with
+drawing crops, and Finish writes the tally. The decision table is registered in
+`docs/plans/2026-09-22-gdt-review.md`. **The deck holds client text: an agent
+never reads it, and the guard blocks every file route to it.** Read
 `docs/eval/gdt-review-tally.json` once the operator says "done".
 
 **These are now TWO separate closed dead ends, and they close for different
@@ -728,7 +733,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 909 passed, 2 skipped
+python -m pytest -q                          # 935 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```

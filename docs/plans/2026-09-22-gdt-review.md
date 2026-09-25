@@ -37,44 +37,52 @@ least 5 of them silent: **at least −1.67**, the size of the shipped crop win
 
 ## 2. What you do — about 10 minutes
 
-The worksheet is already generated (by `score --gdt-worksheet`, 2026-09-22):
+> **Updated 2026-09-25:** the Markdown worksheet is replaced by a local review
+> app (design: `2026-09-25-gdt-review-ui-design.md`). The questions, the
+> routing and the decision table below are unchanged.
 
-```
-$HOME/sindri-client-data/reports/gdt-review.md
-```
+The deck is already generated (by `score --review-deck`, 2026-09-25) inside the
+client-data folder, next to the reports.
 
-1. **Open it in your own editor.** It contains client data: the inspection-sheet
-   labels, what the reader transcribed, and part numbers. Do not paste it to an
-   agent. The agent's guard blocks it from reading the file, so it cannot check
-   your work there. That is intended.
-2. **For each of the 8 rows** (grouped by drawing, so open each stamped drawing
-   once): find the balloon, look at the GD&T frame, fill in three lines. The
-   worksheet has the answer key at the top.
-
-   | line | answers |
-   |---|---|
-   | `drawing_shows:` | the characteristic the frame's symbol is — `Position`, `Parallelism`, `Straightness`, … (14 ISO 1101 names), or `other` / `unsure` |
-   | `symbol_in_transcription:` | `glyph` (a symbol is there, even a look-alike), `word` (written out), or `none` (missing) |
-   | `gold_label_means_it:` | does the inspection-sheet label name that same characteristic? `yes` / `no` / `unsure` |
-
-   Leave a line blank rather than guess — blank rows are reported as
-   unanswered. `note:` is yours and is never read.
-3. **Run the tally in your own terminal** and write it into the repo:
+1. **Start the app in your own terminal**, from the repo checkout:
 
    ```bash
    cd ~/mci/sindri/.claude/worktrees/eval-harness
-   python3 -m app.eval.runner review-tally \
-       "$HOME/sindri-client-data/reports/gdt-review.md" \
-       --out docs/eval/gdt-review-tally.json
+   python3 -m app.eval.runner review-serve \
+       "$HOME/sindri-client-data/reports/gdt-review.deck.json"
    ```
 
-   It prints counts and row ids (`g1`–`g8`) only: no labels, no transcriptions,
-   no notes. If it lists any row as `invalid` (a typo like `Positon`), fix that
-   line and run it again.
-4. **Tell the agent "done".** It reads `docs/eval/gdt-review-tally.json`.
+   It prints one link (`http://127.0.0.1:…/?t=…`). **Open it in your
+   browser, and never paste it into an agent chat**: the `t=` part is the
+   session token that keeps the page private.
+2. **Answer each of the 8 rows** (about a minute each). Every row shows the
+   clean drawing with a red box (what the pipeline read) and a blue dot (gold's
+   balloon), the stamped drawing with the printed balloon, the inspection-sheet
+   label and the transcription. Click a crop to enlarge it.
 
-If you ever need to regenerate the worksheet, move the old one away first —
-`score` refuses to overwrite it, so answers are never lost by accident.
+   | question | answers |
+   |---|---|
+   | 1 What does the frame show? | one of 14 ISO 1101 characteristics, or `other` / `unsure` — type to filter (`pos` → Position) |
+   | 2 Is that symbol in the transcription? | `G`lyph (even a look-alike), `W`ord, `N`one |
+   | 3 Does the inspection-sheet label mean it? | `Y`es, `N`o, `U`nsure |
+
+   Letters answer the question marked in blue; `Enter` / `→` next row, `←`
+   back. Clicking a chosen answer again clears it. Every click saves at once
+   (top right shows `saved ✓`); you can close the tab and resume later. The
+   note field is yours and never leaves your machine.
+3. **Press Finish.** Unanswered rows are reported as unanswered, never guessed.
+   It writes the counts-only tally to `docs/eval/gdt-review-tally.json` and
+   shows the summary.
+4. **Tell the agent "done".** Then stop the app with Ctrl+C.
+
+Headless alternative: `python3 -m app.eval.runner review-tally <deck> --out
+docs/eval/gdt-review-tally.json` computes the same counts from the saved
+answers. The old `gdt-review.md` worksheet in the client-data folder is unused
+and can be deleted.
+
+If the deck ever needs regenerating, move the old one (and its
+`.answers.json`) away first — `score` refuses to overwrite a deck, so answers
+are never lost by accident.
 
 ---
 
@@ -132,11 +140,18 @@ respond.
 
 ## 5. Data handling
 
-* The worksheet is written only inside a protected root (enforced in
-  `review.check_worksheet_path`, tested) and is never overwritten.
+* The deck and its answers are written only inside a protected root (enforced
+  in `review.check_deck_path` / `save_answer`, tested) and the deck is never
+  overwritten; answers are keyed to it by `deck_sha`.
+* The app binds 127.0.0.1, checks the Host header, and refuses any request
+  without the session token. It sends `no-store`, `no-referrer` and a CSP that
+  forbids every external request, and loads no fonts or scripts from anywhere.
 * The agent's guard was probed with simulated calls, no guard change: it DENIES
-  the agent running `review-tally` on the worksheet, `cat`, `Read`, `Grep` and
-  `cp` of it, and ALLOWS the sanctioned `score` that writes it.
-* The tally reads only the three answer lines and the generator's own
-  closed-vocabulary tag per row. A test writes `SECRET` into a label, a
+  the agent `review-serve`, `review-tally`, and `cat` / `Read` / `Grep` / `cp`
+  of the deck or answers, and ALLOWS the sanctioned `score` that writes the
+  deck. **It does not cover a plain `curl` to the running app** — the session
+  token is what protects it, which is why the link must never be pasted to an
+  agent.
+* The tally reads only the three closed-vocabulary answers and the deck's own
+  closed-vocabulary tag per row. A test plants `SECRET` in a label, a
   transcription, a part number and a note, and asserts none reaches the output.
