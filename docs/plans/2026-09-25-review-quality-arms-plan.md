@@ -730,6 +730,8 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'app.eval.policy_check
 
 - [ ] **Step 3: Implement** `app/eval/policy_check.py`
 
+> **As built (2026-09-25):** the shipped module also carries `auto_accept_rate` in `_stats`/`_delta` and checks it (≥ −0.02) in every pass function, per §1; precision is `None` (a FAIL) when the unflagged set is empty; and the base gate RAISES if a dump recorded at today's LOW_CONF still needs re-flagging. The block below is the original sketch.
+
 ```python
 """Price a flag rule or a drop rule from dumps already on disk — no GPU.
 
