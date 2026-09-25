@@ -136,12 +136,22 @@ def _empty_read(c, chars):
 
 def _content_related(small, big):
     """Containment alone is not a duplicate: a single oversized box (a stray
-    detection artefact, a title-block frame) would otherwise swallow every
-    real callout that happens to fall inside it. Require the smaller row's
-    text to actually appear in the bigger one's, or the same non-empty
-    nominal -- either says they plausibly name the same value."""
+    detection artefact, a title-block frame, a note's boilerplate) would
+    otherwise swallow every real callout that happens to fall inside it.
+
+    Two different kinds are never the same read -- a note's text and a
+    dimension's are unrelated even when one contains the other's digits by
+    coincidence ("...SEE NOTE 5" holding a "5" that is really its own row).
+
+    The text check is a WHOLE-TOKEN match (bounded by neither digit nor
+    separator), not a bare substring: a plain `in` check let "5" match
+    inside "25" or "2768", i.e. any number that happens to embed the small
+    box's digits, which is not the same value at all."""
+    if small.kind != big.kind:
+        return False
     text = (small.raw_text or "").strip()
-    if text and text in (big.raw_text or ""):
+    if text and re.search(rf"(?<![\d,.]){re.escape(text)}(?![\d,.])",
+                          big.raw_text or ""):
         return True
     return bool(small.nominal) and small.nominal == big.nominal
 
@@ -154,9 +164,14 @@ def _contained_duplicate(c, chars):
         b = o.target_region
         if o is c or b is None:
             continue
-        # STRICTLY larger: equal boxes keep both (see module docstring).
+        # STRICTLY larger: equal boxes keep both (see module docstring). Also
+        # defer to confidence like `repeated_value_nearby` does: if the
+        # CONTAINED row is the more confident read, containment must not
+        # drop it -- otherwise the two rules together can delete a callout
+        # entirely (this one drops the smaller box, the other drops the
+        # bigger one for being less confident, and nothing survives).
         if _area(b) > _area(a) and _inter(a, b) / _area(a) >= CONTAINED_FRAC \
-                and _content_related(c, o):
+                and _content_related(c, o) and not (c.confidence > o.confidence):
             return True
     return False
 

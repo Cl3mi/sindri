@@ -71,6 +71,47 @@ def test_contained_duplicate_requires_a_content_relation():
     assert real in kept
 
 
+def test_contained_duplicate_requires_matching_kind():
+    """A note box's boilerplate text can happen to contain a real dimension's
+    digits ("...SEE NOTE 5"), but a note and a dimension are never the same
+    read -- so a cross-kind containment must never drop the real value."""
+    note_box = _c(pos=1, box=(0, 0, 200, 50), kind="note",
+                  raw_text="ISO 2768-m, SEE NOTE 5")
+    real = _c(pos=2, box=(150, 10, 190, 40), kind="dimension", raw_text="5")
+    kept = pr.apply_drop_rules([note_box, real], ("contained_duplicate",))
+    assert real in kept
+
+
+def test_contained_duplicate_substring_match_is_whole_token():
+    """A bare digit-string containment check would match "5" inside "25" or
+    "2768" -- require a WHOLE-TOKEN match so an unrelated number that happens
+    to embed the small box's digits does not count as the same read."""
+    big_25 = _c(pos=1, box=(0, 0, 100, 40), kind="dimension", raw_text="25")
+    small_5 = _c(pos=2, box=(10, 5, 50, 35), kind="dimension", raw_text="5")
+    kept = pr.apply_drop_rules([big_25, small_5], ("contained_duplicate",))
+    assert small_5 in kept
+
+    big_zone = _c(pos=1, box=(0, 0, 100, 40), kind="dimension",
+                  raw_text="Ø20 ±0,1")
+    small_frag = _c(pos=2, box=(10, 5, 50, 35), kind="dimension", raw_text="20")
+    kept = pr.apply_drop_rules([big_zone, small_frag], ("contained_duplicate",))
+    assert small_frag not in kept
+
+
+def test_contained_duplicate_defers_to_the_more_confident_read():
+    """contained_duplicate must not delete a callout that repeated_value_nearby
+    would otherwise keep: if the smaller (contained) row is the MORE
+    confident read, containment must not drop it, so the two rules together
+    can settle on exactly one survivor instead of deleting both."""
+    outer = _c(pos=1, box=(0, 0, 100, 40), kind="dimension", nominal="20",
+               raw_text="20", confidence=0.80)
+    inner = _c(pos=2, box=(10, 5, 50, 35), kind="dimension", nominal="20",
+               raw_text="20", confidence=0.99)
+    kept = pr.apply_drop_rules([outer, inner],
+                               ("contained_duplicate", "repeated_value_nearby"))
+    assert kept == [inner]
+
+
 def test_contained_duplicate_chain_drops_only_up_to_the_largest():
     """A subset-of B subset-of C, all naming the same value: each smaller box
     is a duplicate of a still-larger one, but C has nothing bigger to defer
