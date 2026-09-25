@@ -149,3 +149,15 @@ def test_the_app_refuses_a_deck_outside_a_protected_root(tmp_path, monkeypatch):
     outside.write_text(json.dumps(build_deck(_rows3(), "r", "/o", "/s")))
     with pytest.raises(ReviewRefused):
         ReviewApp(outside, tmp_path / "docs" / "tally.json")
+
+
+def test_the_page_is_self_contained_and_uses_only_the_served_routes(running):
+    """It must work offline and send nothing anywhere, and client text must be
+    set as text -- a label containing markup must never become markup."""
+    app, base, _, _ = running
+    html = _get(f"{base}/?t={app.token}").read().decode()
+    for route in ("/api/deck", "/api/answer", "/api/finish", "/crop/"):
+        assert route in html, route
+    for external in ("http://", "https://", "//cdn", "<link"):
+        assert external not in html, external
+    assert "innerHTML" not in html
