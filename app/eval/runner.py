@@ -649,6 +649,10 @@ def _cmd_score(args):
         except ReviewRefused as e:
             print(f"ERROR: --review-deck refused: {e}", file=sys.stderr)
             return 1
+    if getattr(args, "proposal_check", False) and not getattr(args, "pdfs", None):
+        print("ERROR: --proposal-check needs --pdfs -- it renders the "
+              "original drawings to run OCR against", file=sys.stderr)
+        return 1
     gold = _load_gold_dir(args.gold)
     dumps = {d.doc_id: d for d in
              (load_dump(p) for p in sorted(Path(args.run).glob("*.pred.json")))}
@@ -802,6 +806,14 @@ def _cmd_score(args):
         from app.eval.policy_check import policy_report
         pr = policy_report(dumps, gold, doc_ids, weights, params, joint=joint)
         blob = json.dumps(pr, indent=1)
+        if args.policy_out:
+            Path(args.policy_out).parent.mkdir(parents=True, exist_ok=True)
+            Path(args.policy_out).write_text(blob, encoding="utf-8")
+        print(blob)
+    if getattr(args, "proposal_check", False):
+        from app.eval.proposal_check import proposal_check
+        pc = proposal_check(dumps, gold, scores, args.pdfs, params)
+        blob = json.dumps(pc, indent=1)
         if args.policy_out:
             Path(args.policy_out).parent.mkdir(parents=True, exist_ok=True)
             Path(args.policy_out).write_text(blob, encoding="utf-8")
@@ -1018,8 +1030,8 @@ def main(argv=None) -> int:
                    help="price every flag/drop rule in policy_rules by "
                         "re-scoring transformed dumps; the report is untouched")
     p.add_argument("--policy-out", default=None,
-                   help="write the --policy-check JSON here (counts only) -- "
-                        "the guard denies '>' redirects")
+                   help="write the --policy-check or --proposal-check JSON "
+                        "here (counts only) -- the guard denies '>' redirects")
     p.add_argument("--flag-rules", default="",
                    help="comma-separated flag rules to price as a JOINT set")
     p.add_argument("--drop-rules", default="",
@@ -1030,6 +1042,9 @@ def main(argv=None) -> int:
                         "client text, so it must be inside a protected root "
                         "and must not exist yet. Needs --pdfs. Only a row "
                         "count is printed. Open it with review-serve.")
+    p.add_argument("--proposal-check", action="store_true",
+                   help="CPU: count OCR proposals landing on isolated misses "
+                        "(needs --pdfs); the report is untouched")
     p.set_defaults(fn=_cmd_score)
 
     p = sub.add_parser("review-tally", parents=[common])
