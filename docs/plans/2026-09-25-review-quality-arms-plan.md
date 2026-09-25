@@ -41,14 +41,15 @@ If Task 0 finds `r3-trainpredict` unscoreable, select on dev and confirm on test
 **A flag rule is KEPT iff, on validate AND confirm (and on select when available):**
 1. mean review cost falls,
 2. it is better under **6 of 6** `report.WEIGHT_GRID` weightings,
-3. `auto_accept.precision` **rises** (strictly) — this is what blocks flag-everything,
-4. (field_acc and recall are untouched by flags by construction; the check asserts that).
+3. `auto_accept.precision` **rises** (strictly) on every split — the flagged rows must be MORE error-dense than the unflagged set, i.e. the rule discriminates better than chance (random flags leave precision flat),
+4. `auto_accept.rate` falls by no more than 0.02 (added after the Tasks 1-2 review: precision alone cannot see flags spread evenly over right and wrong rows; the rate is what falls then),
+5. (field_acc and recall are untouched by flags by construction; the check asserts that).
 
 **A drop rule is KEPT iff, on the same splits:**
 1. mean review cost falls, 6 of 6 weightings,
 2. recall falls by no more than `experiment.RECALL_TOLERANCE` (0.005),
 3. field_acc falls by no more than `experiment.FIELD_ACC_TOLERANCE` (0.02),
-4. escaped_rate does not rise, `auto_accept.precision` does not fall.
+4. escaped_rate does not rise, `auto_accept.precision` does not fall, `auto_accept.rate` falls by no more than 0.02.
 
 **The joint set** of kept rules is then priced together on validate and confirm and must pass the drop-rule conditions plus flag condition 3. If it fails, drop the rule with the smallest dev gain and re-price until it passes or the set is empty.
 
@@ -1422,8 +1423,15 @@ def _apply_active_policy(results):
 and in `extract()`, directly before `emit("place", "Placing balloons")`:
 
 ```python
+    # The loose_text exclusion below must still cover DROPPED boxes, or their
+    # text resurfaces as title fields -- a side effect the offline price
+    # cannot see. So keep the pre-drop regions for it.
+    read_regions = [c.target_region for c in results
+                    if c.target_region is not None]
     results = _apply_active_policy(results)
 ```
+
+and change the `exclude += [c.target_region for c in results ...]` line further down to `exclude += read_regions`.
 
 - [ ] **Step 4: Run tests**
 
