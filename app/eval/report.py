@@ -631,6 +631,24 @@ def _frame_mismatch(report: RunReport, anonymizer) -> Dict:
     }
 
 
+def _auto_accept(report: RunReport) -> Dict:
+    """Precision and rate of the rows a reviewer is told NOT to check.
+
+    flag=1 against escaped=5 makes review cost fall whenever more rows are
+    flagged, down to flagging everything (223 vs 406 on dev, 2026-09-25) --
+    which automates nothing. The product's value is the unflagged set, so a
+    policy change must make it more trustworthy, not merely smaller. None when
+    nothing is unflagged: an empty set has no precision, and 1.0 would reward
+    flag-everything with a perfect score."""
+    t = report.taxonomy
+    correct, escaped = t.get("correct", 0), t.get("escaped_error", 0)
+    n_auto = correct + escaped
+    n_gold = sum(d.n_gold for d in report.doc_scores)
+    return {"n_auto": n_auto, "correct": correct, "escaped": escaped,
+            "precision": round(correct / n_auto, 4) if n_auto else None,
+            "rate": round(correct / n_gold, 4) if n_gold else 0.0}
+
+
 def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
     """Privacy-safe digest of a run: aggregate metrics only, doc ids hashed.
 
@@ -658,6 +676,9 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
         "micro_precision": report.micro_precision,
         "escaped_rate": report.escaped_rate,
         "taxonomy": dict(report.taxonomy),
+        # Precision of the unflagged rows -- the guard against flag-everything,
+        # which review cost alone rewards. See _auto_accept.
+        "auto_accept": _auto_accept(report),
         # Handoff §6 routing: misparse -> parser hardening (Rung 1),
         # misread -> prompts (Rung 2) then LoRA (Rung 3).
         "error_causes": causes,
