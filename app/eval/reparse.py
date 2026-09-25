@@ -20,7 +20,8 @@ Once a candidate parser edit is in place `identical` drops by design, and
 from typing import Dict, List
 
 from app.eval.normalize import char_type_equal, values_equal
-from app.eval.report import is_char_type_only
+from app.eval import vocab_probe
+from app.eval.report import is_char_type_only, scorer_side
 from app.pipeline.parser import _GDT_SYMBOLS, parse_value
 
 # Copy of extract._HINTS: detector kind -> parser hint. Duplicated so this
@@ -53,6 +54,22 @@ def _same_parse(a, b) -> bool:
             and all(getattr(a, f) == getattr(b, f) for f in _FIELDS))
 
 
+def _bump(d: Dict, k: str) -> None:
+    d[k] = d.get(k, 0) + 1
+
+
+def _probe_row(probe: Dict, transcription: str, label: str, side: str) -> None:
+    _bump(probe["transcription_glyphs"],
+          vocab_probe.signature(vocab_probe.glyph_set(transcription)))
+    _bump(probe["transcription_words"], vocab_probe.signature(
+        vocab_probe.word_set(transcription, vocab_probe.TRANSCRIPTION_WORDS)))
+    _bump(probe["label_words_by_scorer"].setdefault(side, {}),
+          vocab_probe.signature(
+              vocab_probe.word_set(label, vocab_probe.LABEL_WORDS)))
+    probe["unlisted_symbol_rows"] += int(
+        vocab_probe.has_unlisted_symbol(transcription))
+
+
 def reparse_report(dumps: Dict, golds: Dict, scores: List) -> Dict:
     """Counts only — never a value — over every matched pair in `scores`.
 
@@ -67,6 +84,13 @@ def reparse_report(dumps: Dict, golds: Dict, scores: List) -> Dict:
     # alone that split routes the fix: a guessed type points at the read or the
     # parser, a read one that still disagrees points at the scorer's vocabulary.
     gdt = {"n": 0, "symbol_recognised": 0, "parser_defaulted": 0}
+    # Closed-vocabulary probe (vocab_probe): which LISTED glyphs and ISO 1101
+    # words occur, as per-row sets, so co-occurrence survives. Label words are
+    # split by how the scorer reads the label today. Nothing outside the lists
+    # can reach this output; unlisted symbols are only counted.
+    probe = {"transcription_glyphs": {}, "transcription_words": {},
+             "label_words_by_scorer": {}, "unlisted_symbol_rows": 0}
+    gdt["probe"] = probe
     out["gdt_char_type_only"] = gdt
     for score in scores:
         dump, gold = dumps[score.doc_id], golds[score.doc_id]
@@ -84,6 +108,8 @@ def reparse_report(dumps: Dict, golds: Dict, scores: List) -> Dict:
                     gdt["symbol_recognised"] += 1
                 else:
                     gdt["parser_defaulted"] += 1
+                _probe_row(probe, p.raw_text or "", g.char_type or "",
+                           scorer_side(pair))
             fresh = parse_value(p.raw_text or "",
                                hint=_HINTS.get(p.kind or "", ""))
             if _same_parse(fresh, p):

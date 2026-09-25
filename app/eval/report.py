@@ -347,6 +347,19 @@ def _ctype_key(pair) -> Optional[str]:
             f"->{pred if pred in _CTYPE_VOCAB else 'other'}")
 
 
+def scorer_side(pair) -> str:
+    """How the scorer reads gold's label: a characteristic name, `none` (no
+    type word it knows), `ambiguous`, `empty`, or `not_measured`. Closed
+    vocabulary only -- taken from the `ctype:` note, never from the label."""
+    key = _ctype_key(pair)
+    if key is None:
+        return "not_measured"
+    gold = key[len("chartype:"):].partition("->")[0]
+    if gold.startswith("unmapped(") and gold.endswith(")"):
+        return gold[len("unmapped("):-1]
+    return gold
+
+
 def is_char_type_only(pair) -> bool:
     """Wrong in char_type and in NOTHING else: the only rows a char_type fix
     can make fully correct. Public because app.eval.review selects its operator

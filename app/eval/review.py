@@ -27,14 +27,13 @@ so the operator reviews exactly the rows the counts describe.
 import hashlib
 import json
 import os
-import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from app.eval.reparse import gdt_symbol_recognised
-from app.eval.report import _ctype_key, is_char_type_only
+from app.eval.report import is_char_type_only, scorer_side
 
 DECK_VERSION = 1
 KIND = "gdt-char-type-only"
@@ -114,18 +113,6 @@ def _where(pos, rect) -> str:
     return f"{row} {col}"
 
 
-def _scorer_side(pair) -> str:
-    """How the scorer reads gold's label: a characteristic name, `none` (no
-    type word it knows), `ambiguous`, or `empty`. Closed vocabulary only --
-    taken from the `ctype:` note, never from the label itself."""
-    key = _ctype_key(pair)
-    if key is None:
-        return "not_measured"
-    gold = key[len("chartype:"):].partition("->")[0]
-    m = re.fullmatch(r"unmapped\((.*)\)", gold)
-    return m.group(1) if m else gold
-
-
 def _pt_box(region, scale):
     """Render pixels -> PDF points: the crop is cut from the PDF itself."""
     if not region or not scale:
@@ -156,7 +143,7 @@ def collect_gdt_rows(dumps: Dict, golds: Dict, scores: List) -> List[ReviewRow]:
                 gold_label=g.char_type, transcription=p.raw_text or "",
                 predicted=p.char_type or "",
                 parser_defaulted=not gdt_symbol_recognised(p.raw_text),
-                scorer_reads_gold_as=_scorer_side(pair),
+                scorer_reads_gold_as=scorer_side(pair),
                 silent=pair.taxonomy == "escaped_error")))
     found.sort(key=lambda t: (t[0], t[1]))
     return [ReviewRow(id=f"g{i}", **kw)

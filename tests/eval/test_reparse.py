@@ -89,14 +89,14 @@ _GDT_GOLD = dict(char_type="Position", nominal="0", upper_tol="0,05",
 
 def test_a_gdt_row_with_no_recognised_symbol_counts_as_parser_defaulted():
     r = _case(dict(_GDT_ROW, raw_text="0,05 A"), _GDT_GOLD)
-    assert r["gdt_char_type_only"] == {
-        "n": 1, "symbol_recognised": 0, "parser_defaulted": 1}
+    gdt = r["gdt_char_type_only"]
+    assert (gdt["n"], gdt["symbol_recognised"], gdt["parser_defaulted"]) == (1, 0, 1)
 
 
 def test_a_gdt_row_whose_symbol_was_read_counts_as_recognised():
     r = _case(dict(_GDT_ROW, raw_text="⏥ 0,05 A"), _GDT_GOLD)
-    assert r["gdt_char_type_only"] == {
-        "n": 1, "symbol_recognised": 1, "parser_defaulted": 0}
+    gdt = r["gdt_char_type_only"]
+    assert (gdt["n"], gdt["symbol_recognised"], gdt["parser_defaulted"]) == (1, 1, 0)
 
 
 def test_only_char_type_only_gdt_rows_are_counted():
@@ -108,3 +108,35 @@ def test_only_char_type_only_gdt_rows_are_counted():
     dim = _case(dict(char_type="Distance", nominal="20", raw_text="20"),
                 dict(char_type="Diameter", nominal="20"))
     assert dim["gdt_char_type_only"]["n"] == 0
+
+
+# --- the closed-vocabulary probe over those rows ------------------------------
+
+_PROFILE_GOLD = dict(char_type="Linienform Profil zu A", nominal="0",
+                     upper_tol="0,05", lower_tol="0")
+
+
+def test_the_probe_reports_listed_glyphs_and_label_words_per_row():
+    """Label words are split by how the scorer reads the label today, which
+    isolates the rows it finds no type word in -- where a synonym belongs."""
+    r = _case(dict(_GDT_ROW, raw_text="⌒ 0,05 A"), _PROFILE_GOLD)
+    probe = r["gdt_char_type_only"]["probe"]
+    assert probe["transcription_glyphs"] == {"U+2312 ARC": 1}
+    assert probe["transcription_words"] == {"(none listed)": 1}
+    assert probe["label_words_by_scorer"] == {"none": {"linienform+profil": 1}}
+    assert probe["unlisted_symbol_rows"] == 0
+
+
+def test_an_unlisted_symbol_is_counted_so_a_miss_is_visible():
+    r = _case(dict(_GDT_ROW, raw_text="★ 0,05 A"), _PROFILE_GOLD)
+    probe = r["gdt_char_type_only"]["probe"]
+    assert probe["transcription_glyphs"] == {"(none listed)": 1}
+    assert probe["unlisted_symbol_rows"] == 1
+
+
+def test_the_probe_never_carries_text_outside_its_lists():
+    import json
+    r = _case(dict(_GDT_ROW, raw_text="⌒ 0,05 SECRETREAD"),
+              dict(_PROFILE_GOLD, char_type="Linienform Profil SECRETLABEL"))
+    blob = json.dumps(r, ensure_ascii=False)
+    assert "SECRET" not in blob and "0,05" not in blob
