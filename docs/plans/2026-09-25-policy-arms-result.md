@@ -92,3 +92,29 @@ KEEP (activate in the pipeline, Task 10): `ACTIVE_FLAG_RULES = ("nondim_kind",
 Not kept: every other rule, for the reasons above. Derived until a predict run
 on current code (`r4-control`) reproduces them; the registered prediction for
 that run is "equal to the derived numbers to the decimal".
+
+## 7. OCR proposals (direction 4) — NO-GO at the CPU gate
+
+`score --proposal-check` on dev, registered go/no-go in the prediction doc §4.
+Counts: `docs/eval/proposal-check-dev.json`.
+
+| | observed | registered |
+|---|---|---|
+| gates `scale_mismatch` / `isolated` | 0 / 58 ✓ | 0 / 58 |
+| **isolated misses with an OCR proposal in the gate** | **6 of 58** | GO iff ≥ 12 (expected 15-30) |
+| proposals | 385 (253 far from any gold, 112 near matched gold, 20 near unmatched) | hundreds far ✓ |
+| unverified bound 9·covered − 2·far | −452 units | negative ✓ |
+
+**NO-GO.** Even a perfect VLM verifier could recover at most 6 isolated misses
+(≈ −3.6 per doc) before paying for any false detection, so the GPU arm cannot
+reach the gate's ceiling. The registered expectation (15-30) was wrong: the
+callouts the VLM detector misses are, overwhelmingly, ones tesseract does not
+find either — consistent with them being missed for visual reasons (small,
+rotated, crowded, overlapping geometry) that a second, weaker text detector
+shares. Tuning tesseract (upscaling, binarisation) after seeing this number
+would be selecting on dev; it would need its own registered prediction.
+
+**Reverted** per §1: `app/pipeline/proposals.py`, `Detection.source`,
+`app/eval/proposal_check.py`, the `--proposal-check` flag and their tests.
+Isolated misses remain reachable only through the detector's weights (the
+Rung 3 finding, 75 → 43 with an adapter); that stays the route.
