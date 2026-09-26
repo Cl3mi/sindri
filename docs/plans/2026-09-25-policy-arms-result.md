@@ -90,8 +90,19 @@ false detection) and is recorded as open.
 KEEP (activate in the pipeline, Task 10): `ACTIVE_FLAG_RULES = ("nondim_kind",
 "no_tolerance")`, `ACTIVE_DROP_RULES = ("contained_duplicate",)`.
 Not kept: every other rule, for the reasons above. Derived until a predict run
-on current code (`r4-control`) reproduces them; the registered prediction for
-that run is "equal to the derived numbers to the decimal".
+on current code (`r4-control`) reproduces them.
+
+**What r4-control must reproduce — the REAPPLY numbers, not §4's table.**
+`score --reapply-policy` (today's parser + re-derived flags + active rules;
+`docs/eval/reapply-{dev,test}-summary.json`) and the §4 joint counterfactual
+(stored parse, no re-parse) agree on cost (dev 118.73, test 149.73),
+`escaped_error` (17 / 22), auto-accept precision (0.8046 / 0.6986) and `n_pred`
+(563 / 357). They differ in the flagged split and field_acc on dev (§4:
+flagged_error/flagged_correct 88/48, field_acc 0.5291; reapply: 86/50,
+≈ 0.538) because the Ø-zone re-parse turns two already-flagged gdt rows
+correct — worth 0 in cost, visible in field_acc. r4-control runs current code,
+so it is predicted to equal **reapply-dev** to the decimal, field_acc
+included; a field_acc of 0.5291 would itself be a mismatch.
 
 ## 7. OCR proposals (direction 4) — NO-GO at the CPU gate
 

@@ -42,11 +42,50 @@ advisory, and it has been right every single time it fired.
 
 ## 2. Where things stand
 
-**Read `docs/plans/2026-09-25-session-handoff.md` first — it is the current
-state of play: what changed through 2026-09-25, where the review cost now sits
-(79.5% detection at today's weights), and the open threads.** For device setup
-on a fresh clone, `docs/plans/2026-09-17-session-handoff.md` §1 still applies.
-Everything below is the durable summary.
+**Read `docs/plans/2026-09-26-session-handoff.md` first — it is the current
+state of play: the policy arms shipped (flag/drop rules, dev 131.87 → 118.73
+DERIVED), OCR proposals closed, and what runs next.** It supersedes
+`2026-09-25-session-handoff.md`. For device setup on a fresh clone,
+`docs/plans/2026-09-17-session-handoff.md` §1 still applies. Everything below
+is the durable summary.
+
+**THE PIPELINE NOW FLAGS AND DROPS BY POLICY, BY DEFAULT** (2026-09-25/26,
+`docs/plans/2026-09-25-policy-arms-result.md`). `app/pipeline/policy_rules.py`
+holds gold-free post-read rules; three are ACTIVE — flags `nondim_kind`
+(gdt/surface/note/boxed rows, which read at 0.00-0.18) and `no_tolerance` (a
+dimension with no tolerance read; gold carries the general tolerance on nearly
+every row, so it is wrong by construction), and the drop `contained_duplicate`.
+They are recorded in `RunConfig.extra` (`flag_rules`/`drop_rules`), so every
+dump predicted from now on differs in config from every `r3-*` dump.
+**Derived, exact, not yet measured:** dev **131.87 → 118.73**, test **165.18 →
+149.73**, `escaped_error` 64 → 17 (dev), auto-accept precision **0.53 → 0.80**
+(dev) / 0.44 → 0.70 (test), recall and field_acc held. Two code paths agree to
+the decimal (`score --policy-check` joint and `score --reapply-policy`).
+**`r4-control` (a stage in `run_gpu_queue.sh`, not yet run) must reproduce
+`docs/eval/reapply-dev-summary.json` to the decimal** — field_acc ≈ 0.538, not
+the counterfactual table's 0.5291 (result doc §6 explains the difference).
+Until it does, quote 118.73 as DERIVED, and compare any new arm against
+`r4-control`, never against an `r3-*` control (`compare_runs` now warns when
+the review policy differs).
+
+**AUTO-ACCEPT PRECISION IS THE GUARD REVIEW COST LACKS.** flag=1 < escaped=5
+means flagging more always lowers cost — flagging every matched row cost 223 vs
+406 on dev and automates nothing. The digest's `auto_accept` (`precision` =
+correct / (correct + escaped_error), `rate` = correct / n_gold) and
+`experiment.verdict`'s two guards (precision must not fall, rate must not fall
+> 0.02) catch it; precision alone cannot see RANDOM flagging, the rate can.
+
+**`score --policy-check` prices a flag/drop rule EXACTLY in CPU seconds**
+(`app/eval/policy_check.py`): it applies the rule to stored dumps and
+re-scores, matching included, against a LOW_CONF-normalised base. It refuses
+dumps that already carry active rules. `score --reapply-policy`
+(`app/eval/reapply.py`) scores stored dumps as today's post-read code would —
+re-parse, re-derived flags, active rules — and marks the report and digest
+`reapplied_policy`, i.e. DERIVED. **`false_diagnosis`** in the digest
+partitions false detections (sibling of `missed_diagnosis`): duplicates of a
+match are only 7-11% of them; the bulk sits near gold that paired elsewhere
+(45-61%) or far from any gold (21-46%) — unballooned callout-like text no
+gold-free rule reaches.
 
 **On a NEW MACHINE, run `./install-hooks.sh` before your first commit.** The
 client-data pre-commit guard is versioned in `hooks/` and wired up by that
@@ -64,7 +103,7 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **959 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **1033 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). **`tesseract` is a device
 prerequisite** — without the binary six tests fail as `TesseractNotFoundError`
 and read as broken code. `SCHEMA_VERSION` = 1 — do not bump it. Split frozen
@@ -601,6 +640,24 @@ GPU days.
   campaign: two CPU-second re-scores, no GPU.** The commit stays in history
   because it also made boxed gold rows renderable as TRAINING targets, which the
   bound cannot price — cherry-pick it back if an adapter ever needs them.
+* **Flag/drop rules that failed the policy arms** (2026-09-25,
+  `docs/plans/2026-09-25-policy-arms-result.md` §2; each priced exactly on
+  train/dev/test). Flags: `tall_box` (cost −7 to −11 but flags 15-61 correct
+  rows — auto-accept rate −0.05), `diameter_sign` (rate −0.03/−0.04),
+  `asymmetric_tol` (precision falls on train and dev), `multiline` (never fires
+  — the reader emits no newlines), `gdt_guessed` (passes, but a strict subset
+  of `nondim_kind`). Drops: `empty_read` and `no_digit` (they hit matched
+  flagged rows — recall), `note_kind` and `theoretical_kind` (recall on
+  train/test; on dev a re-pairing made a row escape — cost alone said −5.3),
+  `repeated_value_nearby` (4/6 weightings on train, fails test),
+  `theoretical_no_nominal` (precision). **Do not re-propose a kind-drop:** it
+  is the closed `score_kinds` family again, now measured rule by rule.
+* **OCR (tesseract) proposals for isolated misses** (2026-09-26, result doc
+  §7). CPU feasibility gate: an OCR proposal lands in the match gate of only
+  **6 of 58** isolated misses (registered GO ≥ 12, expected 15-30), against 253
+  proposals far from any gold. Even a perfect verifier caps at ≈ −3.6/doc.
+  Built and reverted; the misses the VLM makes are misses tesseract makes too.
+  Isolated misses stay a detector-WEIGHTS problem (Rung 3: 75 → 43).
 * **`predict --detect-only` as a way to cheapen the crop pass.** Detection is
   ~2/3 of per-document cost, not the reads: detection-only measured 10 m 55 s and
   23 m 45 s on dev documents 2 and 3 against a full-predict median of ~16 min, and
@@ -633,6 +690,12 @@ GPU days.
 * **Never judge a change on review cost alone.** An arm must also hold field
   accuracy on matched rows and not raise `escaped_rate`. `app/eval/experiment.py`
   encodes this; `weights.miss=10 > weights.escaped=5` makes cost gameable.
+  **And a policy change must not buy cost by flagging more:** auto-accept
+  precision must not fall and the auto-accept rate must hold (§2).
+* **A behaviour change is kept only if it passes on data it was not selected
+  on**: select on train (`r3-trainpredict`), validate on dev, confirm on test,
+  under every guard and 6/6 weightings; register predictions BEFORE pricing;
+  a rule added after its price was seen is not eligible on that split.
 * **Register the MECHANISM a gate assumes, not only its threshold — and pick a
   damage counter the treatment can actually move.** Two of the last three arms
   had a registered gate whose premise was the flawed part, and in both cases the
@@ -750,7 +813,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 959 passed, 2 skipped
+python -m pytest -q                          # 1033 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```

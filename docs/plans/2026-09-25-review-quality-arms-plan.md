@@ -1524,6 +1524,8 @@ Check `extract.py` for any post-parse mutation of `char_type`/`nominal` between 
 
 ## Part D — Direction 4: OCR proposals for isolated misses
 
+> **Outcome (2026-09-26): NO-GO at Task 14 — 6 of 58 isolated misses covered, gate was ≥ 12. Tasks 12-13 were built and then REVERTED (db51a37, 617cc31); Tasks 15-19 were never started. `proposals.py`, `Detection.source` and `proposal_check.py` do not exist. See `docs/plans/2026-09-25-policy-arms-result.md` §7.**
+
 ### Task 12: Proposal generator (pure parts first)
 
 **Files:**
