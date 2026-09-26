@@ -907,3 +907,60 @@ def test_two_single_model_runs_produce_no_detect_warning():
         r.config = RunConfig(model_id="Qwen/Qwen2.5-VL-72B-Instruct-AWQ")
     assert not any("detect model" in w
                    for w in compare_runs(a, b, seed=13)["warnings"])
+
+
+def test_a_comparison_across_review_policy_warns():
+    """r3-* dumps carry no flag_rules/drop_rules; r4-control carries the
+    policy shipped 2026-09-25. Comparing across that boundary would attribute
+    the -13 to -15 the kept set is worth (dev/test) to whatever else the arm
+    changed -- the same defect the base/detect-model warnings exist for, one
+    field over: RunConfig.extra is where this policy is recorded
+    (review.active_review_policy), so it is what compare_runs must diff."""
+    a = _run("a", [10.0, 12.0])
+    b = _run("b", [9.0, 11.0])
+    a.config = RunConfig(model_id="stub")
+    b.config = RunConfig(model_id="stub",
+                         extra={"flag_rules": ["nondim_kind", "no_tolerance"],
+                                "drop_rules": ["contained_duplicate"]})
+
+    cmp = compare_runs(a, b, seed=13)
+
+    assert any("review policy" in w for w in cmp["warnings"]), cmp["warnings"]
+    assert any("-13" in w or "-15" in w for w in cmp["warnings"])
+
+
+def test_identical_review_policy_produces_no_warning():
+    a = _run("a", [10.0, 12.0])
+    b = _run("b", [9.0, 11.0])
+    for r in (a, b):
+        r.config = RunConfig(model_id="stub",
+                             extra={"flag_rules": ["nondim_kind"],
+                                    "drop_rules": []})
+    assert not any("review policy" in w
+                   for w in compare_runs(a, b, seed=13)["warnings"])
+
+
+def test_comparison_warns_when_only_one_side_is_reapplied_policy():
+    """reapplied_policy non-null means the report was DERIVED by
+    --reapply-policy (re-parsed and re-flagged offline), not measured by a
+    predict run -- mixing that with a measured report silently blends a
+    derived number into a measured comparison."""
+    a = _run("a", [10.0, 12.0])
+    b = _run("b", [9.0, 11.0])
+    b.reapplied_policy = {"flag_rules": ["nondim_kind"], "drop_rules": [],
+                          "reparsed": True}
+
+    cmp = compare_runs(a, b, seed=13)
+
+    assert any("reapplied_policy" in w or "derived" in w.lower()
+              for w in cmp["warnings"]), cmp["warnings"]
+
+
+def test_comparison_with_both_sides_reapplied_produces_no_derived_warning():
+    a = _run("a", [10.0, 12.0])
+    b = _run("b", [9.0, 11.0])
+    for r in (a, b):
+        r.reapplied_policy = {"flag_rules": [], "drop_rules": [],
+                              "reparsed": True}
+    assert not any("reapplied_policy" in w or "derived" in w.lower()
+                  for w in compare_runs(a, b, seed=13)["warnings"])

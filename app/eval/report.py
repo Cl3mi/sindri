@@ -925,6 +925,37 @@ def compare_runs(a: RunReport, b: RunReport, seed: int = 13,
             f"from reading and this delta includes the change of detector. "
             f"State which model localised wherever this result is quoted.")
 
+    # A third instance of the same defect: the ACTIVE flag/drop rules
+    # (review.active_review_policy, RunConfig.extra) are a post-read stage
+    # just like the detector is a pre-read one. r3-* dumps predate them
+    # entirely; r4-* dumps carry them. Comparing across that boundary would
+    # attribute the policy's own -13 to -15 (dev/test, when the kept set was
+    # first added) to whatever else the arm under test changed.
+    pol_a = ((a.config.extra or {}).get("flag_rules"),
+            (a.config.extra or {}).get("drop_rules"))
+    pol_b = ((b.config.extra or {}).get("flag_rules"),
+            (b.config.extra or {}).get("drop_rules"))
+    if pol_a != pol_b:
+        warnings.append(
+            f"review policy differs: flag_rules/drop_rules {pol_a} -> "
+            f"{pol_b}. This delta includes the policy change, not only the "
+            f"treatment (-13 to -15 on dev/test when the kept set was "
+            f"added). State which policy each side ran wherever this result "
+            f"is quoted.")
+    # reapplied_policy marks a report as DERIVED (score --reapply-policy
+    # re-parsed and re-flagged a stored dump offline) rather than measured by
+    # a predict run. Comparing a derived report against a measured one blends
+    # the two without saying so.
+    reapplied_a = a.reapplied_policy is not None
+    reapplied_b = b.reapplied_policy is not None
+    if reapplied_a != reapplied_b:
+        warnings.append(
+            f"reapplied_policy differs: {a.run_name}={reapplied_a}, "
+            f"{b.run_name}={reapplied_b} — one side is DERIVED "
+            f"(score --reapply-policy re-parsed and re-flagged stored dumps "
+            f"offline) and the other was measured by a predict run. State "
+            f"which side is derived wherever this result is quoted.")
+
     return {
         "schema_version": SCHEMA_VERSION,
         "run_a": a.run_name, "run_b": b.run_name, "n_docs": n,
