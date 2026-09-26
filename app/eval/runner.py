@@ -656,6 +656,22 @@ def _cmd_score(args):
     gold = _load_gold_dir(args.gold)
     dumps = {d.doc_id: d for d in
              (load_dump(p) for p in sorted(Path(args.run).glob("*.pred.json")))}
+    reapplied = None
+    if getattr(args, "reapply_policy", False):
+        # Post-read only: parser + review flags + ACTIVE policy rules are all
+        # re-derivable from what a dump already stores, so this reproduces
+        # exactly what today's code would have written -- not a re-read, and
+        # not comparable as if it were one until a predict run confirms it.
+        from app.eval.reapply import reapply_current_code
+        from app.pipeline import policy_rules as pr
+        dumps = {doc_id: reapply_current_code(d) for doc_id, d in dumps.items()}
+        reapplied = {"flag_rules": list(pr.ACTIVE_FLAG_RULES),
+                    "drop_rules": list(pr.ACTIVE_DROP_RULES),
+                    "reparsed": True}
+        print("NOTE: --reapply-policy is scoring dumps re-parsed and "
+              "re-flagged under today's code, not as predicted -- the "
+              "numbers are DERIVED and must be quoted as such until a "
+              "predict run on current code confirms them.", file=sys.stderr)
     weights = (ReviewCostWeights.model_validate_json(
                    Path(args.weights).read_text()) if args.weights
                else ReviewCostWeights())
@@ -786,6 +802,7 @@ def _cmd_score(args):
                        max_pages=max_pages,
                        exclude_clamped=getattr(args, "exclude_clamped", False),
                        missing_dumps=len(missing_preds))
+    report.reapplied_policy = reapplied
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(report.model_dump_json(indent=1),
                               encoding="utf-8")
@@ -1036,6 +1053,10 @@ def main(argv=None) -> int:
                    help="comma-separated flag rules to price as a JOINT set")
     p.add_argument("--drop-rules", default="",
                    help="comma-separated drop rules to price as a JOINT set")
+    p.add_argument("--reapply-policy", action="store_true",
+                   help="score as if today's parser and ACTIVE policy rules "
+                        "had produced the dumps -- DERIVED, exact for "
+                        "post-read changes; recorded in the report")
     p.add_argument("--review-deck", default=None,
                    help="write the operator's review deck -- the gdt rows "
                         "wrong in char_type ONLY -- to this path. It holds "

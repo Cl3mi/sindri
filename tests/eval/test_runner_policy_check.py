@@ -52,3 +52,41 @@ def test_unknown_rule_name_is_refused_before_scoring(tmp_path):
     assert _score(tmp_path, run, gold_dir, "--policy-check",
                   "--flag-rules", "no_such_rule") == 1
     assert not (tmp_path / "r.json").exists()
+
+
+def test_reapply_policy_scores_with_the_active_rules_and_says_so(
+        tmp_path, monkeypatch):
+    from app.pipeline import policy_rules as pr
+    monkeypatch.setattr(pr, "ACTIVE_FLAG_RULES", ("nondim_kind",))
+    monkeypatch.setattr(pr, "ACTIVE_DROP_RULES", ("empty_read",))
+    run, gold_dir = _write(tmp_path)
+    assert _score(tmp_path, run, gold_dir, "--reapply-policy") == 0
+    r = json.loads((tmp_path / "r.json").read_text())
+    assert r["reapplied_policy"] == {"flag_rules": ["nondim_kind"],
+                                     "drop_rules": ["empty_read"],
+                                     "reparsed": True}
+    assert r["taxonomy"].get("false_detection", 0) == 0   # empty read dropped
+    assert r["taxonomy"].get("escaped_error", 0) == 0     # gdt row flagged
+
+
+def test_plain_score_records_no_reapplied_policy(tmp_path):
+    run, gold_dir = _write(tmp_path)
+    assert _score(tmp_path, run, gold_dir) == 0
+    r = json.loads((tmp_path / "r.json").read_text())
+    assert r.get("reapplied_policy") is None
+
+
+def test_reapply_with_no_rules_and_unchanged_parser_is_identity(
+        tmp_path, monkeypatch):
+    """The gate: with nothing active, reapplying must reproduce the plain
+    score exactly -- otherwise the reconstruction itself moves numbers."""
+    from app.pipeline import policy_rules as pr
+    monkeypatch.setattr(pr, "ACTIVE_FLAG_RULES", ())
+    monkeypatch.setattr(pr, "ACTIVE_DROP_RULES", ())
+    run, gold_dir = _write(tmp_path)
+    assert _score(tmp_path, run, gold_dir) == 0
+    plain = json.loads((tmp_path / "r.json").read_text())
+    assert _score(tmp_path, run, gold_dir, "--reapply-policy") == 0
+    re = json.loads((tmp_path / "r.json").read_text())
+    assert re["taxonomy"] == plain["taxonomy"]
+    assert re["mean_review_cost"] == plain["mean_review_cost"]

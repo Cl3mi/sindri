@@ -303,6 +303,13 @@ class RunReport(_Versioned):
     # verified complete when nothing looked -- the same lie
     # DocScore.frame_origin_frac exists to prevent.
     missing_dumps: Optional[int] = None
+    # Set when `score --reapply-policy` re-parsed raw_text with today's parser,
+    # re-derived the review flags, and applied today's ACTIVE flag/drop rules
+    # to the dumps before scoring. The number is DERIVED from older dumps --
+    # exactly, since every step is post-read -- and must be quoted as derived
+    # until a predict run on current code confirms it. None = scored as
+    # predicted, which is every report written before this field.
+    reapplied_policy: Optional[Dict] = None
     doc_scores: List[DocScore] = []
     mean_review_cost: float = 0.0
     micro_recall: float = 0.0
