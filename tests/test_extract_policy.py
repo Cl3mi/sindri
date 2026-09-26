@@ -15,7 +15,7 @@ def test_active_policy_flags_and_drops_through_the_registry(monkeypatch):
                        target_region=(20, 0, 30, 10))
     out = _apply_active_policy([a, b])
     assert out == [a]
-    assert a.needs_review and "rule:nondim_kind" in a.review_reasons
+    assert a.needs_review and pr.FLAG_REASONS["nondim_kind"] in a.review_reasons
 
 
 def test_a_row_already_flagged_keeps_its_reasons_and_gains_the_rule(monkeypatch):
@@ -25,7 +25,8 @@ def test_a_row_already_flagged_keeps_its_reasons_and_gains_the_rule(monkeypatch)
                        review_reasons=["low OCR confidence"],
                        target_region=(0, 0, 10, 10))
     _apply_active_policy([a])
-    assert a.review_reasons == ["low OCR confidence", "rule:nondim_kind"]
+    assert a.review_reasons == ["low OCR confidence",
+                                pr.FLAG_REASONS["nondim_kind"]]
 
 
 def test_run_config_records_the_active_rules(monkeypatch):

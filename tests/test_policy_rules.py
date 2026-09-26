@@ -51,7 +51,16 @@ def test_asymmetric_tol_is_dimension_only_and_numeric():
 def test_apply_flag_rules_returns_one_reason_per_rule_that_fired():
     c = _c(kind="gdt", raw_text="0,05 A")
     assert pr.apply_flag_rules(c, ("nondim_kind", "gdt_guessed", "tall_box")) \
-        == ["rule:nondim_kind", "rule:gdt_guessed"]
+        == [pr.FLAG_REASONS["nondim_kind"], pr.FLAG_REASONS["gdt_guessed"]]
+
+
+def test_every_flag_rule_has_a_human_reason():
+    """review_reasons reaches a reviewer as a tooltip (app/static/js/table.js,
+    viewer.js) -- a bare `rule:no_tolerance` there is jargon, not guidance."""
+    assert set(pr.FLAG_REASONS) == set(pr.FLAG_RULES)
+    for name, text in pr.FLAG_REASONS.items():
+        assert isinstance(text, str) and text.strip(), name
+        assert not text.startswith("rule:"), name
 
 
 def test_contained_duplicate_drops_the_smaller_box_only():

@@ -128,6 +128,22 @@ FLAG_RULES: Dict[str, Callable[[Characteristic], bool]] = {
     "asymmetric_tol": _asymmetric_tol,
 }
 
+# review_reasons reaches a reviewer as a hover tooltip (app/static/js/table.js,
+# viewer.js) -- `rule:no_tolerance` is jargon a reviewer never signed up to
+# learn. One human-readable string per FLAG_RULES key, checked 1:1 by
+# tests/test_policy_rules.py so a new rule can never ship without one.
+FLAG_REASONS: Dict[str, str] = {
+    "nondim_kind": "GD&T / surface / note / boxed callout — read often "
+                   "wrong, check",
+    "gdt_guessed": "GD&T symbol not recognised — characteristic type guessed",
+    "tall_box": "tall box — may span several lines",
+    "diameter_sign": "Ø present — check diameter vs distance",
+    "multiline": "multi-line read",
+    "no_tolerance": "no tolerance read — apply the general tolerance from "
+                    "the title block",
+    "asymmetric_tol": "asymmetric tolerance — check both limits",
+}
+
 
 # ---- drop rules: (Characteristic, all rows) -> bool -----------------------
 
@@ -165,12 +181,20 @@ def _contained_duplicate(c, chars):
         b = o.target_region
         if o is c or b is None:
             continue
-        # STRICTLY larger: equal boxes keep both (see module docstring). Also
-        # defer to confidence like `repeated_value_nearby` does: if the
-        # CONTAINED row is the more confident read, containment must not
-        # drop it -- otherwise the two rules together can delete a callout
-        # entirely (this one drops the smaller box, the other drops the
-        # bigger one for being less confident, and nothing survives).
+        # STRICTLY larger: equal boxes keep both (see module docstring --
+        # that "ties keep both" is about AREA ties, a different tie from the
+        # one below). Also defer to confidence like `repeated_value_nearby`
+        # does: if the CONTAINED row is the more confident read, containment
+        # must not drop it -- otherwise the two rules together can delete a
+        # callout entirely (this one drops the smaller box, the other drops
+        # the bigger one for being less confident, and nothing survives).
+        # `not (c.confidence > o.confidence)` means a CONFIDENCE tie drops
+        # the contained box, the opposite choice from the area tie above --
+        # known residual risk, not a bug: a merged box reading both a
+        # dimension and its neighbour ("20 35") can equal-confidence-drop a
+        # clean inner "20" read separately. Rare (6 drops on dev, measured
+        # 2026-09-25) and cheaper than flipping the tie the other way, which
+        # would instead let genuine duplicates survive at equal confidence.
         if _area(b) > _area(a) and _inter(a, b) / _area(a) >= CONTAINED_FRAC \
                 and _content_related(c, o) and not (c.confidence > o.confidence):
             return True
@@ -266,8 +290,9 @@ ACTIVE_DROP_RULES: Tuple[str, ...] = ("contained_duplicate",)
 
 
 def apply_flag_rules(c: Characteristic, names: Sequence[str]) -> List[str]:
-    """The review reasons the named rules add for `c`, in `names` order."""
-    return [f"rule:{n}" for n in names if FLAG_RULES[n](c)]
+    """The review reasons the named rules add for `c`, in `names` order --
+    FLAG_REASONS' human text, not the bare rule name (see its docstring)."""
+    return [FLAG_REASONS[n] for n in names if FLAG_RULES[n](c)]
 
 
 def apply_drop_rules(chars: List[Characteristic],
