@@ -70,7 +70,7 @@ IMAGE_VLLM="${IMAGE_VLLM:-sindri-vllm}"
 
 if [ -z "$GPU_INDEX" ] || [ ${#STAGES[@]} -eq 0 ]; then
     echo "usage: run_gpu_queue.sh <gpu-index>[,<gpu-index>] <stage> [<stage>...]" >&2
-    echo "stages: trainpredict awqgate base72bnf4 awqcontrol nf4control lora72bnf4 lora72bawq loraread loramerged mergedcontrol vllmcontrol vllmlora hybrid hybridgate awqtest cropctx cropctx48 tallpad" >&2
+    echo "stages: trainpredict awqgate base72bnf4 awqcontrol nf4control lora72bnf4 lora72bawq loraread loramerged mergedcontrol vllmcontrol vllmlora hybrid hybridgate awqtest cropctx cropctx48 tallpad r4control" >&2
     echo "  the hybrid stages serve two checkpoints and need two cards: 0,1" >&2
     exit 2
 fi
@@ -103,7 +103,8 @@ stage_run()    { case "$1" in trainpredict) echo "r3-trainpredict" ;;
                               awqtest)      echo "r3-awqtest" ;;
                               cropctx)      echo "r3-cropctx" ;;
                               cropctx48)    echo "r3-cropctx48" ;;
-                              tallpad)      echo "r3-tallpad" ;; esac; }
+                              tallpad)      echo "r3-tallpad" ;;
+                              r4control)    echo "r4-control" ;; esac; }
 # The ONLY stage that touches the frozen test split, and deliberately so: it is
 # spendable once per question, and a stage that wandered onto it by accident
 # would burn it while producing a report that merely looks incomparable.
@@ -187,6 +188,7 @@ stage_why()    { case "$1" in
     hybrid)       echo "THE HYBRID: the 32B localises, the 72B transcribes. The 32B is the best detector and the worst reader measured -- missed 70 vs 88, recall 0.7749 vs 0.7170, field_acc 0.2614 vs 0.4798 -- and Rung 1 established that the detector's WEIGHTS are the only thing that has ever moved missed; its knobs and prompts never did. Judge vs r3-awqcontrol (133.93 scoped), never vs r3-32bawq, which differs in two variables at once. VOID GATES, registered in docs/plans/2026-09-09-hybrid-arm-prediction.md BEFORE this ran: n_pred must be EXACTLY 890 (detection is a pure function of the detect model) and field_acc must be >= 0.40 (below it the reads did not reach the 72B). PREDICTED 164.60, a LOSS of about +30: 18 recovered misses are worth -180 and the 303 extra false detections cost +606 at w=2. The arm is not run for its cost verdict, which is arithmetic; it is run for the ceiling on missed, for whether the 32B's recall survives good reading, and for what the 72B reads on the spurious boxes -- which is the only thing that could size a filter." ;;
     hybridgate)   echo "THE HYBRID'\''S CONTROL, and it is only skippable by the rule the prediction registers. Serves the 72B on BOTH passes through the hybrid machinery, so it prices the two-card device pinning and the delegation layer by themselves. PREDICTION: it reproduces r3-awqcontrol with every per-document delta exactly 0.0, which app/eval/gate.py checks -- the same role awqgate played for the dependency change. Run it only if the hybrid'\''s field_acc lands outside [0.40, 0.52]; inside that band the device change cannot be the explanation, because decoding is greedy and CLAUDE.md section 5 records 16 documents at exactly 0.0 across a GPU device change." ;;
     lora72bawq)   echo "THE DEPLOYMENT QUESTION: an adapter attached to what production actually serves. Judge vs r3-awqcontrol (170.05). Trained on NF4 and served on AWQ, so this arm also measures that quantisation mismatch, whose size is unknown." ;;
+    r4control)    echo "CURRENT CODE, NO KNOB -- the native confirmation of the 2026-09-25 policy arms. They were priced exactly from stored dumps and three rules were kept (flags nondim_kind + no_tolerance, drop contained_duplicate); score --reapply-policy on r3-cropctx then gave 118.73 on dev through the pipeline's own _apply_active_policy. PREDICTION, registered: this run's scoped dev numbers equal reapply-dev TO THE DECIMAL -- 118.73, escaped_error 17, auto-accept precision 0.8046, n_pred 563 -- because decoding is greedy and every change since r3-cropctx is post-read. If it does not, a derivation step is wrong and no derived number is quotable. Full result: docs/plans/2026-09-25-policy-arms-result.md." ;;
   esac; }
 
 # The whole queue is validated before anything starts, so a typo or a wrong card

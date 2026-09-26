@@ -528,3 +528,23 @@ def test_the_second_crop_dose_is_a_stage(tmp_path):
     assert "VLM_MODEL_ID=Qwen/Qwen2.5-VL-72B-Instruct-AWQ" in line, line
     assert "--split dev" in line, line
     assert line.count("--device") == 1, line
+
+
+# --- the policy-arms confirmation run ---------------------------------------
+
+def test_r4control_is_current_code_with_no_knob(tmp_path):
+    """r4-control confirms natively what the policy arms DERIVED from stored
+    dumps (reapply-dev 118.73): current code -- Ø-zone parse plus the active
+    flag/drop rules -- and nothing else. Any knob here would make the
+    registered prediction (equal to the derived number to the decimal)
+    untestable."""
+    env, calls = _stub_env(tmp_path)
+    assert _run(tmp_path, env, "r4control").returncode == 0
+    line = _podman_line(calls, "r4-control")
+    assert "VLM_MODEL_ID=Qwen/Qwen2.5-VL-72B-Instruct-AWQ" in line, line
+    assert "OCR_BACKEND=vlm" in line, line
+    for knob in ("SINDRI_CROP", "SINDRI_ADAPTER", "SINDRI_QUANT",
+                 "SINDRI_PROPOSALS", "SINDRI_READ_PROMPT", "SINDRI_DETECT_PROMPT"):
+        assert knob not in line, line
+    assert "--split dev" in line, line
+    assert line.count("--device") == 1, line
