@@ -623,6 +623,19 @@ def _serving_backend(env=None):
 
 
 def _cmd_score(args):
+    if getattr(args, "reapply_policy", False) and getattr(args, "policy_check", False):
+        # --reapply-policy re-parses and re-flags every dump under the ACTIVE
+        # rules before scoring, so --policy-check would then price a rule on
+        # top of dumps that already carry it -- the exact "shows a delta near
+        # 0, reads as a revert" trap policy_report's own gate refuses (a dump
+        # whose ORIGINAL config.extra already carries active rules). Refused
+        # here too, before scoring, because reapply_policy manufactures that
+        # same condition rather than the dump arriving with it already.
+        print("ERROR: --reapply-policy and --policy-check together price a "
+              "rule on top of a dump --reapply-policy just re-flagged under "
+              "that same rule -- the delta reads as ~0, i.e. a revert, not "
+              "as the rule's price. Run them separately.", file=sys.stderr)
+        return 1
     joint = None
     if getattr(args, "policy_check", False):
         from app.pipeline.policy_rules import DROP_RULES, FLAG_RULES

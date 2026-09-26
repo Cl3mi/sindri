@@ -251,6 +251,25 @@ def policy_report(dumps: Dict[str, PredictionDump], golds: Dict[str, GoldDoc],
         raise ValueError(f"policy_report: doc_ids has {len(dupes)} duplicate "
                          f"id(s)")
 
+    # A dump whose ORIGINAL config.extra already carries flag_rules/drop_rules
+    # was produced under (some version of) the policy this call is about to
+    # price. Pricing a rule on top of it a second time shows a delta near 0
+    # -- the pipeline already applied it -- and that reads exactly like "this
+    # rule does nothing" or "revert it", not like "it was never active". A
+    # count only, never a doc id, for the same reason as the duplicate check.
+    already_active = sum(
+        1 for i in doc_ids
+        if dumps[i].config.extra.get("flag_rules")
+        or dumps[i].config.extra.get("drop_rules"))
+    if already_active:
+        raise ValueError(
+            f"policy_report: {already_active} of {len(doc_ids)} dump(s) "
+            f"already carry active flag_rules/drop_rules in their ORIGINAL "
+            f"config.extra -- pricing a rule on top of dumps already on the "
+            f"active policy shows a delta near 0 and reads as a revert. "
+            f"Re-predict without the policy active, or price against dumps "
+            f"predating it.")
+
     base_reflagged = 0
     n_docs_pre_low_conf = 0
     base_dumps: Dict[str, PredictionDump] = {}

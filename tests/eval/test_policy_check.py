@@ -207,6 +207,36 @@ def test_base_gate_counts_pre_low_conf_docs():
     assert r["base_low_conf_reflagged"] == 1
 
 
+def test_refuses_to_price_a_dump_that_already_carries_active_rules():
+    """A dump whose ORIGINAL config.extra already carries flag_rules/drop_rules
+    was produced under the policy being priced -- pricing a rule on top of it
+    a second time shows a delta near 0 and reads as "revert" rather than as
+    "this rule was never active"."""
+    dumps, golds = _setup()
+    dumps["D"].config.extra = {"flag_rules": ["nondim_kind"], "drop_rules": []}
+    with pytest.raises(ValueError, match="1"):
+        policy_report(dumps, golds, ["D"], ReviewCostWeights(), MatchParams(),
+                      flag_rules=("nondim_kind",), drop_rules=())
+
+
+def test_refuses_on_drop_rules_alone_too():
+    dumps, golds = _setup()
+    dumps["D"].config.extra = {"drop_rules": ["contained_duplicate"]}
+    with pytest.raises(ValueError):
+        policy_report(dumps, golds, ["D"], ReviewCostWeights(), MatchParams())
+
+
+def test_active_rules_gate_never_names_a_document():
+    dumps, golds = _setup()
+    secret = "PART-4711-XYZ"
+    dumps = {secret: dumps["D"].model_copy(update={"doc_id": secret})}
+    golds = {secret: golds["D"].model_copy(update={"doc_id": secret})}
+    dumps[secret].config.extra = {"flag_rules": ["nondim_kind"]}
+    with pytest.raises(ValueError) as exc:
+        policy_report(dumps, golds, [secret], ReviewCostWeights(), MatchParams())
+    assert secret not in str(exc.value)
+
+
 def test_empty_doc_ids_raises():
     dumps, golds = _setup()
     with pytest.raises(ValueError):

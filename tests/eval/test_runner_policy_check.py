@@ -54,6 +54,19 @@ def test_unknown_rule_name_is_refused_before_scoring(tmp_path):
     assert not (tmp_path / "r.json").exists()
 
 
+def test_reapply_policy_and_policy_check_together_are_refused_before_scoring(
+        tmp_path):
+    """--reapply-policy re-parses and re-flags the dump under the ACTIVE
+    rules before scoring; --policy-check then prices a rule on top of a dump
+    that already carries them -- the same "shows a delta near 0, reads as a
+    revert" trap policy_report.already_active guards against, one call site
+    over. Refused before scoring, like the unknown-rule-name case above."""
+    run, gold_dir = _write(tmp_path)
+    assert _score(tmp_path, run, gold_dir, "--reapply-policy",
+                  "--policy-check") == 1
+    assert not (tmp_path / "r.json").exists()
+
+
 def test_reapply_policy_scores_with_the_active_rules_and_says_so(
         tmp_path, monkeypatch):
     from app.pipeline import policy_rules as pr
