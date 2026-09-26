@@ -209,6 +209,34 @@ def test_read_region_sets_needs_review_on_empty_read(monkeypatch):
     assert row["review_reasons"] == ["empty read"]
 
 
+def test_read_region_applies_active_flag_rules_like_the_pipeline(monkeypatch):
+    """extract() runs _apply_active_policy after review_flags (app/pipeline/
+    extract.py); a manual read through /api/read_region skipped that step
+    entirely, so the same row read manually vs auto-ballooned disagreed on
+    whether it needs review. diameter_sign fires on raw_text alone (no kind
+    needed), so it exercises the wiring independent of ACTIVE_FLAG_RULES'
+    current membership."""
+    import app.pipeline.policy_rules as pr
+    monkeypatch.setattr(pr, "ACTIVE_FLAG_RULES", ("diameter_sign",))
+
+    import app.main as main
+    from PIL import Image
+
+    monkeypatch.setattr("app.main._BACKEND", StubVLMBackend(text="Ø20"))
+
+    session = "5e5537e7ae00000000000000000000af"
+    work = main._session_dir(session)
+    work.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (200, 200), "white").save(work / "page.png")
+
+    resp = client.post("/api/read_region",
+                       json={"session_id": session, "box": [10, 10, 80, 40]})
+    assert resp.status_code == 200
+    row = resp.json()
+    assert row["needs_review"] is True
+    assert pr.FLAG_REASONS["diameter_sign"] in row["review_reasons"]
+
+
 def test_upload_returns_notes_field(monkeypatch, sample_pdf):
     """The upload endpoint now returns {rows, notes}; notes may be null."""
     from fastapi.testclient import TestClient

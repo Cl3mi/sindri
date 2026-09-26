@@ -146,14 +146,19 @@ def test_active_review_policy_reports_the_threshold_for_run_config_extra():
 
     Absence of the key means the dump PREDATES it, not 0.6. Same discipline as
     frame_origin_frac being None rather than a plausible 0.0."""
+    from app.pipeline import policy_rules as pr
     from app.pipeline.review import LOW_CONF, active_review_policy
     # As of 2026-09-25 the kept policy rules (docs/plans/2026-09-25-policy-
     # arms-result.md) are active by default, so this reports the full set,
     # not the threshold alone -- see test_extract_policy.py for the
-    # empty-rules case that reproduces the old bare dict.
+    # empty-rules case that reproduces the old bare dict. Built from
+    # ACTIVE_FLAG_RULES/ACTIVE_DROP_RULES rather than pinning the tuples
+    # again here -- tests/test_policy_rules.py is the one authority for what
+    # is currently kept, so a keep/revert decision there cannot desync this
+    # assertion from it.
     assert active_review_policy() == {
         "review_low_conf": LOW_CONF,
-        "flag_rules": ["nondim_kind", "no_tolerance"],
-        "drop_rules": ["contained_duplicate"],
+        "flag_rules": list(pr.ACTIVE_FLAG_RULES),
+        "drop_rules": list(pr.ACTIVE_DROP_RULES),
     }
     assert active_review_policy()["review_low_conf"] == 0.8
