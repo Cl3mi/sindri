@@ -87,3 +87,21 @@ for 3 correct flagged).
 duplicate rules; dev gain ≈ −7, driven almost entirely by flagging. If
 `nondim_kind` fails anywhere, the direction-1 premise (kind predicts error) is
 wrong and must be written up as such.
+
+## 4. OCR proposals — CPU go/no-go (registered before `--proposal-check` ran)
+
+`score --proposal-check` on dev (`r3-cropctx`, 15 docs, 58 isolated misses).
+
+* **Gates:** `scale_mismatch == 0` (else the geometry is wrong and coverage
+  means nothing); `isolated == 58` (the identity gate raises otherwise).
+* **GO iff `isolated_covered >= 12`** — a ceiling of −7.2 per doc before any
+  false detection (each covered miss recovered and flagged saves 9).
+* Expectation, stated so it can be wrong: tesseract finds dimension text on a
+  clean 300 dpi drawing (a synthetic 40 px check found every horizontal
+  callout), so coverage should be moderate — **~15-30 of 58** — and
+  `far_from_gold` large (**hundreds**), because drawings are full of numbers
+  the client never balloons. The unverified bound `9·covered − 2·far` is
+  therefore expected NEGATIVE: the arm lives or dies on the VLM verifier
+  rejecting far proposals, and must keep ≥ 18% precision to break even.
+* NO-GO → revert the proposal code (`proposals.py`, `proposal_check.py`,
+  their runner flag and tests) and record the numbers in CLAUDE.md §3.
