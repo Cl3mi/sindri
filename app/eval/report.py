@@ -708,6 +708,10 @@ def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
         # Precision of the unflagged rows -- the guard against flag-everything,
         # which review cost alone rewards. See _auto_accept.
         "auto_accept": _auto_accept(report),
+        # Non-null = DERIVED by `score --reapply-policy` from older dumps, not
+        # measured by a predict run. Carried so a committed digest cannot pass
+        # a derived number off as a measured one.
+        "reapplied_policy": report.reapplied_policy,
         # Handoff §6 routing: misparse -> parser hardening (Rung 1),
         # misread -> prompts (Rung 2) then LoRA (Rung 3).
         "error_causes": causes,

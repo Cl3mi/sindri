@@ -31,3 +31,14 @@ def test_flag_everything_has_no_auto_accept_precision_not_a_perfect_one():
     assert aa["n_auto"] == 0
     assert aa["precision"] is None
     assert aa["rate"] == 0.0
+
+
+def test_a_derived_report_says_so_in_its_digest():
+    """A --reapply-policy report is DERIVED from older dumps; its digest is
+    committed to docs/eval next to measured ones, so the marker must survive
+    summarize or a derived number reads as a measured run."""
+    r = _report({"correct": 1}, n_gold=1)
+    assert summarize(r, lambda d: "x")["reapplied_policy"] is None
+    r.reapplied_policy = {"flag_rules": ["nondim_kind"], "drop_rules": [],
+                          "reparsed": True}
+    assert summarize(r, lambda d: "x")["reapplied_policy"]["reparsed"] is True
