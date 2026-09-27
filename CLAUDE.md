@@ -57,16 +57,16 @@ dimension with no tolerance read; gold carries the general tolerance on nearly
 every row, so it is wrong by construction), and the drop `contained_duplicate`.
 They are recorded in `RunConfig.extra` (`flag_rules`/`drop_rules`), so every
 dump predicted from now on differs in config from every `r3-*` dump.
-**Derived, exact, not yet measured:** dev **131.87 → 118.73**, test **165.18 →
-149.73**, `escaped_error` 64 → 17 (dev), auto-accept precision **0.53 → 0.80**
-(dev) / 0.44 → 0.70 (test), recall and field_acc held. Two code paths agree to
-the decimal (`score --policy-check` joint and `score --reapply-policy`).
-**`r4-control` (a stage in `run_gpu_queue.sh`, not yet run) must reproduce
-`docs/eval/reapply-dev-summary.json` to the decimal** — field_acc ≈ 0.538, not
-the counterfactual table's 0.5291 (result doc §6 explains the difference).
-Until it does, quote 118.73 as DERIVED, and compare any new arm against
-`r4-control`, never against an `r3-*` control (`compare_runs` now warns when
-the review policy differs).
+**MEASURED on dev (2026-09-27, `r4-control`): 131.87 → 118.73, −13.13, ci95
+[−18.0, −8.7], better on 15 of 15 documents and under 6 of 6 weightings**;
+`escaped_error` 64 → 17, auto-accept precision **0.53 → 0.80**, recall
+unchanged, field_acc 0.5291 → 0.5381. `experiment.py`: WIN, best arm on record.
+It reproduced the DERIVED prediction (`score --reapply-policy`) on every digest
+aggregate to the decimal — the offline pricing is exact, not an estimate.
+Test (165.18 → **149.73**, auto-accept precision 0.44 → 0.70) is still
+DERIVED; no current-code run exists on test. **`r4-control` (118.73) is the
+dev control for every later arm — never compare a new arm against an `r3-*`
+control** (`compare_runs` warns when the review policy differs).
 
 **AUTO-ACCEPT PRECISION IS THE GUARD REVIEW COST LACKS.** flag=1 < escaped=5
 means flagging more always lowers cost — flagging every matched row cost 223 vs

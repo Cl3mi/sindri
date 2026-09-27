@@ -8,7 +8,7 @@ stays the reference for device setup.
 non-dimension kinds, flag untoleranced dimensions, drop contained duplicates),
 priced exactly on train/dev/test before being kept: **dev 131.87 → 118.73,
 test 165.18 → 149.73, silent errors 64 → 17 on dev, auto-accept precision
-0.53 → 0.80** — DERIVED from stored dumps until `r4-control` runs. OCR
+0.53 → 0.80** — MEASURED on dev by `r4-control` on 2026-09-27 (test still derived). OCR
 proposals for isolated misses were closed at a CPU gate. What is left is
 **87.6% detection**.
 
@@ -28,7 +28,7 @@ Branch `worktree-eval-harness`, PR #2. Plan executed:
 before pricing): `2026-09-25-policy-arms-prediction.md`. Result:
 `2026-09-25-policy-arms-result.md`.
 
-## 1. Where the review cost sits now (dev, scoped, DERIVED shipped config)
+## 1. Where the review cost sits now (dev, scoped, shipped config — measured by r4-control)
 
 `docs/eval/reapply-dev-summary.json` — 118.73, reconstructs exactly:
 
@@ -77,8 +77,14 @@ remaining escaped rows (the r3-tallpad lesson: fixing a flagged row saves 0).
 
 ## 3. Open threads — raw material for the next brainstorm
 
-**Confirm what shipped (one GPU run, no decision needed)**
-1. **Run `r4control`** (`run_gpu_queue.sh <free-gpu> r4control`; deploy per
+**Confirm what shipped — DONE 2026-09-27.** `r4-control` reproduced the
+derived numbers on every digest aggregate to the decimal: dev 118.73, −13.13
+vs r3-cropctx, ci95 [−18.0, −8.7], 15/15 documents, 6/6 weightings,
+`experiment.py` WIN (result doc §8). It is now the dev control. Test stays
+derived (149.73) unless `r4controltest` is added and run. The original
+instructions are kept below for the record.
+
+1. ~~**Run `r4control`**~~ (`run_gpu_queue.sh <free-gpu> r4control`; deploy per
    CLAUDE.md §5 — push to `from-operator`, detached checkout, rebuild
    `sindri-gpu-nf4`, check the free card). Registered prediction: equals
    `docs/eval/reapply-dev-summary.json` to the decimal (118.73, escaped 17,

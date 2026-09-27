@@ -129,3 +129,40 @@ would be selecting on dev; it would need its own registered prediction.
 `app/eval/proposal_check.py`, the `--proposal-check` flag and their tests.
 Isolated misses remain reachable only through the detector's weights (the
 Rung 3 finding, 75 → 43 with an adapter); that stays the route.
+
+## 8. MEASURED — r4-control confirms the derivation to the decimal (2026-09-27)
+
+`r4-control` (current code, no knob, dev, GPU 0 on the host, 2026-09-26 16:08
+→ 2026-09-27 00:43 UTC) scored under the scope policy:
+`docs/eval/r4control-scoped-summary.json`.
+
+**Registered prediction: equal to `reapply-dev` to the decimal. HELD — on
+every aggregate in the digest**, not only the headline: a key-by-key diff of
+the two digests differs in nothing but the run name, the `reapplied_policy`
+marker (null here, i.e. measured) and `config.extra`, which now records
+`flag_rules`/`drop_rules`. Cost **118.7333**, `n_pred` **563**, taxonomy
+86 / 70 / 50 / 17 / 88 / 340, auto-accept precision **0.8046** / rate 0.2251,
+field_acc **0.5381** — which also confirms natively the Ø-zone parser fix's
+derived field_acc from 2026-09-25.
+
+Against the shipped control (`docs/eval/r4control-scoped-vs-cropctx-scoped.json`):
+
+| | r3-cropctx (control) | r4-control |
+|---|---|---|
+| mean review cost | 131.87 | **118.73** |
+| delta | | **−13.13**, ci95 [−18.00, −8.67], significant |
+| per document | | better on **15 of 15** |
+| weightings | | better under **6 of 6** (−3.3 to −22.5) |
+| recall | 0.7170 | 0.7170 |
+| field_acc | 0.5291 | 0.5381 |
+| escaped_rate | 0.2058 | **0.0547** |
+| auto-accept precision | 0.5328 | **0.8046** |
+
+`python3 -m app.eval.experiment`: **WIN**, and the best arm on record.
+`compare_runs` warned that the review policy differs — correctly: the policy
+IS the treatment here, and the warning names it.
+
+The numbers in §4 for dev are therefore MEASURED from now on. Test (149.73)
+remains derived — no current-code run exists on test; `r4controltest` would
+measure it if that confirmation is wanted. **`r4-control` is the control for
+every later dev arm.**
