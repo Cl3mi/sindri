@@ -78,7 +78,7 @@ exactly: the adapter fills missing tolerances with plausible wrong ones, so
 (`flagged_error` −20/−23, `escaped_error` +13/+14). **A flag rule keyed on a
 field being ABSENT is defeated by any model change that fills the field, right
 or wrong. Price every read-stage arm under the active rules.** Side findings:
-NF4's serving overhead is now +0.20 (was +3.54); the unscoped / merged shape
+NF4's serving overhead is now +0.20 (was +3.53); the unscoped / merged shape
 costs +17.20, and `contained_duplicate` absorbs none of its +183 false
 detections. **A merged checkpoint cannot keep read/detect scoping**: it has no
 base weights for `detect_regions`.

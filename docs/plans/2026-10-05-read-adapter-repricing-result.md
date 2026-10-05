@@ -47,7 +47,7 @@ fires, and they ship for 5. `flagged_error` −20/−23 and `escaped_error`
 +13/+14 are that conversion.
 
 Cost reconciles exactly (missed and false detections unchanged on NF4; vLLM
-misses one unlocated row through the value channel):
+gains one contended miss, 18 -> 19, unlocated flat at 12):
 
     NF4 : 5(+13) + 1(−20 + 5)          = +50  ÷15 = +3.33
     vLLM: 5(+14) + 1(−23 + 7) + 10(+1) = +64  ÷15 = +4.27
@@ -64,7 +64,7 @@ an old-policy number.
 |---|---|---|---|---|---|---|
 | G_nf4 | loraread − nf4control | −3.40 | **+3.33** | [+0.87, +6.33] | 0/6 | none |
 | G_vllm | vllmlora − vllmcontrol | −2.47 | **+4.27** | [+0.73, +8.07] | 0/6 | none |
-| O_nf4 | nf4control − awqcontrol | +3.54 | **+0.20** | [−7.40, +7.13] | 2/6 | base model differs (expected) |
+| O_nf4 | nf4control − awqcontrol | +3.53 | **+0.20** | [−7.40, +7.13] | 2/6 | base model differs (expected) |
 | O_vllm | vllmcontrol − awqcontrol | +7.27 | **+6.07** | [−1.27, +13.20] | 0/6 | none |
 | U | lora72bnf4 − nf4control | (unscoped only) | **+17.20** | [+7.87, +26.67] | 0/6 | none |
 
@@ -96,7 +96,7 @@ Reapplied absolute costs: awqcontrol 120.93, nf4control 121.13, loraread
 * **P3:** the gap stayed at exactly 0.93. It did not shrink because G did not
   shrink; it changed sign.
 * **P4 refutes "NF4's overhead shrinks but stays".** It nearly vanished:
-  +0.20, 2/6, ci95 spanning zero. Most of NF4's old +3.54 was rows that are now
+  +0.20, 2/6, ci95 spanning zero. Most of NF4's old +3.53 (registered as +3.54, a rounding slip) was rows that are now
   flagged on both sides. NF4 serving is roughly cost-neutral against AWQ under
   the shipped policy, but still ~2.3× the wall-clock, and with nothing to serve
   on it, the finding has no use today.
