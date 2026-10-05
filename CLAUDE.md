@@ -78,6 +78,17 @@ delivered value must be true, and that matters more than finding every value.
 arms on auto-accept precision and silent errors first, then false detections,
 then recall, until the client's own weights arrive.
 
+**AND THE MATCHED-ONLY PRECISION HID MOST OF THE PROBLEM.**
+`auto_accept.delivered_precision` (2026-10-06) also counts false detections
+that ship UNFLAGGED, which are phantom values nobody is asked to check: **dev
+0.419** (70 correct, 17 wrong, **80 phantoms**), **test 0.536** (52 / 24 / 21),
+against matched-only 0.805 / 0.684. Under today's weights flagging a phantom
+changes nothing (false = 2 either way), so review cost is blind to the client's
+first priority. Quote delivered precision alongside the matched one.
+Caveat: "phantom" means "not in gold", and gold balloons a strict subset of
+what the client inspects, so some may be real dimensions the client chose not
+to balloon. They are still balloons the client would have to delete.
+
 **`read-lora-v1` IS NOW HARMFUL UNDER THE SHIPPED POLICY — deployment CLOSED**
 (2026-10-05, `docs/plans/2026-10-05-read-adapter-repricing-result.md`;
 DERIVED, `--reapply-policy` on stored dev dumps, pad 6). The scoped adapter's
