@@ -548,3 +548,28 @@ def test_r4control_is_current_code_with_no_knob(tmp_path):
         assert knob not in line, line
     assert "--split dev" in line, line
     assert line.count("--device") == 1, line
+
+
+def test_r4controltest_is_the_shipped_config_on_the_test_split(tmp_path):
+    """The native test number for what ships: current code at the shipped
+    pad, on the frozen test split. The shipped policy's 149.73 there is still
+    DERIVED from r3-awqtest -- and that run was predicted at pad 6, so this one
+    measures the pad and the policy together, never the policy alone."""
+    env, calls = _stub_env(tmp_path)
+    assert _run(tmp_path, env, "r4controltest").returncode == 0
+    line = _podman_line(calls, "r4-controltest")
+    assert "--split test" in line and "--split dev" not in line, line
+    assert "VLM_MODEL_ID=Qwen/Qwen2.5-VL-72B-Instruct-AWQ" in line, line
+    assert "OCR_BACKEND=vlm" in line, line
+    for knob in ("SINDRI_CROP", "SINDRI_ADAPTER", "SINDRI_QUANT",
+                 "SINDRI_PROPOSALS", "SINDRI_READ_PROMPT", "SINDRI_DETECT_PROMPT"):
+        assert knob not in line, line
+    assert "sindri-gpu-nf4" in line, line
+    assert line.count("--device") == 1, line
+
+
+def test_only_the_two_test_stages_touch_the_test_split(tmp_path):
+    env, calls = _stub_env(tmp_path)
+    _run(tmp_path, env, "awqcontrol", "r4control", "cropctx", "tallpad")
+    for line in (calls.read_text().splitlines() if calls.exists() else []):
+        assert "--split test" not in line, line
