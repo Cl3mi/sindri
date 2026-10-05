@@ -1,0 +1,55 @@
+{
+ "schema_version": 1,
+ "run_a": "reapply-nf4control-scoped",
+ "run_b": "reapply-lora72bnf4-scoped",
+ "n_docs": 15,
+ "mean_delta": 17.2,
+ "ci95": [
+  7.8667,
+  26.6667
+ ],
+ "significant": true,
+ "per_doc_deltas": {
+  "8e5fb4d8": 16.0,
+  "1a3064de": -13.0,
+  "514ec627": 40.0,
+  "53c2a083": 4.0,
+  "acb2b8bc": -10.0,
+  "1a007bc4": 27.0,
+  "caf2afd1": 1.0,
+  "3a75ba3d": 13.0,
+  "6095d6ec": 34.0,
+  "c9395a33": -4.0,
+  "f1639571": 19.0,
+  "28b2c522": 25.0,
+  "01806166": 19.0,
+  "c3aa6a9e": 33.0,
+  "aa3592aa": 54.0
+ },
+ "headline": {
+  "reapply-nf4control-scoped": {
+   "mean_review_cost": 121.13333333333334,
+   "recall": 0.729903536977492,
+   "escaped_rate": 0.0707395498392283
+  },
+  "reapply-lora72bnf4-scoped": {
+   "mean_review_cost": 138.33333333333334,
+   "recall": 0.7942122186495176,
+   "escaped_rate": 0.13183279742765272
+  }
+ },
+ "weight_sensitivity": {
+  "n_weight_vectors": 6,
+  "b_better_fraction": 0.0,
+  "mean_delta_per_weighting": [
+   17.2,
+   7.6667,
+   22.6,
+   41.4,
+   11.4667,
+   10.5333
+  ],
+  "robust": true
+ },
+ "warnings": []
+}

@@ -1,0 +1,55 @@
+{
+ "schema_version": 1,
+ "run_a": "reapply-nf4control-scoped",
+ "run_b": "reapply-loraread-scoped",
+ "n_docs": 15,
+ "mean_delta": 3.3333,
+ "ci95": [
+  0.8667,
+  6.3333
+ ],
+ "significant": true,
+ "per_doc_deltas": {
+  "8e5fb4d8": -2.0,
+  "1a3064de": 4.0,
+  "514ec627": 0.0,
+  "53c2a083": 1.0,
+  "acb2b8bc": -2.0,
+  "1a007bc4": 17.0,
+  "caf2afd1": 0.0,
+  "3a75ba3d": -1.0,
+  "6095d6ec": 13.0,
+  "c9395a33": 0.0,
+  "f1639571": 2.0,
+  "28b2c522": 6.0,
+  "01806166": 8.0,
+  "c3aa6a9e": 4.0,
+  "aa3592aa": 0.0
+ },
+ "headline": {
+  "reapply-nf4control-scoped": {
+   "mean_review_cost": 121.13333333333334,
+   "recall": 0.729903536977492,
+   "escaped_rate": 0.0707395498392283
+  },
+  "reapply-loraread-scoped": {
+   "mean_review_cost": 124.46666666666667,
+   "recall": 0.729903536977492,
+   "escaped_rate": 0.11254019292604502
+  }
+ },
+ "weight_sensitivity": {
+  "n_weight_vectors": 6,
+  "b_better_fraction": 0.0,
+  "mean_delta_per_weighting": [
+   3.3333,
+   5.9333,
+   2.4667,
+   2.3333,
+   5.9333,
+   0.7333
+  ],
+  "robust": true
+ },
+ "warnings": []
+}

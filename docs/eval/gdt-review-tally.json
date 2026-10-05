@@ -1,0 +1,74 @@
+{
+ "kind": "gdt-char-type-only",
+ "run": "r3-cropctx-scoped",
+ "n_rows": 8,
+ "answered": 8,
+ "incomplete": [],
+ "invalid": [],
+ "drawing_shows": {
+  "Flatness": 1,
+  "other": 1,
+  "Angularity": 1,
+  "Profile of a surface": 2,
+  "Profile of a line": 3
+ },
+ "prediction_fix": {
+  "parser": 8
+ },
+ "gold_side": {
+  "scorer_reads_it_differently": 2,
+  "gold_disagrees_with_drawing": 2,
+  "needs_synonym_word": 4
+ },
+ "freed_without_gpu": 4,
+ "rows": {
+  "g1": {
+   "drawing_shows": "Flatness",
+   "prediction_fix": "parser",
+   "gold_side": "scorer_reads_it_differently",
+   "freed_without_gpu": false
+  },
+  "g2": {
+   "drawing_shows": "other",
+   "prediction_fix": "parser",
+   "gold_side": "scorer_reads_it_differently",
+   "freed_without_gpu": false
+  },
+  "g3": {
+   "drawing_shows": "Angularity",
+   "prediction_fix": "parser",
+   "gold_side": "gold_disagrees_with_drawing",
+   "freed_without_gpu": false
+  },
+  "g4": {
+   "drawing_shows": "Profile of a surface",
+   "prediction_fix": "parser",
+   "gold_side": "needs_synonym_word",
+   "freed_without_gpu": true
+  },
+  "g5": {
+   "drawing_shows": "Profile of a line",
+   "prediction_fix": "parser",
+   "gold_side": "needs_synonym_word",
+   "freed_without_gpu": true
+  },
+  "g6": {
+   "drawing_shows": "Profile of a line",
+   "prediction_fix": "parser",
+   "gold_side": "gold_disagrees_with_drawing",
+   "freed_without_gpu": false
+  },
+  "g7": {
+   "drawing_shows": "Profile of a line",
+   "prediction_fix": "parser",
+   "gold_side": "needs_synonym_word",
+   "freed_without_gpu": true
+  },
+  "g8": {
+   "drawing_shows": "Profile of a surface",
+   "prediction_fix": "parser",
+   "gold_side": "needs_synonym_word",
+   "freed_without_gpu": true
+  }
+ }
+}

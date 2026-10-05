@@ -1,0 +1,182 @@
+"""Folding a LoRA adapter into its base — and the control that makes the result
+readable.
+
+PEFT cannot attach an adapter to an AWQ checkpoint at all (autoawq replaces every
+q/k/v/o projection with WQLinear_GEMM, which PEFT does not inject into), so the
+only way to serve `read-lora-v1` on what production actually runs is to merge it
+into bf16 and re-quantise. That produces a checkpoint no committed number was
+measured on, which is why the zero-scale control below exists.
+
+Deliberately outside the merge script and free of torch and peft imports, for
+the same reason `app.train.dataset` is: the operator's machine has PIL and no
+torch, and this is the part with logic worth testing.
+"""
+
+
+def zero_lora_scaling(model) -> int:
+    """Scale every LoRA layer's contribution to zero, in place. Returns how many
+    layers were zeroed.
+
+    A merge folds `scaling * B @ A` into the base weight, so zeroing the scaling
+    makes `merge_and_unload()` a numeric no-op while still travelling the whole
+    merge-and-requantise path. That is precisely the control this route needs:
+    it isolates "the round trip changed the model" from "the adapter changed the
+    model", and only the second is the result.
+
+    Raises when there is nothing to zero. A model with no LoRA layers was never
+    wrapped in PeftModel, so quantising it yields a plain-base checkpoint that
+    would pass as the control while silently skipping the round trip the control
+    exists to measure -- the same class of failure as resolve_adapter falling
+    back to the base model under a treatment arm's run name."""
+    n = 0
+    for module in model.modules():
+        scaling = getattr(module, "scaling", None)
+        # A dict keyed by adapter name is what a peft LoRA layer carries; other
+        # modules that happen to have a `scaling` attribute (a float, say) are
+        # not adapters and must not be touched.
+        if isinstance(scaling, dict) and scaling:
+            for name in scaling:
+                scaling[name] = 0.0
+            n += 1
+    if n == 0:
+        raise ValueError(
+            "no LoRA layers found, so there is no adapter contribution to zero. "
+            "This model was never wrapped in PeftModel: merging it would write a "
+            "plain-base checkpoint that reads as the zero-scale control while "
+            "skipping the merge round trip the control exists to measure.")
+    return n
+
+
+def assert_quantisable(model_type: str, supported) -> None:
+    """Refuse, before the 137 GB load, a model autoawq will not be able to
+    quantise afterwards.
+
+    The merge half succeeds for any architecture -- load, fold, save all work --
+    so an unsupported model fails only once quantisation starts, hours in and
+    after ~137 GB has been written. autoawq 0.2.8 ships a `qwen2_vl` wrapper and
+    no `qwen2_5_vl` one, while this corpus' base is `qwen2_5_vl`; 0.2.9 adds it,
+    which is why quantisation runs in its own image and serving does not move.
+
+    SystemExit rather than ValueError: this is a CLI preflight, and it reports a
+    misconfigured run rather than a bug in a caller."""
+    if model_type not in set(supported):
+        raise SystemExit(
+            f"autoawq here cannot quantise model_type {model_type!r}. It "
+            f"supports: {sorted(set(supported))}. Merging first would spend the "
+            f"load, the fold and the save before failing. Build the "
+            f"quantisation image (Dockerfile.quant, autoawq>=0.2.9) and run "
+            f"there; the pinned serving image must NOT move.")
+
+
+# How the model is LOADED for quantisation. autoawq's from_pretrained defaults
+# to device_map="auto", which placed ~57.5 GiB of the 72B onto the card and left
+# only ~21 GiB for calibration activations -- the cause of the first OOM
+# (9.22 GiB wanted, 6.24 GiB free, 14.75 GiB reserved-but-unallocated).
+#
+# Its quantizer moves each block to the device itself
+# (awq/quantize/quantizer.py:137, `self.modules[i].to(best_device)`), so a large
+# model is MEANT to sit on CPU while one block at a time visits the GPU. The
+# host has 1007 GB of RAM; the card then has all 79 GiB for activations.
+AWQ_LOAD = {"device_map": "cpu"}
+
+# Calibration settings for the AWQ pass. CONSTANTS, deliberately not CLI flags:
+# the arm and its zero-scale control must be quantised identically or the delta
+# measures the calibration instead of the adapter, and a flag is exactly how the
+# two would drift apart.
+#
+# These are autoawq's own defaults, restated so a future reader sees they were
+# CHOSEN. Two things must not be "fixed" here:
+#
+#   n_parallel_calib_samples -- chunks the hidden states but NOT the mrope
+#     position embeddings, so Qwen2.5-VL dies in apply_multimodal_rotary_pos_emb
+#     ("tensor a (8) must match tensor b (59)"). Unavailable on this
+#     architecture, and unnecessary once the model is off the card.
+#   max_calib_samples / max_calib_seq_len -- cutting either degrades the scale
+#     estimates, and the zero-scale control has to stand against a checkpoint
+#     Qwen calibrated properly. Fix memory by PLACEMENT, not by weakening
+#     calibration.
+CALIB = {"n_parallel_calib_samples": None,
+         "max_calib_samples": 128,
+         "max_calib_seq_len": 512}
+
+
+def check_merge_target(out, quantise_only: bool) -> None:
+    """Decide whether `out` may be written, or must already hold a merge.
+
+    Two different failures, and only one of them is about overwriting:
+
+    * a fresh merge into a populated directory silently mixes the arm with its
+      control, which differ in nothing a directory listing shows;
+    * a --quantise-only retry into an EMPTY directory would quantise nothing and
+      still write a checkpoint under the arm's name.
+
+    The retry path exists because the merge writes 137 GB in minutes while
+    quantisation runs for hours -- when the latter fails, refusing to reuse the
+    former costs the whole merge again for nothing."""
+    populated = out.is_dir() and any(out.iterdir())
+    if quantise_only:
+        if not populated:
+            raise SystemExit(
+                f"no merged checkpoint at {out} to quantise. --quantise-only "
+                f"resumes a failed quantisation; it cannot create the merge it "
+                f"needs, and writing an empty result under this name would pass "
+                f"as the real checkpoint.")
+        return None
+    if populated:
+        raise SystemExit(
+            f"{out} is not empty. Refusing to write a checkpoint over another "
+            f"one: the arm and its zero-scale control differ in nothing a "
+            f"directory listing shows, and mixing them is unrecoverable. To "
+            f"resume a failed quantisation over this merge, pass "
+            f"--quantise-only.")
+    return None
+
+
+def offloading_quantizer(base_cls):
+    """Subclass `base_cls` (autoawq's AwqQuantizer) so each block returns to CPU
+    once it has been quantised.
+
+    autoawq's loop moves a CPU-resident block onto the card
+    (quantize/quantizer.py:129-137) and never moves it back, so with the model on
+    CPU the card accumulates every block it has finished with. Measured on both
+    H100s: 40.7 GiB at block 1, 69.9 GiB at block 12, against 79.1 GiB of
+    capacity -- an OOM around block 15 of 80.
+
+    `_apply_quant` is the last thing the loop does with a block; the steps after
+    it operate on the next one, and `self.inps` was already computed before
+    quantisation. So offloading here is safe, and it happens AFTER the parent
+    runs: quantising on CPU would be astronomically slow, and `_apply_quant`
+    moves each layer to the best device itself.
+
+    Passed via `quantize(quantizer_cls=...)`, which is autoawq's own extension
+    point -- not a patch of its source."""
+
+    class _OffloadingQuantizer(base_cls):
+        def _apply_quant(self, module, named_linears):
+            super()._apply_quant(module, named_linears)
+            module.to("cpu")
+            return None
+
+    _OffloadingQuantizer.__name__ = f"Offloading{base_cls.__name__}"
+    return _OffloadingQuantizer
+
+
+# Modules the AWQ pass must NOT touch, for route A via llm-compressor.
+#
+# Qwen ships Qwen2.5-VL-72B-Instruct-AWQ with the vision tower unquantised, and
+# r3-awqcontrol's 170.05 was measured on that checkpoint. Quantising the tower
+# here would make ours structurally different, so r3-mergedcontrol would price
+# that difference instead of the merge round trip it exists to measure.
+# lm_head is excluded by the same convention: it costs accuracy for almost no
+# memory.
+AWQ_IGNORE = ("lm_head", "re:visual.*", "re:model.visual.*")
+
+
+def awq_scheme() -> dict:
+    """The AWQ scheme, matching what production already serves.
+
+    4-bit, group 128 — identical to the quantisation r3-awqcontrol runs on. Any
+    departure would be a second variable on top of the merge, and the arm's
+    delta could no longer be attributed to the adapter."""
+    return {"num_bits": 4, "group_size": 128, "symmetric": False,
+            "strategy": "group"}

@@ -5,3 +5,26 @@ venv/
 data/
 *.xlsx
 .worktrees/
+eval_data/
+
+# --- Client data guard (see docs/eval/DATA-HANDLING.md) ---------------------
+# Client drawings/inspection sheets and everything derived from them live
+# OUTSIDE this repo. These patterns are a second line of defence; the
+# authoritative block is .git/hooks/pre-commit (core.hooksPath, all worktrees).
+# Already-tracked files (tests/fixtures/sample.pdf) are unaffected.
+*.pdf
+*.xls
+*.xlsm
+*.xlsb
+*.ods
+*.csv
+*.gold.json
+*.pred.json
+*.report.json
+doc_id_map*.json
+client_data/
+client-data/
+Berichte/
+Gestempelte*/
+Orginalzeichnungen/
+Originalzeichnungen/

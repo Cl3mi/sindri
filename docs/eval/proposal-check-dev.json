@@ -1,0 +1,11 @@
+{
+ "docs": 15,
+ "scale_mismatch": 0,
+ "isolated": 58,
+ "isolated_covered": 6,
+ "proposals": 385,
+ "near_unmatched_gold": 20,
+ "near_matched_gold": 112,
+ "far_from_gold": 253,
+ "unverified_net_units": -452
+}

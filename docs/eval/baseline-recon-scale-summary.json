@@ -1,0 +1,264 @@
+{
+ "run": "baseline-dev-reconciled-scale",
+ "split": "dev",
+ "splits_hash": "6d174d5e4f1b9228",
+ "n_docs": 20,
+ "n_gold": 477,
+ "n_pred": 830,
+ "mean_review_cost": 174.3,
+ "micro_recall": 0.6457023060796646,
+ "micro_precision": 0.3710843373493976,
+ "escaped_rate": 0.27044025157232704,
+ "taxonomy": {
+  "escaped_error": 129,
+  "correct": 72,
+  "flagged_correct": 40,
+  "flagged_error": 67,
+  "missed": 169,
+  "false_detection": 522
+ },
+ "error_causes": {
+  "misparse": 52,
+  "misread": 144
+ },
+ "misplaced_matches": 80,
+ "clamped_docs": [
+  {
+   "doc": "7bd2fd06",
+   "effective_dpi": 109,
+   "recall": 0.2264,
+   "review_cost": 490.0,
+   "missed_isolated": 0
+  },
+  {
+   "doc": "d01660e4",
+   "effective_dpi": 208,
+   "recall": 0.0,
+   "review_cost": 124.0,
+   "missed_isolated": 1
+  },
+  {
+   "doc": "a7994023",
+   "effective_dpi": 225,
+   "recall": 0.4776,
+   "review_cost": 455.0,
+   "missed_isolated": 13
+  },
+  {
+   "doc": "c32e79eb",
+   "effective_dpi": 225,
+   "recall": 0.7778,
+   "review_cost": 70.0,
+   "missed_isolated": 2
+  }
+ ],
+ "clamped_vs_unclamped": {
+  "clamped": {
+   "n": 4,
+   "macro_mean_recall": 0.3705,
+   "mean_review_cost": 284.75,
+   "missed_isolated": 16
+  },
+  "unclamped": {
+   "n": 16,
+   "macro_mean_recall": 0.7281,
+   "mean_review_cost": 146.69,
+   "missed_isolated": 58
+  },
+  "unknown_dpi": {
+   "n": 0,
+   "macro_mean_recall": null,
+   "mean_review_cost": null,
+   "missed_isolated": 0
+  }
+ },
+ "pred_kinds": {
+  "dimension": 589,
+  "gdt": 57,
+  "note": 54,
+  "theoretical": 102,
+  "surface": 21,
+  "material": 7
+ },
+ "false_detections_by_kind": {
+  "dimension": 342,
+  "gdt": 26,
+  "theoretical": 85,
+  "note": 49,
+  "surface": 14,
+  "material": 6
+ },
+ "matched_by_pred_kind": {
+  "dimension": 247,
+  "gdt": 31,
+  "theoretical": 17,
+  "surface": 7,
+  "note": 5,
+  "material": 1
+ },
+ "frame_mismatch": {
+  "n_docs_affected": 14,
+  "n_docs_frames_agree": 6,
+  "n_docs_not_measured": 0,
+  "max_frac": 0.823966,
+  "micro_recall_frames_agree": 0.7376,
+  "micro_recall_frames_differ": 0.6071,
+  "docs": [
+   {
+    "doc": "7bd2fd06",
+    "origin": 0.0,
+    "extent": 0.823966,
+    "recall": 0.2264
+   },
+   {
+    "doc": "d01660e4",
+    "origin": 0.0,
+    "extent": 0.672608,
+    "recall": 0.0
+   },
+   {
+    "doc": "a7994023",
+    "origin": 0.0,
+    "extent": 0.624569,
+    "recall": 0.4776
+   },
+   {
+    "doc": "c32e79eb",
+    "origin": 0.0,
+    "extent": 0.612477,
+    "recall": 0.7778
+   },
+   {
+    "doc": "caf2afd1",
+    "origin": 0.0,
+    "extent": 0.545445,
+    "recall": 0.3333
+   },
+   {
+    "doc": "514ec627",
+    "origin": 0.0,
+    "extent": 0.545432,
+    "recall": 1.0
+   },
+   {
+    "doc": "6095d6ec",
+    "origin": 0.0,
+    "extent": 0.52834,
+    "recall": 0.7407
+   },
+   {
+    "doc": "c3aa6a9e",
+    "origin": 0.0,
+    "extent": 0.52834,
+    "recall": 0.6111
+   },
+   {
+    "doc": "961693d9",
+    "origin": 0.0,
+    "extent": 0.52834,
+    "recall": 0.9444
+   },
+   {
+    "doc": "8e5fb4d8",
+    "origin": 0.0,
+    "extent": 0.408241,
+    "recall": 0.9429
+   },
+   {
+    "doc": "3a75ba3d",
+    "origin": 0.0,
+    "extent": 0.408241,
+    "recall": 0.9167
+   },
+   {
+    "doc": "28b2c522",
+    "origin": 0.0,
+    "extent": 0.408241,
+    "recall": 0.9
+   },
+   {
+    "doc": "c9395a33",
+    "origin": 0.0,
+    "extent": 0.408202,
+    "recall": 0.375
+   },
+   {
+    "doc": "acb2b8bc",
+    "origin": 0.0,
+    "extent": 0.238168,
+    "recall": 0.6364
+   }
+  ]
+ },
+ "missed_diagnosis": {
+  "contended": 82,
+  "isolated": 74,
+  "unlocated": 13
+ },
+ "config": {
+  "model_id": "Qwen/Qwen2.5-VL-72B-Instruct-AWQ",
+  "dpi": 300,
+  "git_sha": "unknown",
+  "prompt_sha256": "aa7659f1929184ea",
+  "extra": {}
+ },
+ "weights": {
+  "miss": 10.0,
+  "escaped": 5.0,
+  "false": 2.0,
+  "flag": 1.0
+ },
+ "match_params": {
+  "max_geo_frac": 0.1,
+  "value_bonus": 0.35,
+  "misplaced_frac": 0.04,
+  "mode": "geometry",
+  "value_sim_min": 0.6,
+  "score_kinds": [
+   "dimension"
+  ],
+  "reconcile_frames": "scale"
+ },
+ "worst_docs": [
+  {
+   "doc": "7bd2fd06",
+   "review_cost": 490.0
+  },
+  {
+   "doc": "a7994023",
+   "review_cost": 455.0
+  },
+  {
+   "doc": "caf2afd1",
+   "review_cost": 426.0
+  },
+  {
+   "doc": "961693d9",
+   "review_cost": 286.0
+  },
+  {
+   "doc": "1a007bc4",
+   "review_cost": 242.0
+  },
+  {
+   "doc": "514ec627",
+   "review_cost": 183.0
+  },
+  {
+   "doc": "01806166",
+   "review_cost": 153.0
+  },
+  {
+   "doc": "c3aa6a9e",
+   "review_cost": 144.0
+  },
+  {
+   "doc": "53c2a083",
+   "review_cost": 143.0
+  },
+  {
+   "doc": "d01660e4",
+   "review_cost": 124.0
+  }
+ ]
+}

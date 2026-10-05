@@ -140,3 +140,31 @@ def test_gdt_hint_on_plain_tolerance_text_is_not_position():
     # '+' sign as a position symbol; with no real symbol it defaults to Flatness
     c = parse_value("1,2 +0,1 -0,1", hint="gdt")
     assert c.char_type != "Position"
+
+
+# --- a cylindrical zone is never flatness -------------------------------------
+#
+# _gdt_type falls back to Flatness when it recognises no symbol. The gdt review
+# (2026-09-25, docs/plans/2026-09-25-gdt-review-result.md §6-7) found the
+# reader drops the characteristic symbol on most gdt frames, and on several
+# keeps only the diameter sign that opens a CYLINDRICAL tolerance zone. Flatness
+# never has one, so for such a frame the fallback was the one answer that could
+# not be right. Position is the characteristic that most often carries a Ø zone.
+
+def test_a_leading_diameter_zone_with_no_symbol_defaults_to_position():
+    for text in ("Ø0,4 A", "⌀0,4 A", " Ø 0.4 A B"):
+        c = parse_value(text, hint="gdt")
+        assert c.char_type == "Position", text
+        assert (c.nominal, c.upper_tol, c.lower_tol) == ("0", "0,4", "0"), text
+
+
+def test_a_recognised_symbol_still_wins_over_the_zone_default():
+    """A Ø zone also appears on orientation frames; when the symbol survived,
+    it decides."""
+    assert parse_value("∥ Ø0,1 A", hint="gdt").char_type == "Parallelism"
+    assert parse_value("⊥ Ø0,1 A", hint="gdt").char_type == "Perpendicularity"
+
+
+def test_without_a_zone_the_flatness_default_is_unchanged():
+    assert parse_value("0,1 A", hint="gdt").char_type == FLATNESS
+    assert parse_value("A Ø0,1", hint="gdt").char_type == FLATNESS

@@ -1,0 +1,443 @@
+{
+ "run": "r3-hybrid-scoped",
+ "split": "dev",
+ "splits_hash": "6d174d5e4f1b9228",
+ "n_docs": 15,
+ "n_gold": 311,
+ "n_pred": 890,
+ "mean_review_cost": 173.93333333333334,
+ "micro_recall": 0.77491961414791,
+ "micro_precision": 0.27078651685393257,
+ "escaped_rate": 0.33762057877813506,
+ "taxonomy": {
+  "escaped_error": 105,
+  "flagged_error": 70,
+  "flagged_correct": 16,
+  "correct": 50,
+  "missed": 70,
+  "false_detection": 649
+ },
+ "error_causes": {
+  "misparse": 52,
+  "misread": 123
+ },
+ "error_cause_crosstab": {
+  "misparse": {
+   "total": 52,
+   "misplaced": 3,
+   "on_target": 49,
+   "escaped": 33,
+   "flagged": 19
+  },
+  "misread": {
+   "total": 123,
+   "misplaced": 42,
+   "on_target": 81,
+   "escaped": 72,
+   "flagged": 51
+  }
+ },
+ "misplaced_matches": 48,
+ "field_failures": {
+  "field:lower_tol": 128,
+  "field:char_type": 80,
+  "field:nominal": 111,
+  "field:upper_tol": 115
+ },
+ "field_failure_signatures": {
+  "fields:lower_tol": 16,
+  "fields:char_type+nominal+lower_tol": 7,
+  "fields:char_type+nominal+upper_tol+lower_tol": 44,
+  "fields:nominal": 21,
+  "fields:upper_tol+lower_tol": 21,
+  "fields:nominal+upper_tol+lower_tol": 27,
+  "fields:char_type+upper_tol+lower_tol": 8,
+  "fields:char_type": 4,
+  "fields:nominal+upper_tol": 1,
+  "fields:upper_tol": 6,
+  "fields:nominal+lower_tol": 3,
+  "fields:char_type+nominal": 7,
+  "fields:char_type+upper_tol": 7,
+  "fields:char_type+lower_tol": 2,
+  "fields:char_type+nominal+upper_tol": 1
+ },
+ "field_failure_modes": {
+  "missing:lower_tol": 61,
+  "wrong:char_type": 80,
+  "wrong:nominal": 97,
+  "wrong:lower_tol": 61,
+  "wrong:upper_tol": 62,
+  "missing:upper_tol": 41,
+  "spurious:upper_tol": 12,
+  "spurious:lower_tol": 6,
+  "missing:nominal": 9,
+  "spurious:nominal": 5
+ },
+ "field_failure_modes_not_measured": 0,
+ "char_type_confusion": {
+  "chartype:Distance->Perpendicularity": 1,
+  "chartype:Distance->Flatness": 9,
+  "chartype:unmapped(none)->Distance": 11,
+  "chartype:Radius->Distance": 3,
+  "chartype:Distance->Diameter": 10,
+  "chartype:Distance->Note": 3,
+  "chartype:unmapped(Material)->Distance": 1,
+  "chartype:unmapped(none)->Diameter": 3,
+  "chartype:Diameter->Distance": 7,
+  "chartype:unmapped(ambiguous)->Diameter": 1,
+  "chartype:unmapped(Position)->Diameter": 2,
+  "chartype:unmapped(ambiguous)->Distance": 1,
+  "chartype:Flatness->Diameter": 1,
+  "chartype:Flatness->Distance": 1,
+  "chartype:unmapped(Position)->Flatness": 1,
+  "chartype:unmapped(Parallelism)->Flatness": 3,
+  "chartype:Distance->Radius": 1,
+  "chartype:Distance->Theoretical": 2,
+  "chartype:unmapped(Distance)->Diameter": 2,
+  "chartype:unmapped(Position)->Distance": 1,
+  "chartype:unmapped(none)->Note": 1,
+  "chartype:unmapped(Distance)->Note": 2,
+  "chartype:unmapped(Distance)->Theoretical": 1,
+  "chartype:Diameter->Theoretical": 1,
+  "chartype:unmapped(Flatness)->Diameter": 1,
+  "chartype:unmapped(Flatness)->Theoretical": 1,
+  "chartype:unmapped(Material)->Diameter": 1,
+  "chartype:unmapped(none)->Flatness": 5,
+  "chartype:unmapped(none)->Radius": 3
+ },
+ "char_type_confusion_not_measured": 0,
+ "confidence_by_taxonomy": {
+  ">=0.8": {
+   "escaped_error": 105,
+   "flagged_error": 26,
+   "flagged_correct": 16,
+   "correct": 50
+  },
+  "0.6-0.8": {
+   "flagged_error": 27
+  },
+  "0.4-0.6": {
+   "flagged_error": 8
+  },
+  "<0.2": {
+   "flagged_error": 9
+  }
+ },
+ "confidence_not_measured": 0,
+ "dropped_tolerances": {
+  "rows": 65,
+  "not_measured": 0,
+  "docs": [
+   {
+    "doc": "1a007bc4",
+    "rows": 11,
+    "distinct": 4
+   },
+   {
+    "doc": "01806166",
+    "rows": 8,
+    "distinct": 6
+   },
+   {
+    "doc": "c3aa6a9e",
+    "rows": 8,
+    "distinct": 3
+   },
+   {
+    "doc": "8e5fb4d8",
+    "rows": 5,
+    "distinct": 4
+   },
+   {
+    "doc": "1a3064de",
+    "rows": 5,
+    "distinct": 4
+   },
+   {
+    "doc": "caf2afd1",
+    "rows": 5,
+    "distinct": 2
+   },
+   {
+    "doc": "6095d6ec",
+    "rows": 5,
+    "distinct": 2
+   },
+   {
+    "doc": "53c2a083",
+    "rows": 4,
+    "distinct": 4
+   },
+   {
+    "doc": "f1639571",
+    "rows": 4,
+    "distinct": 3
+   },
+   {
+    "doc": "c9395a33",
+    "rows": 3,
+    "distinct": 3
+   },
+   {
+    "doc": "514ec627",
+    "rows": 2,
+    "distinct": 2
+   },
+   {
+    "doc": "3a75ba3d",
+    "rows": 2,
+    "distinct": 2
+   },
+   {
+    "doc": "28b2c522",
+    "rows": 2,
+    "distinct": 2
+   },
+   {
+    "doc": "acb2b8bc",
+    "rows": 1,
+    "distinct": 1
+   }
+  ]
+ },
+ "clamped_docs": [],
+ "clamped_vs_unclamped": {
+  "clamped": {
+   "n": 0,
+   "macro_mean_recall": null,
+   "mean_review_cost": null,
+   "missed_isolated": 0
+  },
+  "unclamped": {
+   "n": 15,
+   "macro_mean_recall": 0.765,
+   "mean_review_cost": 173.93,
+   "missed_isolated": 49
+  },
+  "unknown_dpi": {
+   "n": 0,
+   "macro_mean_recall": null,
+   "mean_review_cost": null,
+   "missed_isolated": 0
+  }
+ },
+ "pred_kinds": {
+  "dimension": 628,
+  "gdt": 83,
+  "surface": 39,
+  "note": 60,
+  "theoretical": 66,
+  "material": 14
+ },
+ "false_detections_by_kind": {
+  "dimension": 424,
+  "gdt": 58,
+  "surface": 38,
+  "note": 54,
+  "theoretical": 61,
+  "material": 14
+ },
+ "matched_by_pred_kind": {
+  "dimension": 204,
+  "gdt": 25,
+  "surface": 1,
+  "note": 6,
+  "theoretical": 5
+ },
+ "frame_mismatch": {
+  "n_docs_affected": 0,
+  "n_docs_frames_agree": 15,
+  "n_docs_not_measured": 0,
+  "max_frac": 0.0,
+  "micro_recall_frames_agree": 0.7749,
+  "micro_recall_frames_differ": null,
+  "docs": []
+ },
+ "missed_diagnosis": {
+  "contended": 10,
+  "isolated": 49,
+  "unlocated": 11
+ },
+ "gold_coverage": {
+  "not_measured": 0,
+  "unlocated_gold": 12,
+  "carried_by_value": 1
+ },
+ "read_accuracy_by_crop_height": {
+  "buckets": [
+   {
+    "range": "<28",
+    "n": 4,
+    "field_acc": 0.0,
+    "kinds": {
+     "dimension": 4
+    }
+   },
+   {
+    "range": "28-40",
+    "n": 6,
+    "field_acc": 0.1667,
+    "kinds": {
+     "dimension": 4,
+     "gdt": 1,
+     "note": 1
+    }
+   },
+   {
+    "range": "40-80",
+    "n": 87,
+    "field_acc": 0.3103,
+    "kinds": {
+     "dimension": 77,
+     "gdt": 10
+    }
+   },
+   {
+    "range": "80-120",
+    "n": 58,
+    "field_acc": 0.2414,
+    "kinds": {
+     "dimension": 40,
+     "gdt": 10,
+     "note": 3,
+     "surface": 1,
+     "theoretical": 4
+    }
+   },
+   {
+    "range": "120-200",
+    "n": 57,
+    "field_acc": 0.193,
+    "kinds": {
+     "dimension": 51,
+     "gdt": 3,
+     "note": 2,
+     "theoretical": 1
+    }
+   },
+   {
+    "range": ">=200",
+    "n": 29,
+    "field_acc": 0.4483,
+    "kinds": {
+     "dimension": 28,
+     "gdt": 1
+    }
+   }
+  ],
+  "not_measured": 0
+ },
+ "read_accuracy_by_kind": {
+  "kinds": [
+   {
+    "kind": "dimension",
+    "n": 204,
+    "field_acc": 0.3137,
+    "escaped_error": 83
+   },
+   {
+    "kind": "gdt",
+    "n": 25,
+    "field_acc": 0.08,
+    "escaped_error": 13
+   },
+   {
+    "kind": "note",
+    "n": 6,
+    "field_acc": 0.0,
+    "escaped_error": 6
+   },
+   {
+    "kind": "theoretical",
+    "n": 5,
+    "field_acc": 0.0,
+    "escaped_error": 3
+   },
+   {
+    "kind": "surface",
+    "n": 1,
+    "field_acc": 0.0,
+    "escaped_error": 0
+   }
+  ],
+  "not_measured": 0
+ },
+ "config": {
+  "model_id": "Qwen/Qwen2.5-VL-72B-Instruct-AWQ",
+  "dpi": 300,
+  "git_sha": "unknown",
+  "prompt_sha256": "aa7659f1929184ea",
+  "extra": {
+   "tile": 1024,
+   "tile_overlap": 0.15,
+   "merge_x_tol": 20,
+   "merge_y_gap": 20,
+   "merge_max_lines": 2,
+   "read_prompt": "base",
+   "detect_prompt": "base",
+   "review_low_conf": 0.8,
+   "serving_backend": "hybrid",
+   "detect_model": "Qwen/Qwen2.5-VL-32B-Instruct-AWQ"
+  }
+ },
+ "weights": {
+  "miss": 10.0,
+  "escaped": 5.0,
+  "false": 2.0,
+  "flag": 1.0
+ },
+ "match_params": {
+  "max_geo_frac": 0.1,
+  "value_bonus": 0.35,
+  "misplaced_frac": 0.04,
+  "mode": "geometry",
+  "value_sim_min": 0.6,
+  "score_kinds": [
+   "dimension"
+  ],
+  "reconcile_frames": "none",
+  "assignment": "greedy"
+ },
+ "worst_docs": [
+  {
+   "doc": "caf2afd1",
+   "review_cost": 544.0
+  },
+  {
+   "doc": "1a007bc4",
+   "review_cost": 236.0
+  },
+  {
+   "doc": "514ec627",
+   "review_cost": 232.0
+  },
+  {
+   "doc": "aa3592aa",
+   "review_cost": 194.0
+  },
+  {
+   "doc": "c3aa6a9e",
+   "review_cost": 177.0
+  },
+  {
+   "doc": "53c2a083",
+   "review_cost": 174.0
+  },
+  {
+   "doc": "6095d6ec",
+   "review_cost": 166.0
+  },
+  {
+   "doc": "01806166",
+   "review_cost": 163.0
+  },
+  {
+   "doc": "1a3064de",
+   "review_cost": 144.0
+  },
+  {
+   "doc": "8e5fb4d8",
+   "review_cost": 139.0
+  }
+ ]
+}

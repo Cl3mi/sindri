@@ -1,0 +1,83 @@
+# Route B's inference image: Qwen's official AWQ checkpoint served by vLLM, with
+# `read-lora-v1` attached per REQUEST. Nothing here quantises anything — that
+# calibration-free property is the whole reason route B exists — so there is no
+# autoawq, no bitsandbytes and no peft in this image.
+#
+# It cannot share Dockerfile.gpu's image. That one is pinned at transformers
+# 4.49.0 / autoawq 0.2.8 because 4.50+ breaks AWQ dispatch for Qwen2.5-VL at
+# inference, and it must stay exactly as every committed measurement found it.
+# vLLM does not use those weights through transformers at all; it only needs
+# transformers for the config, the tokenizer and the HF image processor.
+#
+# vllm 0.8.5.post1, NOT a newer one. vLLM >= 0.28 pulls torch 2.13+cu130 and
+# this host's driver is CUDA 12.4, so a real matmul there dies with "The NVIDIA
+# driver on your system is too old (found version 12040)" — while
+# `torch.cuda.is_available()` still returns True, so only a real op proves a
+# card is usable. 0.8.5.post1 brings torch 2.6.0+cu124, which matches
+# Dockerfile.gpu's CUDA line.
+#
+# transformers is pinned to 4.51.3, the release contemporary with vLLM 0.8.5.
+# vllm's own metadata asks only for `transformers>=4.51.1`, which resolves today
+# to transformers 5.x — and 5.x removed `all_special_tokens_extended`, so vLLM
+# 0.8.5 dies in `get_cached_tokenizer` before any model is loaded:
+#     AttributeError: Qwen2Tokenizer has no attribute all_special_tokens_extended
+# An unpinned build therefore produces an image that cannot serve at all.
+FROM python:3.11-slim
+
+# tesseract + its German data for the fallback backend (a VLM load into an
+# occupied card degrades to Tesseract rather than failing the request), and
+# libgl/libglib for opencv, which app.pipeline imports at module scope.
+# libglib2.0-0t64, not libglib2.0-0: this base is Debian trixie, where the t64
+# transition renamed the package and the old name has no candidate at all.
+# build-essential is NOT optional here, despite every wheel being prebuilt:
+# Triton compiles the launcher stub for each kernel at RUNTIME, and on a base
+# with no compiler the 72B loads fine — weights took 40.6 GiB and 27.7 s — and
+# then dies during graph capture with
+#     RuntimeError: Failed to find C compiler. Please specify via CC
+# which reaches the run as a bare "Engine core initialization failed", is
+# retried three times, and lands on Tesseract.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        tesseract-ocr tesseract-ocr-deu \
+        libgl1 libglib2.0-0t64 \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY requirements.txt ./
+# TWO installs, and the order is the point: vllm goes LAST so it wins the one
+# genuine conflict between the two sets. requirements.txt pins
+# opencv-python-headless==4.10.*, vllm 0.8.5.post1 requires >=4.11.0, and asking
+# pip for both at once is simply unsatisfiable:
+#     ERROR: Cannot install opencv-python-headless==4.10.* and
+#     vllm==0.8.5.post1 because these package versions have conflicting
+#     dependencies.
+# So this image runs opencv 4.11 while sindri-gpu runs 4.10. That is a real
+# difference and it is why r3-vllmcontrol is not optional: the control runs in
+# THIS image, so it prices the whole serving change — vLLM's kernels and this
+# dependency alike — and only then does r3-vllmlora price the adapter. It also
+# means r3-awqcontrol (170.05) is not a valid baseline for anything here. The
+# ops involved are deterministic classical CV (Otsu, contours, morphology) in
+# boxes.py / title_block.py / marks_block.py, so the expected difference is
+# small, but "expected" is not "measured" and the control is what measures it.
+#
+# opencv is therefore pinned to 4.11 explicitly, the LOWEST version vllm accepts
+# and the closest thing to the 4.10 every measurement was taken on. vllm's
+# requirement has no upper bound, so an unpinned build resolves to opencv
+# 5.0.0.93 — a major-version jump, taken by accident, in the one dependency
+# that decides where boxes.py finds a feature-control frame.
+RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir vllm==0.8.5.post1 transformers==4.51.3 \
+        "opencv-python-headless==4.11.*"
+
+COPY app ./app
+
+# Model weights are cached here; mount `-v sindri-models:/models` to reach the
+# 72B AWQ checkpoint and the adapters under /models/adapters.
+ENV HF_HOME=/models
+# This image exists to serve route B, so it selects route B by itself. The
+# queue also passes -e OCR_BACKEND=vllm; a wrong default here would otherwise
+# make a bare `podman run` of this image quietly serve the transformers path.
+ENV OCR_BACKEND=vllm
+
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

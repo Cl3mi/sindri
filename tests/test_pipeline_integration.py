@@ -158,6 +158,53 @@ def test_extract_flags_missing_nominal(sample_pdf, tmp_path, monkeypatch):
     assert "missing nominal" in rows[0].review_reasons
 
 
+def test_balloon_gap_stays_physically_constant_when_the_render_is_clamped(
+        tmp_path, monkeypatch):
+    """`place_balloons` converts a 14 pt gap into render pixels. Handing it the
+    REQUESTED dpi after the pixel budget clamped the render would push every
+    balloon several times too far from its callout — the gap is only constant
+    in physical terms if it is computed from the EFFECTIVE resolution."""
+    import fitz
+    import pytest
+    import app.pipeline.extract as extract_mod
+    from app.pipeline.ocr.base import OcrResult
+
+    doc = fitz.open()
+    page = doc.new_page(width=600, height=400)
+    page.draw_rect(fitz.Rect(120, 90, 180, 110), color=(0, 0, 0), fill=(0, 0, 0))
+    drawing = tmp_path / "wide.pdf"
+    doc.save(drawing)
+    doc.close()
+
+    real_render = extract_mod.render_page
+    monkeypatch.setattr(extract_mod, "render_page", lambda *a, **kw: real_render(
+        *a, **{**kw, "max_pixels": 300_000}))
+    monkeypatch.setenv("VLM_TILE", "4096")
+    monkeypatch.setattr("app.pipeline.boxes.detect_boxes", lambda image: [])
+    monkeypatch.setattr("app.pipeline.notes_block.locate_notes_block",
+                        lambda image, backend: None)
+    monkeypatch.setattr("app.pipeline.marks_block.locate_marks_block",
+                        lambda image: None)
+    monkeypatch.setattr("app.pipeline.title_block.locate_title_block",
+                        lambda image: None)
+
+    class InkBackend:
+        def detect_regions(self, image):
+            w, h = image.size
+            return [Detection(box=(0.15 * w, 0.175 * h, 0.35 * w, 0.325 * h),
+                              kind="dimension", conf=0.9)]
+
+        def read_region(self, image):
+            return OcrResult(text="20", confidence=0.9)
+
+    result = extract_mod.extract(drawing, work_dir=tmp_path, dpi=300,
+                                 backend=InkBackend())
+    assert result.render_scale < 300 / 72.0     # the render really was clamped
+    c = result.characteristics[0]
+    gap_px = c.target_region[0] - c.balloon_xy[0]
+    assert gap_px / result.render_scale == pytest.approx(14.0, abs=1.0)
+
+
 def test_best_read_not_ambiguous_when_one_rotation_clearly_wins():
     from PIL import Image
     from app.pipeline.extract import _best_read

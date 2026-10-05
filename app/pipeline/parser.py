@@ -29,6 +29,13 @@ def _gdt_type(text: str) -> str:
     for sym, name in _GDT_SYMBOLS.items():
         if sym in text:
             return name
+    # No symbol recognised. A leading diameter sign opens a CYLINDRICAL
+    # tolerance zone, which flatness never has -- so the Flatness fallback is
+    # the one answer that cannot be right. Position is the characteristic that
+    # most often carries a Ø zone. The reader drops the symbol and keeps the Ø
+    # on real frames (2026-09-25 gdt review, result doc §6-7).
+    if text.lstrip().startswith(("Ø", "⌀")):
+        return "Position"
     return FLATNESS    # default geometric tolerance when no symbol is recognized
 
 

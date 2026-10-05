@@ -1,0 +1,273 @@
+{
+ "n_docs": 49,
+ "base": {
+  "cost": 129.5714,
+  "counts": {
+   "correct": 279,
+   "escaped_error": 292,
+   "flagged_correct": 156,
+   "flagged_error": 153,
+   "missed": 327,
+   "false_detection": 655
+  },
+  "recall": 0.7291,
+  "field_acc": 0.4943,
+  "escaped_rate": 0.2419,
+  "auto_accept_precision": 0.4886,
+  "auto_accept_rate": 0.2312
+ },
+ "base_low_conf_reflagged": 97,
+ "n_docs_pre_low_conf": 49,
+ "flag_rules": {
+  "nondim_kind": {
+   "newly_flagged": {
+    "escaped_error": 81,
+    "false_detection": 180,
+    "correct": 5
+   },
+   "delta": {
+    "cost": -6.5102,
+    "recall": 0.0,
+    "field_acc": 0.0,
+    "escaped_rate": -0.0671,
+    "auto_accept_precision": 0.0763,
+    "auto_accept_rate": -0.0042
+   },
+   "better_under": 6,
+   "precision_unmeasured": false,
+   "passes": true
+  },
+  "gdt_guessed": {
+   "newly_flagged": {
+    "false_detection": 40,
+    "escaped_error": 32,
+    "correct": 4
+   },
+   "delta": {
+    "cost": -2.5306,
+    "recall": 0.0,
+    "field_acc": 0.0,
+    "escaped_rate": -0.0265,
+    "auto_accept_precision": 0.0254,
+    "auto_accept_rate": -0.0034
+   },
+   "better_under": 6,
+   "precision_unmeasured": false,
+   "passes": true
+  },
+  "tall_box": {
+   "newly_flagged": {
+    "escaped_error": 149,
+    "correct": 61,
+    "false_detection": 230
+   },
+   "delta": {
+    "cost": -10.9183,
+    "recall": 0.0,
+    "field_acc": 0.0,
+    "escaped_rate": -0.1234,
+    "auto_accept_precision": 0.1153,
+    "auto_accept_rate": -0.0506
+   },
+   "better_under": 6,
+   "precision_unmeasured": false,
+   "passes": false
+  },
+  "diameter_sign": {
+   "newly_flagged": {
+    "escaped_error": 59,
+    "false_detection": 62,
+    "correct": 45
+   },
+   "delta": {
+    "cost": -3.8979,
+    "recall": 0.0,
+    "field_acc": 0.0,
+    "escaped_rate": -0.0489,
+    "auto_accept_precision": 0.0125,
+    "auto_accept_rate": -0.0373
+   },
+   "better_under": 6,
+   "precision_unmeasured": false,
+   "passes": false
+  },
+  "multiline": {
+   "newly_flagged": {},
+   "delta": {
+    "cost": 0.0,
+    "recall": 0.0,
+    "field_acc": 0.0,
+    "escaped_rate": 0.0,
+    "auto_accept_precision": 0.0,
+    "auto_accept_rate": 0.0
+   },
+   "better_under": 0,
+   "precision_unmeasured": false,
+   "passes": false
+  },
+  "no_tolerance": {
+   "newly_flagged": {
+    "escaped_error": 120,
+    "false_detection": 127,
+    "correct": 1
+   },
+   "delta": {
+    "cost": -9.7755,
+    "recall": 0.0,
+    "field_acc": 0.0,
+    "escaped_rate": -0.0994,
+    "auto_accept_precision": 0.1292,
+    "auto_accept_rate": -0.0009
+   },
+   "better_under": 6,
+   "precision_unmeasured": false,
+   "passes": true
+  },
+  "asymmetric_tol": {
+   "newly_flagged": {
+    "false_detection": 15,
+    "correct": 26,
+    "escaped_error": 15
+   },
+   "delta": {
+    "cost": -0.6938,
+    "recall": 0.0,
+    "field_acc": 0.0,
+    "escaped_rate": -0.0124,
+    "auto_accept_precision": -0.0112,
+    "auto_accept_rate": -0.0216
+   },
+   "better_under": 4,
+   "precision_unmeasured": false,
+   "passes": false
+  }
+ },
+ "drop_rules": {
+  "empty_read": {
+   "dropped": {
+    "false_detection": 13,
+    "flagged_error": 7
+   },
+   "delta": {
+    "cost": 0.3878,
+    "recall": -0.0042,
+    "field_acc": 0.0028,
+    "escaped_rate": 0.0009,
+    "auto_accept_precision": -0.0008,
+    "auto_accept_rate": 0.0
+   },
+   "better_under": 3,
+   "precision_unmeasured": false,
+   "passes": false
+  },
+  "contained_duplicate": {
+   "dropped": {
+    "flagged_error": 2,
+    "flagged_correct": 1,
+    "escaped_error": 2,
+    "false_detection": 2
+   },
+   "delta": {
+    "cost": -0.2449,
+    "recall": -0.0008,
+    "field_acc": 0.0029,
+    "escaped_rate": -0.0016,
+    "auto_accept_precision": 0.0026,
+    "auto_accept_rate": 0.0008
+   },
+   "better_under": 6,
+   "precision_unmeasured": false,
+   "passes": true
+  },
+  "repeated_value_nearby": {
+   "dropped": {
+    "false_detection": 18,
+    "flagged_correct": 6,
+    "escaped_error": 5,
+    "flagged_error": 3
+   },
+   "delta": {
+    "cost": -0.1428,
+    "recall": -0.005,
+    "field_acc": 0.0,
+    "escaped_rate": -0.0016,
+    "auto_accept_precision": 0.0026,
+    "auto_accept_rate": 0.0008
+   },
+   "better_under": 4,
+   "precision_unmeasured": false,
+   "passes": false
+  },
+  "no_digit": {
+   "dropped": {
+    "flagged_error": 7,
+    "false_detection": 16,
+    "flagged_correct": 1
+   },
+   "delta": {
+    "cost": 0.3878,
+    "recall": -0.0042,
+    "field_acc": 0.0017,
+    "escaped_rate": 0.0025,
+    "auto_accept_precision": -0.0025,
+    "auto_accept_rate": 0.0
+   },
+   "better_under": 3,
+   "precision_unmeasured": false,
+   "passes": false
+  },
+  "theoretical_no_nominal": {
+   "dropped": {
+    "false_detection": 16,
+    "flagged_error": 3
+   },
+   "delta": {
+    "cost": -0.3877,
+    "recall": -0.0008,
+    "field_acc": 0.0006,
+    "escaped_rate": 0.0017,
+    "auto_accept_precision": -0.0017,
+    "auto_accept_rate": 0.0
+   },
+   "better_under": 5,
+   "precision_unmeasured": false,
+   "passes": false
+  },
+  "note_kind": {
+   "dropped": {
+    "flagged_error": 5,
+    "false_detection": 91,
+    "escaped_error": 24
+   },
+   "delta": {
+    "cost": -2.1632,
+    "recall": -0.0149,
+    "field_acc": 0.0103,
+    "escaped_rate": -0.0132,
+    "auto_accept_precision": 0.0141,
+    "auto_accept_rate": 0.0
+   },
+   "better_under": 5,
+   "precision_unmeasured": false,
+   "passes": false
+  },
+  "theoretical_kind": {
+   "dropped": {
+    "false_detection": 90,
+    "flagged_error": 10,
+    "escaped_error": 11
+   },
+   "delta": {
+    "cost": -2.9796,
+    "recall": -0.0066,
+    "field_acc": 0.0057,
+    "escaped_rate": -0.0025,
+    "auto_accept_precision": 0.0026,
+    "auto_accept_rate": 0.0
+   },
+   "better_under": 6,
+   "precision_unmeasured": false,
+   "passes": false
+  }
+ }
+}

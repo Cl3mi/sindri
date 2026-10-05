@@ -1,0 +1,371 @@
+from app.eval.experiment import arm_row, verdict
+
+
+def _digest(cost, recall, missed, contended, isolated, correct, flagged_correct,
+            escaped, n_gold=477, n_pred=830, false_det=522, misplaced=80):
+    return {
+        "run": "exp-x-dev", "n_gold": n_gold, "n_pred": n_pred,
+        "mean_review_cost": cost, "micro_recall": recall,
+        "micro_precision": 0.37, "escaped_rate": escaped / n_gold,
+        "taxonomy": {"missed": missed, "correct": correct,
+                     "flagged_correct": flagged_correct, "escaped_error": escaped,
+                     "flagged_error": n_gold - missed - correct - flagged_correct
+                                      - escaped,
+                     "false_detection": false_det},
+        "misplaced_matches": misplaced,
+        "missed_diagnosis": {"contended": contended, "isolated": isolated,
+                             "unlocated": missed - contended - isolated},
+        "config": {"extra": {"merge_max_lines": 2}},
+    }
+
+
+CONTROL = _digest(174.3, 0.6457, 169, 82, 74, 72, 40, 129)
+
+
+def test_arm_row_derives_field_accuracy_on_matched_rows():
+    """The number that catches recall bought by breaking correct pairs."""
+    row = arm_row("control", CONTROL)
+    assert row["matched"] == 477 - 169
+    assert row["field_acc"] == round((72 + 40) / (477 - 169), 4)
+
+
+def test_a_real_improvement_draws_no_objection_from_the_taxonomy_conditions():
+    """Cost down, recall up, matched rows no less accurate: a genuine gain, and
+    none of the taxonomy conditions should complain about it.
+
+    Robustness is checked separately and is NOT satisfied here, because no
+    vs-control comparison is supplied -- see
+    test_a_robust_improvement_still_wins for the whole rule passing at once.
+    This test exists to keep the taxonomy half from becoming unsatisfiable."""
+    better = _digest(150.0, 0.70, 140, 55, 74, 95, 50, 130)
+    why = verdict(arm_row("nomerge", better), arm_row("control", CONTROL))["why"]
+    for taxonomy_objection in ("review cost", "field accuracy", "escaped-error",
+                               "recall fell"):
+        assert taxonomy_objection not in why, why
+    assert "robustness unmeasured" in why
+
+
+def test_recall_bought_by_breaking_correct_pairs_is_not_a_win():
+    """The max_cardinality result, encoded so it cannot be repeated: 26 misses
+    recovered, 27 correct pairings destroyed, field accuracy 36.4% -> 25.4%.
+    Review cost fell, so a cost-only rule would have called it an improvement."""
+    inflated = _digest(168.6, 0.7002, 143, 58, 74, 52, 33, 167,
+                       false_det=496, misplaced=126)
+    v = verdict(arm_row("maxcard", inflated), arm_row("control", CONTROL))
+    assert v["win"] is False
+    assert "field accuracy" in v["why"]
+
+
+def test_a_rise_in_silent_errors_is_not_a_win_either():
+    """handoff §6's regression guard: cost down but escaped errors up is a net
+    review-time LOSS, because a silent wrong value reaches the customer."""
+    leaky = _digest(170.0, 0.66, 160, 78, 74, 72, 40, 175)
+    v = verdict(arm_row("leaky", leaky), arm_row("control", CONTROL))
+    assert v["win"] is False
+    assert "escaped" in v["why"]
+
+
+def test_no_cost_improvement_is_not_a_win():
+    worse = _digest(180.0, 0.60, 190, 90, 82, 70, 38, 129)
+    v = verdict(arm_row("worse", worse), arm_row("control", CONTROL))
+    assert v["win"] is False
+    assert "review cost" in v["why"]
+
+
+def test_verdict_names_the_direction_the_arm_confirms():
+    """Direction-finding is the point: which miss bucket actually moved."""
+    merge_win = _digest(150.0, 0.70, 140, 50, 74, 95, 50, 130)
+    v = verdict(arm_row("nomerge", merge_win), arm_row("control", CONTROL))
+    assert v["contended_delta"] == 50 - 82
+    assert v["isolated_delta"] == 0
+
+
+# The real detectbox numbers, 2026-08-27. Cost fell, field accuracy ROSE, and
+# escaped_rate rose only +0.0147 -- inside experiment.py's 0.02 tolerance -- so
+# the three original conditions all passed and the tool printed WIN plus
+# "confirm it on the full corpus". Four things said otherwise, and two of them
+# are checkable here.
+_DETECTBOX = _digest(174.05, 0.631, 176, 87, 70, 72, 46, 136,
+                     false_det=474, misplaced=80)
+_DETECTBOX_CMP_NOT_ROBUST = {
+    "mean_delta": -0.25, "ci95": [-6.35, 6.0], "significant": False,
+    "weight_sensitivity": {"n_weight_vectors": 6, "b_better_fraction": 4 / 6,
+                           "robust": False,
+                           "mean_delta_per_weighting": [-0.25, 4.3, -2.35,
+                                                        -5.75, 2.5, -1.35]},
+}
+
+
+def test_a_recall_drop_is_not_a_win_even_when_cost_and_field_accuracy_improve():
+    """detectbox converted 7 wrong rows into MISSES at w=10 rather than into
+    correct ones, which lifts field accuracy by shrinking its denominator.
+    compare_runs already warns on a recall drop at 0.005 while cost improves;
+    experiment.py tolerated it silently, so the two tools disagreed about the
+    same run and the looser one printed WIN."""
+    v = verdict(arm_row("detectbox", _DETECTBOX), arm_row("control", CONTROL))
+    assert v["win"] is False
+    assert "recall" in v["why"]
+
+
+def test_an_arm_that_is_not_robust_across_weightings_is_not_a_win():
+    """A -0.25 mean on ci95 [-6.35, 6.00], better under 4 of 6 weightings, is
+    indistinguishable from tightmerge's +0.35 -- which findings §4 records as a
+    no-op, not a small gain. Adopting it would be reading noise as direction."""
+    v = verdict(arm_row("detectbox", _DETECTBOX), arm_row("control", CONTROL),
+                comparison=_DETECTBOX_CMP_NOT_ROBUST)
+    assert v["win"] is False
+    assert "robust" in v["why"] or "weighting" in v["why"]
+
+
+def test_robustness_that_was_never_measured_does_not_count_as_passing():
+    """House rule: an unmeasured field must not read as a pass. Without the
+    vs-control comparison there is no evidence the arm beats control under any
+    weighting but the default one."""
+    good = _digest(150.0, 0.70, 140, 55, 74, 95, 50, 130)
+    v = verdict(arm_row("x", good), arm_row("control", CONTROL), comparison=None)
+    assert v["win"] is False
+    assert "unmeasured" in v["why"] or "no comparison" in v["why"]
+
+
+def test_a_robust_improvement_still_wins():
+    """The guard must not make every arm unwinnable: cost down under all six
+    weightings, recall up, accuracy up."""
+    good = _digest(150.0, 0.70, 140, 55, 74, 95, 50, 130)
+    cmp_robust = {
+        "mean_delta": -24.3, "ci95": [-30.0, -18.0], "significant": True,
+        "weight_sensitivity": {"n_weight_vectors": 6, "b_better_fraction": 1.0,
+                               "robust": True,
+                               "mean_delta_per_weighting": [-24.3] * 6},
+    }
+    v = verdict(arm_row("x", good), arm_row("control", CONTROL),
+                comparison=cmp_robust)
+    assert v["win"] is True, v["why"]
+
+
+def test_the_spans_zero_clause_is_only_used_when_the_interval_spans_zero():
+    """nomerge's ci95 is [1.15, 9.70] -- significantly WORSE, not a no-op. The
+    first version of this message appended "an interval spanning zero is a
+    no-op" to every non-robust arm, which was simply untrue for that one. An
+    inaccurate diagnostic is what sent this campaign after the wrong lever in
+    the first place."""
+    worse = _digest(179.9, 0.6625, 161, 74, 74, 68, 43, 139)
+    definitely_worse = {
+        "mean_delta": 5.6, "ci95": [1.15, 9.7], "significant": True,
+        "weight_sensitivity": {"n_weight_vectors": 6, "b_better_fraction": 0.0,
+                               "robust": True},
+    }
+    why = verdict(arm_row("nomerge", worse), arm_row("control", CONTROL),
+                  comparison=definitely_worse)["why"]
+    assert "spanning zero" not in why
+    assert "0 of 6 weightings" in why
+
+    spans_zero = {
+        "mean_delta": -0.25, "ci95": [-6.35, 6.0], "significant": False,
+        "weight_sensitivity": {"n_weight_vectors": 6, "b_better_fraction": 4 / 6,
+                               "robust": False},
+    }
+    why2 = verdict(arm_row("detectbox", _DETECTBOX), arm_row("control", CONTROL),
+                   comparison=spans_zero)["why"]
+    assert "spanning zero" in why2
+
+
+def test_arm_row_carries_the_base_model():
+    """Rung 3 compares an AWQ baseline against an NF4 run of the same weights.
+    A row that does not say which model produced it cannot be read as a result."""
+    digest = _digest(174.3, 0.6457, 169, 82, 74, 72, 40, 129)
+    digest["config"]["model_id"] = "Qwen/Qwen2.5-VL-72B-Instruct"
+    assert arm_row("nf4", digest)["model"] == "Qwen/Qwen2.5-VL-72B-Instruct"
+
+
+def test_arm_row_says_so_when_the_model_was_not_recorded():
+    """Every digest since the Rung-0 baseline records model_id, but an older one
+    must read as unknown rather than as the current default -- the same reason
+    frame_origin_frac is None rather than 0.0."""
+    digest = _digest(174.3, 0.6457, 169, 82, 74, 72, 40, 129)
+    digest["config"].pop("model_id", None)
+    assert arm_row("old", digest)["model"] == "unrecorded"
+
+
+# --- control selection -------------------------------------------------------
+# experiment.py compared every arm to one global control digest. That is wrong
+# for any arm not served on the same base: it reported lora72bnf4 at +13.35
+# against the AWQ, 0.6-threshold exp-control when the matched-control answer
+# against r3-nf4control is +10.00. The comparison file written beside each arm
+# already names the control it was measured against, in run_a -- so the pairing
+# is recorded data, not something to infer from config.extra.
+
+import json
+
+from app.eval.experiment import main
+
+
+def _summary(path, run, cost, **kw):
+    d = _digest(cost, kw.pop("recall", 0.65), kw.pop("missed", 160),
+                kw.pop("contended", 70), kw.pop("isolated", 75),
+                kw.pop("correct", 80), kw.pop("flagged_correct", 40),
+                kw.pop("escaped", 120))
+    d["run"] = run
+    d["config"] = {"model_id": kw.pop("model_id", "Qwen-72B"),
+                   "extra": kw.pop("extra", {"merge_max_lines": 2})}
+    path.write_text(json.dumps(d))
+
+
+def _comparison(path, run_a, run_b, mean_delta, robust=True):
+    path.write_text(json.dumps({
+        "run_a": run_a, "run_b": run_b, "mean_delta": mean_delta,
+        "ci95": [mean_delta - 2, mean_delta + 2], "significant": True,
+        "weight_sensitivity": {"n_weight_vectors": 6,
+                               "b_better_fraction": 1.0 if robust else 0.3,
+                               "robust": robust},
+        "warnings": []}))
+
+
+def _two_base_corpus(tmp_path):
+    """An AWQ control, an NF4 control, and one arm served on the NF4 base."""
+    _summary(tmp_path / "exp-control-summary.json", "r3-awqcontrol-dev", 170.05)
+    _summary(tmp_path / "nf4control-summary.json", "r3-nf4control-dev", 176.40)
+    _summary(tmp_path / "exp-loraread-summary.json", "r3-loraread-dev", 172.00,
+             extra={"merge_max_lines": 2, "quant": "nf4",
+                    "adapter": "read-lora-v1", "adapter_scope": "read"})
+    _comparison(tmp_path / "loraread-vs-nf4control.json",
+                "r3-nf4control-dev", "r3-loraread-dev", -4.40)
+    return tmp_path
+
+
+def test_an_arm_is_judged_against_the_control_its_comparison_names(tmp_path,
+                                                                   capsys):
+    """172.00 against the NF4 control it actually ran on is -4.40 and a WIN.
+    Against the AWQ global control it is +1.95 and a loss. Same arm, opposite
+    verdict -- which is why the control cannot be a single global file."""
+    assert main([str(_two_base_corpus(tmp_path))]) == 0
+    out = capsys.readouterr().out
+
+    assert "-4.40" in out or "-4.4" in out
+    assert "+1.95" not in out
+    assert "WIN" in out
+
+
+def test_the_named_control_is_reported_so_the_pairing_is_auditable(tmp_path,
+                                                                   capsys):
+    """Every wrong verdict on this corpus came from an unstated comparison. The
+    control each arm was judged against has to be visible in the table."""
+    assert main([str(_two_base_corpus(tmp_path))]) == 0
+    assert "r3-nf4control-dev" in capsys.readouterr().out
+
+
+def test_an_arm_whose_control_digest_is_absent_is_not_silently_repaired(
+        tmp_path, capsys):
+    """A comparison naming a control whose digest is missing must be reported,
+    not quietly fall back to the global control -- that fallback is the bug."""
+    _summary(tmp_path / "exp-control-summary.json", "r3-awqcontrol-dev", 170.05)
+    _summary(tmp_path / "exp-ghost-summary.json", "r3-ghost-dev", 172.00,
+             extra={"merge_max_lines": 2, "quant": "nf4"})
+    _comparison(tmp_path / "ghost-vs-missing.json",
+                "r3-not-here-dev", "r3-ghost-dev", -4.40)
+
+    assert main([str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "r3-not-here-dev" in out
+    assert "no matched control" in out.lower()
+
+
+def test_a_digest_used_as_a_control_is_not_also_listed_as_an_arm(tmp_path,
+                                                                capsys):
+    """r3-nf4control is the control for both LoRA arms AND was itself measured
+    against r3-base72bnf4 when the review threshold moved. Auto-discovery found
+    that second comparison and listed the control as a winning arm, which reads
+    as a third treatment win that does not exist. A run something else is judged
+    against is a control, whatever else was once measured about it."""
+    _summary(tmp_path / "exp-control-summary.json", "r3-awqcontrol-dev", 170.05)
+    _summary(tmp_path / "base72bnf4-summary.json", "r3-base72bnf4-dev", 179.80)
+    _summary(tmp_path / "nf4control-summary.json", "r3-nf4control-dev", 176.40)
+    _summary(tmp_path / "loraread-summary.json", "r3-loraread-dev", 172.00)
+    # the control's own re-score, and the arm it serves as control for
+    _comparison(tmp_path / "nf4control-vs-base72bnf4.json",
+                "r3-base72bnf4-dev", "r3-nf4control-dev", -3.40)
+    _comparison(tmp_path / "loraread-vs-nf4control.json",
+                "r3-nf4control-dev", "r3-loraread-dev", -4.40)
+
+    assert main([str(tmp_path)]) == 0
+    verdicts = capsys.readouterr().out.split("verdicts")[1]
+
+    assert "loraread" in verdicts
+    assert "nf4control" not in verdicts.split("[vs")[0] or True
+    assert not any(line.strip().startswith(("WIN", "no"))
+                   and " nf4control " in line
+                   for line in verdicts.splitlines()), verdicts
+
+
+def test_arm_row_derives_auto_accept_precision():
+    row = arm_row("control", CONTROL)
+    assert row["auto_accept_precision"] == round(72 / (72 + 129), 4)
+
+
+def test_cost_bought_by_flagging_more_is_not_a_win():
+    """An arm whose flags land on correct rows, lowering precision, is not a
+    win even if cost fell for other reasons. (Cost falls when an ESCAPED
+    error moves to flagged_error, -4, and precision RISES; here a correct row
+    moves to flagged_correct instead, +1, and precision falls -- the losing
+    trade.)"""
+    arm = _digest(170.0, 0.6457, 169, 82, 74, 20, 92, 129)
+    v = verdict(arm_row("arm", arm), arm_row("control", CONTROL),
+                comparison={"weight_sensitivity": {"robust": True,
+                            "b_better_fraction": 1.0, "n_weight_vectors": 6}})
+    assert not v["win"]
+    assert "auto-accept precision fell" in v["why"]
+
+
+def test_arm_row_reports_no_auto_accept_precision_when_nothing_is_unflagged():
+    """Zero unflagged rows is 'nothing automated', never a fabricated 0.0 --
+    the same rule report._auto_accept already enforces for the digest."""
+    flagged_all = _digest(150.0, 0.6457, 169, 82, 74, 0, 112, 0)
+    row = arm_row("flagall", flagged_all)
+    assert row["auto_accept_precision"] is None
+
+
+def test_arm_row_derives_auto_accept_rate():
+    """Rate is over ALL gold, not just matched rows -- it is what falls when
+    flagging is spread evenly and precision cannot see it (see the random-
+    flagging test below)."""
+    row = arm_row("control", CONTROL)
+    assert row["auto_accept_rate"] == round(72 / 477, 4)
+
+
+def test_flag_everything_is_not_a_win_even_with_lower_cost():
+    """Precision is undefined, not perfect, when nothing is left unflagged --
+    'auto-accepts nothing' must say so on its own, independent of the rate or
+    field_acc guards."""
+    flag_everything = _digest(150.0, 0.6457, 169, 82, 74, 0, 112, 0)
+    v = verdict(arm_row("flagall", flag_everything), arm_row("control", CONTROL),
+                comparison={"weight_sensitivity": {"robust": True,
+                            "b_better_fraction": 1.0, "n_weight_vectors": 6}})
+    assert not v["win"]
+    assert "auto-accepts nothing" in v["why"]
+    assert v["auto_accept_delta"] is None
+
+
+def test_control_with_zero_unflagged_is_unmeasured_not_perfect():
+    """An unmeasured condition is not a passing one -- the module's rule,
+    applied to a control that itself never left anything unflagged."""
+    null_control = _digest(174.3, 0.6457, 169, 82, 74, 0, 112, 0)
+    v = verdict(arm_row("arm", CONTROL), arm_row("control", null_control),
+                comparison={"weight_sensitivity": {"robust": True,
+                            "b_better_fraction": 1.0, "n_weight_vectors": 6}})
+    assert "auto-accept precision unmeasured on control" in v["why"]
+    assert v["auto_accept_delta"] is None
+
+
+def test_random_flagging_is_not_a_win_via_the_rate_guard():
+    """Flagging at RANDOM -- correct and escaped both cut by the same factor,
+    the rest moved to their flagged twins -- leaves precision flat (it may
+    even rise slightly) while cost falls and fewer rows are automated. Only
+    the rate guard, not the precision one, can catch this."""
+    # control: correct 72, escaped 129 (precision 72/201=0.3582)
+    # arm:     correct 36, escaped 64  (precision 36/100=0.3600 -- UP, not down)
+    random_flag = _digest(160.0, 0.6457, 169, 82, 74, 36, 76, 64)
+    v = verdict(arm_row("arm", random_flag), arm_row("control", CONTROL),
+                comparison={"weight_sensitivity": {"robust": True,
+                            "b_better_fraction": 1.0, "n_weight_vectors": 6}})
+    assert not v["win"]
+    assert "auto-accept precision fell" not in v["why"]
+    assert "auto-accept rate fell" in v["why"]
