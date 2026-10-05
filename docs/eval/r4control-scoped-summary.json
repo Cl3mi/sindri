@@ -22,7 +22,11 @@
   "correct": 70,
   "escaped": 17,
   "precision": 0.8046,
-  "rate": 0.2251
+  "rate": 0.2251,
+  "false_unflagged": 80,
+  "false_unflagged_not_measured": 0,
+  "n_delivered": 167,
+  "delivered_precision": 0.4192
  },
  "reapplied_policy": null,
  "error_causes": {
