@@ -1,5 +1,12 @@
 """The general tolerance a drawing names (ISO 2768-1), applied to dimensions
-whose read carries no tolerance of its own.
+whose read carries no tolerance of its own -- as a MEASUREMENT only.
+
+REJECTED as a pipeline step on 2026-10-05: the registered CPU gate failed on
+train (would_fix 12, would_break 63; docs/plans/2026-10-05-general-tolerance-
+result.md). It lives in app/eval, imported by nothing in app/pipeline, so the
+product is byte-identical to before; `score --gentol-check` keeps it runnable
+for the adapter-target question, where gold == the table value is still the one
+gold-free way to tell a general tolerance from a printed one.
 
 Gold carries the general tolerance on nearly every row, so a dimension read
 without one is wrong by construction -- `no_tolerance` exists to flag exactly
@@ -166,7 +173,6 @@ def fill_row(c: Characteristic, cls: Optional[str]) -> str:
     if v is None:
         return "table_none"
     c.upper_tol, c.lower_tol = _fmt(v), "-" + _fmt(v)
-    c.tol_source = "general"
     return "filled"
 
 

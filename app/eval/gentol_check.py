@@ -24,8 +24,8 @@ from app.eval.normalize import values_equal
 from app.eval.policy_check import _better_under, _delta, _score_all, _stats
 from app.eval.reapply import reapply_current_code
 from app.eval.report import WEIGHT_GRID, recompute_cost
-from app.pipeline.general_tolerance import (document_class, fill_row,
-                                            has_fit_notation, iso2768, _fmt)
+from app.eval.general_tolerance import (document_class, fill_row,
+                                        has_fit_notation, iso2768, _fmt)
 
 MIN_FIX = 20          # registered: ~-0.4/doc on train's 49 docs, below the
                       # smallest change ever shipped (Ø-zone, -0.67)
@@ -166,8 +166,15 @@ def _attribute(control: Dict[str, PredictionDump], arm: Dict[str, PredictionDump
             outcome[pos] = ("conflict" if dc.conflict
                             else fill_row(c.model_copy(deep=True), dc.cls))
             _bump(rows, outcome[pos])
+        def was_filled(pos):
+            # The fill only ever writes a tolerance where the control had
+            # none, so a tolerance appearing is exactly "filled".
+            c, a = ctl_by_pos[pos], arm_by_pos[pos]
+            return (not c.upper_tol and not c.lower_tol
+                    and bool(a.upper_tol or a.lower_tol))
+
         for pos in s_a.false_positions:
-            if arm_by_pos[pos].tol_source == "general":
+            if was_filled(pos):
                 filled_false += 1
 
         gold_by_num = {g.balloon: g for g in golds[doc_id].characteristics}
@@ -175,7 +182,7 @@ def _attribute(control: Dict[str, PredictionDump], arm: Dict[str, PredictionDump
         for key, p_c in pairs_c.items():
             _bump(matched_rows, outcome[p_c.pred_pos])
             filled = arm_by_pos[p_c.pred_pos]
-            if filled.tol_source != "general":
+            if not was_filled(p_c.pred_pos):
                 continue
             t_c, t_a = p_c.taxonomy, pairs_a[key].taxonomy
             _bump(transitions, f"{t_c}->{t_a}")

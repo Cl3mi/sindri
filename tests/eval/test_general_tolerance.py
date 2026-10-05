@@ -13,7 +13,7 @@ import pytest
 
 from app.models import (Characteristic, ExtractionResult, Note, NoteBlock,
                         TitleField)
-from app.pipeline import general_tolerance as gt
+from app.eval import general_tolerance as gt
 
 
 # --- §2 the ISO 2768-1 table -------------------------------------------------
@@ -219,7 +219,6 @@ def test_fill_writes_the_parsers_own_symmetric_format():
     assert gt.fill_row(c, "m") == "filled"
     printed = parse_value("20 ±0,2")
     assert (c.upper_tol, c.lower_tol) == (printed.upper_tol, printed.lower_tol)
-    assert c.tol_source == "general"
 
 
 def test_fill_formats_without_trailing_zeros_and_with_a_comma():
@@ -291,5 +290,11 @@ def test_apply_with_a_conflict_fills_nothing():
     assert r.characteristics[0].upper_tol == ""
 
 
-def test_tol_source_defaults_to_none_so_old_dumps_do_not_lie():
-    assert Characteristic(pos=1).tol_source is None
+def test_nothing_in_the_pipeline_imports_the_rejected_fill():
+    """The gate failed (2026-10-05): the fill must stay a measurement. If a
+    pipeline module ever imports it, the product changed without a price."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[2] / "app" / "pipeline"
+    hits = [p.name for p in root.rglob("*.py")
+            if "general_tolerance" in p.read_text(encoding="utf-8")]
+    assert hits == []

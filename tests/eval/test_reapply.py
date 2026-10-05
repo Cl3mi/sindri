@@ -112,8 +112,7 @@ def test_fill_on_fills_and_the_no_tolerance_flag_no_longer_fires():
     off = reapply_current_code(d, fill=False).result.characteristics[0]
     on = reapply_current_code(d, fill=True).result.characteristics[0]
     assert off.needs_review and not off.upper_tol
-    assert (on.upper_tol, on.lower_tol, on.tol_source) == ("0,2", "-0,2",
-                                                            "general")
+    assert (on.upper_tol, on.lower_tol) == ("0,2", "-0,2")
     assert not on.needs_review and on.review_reasons == []
 
 
@@ -131,7 +130,7 @@ def test_fill_runs_after_drops_so_a_dropped_row_is_never_filled():
     at no higher confidence. The survivor is the outer box, and only it may
     be filled -- filling before dropping would have filled the dropped one
     too, harmlessly here, but a fill must never be what decides a drop."""
-    from app.pipeline.extract import _apply_active_drops
+    from app.pipeline import policy_rules as pr
     outer = Characteristic(pos=1, kind="dimension", char_type="Distance",
                            nominal="20", raw_text="20", confidence=0.99,
                            target_region=(100.0, 100.0, 300.0, 160.0))
@@ -139,7 +138,8 @@ def test_fill_runs_after_drops_so_a_dropped_row_is_never_filled():
                                      "target_region": (120.0, 110.0,
                                                        200.0, 150.0)})
     # the gate: the fixture must actually trip the active drop rule
-    assert [c.pos for c in _apply_active_drops([outer, inner])] == [1]
+    assert [c.pos for c in pr.apply_drop_rules([outer, inner],
+                                               pr.ACTIVE_DROP_RULES)] == [1]
     on = reapply_current_code(_gentol_dump([outer, inner]), fill=True)
     assert [c.pos for c in on.result.characteristics] == [1]
-    assert on.result.characteristics[0].tol_source == "general"
+    assert on.result.characteristics[0].upper_tol == "0,2"

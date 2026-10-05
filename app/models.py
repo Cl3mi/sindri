@@ -51,11 +51,6 @@ class Characteristic(BaseModel):
     balloon_xy: Optional[Tuple[float, float]] = None        # image-space
     target_region: Optional[Tuple[float, float, float, float]] = None  # x0,y0,x1,y1
     note_ref_pos: Optional[int] = None    # set when subtype == "note_ref"
-    # "general" when upper_tol/lower_tol were filled from the drawing's ISO
-    # 2768 class (pipeline/general_tolerance.py) rather than read at the
-    # callout. None means "read, or never filled" -- including every dump
-    # written before the fill existed, which is why it is not "read".
-    tol_source: Optional[str] = None
 
 
 class Note(BaseModel):
