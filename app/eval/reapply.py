@@ -23,7 +23,9 @@ from `--reapply-policy`."""
 import copy
 
 from app.eval.models import PredictionDump
-from app.pipeline.extract import _apply_active_policy, _HINTS
+from app.pipeline.extract import (_apply_active_drops, _apply_active_flags,
+                                  _apply_active_policy, _HINTS)
+from app.pipeline.general_tolerance import apply_general_tolerance
 from app.pipeline.parser import parse_value
 from app.pipeline.review import review_flags
 
@@ -45,7 +47,8 @@ def _known_note_positions(result):
     return {n.pos for n in result.notes.notes if n.parent_pos is None}
 
 
-def reapply_current_code(dump: PredictionDump) -> PredictionDump:
+def reapply_current_code(dump: PredictionDump,
+                         fill: bool = False) -> PredictionDump:
     """A copy of `dump` as today's post-read code would have emitted it.
 
     Never mutates `dump`. For each characteristic: re-parse `raw_text` with
@@ -69,5 +72,15 @@ def reapply_current_code(dump: PredictionDump) -> PredictionDump:
         fresh.needs_review, fresh.review_reasons = review_flags(
             fresh, rotation_ambiguous, known_note_positions=known_positions)
         new_chars.append(fresh)
-    dump.result.characteristics = _apply_active_policy(new_chars)
+    if not fill:
+        dump.result.characteristics = _apply_active_policy(new_chars)
+        return dump
+    # The general-tolerance arm, in the order the registration fixes for
+    # the pipeline: drops, then the fill, then flags -- so a filled row is
+    # judged by no_tolerance AFTER it has a tolerance, and a dropped row is
+    # never filled. Flags and drops are order-independent (see
+    # _apply_active_policy), so with nothing filled this equals the path above.
+    dump.result.characteristics = _apply_active_drops(new_chars)
+    apply_general_tolerance(dump.result)
+    _apply_active_flags(dump.result.characteristics)
     return dump

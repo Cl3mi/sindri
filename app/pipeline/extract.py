@@ -238,11 +238,19 @@ def _apply_active_policy(results):
     the offline counterfactual applies drops before flags, but no drop rule
     reads needs_review/review_reasons and no flag rule touches a field a
     drop rule reads, so the two orders agree."""
+    return _apply_active_drops(_apply_active_flags(results))
+
+
+def _apply_active_flags(results):
     for c in results:
         extra = pr.apply_flag_rules(c, pr.ACTIVE_FLAG_RULES)
         if extra:
             c.needs_review = True
             c.review_reasons = [*c.review_reasons, *extra]
+    return results
+
+
+def _apply_active_drops(results):
     return pr.apply_drop_rules(results, pr.ACTIVE_DROP_RULES)
 
 

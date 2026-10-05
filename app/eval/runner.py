@@ -665,6 +665,10 @@ def _cmd_score(args):
     gold = _load_gold_dir(args.gold)
     dumps = {d.doc_id: d for d in
              (load_dump(p) for p in sorted(Path(args.run).glob("*.pred.json")))}
+    # --gentol-check builds its own control and arm from these ORIGINALS:
+    # pricing it on dumps --reapply-policy already rewrote would apply
+    # today's post-read code twice.
+    original_dumps = dumps
     reapplied = None
     if getattr(args, "reapply_policy", False):
         # Post-read only: parser + review flags + ACTIVE policy rules are all
@@ -836,6 +840,19 @@ def _cmd_score(args):
             Path(args.policy_out).parent.mkdir(parents=True, exist_ok=True)
             Path(args.policy_out).write_text(blob, encoding="utf-8")
         print(blob)
+    # The general-tolerance gate (registration 2026-10-05 §4): counts and
+    # salted ids only, to a file, because '>' redirects are denied.
+    if getattr(args, "gentol_check", False):
+        from app.eval.gentol_check import gentol_report
+        gr = gentol_report(original_dumps, gold, doc_ids, weights, params,
+                           anonymizer=_anon(args))
+        blob = json.dumps(gr, indent=1)
+        if args.gentol_out:
+            Path(args.gentol_out).parent.mkdir(parents=True, exist_ok=True)
+            Path(args.gentol_out).write_text(blob, encoding="utf-8")
+        print(f"gentol-check: would_fix={gr['would_fix']} "
+              f"would_break={gr['would_break']} "
+              f"gate={gr['verdict']} reconciles={gr['reconciles']}")
     # The review deck holds client text, so it goes to a file inside a
     # protected root and only its row COUNT is printed -- this stdout may be an
     # agent's context.
@@ -1054,6 +1071,12 @@ def main(argv=None) -> int:
                    help="comma-separated flag rules to price as a JOINT set")
     p.add_argument("--drop-rules", default="",
                    help="comma-separated drop rules to price as a JOINT set")
+    p.add_argument("--gentol-check", action="store_true",
+                   help="DIAGNOSTIC: price fill_general_tolerance (ISO 2768) "
+                        "by re-scoring today's post-read code with and "
+                        "without it; counts only; the report is untouched")
+    p.add_argument("--gentol-out", default=None,
+                   help="write the --gentol-check JSON here (counts only)")
     p.add_argument("--reapply-policy", action="store_true",
                    help="score as if today's parser and ACTIVE policy rules "
                         "had produced the dumps -- DERIVED, exact for "
