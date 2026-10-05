@@ -68,6 +68,21 @@ DERIVED; no current-code run exists on test. **`r4-control` (118.73) is the
 dev control for every later arm — never compare a new arm against an `r3-*`
 control** (`compare_runs` warns when the review policy differs).
 
+**`read-lora-v1` IS NOW HARMFUL UNDER THE SHIPPED POLICY — deployment CLOSED**
+(2026-10-05, `docs/plans/2026-10-05-read-adapter-repricing-result.md`;
+DERIVED, `--reapply-policy` on stored dev dumps, pad 6). The scoped adapter's
+old −3.40 / −2.47 became **+3.33 (NF4) and +4.27 (vLLM)**, both significant,
+0/6 weightings, auto-accept precision 0.75 → 0.66. Mechanism, reconciling
+exactly: the adapter fills missing tolerances with plausible wrong ones, so
+`no_tolerance` stops firing and those rows go from flagged to silently wrong
+(`flagged_error` −20/−23, `escaped_error` +13/+14). **A flag rule keyed on a
+field being ABSENT is defeated by any model change that fills the field, right
+or wrong. Price every read-stage arm under the active rules.** Side findings:
+NF4's serving overhead is now +0.20 (was +3.54); the unscoped / merged shape
+costs +17.20, and `contained_duplicate` absorbs none of its +183 false
+detections. **A merged checkpoint cannot keep read/detect scoping**: it has no
+base weights for `detect_regions`.
+
 **AUTO-ACCEPT PRECISION IS THE GUARD REVIEW COST LACKS.** flag=1 < escaped=5
 means flagging more always lowers cost — flagging every matched row cost 223 vs
 406 on dev and automates nothing. The digest's `auto_accept` (`precision` =
@@ -658,6 +673,13 @@ GPU days.
   proposals far from any gold. Even a perfect verifier caps at ≈ −3.6/doc.
   Built and reverted; the misses the VLM makes are misses tesseract makes too.
   Isolated misses stay a detector-WEIGHTS problem (Rung 3: 75 → 43).
+* **Deploying `read-lora-v1` by ANY route** (NF4, vLLM, merge-and-requantise)
+  (2026-10-05, `docs/plans/2026-10-05-read-adapter-repricing-result.md`).
+  Under the shipped policy the adapter itself costs +3.33 / +4.27 before any
+  serving overhead, on two independent stacks. **Do not run `mergedcontrol` /
+  `loramerged`.** A re-trained adapter is NOT closed: fix `render_target` so a
+  target never renders a tolerance the drawing does not print, then price it
+  under the active rules with `escaped_error` as the damage counter.
 * **`predict --detect-only` as a way to cheapen the crop pass.** Detection is
   ~2/3 of per-document cost, not the reads: detection-only measured 10 m 55 s and
   23 m 45 s on dev documents 2 and 3 against a full-predict median of ~16 min, and
