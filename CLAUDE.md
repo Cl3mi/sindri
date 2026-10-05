@@ -63,10 +63,20 @@ dump predicted from now on differs in config from every `r3-*` dump.
 unchanged, field_acc 0.5291 → 0.5381. `experiment.py`: WIN, best arm on record.
 It reproduced the DERIVED prediction (`score --reapply-policy`) on every digest
 aggregate to the decimal — the offline pricing is exact, not an estimate.
-Test (165.18 → **149.73**, auto-accept precision 0.44 → 0.70) is still
-DERIVED; no current-code run exists on test. **`r4-control` (118.73) is the
-dev control for every later arm — never compare a new arm against an `r3-*`
-control** (`compare_runs` warns when the review policy differs).
+**Test is now MEASURED too: `r4-controltest` = 149.82** (2026-10-06,
+`docs/plans/2026-10-06-r4controltest-result.md`; derived was 149.73). Missed
+reproduced exactly (108), but auto-accept precision is **0.684** (24 silent
+errors of 76 auto-accepted) and pad 24's dev gain did not carry over to test
+(+0.09, 3/6, precision −0.014). **`r4-control` (118.73) is the dev control and
+`r4-controltest` (149.82) the test control for every later arm — never compare
+a new arm against an `r3-*` control** (`compare_runs` warns when the review
+policy differs; against a `--reapply-policy` report that warning is spurious).
+
+**THE CLIENT RANKS PRECISION OVER RECALL** (operator, 2026-10-05): every
+delivered value must be true, and that matters more than finding every value.
+`weights.json` (miss 10 > escaped 5 > false 2) encodes the opposite, so judge
+arms on auto-accept precision and silent errors first, then false detections,
+then recall, until the client's own weights arrive.
 
 **`read-lora-v1` IS NOW HARMFUL UNDER THE SHIPPED POLICY — deployment CLOSED**
 (2026-10-05, `docs/plans/2026-10-05-read-adapter-repricing-result.md`;
