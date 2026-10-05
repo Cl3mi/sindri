@@ -251,3 +251,28 @@ def test_reconciliation_catches_a_cost_move_the_fill_did_not_cause():
     r = gc._attribute(control, arm, {"D": gold}, ["D"], ReviewCostWeights(),
                       MatchParams())
     assert r["reconciles"] is False
+
+
+@pytest.mark.parametrize("upper,lower,shape", [
+    ("0,3", "0,3", "table_magnitude"),   # unsigned lower bound
+    ("+0,3", "-0,3", "table_magnitude"),  # unreachable here: it equals the fill
+    ("0,1", "-0,1", "symmetric_other"),
+    ("+0,05", "-0,02", "asymmetric"),
+    ("+0,1", "", "one_sided"),
+    ("", "-0,1", "one_sided"),
+])
+def test_printed_missed_shape_separates_a_format_artefact(upper, lower, shape):
+    """'printed_missed' claims the drawing printed a tolerance other than the
+    general one. If gold merely writes the general one in another SHAPE (an
+    unsigned lower bound), that claim is a measurement artefact -- this is
+    the count that tells the two apart."""
+    from app.eval.models import GoldCharacteristic
+    from decimal import Decimal
+    g = GoldCharacteristic(balloon=1, nominal="50", upper_tol=upper,
+                           lower_tol=lower)
+    assert gc.printed_shape(g, Decimal("0.3")) == shape
+
+
+def test_report_carries_the_printed_missed_shapes():
+    r = _report()
+    assert r["printed_missed_shape"] == {"asymmetric": 1}

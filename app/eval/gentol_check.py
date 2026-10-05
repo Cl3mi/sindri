@@ -98,6 +98,25 @@ def _break_category(gold, filled, doc_cls: str) -> str:
     return "printed_missed"
 
 
+def _abs(v):
+    from app.eval.normalize import _try_decimal
+    d = _try_decimal(str(v or ""))
+    return None if d is None else abs(d)
+
+
+def printed_shape(gold, v) -> str:
+    """For a `printed_missed` row: is gold's tolerance really something other
+    than the general one, or the general MAGNITUDE written in another shape
+    (an unsigned lower bound, say)? The second would make the category a
+    measurement artefact, so it is counted rather than assumed away."""
+    u, lo = _abs(gold.upper_tol), _abs(gold.lower_tol)
+    if u is None or lo is None:
+        return "one_sided"
+    if u == lo == v:
+        return "table_magnitude"
+    return "symmetric_other" if u == lo else "asymmetric"
+
+
 def _head(cat: str) -> str:
     return "other" if cat.startswith("other:") else cat
 
@@ -121,6 +140,7 @@ def _attribute(control: Dict[str, PredictionDump], arm: Dict[str, PredictionDump
     coverage = {"docs": len(doc_ids), "by_source": {}, "class_histogram": {}}
     rows, matched_rows, transitions = {}, {}, {}
     breakdown, neutral_n, fix_n, brk_n, filled_false = {}, 0, 0, 0, 0
+    shapes: Dict[str, int] = {}
     slices = {"by_class": {}, "by_kind": {}, "by_source": {}}
     per_doc: Dict[str, Tuple[int, int]] = {}
 
@@ -174,6 +194,10 @@ def _attribute(control: Dict[str, PredictionDump], arm: Dict[str, PredictionDump
                 brk_n += 1
                 d_brk += 1
                 _bump(breakdown, cat)
+                if cat == "printed_missed":
+                    _bump(shapes, printed_shape(
+                        gold_by_num[p_c.gold_balloon],
+                        iso2768(dc.cls, filled.nominal, filled.char_type)))
                 for axis, val in axes.items():
                     slices[axis][val]["would_break"] += 1
                     _bump(slices[axis][val]["break_breakdown"], cat)
@@ -215,6 +239,7 @@ def _attribute(control: Dict[str, PredictionDump], arm: Dict[str, PredictionDump
         "would_break": brk_n,
         "break_breakdown": ordered,
         "break_heads": heads,
+        "printed_missed_shape": shapes,
         "neutral": neutral_n,
         "gate": g,
         "verdict": "PASS" if g["passes"] else "FAIL",
