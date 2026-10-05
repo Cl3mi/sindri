@@ -368,6 +368,8 @@ def score_doc(dump: PredictionDump, gold: GoldDoc,
         doc_id=gold.doc_id, gold_hash=gold.gold_hash(),
         n_gold=n_gold, n_pred=n_pred, pairs=pairs,
         missed_balloons=missed, false_positions=false, counts=counts,
+        false_unflagged=sum(1 for pk in false
+                            if not pred_by_pos[pk].needs_review),
         excluded_by_kind=excluded_by_kind,
         effective_dpi=dump.scale * 72.0,
         pred_kinds=pred_kinds, false_kinds=false_kinds,

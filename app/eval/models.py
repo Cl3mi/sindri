@@ -257,6 +257,12 @@ class DocScore(_Versioned):
     # None = NOT MEASURED (any DocScore written before these fields existed).
     dropped_tol_rows: Optional[int] = None
     dropped_tol_distinct: Optional[int] = None
+    # False detections the pipeline left UNFLAGGED: phantom values delivered
+    # without a reviewer being asked. auto_accept.precision counts matched rows
+    # only, so without this an unflagged phantom is invisible to the one ratio
+    # the client cares about most (precision over recall, 2026-10-05).
+    # None = NOT MEASURED (scored before this field existed).
+    false_unflagged: Optional[int] = None
     # Disagreement between gold.page_rect and dump.page_rect, as a fraction of the
     # gold page diagonal. score_doc places predictions with the dump's frame and
     # the match gate with the gold's, and gold geometry is CV-recovered from the

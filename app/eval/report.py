@@ -673,9 +673,21 @@ def _auto_accept(report: RunReport) -> Dict:
     correct, escaped = t.get("correct", 0), t.get("escaped_error", 0)
     n_auto = correct + escaped
     n_gold = sum(d.n_gold for d in report.doc_scores)
+    # Delivered precision adds the phantoms that ship unflagged. Measured only
+    # when EVERY document carries the count: a partial sum would read as fewer
+    # phantoms than there are, i.e. as better precision than was achieved.
+    not_measured = sum(1 for d in report.doc_scores if d.false_unflagged is None)
+    false_unflagged = (None if not_measured else
+                       sum(d.false_unflagged for d in report.doc_scores))
+    n_delivered = None if false_unflagged is None else n_auto + false_unflagged
     return {"n_auto": n_auto, "correct": correct, "escaped": escaped,
             "precision": auto_accept_precision(t),
-            "rate": round(correct / n_gold, 4) if n_gold else None}
+            "rate": round(correct / n_gold, 4) if n_gold else None,
+            "false_unflagged": false_unflagged,
+            "false_unflagged_not_measured": not_measured,
+            "n_delivered": n_delivered,
+            "delivered_precision": (round(correct / n_delivered, 4)
+                                    if n_delivered else None)}
 
 
 def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
