@@ -42,12 +42,14 @@ advisory, and it has been right every single time it fired.
 
 ## 2. Where things stand
 
-**Read `docs/plans/2026-09-26-session-handoff.md` first — it is the current
-state of play: the policy arms shipped (flag/drop rules, dev 131.87 → 118.73
-DERIVED), OCR proposals closed, and what runs next.** It supersedes
-`2026-09-25-session-handoff.md`. For device setup on a fresh clone,
-`docs/plans/2026-09-17-session-handoff.md` §1 still applies. Everything below
-is the durable summary.
+**Read `docs/plans/2026-10-07-session-handoff.md` first — it is the current
+state of play: the automated-precision direction is CLOSED and fully written up
+(current quality, MEASURED: delivered precision dev 0.526 / test 0.958; what
+shipped, what closed, what is parked), and the next direction is
+human-in-the-loop (grading recommendations against reviewer actions, cognitive
+forcing).** It supersedes `2026-09-26-session-handoff.md`. For device setup on
+a fresh clone, `docs/plans/2026-09-17-session-handoff.md` §1 still applies.
+Everything below is the durable summary.
 
 **THE PIPELINE NOW FLAGS AND DROPS BY POLICY, BY DEFAULT** (2026-09-25/26,
 `docs/plans/2026-09-25-policy-arms-result.md`). `app/pipeline/policy_rules.py`
@@ -168,7 +170,7 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **1290 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **1293 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). **`tesseract` is a device
 prerequisite** — without the binary six tests fail as `TesseractNotFoundError`
 and read as broken code. `SCHEMA_VERSION` = 1 — do not bump it. Split frozen
@@ -908,7 +910,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 1290 passed, 2 skipped
+python -m pytest -q                          # 1293 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```
