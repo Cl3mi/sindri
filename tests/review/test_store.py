@@ -1,6 +1,7 @@
 """The durable review record (design §2). Every refusal here exists so that an
 incomplete or foreign log is never graded as if it were whole."""
 import json
+import threading
 
 import pytest
 
@@ -119,3 +120,56 @@ def test_create_refuses_to_overwrite_a_sealed_session(store, writer):
     store.seal(SID, writer, 0, [row("a"), row("b")], [])
     with pytest.raises(JournalInvalid):
         store.create(SID, {"h": 2}, {"rows": []})
+
+
+def test_append_tolerates_a_torn_trailing_line(store, writer):
+    # A crash mid-append can only tear the LAST line, and that batch was
+    # never acknowledged to the client, so it resends exactly this event.
+    d = store.root / SID
+    (d / "events.jsonl").write_text(
+        json.dumps(ev(1, "accept", ids=["a"])) + "\n"
+        + json.dumps(ev(2, "unaccept", ids=["a"])) + "\n"
+        + '{"seq": 3, "type": "delete_row", "id": "b"'  # no closing brace, no newline
+    )
+    assert store.append(SID, writer, [ev(3, "delete_row", id="b")]) == 3
+    assert store.seal(SID, writer, 3, [row("a")], [])["replay_ok"] is True
+
+
+def test_a_malformed_middle_line_is_corruption_not_a_crash(store, writer):
+    # Only the LAST line is forgiven; a broken line buried earlier in the
+    # file was never the tail of an in-flight write and means the log
+    # cannot be trusted.
+    d = store.root / SID
+    (d / "events.jsonl").write_text(
+        json.dumps(ev(1, "accept", ids=["a"])) + "\n"
+        + "not json at all\n"
+        + json.dumps(ev(3, "delete_row", id="b")) + "\n"
+    )
+    with pytest.raises(JournalInvalid):
+        store.append(SID, writer, [])
+
+
+def test_concurrent_appends_of_the_same_batch_land_exactly_once(store, writer):
+    # FastAPI serves sync endpoints on a thread pool, and the UI's pagehide
+    # beacon can race a normal flush for the same session; without a lock,
+    # two threads can both read the same "have" set and both write the same
+    # seq, duplicating a line (and, for a retract, corrupting net_events).
+    events = [ev(1, "accept", ids=["a"]), ev(2, "unaccept", ids=["a"]),
+              ev(3, "delete_row", id="b")]
+    barrier = threading.Barrier(2)
+    results = []
+
+    def go():
+        barrier.wait()
+        results.append(store.append(SID, writer, events))
+
+    threads = [threading.Thread(target=go) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert results == [3, 3]
+    lines = (store.root / SID / "events.jsonl").read_text().splitlines()
+    assert sorted(json.loads(l)["seq"] for l in lines) == [1, 2, 3]
+    assert store.seal(SID, writer, 3, [row("a")], ["a"])["revision"] == 1
