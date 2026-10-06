@@ -61,3 +61,17 @@ def test_consent_comes_from_the_environment(sample_pdf, stub_backend, store, mon
     result = extract(sample_pdf)
     header = json.loads((store.root / result["session_id"] / "header.json").read_text())
     assert header["consent"] is True
+
+
+def test_a_review_capture_fault_does_not_fail_the_extraction(
+        sample_pdf, stub_backend, store, monkeypatch):
+    """build_header can raise (e.g. a PyMuPDF fault unrelated to the already-
+    finished extraction); logging is best-effort (§6) -- a session recorded
+    nowhere is never graded, but an extraction lost to a logging fault costs
+    the reviewer the drawing, which is strictly worse."""
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+    monkeypatch.setattr("app.main.build_header", boom)
+    result = extract(sample_pdf)
+    assert result is not None
+    assert result["writer"] is None and result["review_logging"] is False

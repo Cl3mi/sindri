@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import queue
 import re
@@ -26,7 +27,7 @@ from app.pipeline.review import review_flags
 from app.pipeline.place import place_balloons
 from app.pipeline.ballooned_pdf import render_ballooned_pdf
 from app.review.header import build_header
-from app.review.store import ReviewError, ReviewStore
+from app.review.store import ReviewStore
 from PIL import Image
 
 app = FastAPI(title="Sindri")
@@ -139,6 +140,8 @@ async def extract_endpoint(session_id: str, request: Request):
         try:
             result = extract(pdf_path, work_dir=work, dpi=300,
                              backend=_BACKEND, progress=progress)
+            # Dumped once in json mode so the proposal written to the review
+            # store is byte-identical to the rows the UI receives below.
             rows = [r.model_dump(mode="json") for r in
                     [*result.characteristics, *result.suggestions]]
             writer = None
@@ -147,8 +150,20 @@ async def extract_endpoint(session_id: str, request: Request):
                     writer = _REVIEW_STORE.create(
                         session_id, build_header(pdf_path, _review_consent()),
                         {"rows": rows})
-                except (ReviewError, OSError):
-                    writer = None   # review proceeds unlogged; the UI says so
+                except Exception as e:
+                    # Logging is best-effort by design (§6): a session
+                    # recorded nowhere is never graded, but an extraction
+                    # lost to a capture fault costs the reviewer the whole
+                    # drawing, which is strictly worse -- so this catches
+                    # everything, not just ReviewError/OSError (build_header
+                    # itself can raise, e.g. a PyMuPDF RuntimeError, and that
+                    # must not turn a finished extraction into an SSE error).
+                    # Exception TYPE only, never str(e): a PyMuPDF or journal
+                    # message can carry client text (CLAUDE.md §1).
+                    logging.getLogger(__name__).warning(
+                        "review capture skipped for session %s: %s",
+                        session_id[:8], type(e).__name__)
+                    writer = None
             events.put(("result", {
                 "session_id": session_id,
                 "image_url": f"/api/image/{session_id}",
