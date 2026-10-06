@@ -371,13 +371,26 @@ def apply_flag_rules(c: Characteristic, names: Sequence[str]) -> List[str]:
     return [FLAG_REASONS[n] for n in names if FLAG_RULES[n](c)]
 
 
+def split_drop_stages(chars: List[Characteristic],
+                      stages: Sequence[Sequence[str]]):
+    """(kept, [rows dropped by stage 0, by stage 1, ...]). Each stage is judged
+    on what the previous one kept, exactly as it was priced. The reviewer's
+    suggestion tray needs to know WHICH stage dropped a row: stage 1 removes a
+    duplicate, later stages remove a value the reviewer may still want."""
+    dropped = []
+    for names in stages:
+        kept = apply_drop_rules(chars, names)
+        kept_ids = {id(c) for c in kept}
+        dropped.append([c for c in chars if id(c) not in kept_ids])
+        chars = kept
+    return chars, dropped
+
+
 def apply_drop_stages(chars: List[Characteristic],
                       stages: Sequence[Sequence[str]]) -> List[Characteristic]:
     """Each stage applied to what the previous one kept -- order-independent
     WITHIN a stage, ordered ACROSS stages, exactly as each stage was priced."""
-    for names in stages:
-        chars = apply_drop_rules(chars, names)
-    return chars
+    return split_drop_stages(chars, stages)[0]
 
 
 def apply_drop_rules(chars: List[Characteristic],

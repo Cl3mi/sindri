@@ -116,3 +116,9 @@ def test_extractionresult_marks_optional_default_none():
     r = ExtractionResult(characteristics=[])
     assert r.notes is None
     assert r.marks is None
+
+
+def test_suggestion_fields_default_to_nothing_so_old_dumps_load_unchanged():
+    from app.models import Characteristic, ExtractionResult
+    assert Characteristic(pos=1).suggested is False
+    assert ExtractionResult(characteristics=[]).suggestions == []

@@ -72,6 +72,11 @@ class Characteristic(BaseModel):
     # (pipeline/verifier.py). None = never asked, or no answer -- including
     # every dump written before the verifier existed.
     verifier_p: OptionalProbability = None
+    # True for a row a drop stage >= 2 removed (low confidence etc.): shown to
+    # the reviewer, never exported until confirmed. The API and the UI carry
+    # it; the scorer never sees such rows (they live in
+    # ExtractionResult.suggestions, not characteristics).
+    suggested: bool = False
 
 
 class Note(BaseModel):
@@ -122,6 +127,10 @@ class ExtractionResult(BaseModel):
     notes: Optional[NoteBlock] = None
     title_block: List[TitleField] = []
     marks: Optional[MarkBlock] = None
+    # Rows removed by drop stages >= 2, kept for the reviewer's tray. NOT
+    # characteristics: scoring, delivered precision and exports read
+    # `characteristics` only (docs/plans/2026-10-07-suggestion-tray-design.md).
+    suggestions: List[Characteristic] = []
     # Every box above is in RENDER PIXELS, so the result cannot be converted
     # back to PDF points without the resolution it was produced at. The render
     # clamps its dpi to a pixel budget for large-format sheets, so this is not

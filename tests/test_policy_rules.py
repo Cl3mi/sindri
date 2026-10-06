@@ -329,3 +329,21 @@ def test_verifier_drops_never_touch_a_flagged_row():
              review_reasons=["no tolerance read"])
     for name in VERIFIER_DROPS:
         assert not pr.DROP_RULES[name](row, [row])
+
+
+def test_split_drop_stages_keeps_what_apply_keeps_and_names_each_stage():
+    """The tray needs to know WHICH stage dropped a row: stage 1 deletes a
+    duplicate, later stages make a suggestion. `kept` must be exactly
+    apply_drop_stages's, or the shipped behaviour would drift."""
+    outer = _c(pos=1, box=(0, 0, 200, 60), kind="dimension", raw_text="20",
+               nominal="20", confidence=0.995)
+    inner = _c(pos=2, box=(60, 10, 140, 50), kind="dimension", raw_text="20",
+               nominal="20", confidence=0.99)
+    low = _c(pos=3, box=(500, 0, 600, 40), kind="dimension", raw_text="7",
+             nominal="7", confidence=0.9)
+    kept, dropped = pr.split_drop_stages([outer, inner, low],
+                                         pr.ACTIVE_DROP_STAGES)
+    assert [c.pos for c in kept] == [1]
+    assert [[c.pos for c in s] for s in dropped] == [[2], [3]]
+    assert [c.pos for c in pr.apply_drop_stages([outer, inner, low],
+                                                pr.ACTIVE_DROP_STAGES)] == [1]
