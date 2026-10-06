@@ -853,6 +853,21 @@ def _cmd_score(args):
         print(f"gentol-check: would_fix={gr['would_fix']} "
               f"would_break={gr['would_break']} "
               f"gate={gr['verdict']} reconciles={gr['reconciles']}")
+    # Where the phantoms sit among the DELIVERED values, by gold-free signal
+    # (docs/plans/2026-10-06-phantom-arm-design.md). Profiles the dumps as
+    # scored -- after --reapply-policy when given -- because the question is
+    # what today's code would ship. Run it on TRAIN only.
+    if getattr(args, "phantom_profile", False):
+        from app.eval.phantom_profile import phantom_profile
+        pp = phantom_profile(dumps, scores, doc_ids)
+        blob = json.dumps(pp, indent=1)
+        if args.phantom_out:
+            Path(args.phantom_out).parent.mkdir(parents=True, exist_ok=True)
+            Path(args.phantom_out).write_text(blob, encoding="utf-8")
+        t = pp["totals"]
+        print(f"phantom-profile: delivered={t['delivered']} "
+              f"correct={t['correct']} escaped={t['escaped']} "
+              f"phantom={t['phantom']} reconciles={pp['reconciles']}")
     # The review deck holds client text, so it goes to a file inside a
     # protected root and only its row COUNT is printed -- this stdout may be an
     # agent's context.
@@ -1077,6 +1092,12 @@ def main(argv=None) -> int:
                         "without it; counts only; the report is untouched")
     p.add_argument("--gentol-out", default=None,
                    help="write the --gentol-check JSON here (counts only)")
+    p.add_argument("--phantom-profile", action="store_true",
+                   help="DIAGNOSTIC: delivered (unflagged) predictions by "
+                        "outcome and gold-free signal; counts only. TRAIN only "
+                        "-- profiling dev/test makes them selection data")
+    p.add_argument("--phantom-out", default=None,
+                   help="write the --phantom-profile JSON here (counts only)")
     p.add_argument("--reapply-policy", action="store_true",
                    help="score as if today's parser and ACTIVE policy rules "
                         "had produced the dumps -- DERIVED, exact for "
