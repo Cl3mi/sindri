@@ -41,18 +41,31 @@ class JournalInvalid(ReviewError):
     status = 422
 
 
+def _fsync_dir(path: Path) -> None:
+    # A rename is atomic but not DURABLE until the directory entry for it is
+    # fsynced too -- on a crash, the file's own data can be safely on disk
+    # while the rename that made it visible under its final name is still
+    # only in the directory's write-back cache and can be lost.
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _atomic_write(path: Path, data: str) -> None:
     # Write-then-rename, so a crash never leaves a half-written record that a
-    # later grade would read as complete. fsync before the rename: the
-    # client discards an event once it is acknowledged, so an ack must
-    # survive power loss, not just a process crash (directory fsync is not
-    # needed -- os.replace is atomic within the same directory).
+    # later grade would read as complete. fsync the tmp file's data before
+    # the rename (the client discards an event once it is acknowledged, so
+    # an ack must survive power loss, not just a process crash), and fsync
+    # the directory after the rename, for the reason _fsync_dir explains.
     tmp = path.with_suffix(path.suffix + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(data)
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
+    _fsync_dir(path.parent)
 
 
 def _write_json(path: Path, obj) -> None:
@@ -105,7 +118,7 @@ class ReviewStore:
         events = []
         for i, l in enumerate(lines):
             try:
-                events.append(json.loads(l))
+                e = json.loads(l)
             except json.JSONDecodeError:
                 # A crash mid-append can only tear the LAST line -- that
                 # batch was never acknowledged, so the client resends it, and
@@ -116,6 +129,17 @@ class ReviewStore:
                     break
                 raise JournalInvalid(
                     f"corrupt journal: line {i + 1} is not valid JSON") from None
+            try:
+                validate_event(e)
+            except (JournalError, TypeError, KeyError) as exc:
+                # Unlike a JSON syntax error, this line parsed cleanly -- a
+                # crash cannot tear a write into a complete-but-wrong-shape
+                # object, so this is external corruption regardless of
+                # position, including on the last line.
+                raise JournalInvalid(
+                    f"corrupt journal: line {i + 1} is not a valid event ({exc})"
+                ) from exc
+            events.append(e)
         return events
 
     def _repair_torn_tail(self, d: Path) -> None:
@@ -203,7 +227,12 @@ class ReviewStore:
             # wins, which is sound because a session has a single writer.
             new = [e for e in events if e["seq"] > through and e["seq"] not in have]
             if new:
-                with (d / "events.jsonl").open("a", encoding="utf-8") as f:
+                events_path = d / "events.jsonl"
+                # Only a brand-new events.jsonl needs its directory entry
+                # fsynced -- every append after the first is appending to an
+                # already-durable name, not creating one.
+                creating = not events_path.is_file()
+                with events_path.open("a", encoding="utf-8") as f:
                     for e in new:
                         # ensure_ascii=True: pure-ASCII lines cost nothing and
                         # guarantee a value's raw bytes never contain a
@@ -212,6 +241,8 @@ class ReviewStore:
                         have.add(e["seq"])
                     f.flush()
                     os.fsync(f.fileno())
+                if creating:
+                    _fsync_dir(d)
             return contiguous_seq(have, start=through)
 
     def seal(self, sid: str, writer: str, final_seq: int,

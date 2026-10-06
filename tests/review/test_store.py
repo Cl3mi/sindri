@@ -198,11 +198,11 @@ def test_append_survives_a_line_separator_character_in_a_value(store, writer):
     # valid JSON line holding one must not be sliced into fragments that
     # then fail to parse as a corrupt middle or last line.
     store.append(SID, writer, [
-        ev(1, "edit_cell", id="a", field="nominal", new="1 0"),
+        ev(1, "edit_cell", id="a", field="nominal", new="1\u20280"),
         ev(2, "accept", ids=["a"]),
     ])
     assert store.append(SID, writer, [ev(3, "accept", ids=["b"])]) == 3
-    out = store.seal(SID, writer, 3, [row("a", nominal="1 0"), row("b")], ["a", "b"])
+    out = store.seal(SID, writer, 3, [row("a", nominal="1\u20280"), row("b")], ["a", "b"])
     assert out == {"revision": 1, "replay_ok": True}
 
 
@@ -256,3 +256,51 @@ def test_seal_refuses_a_final_seq_below_what_is_already_sealed(store, writer):
     store.seal(SID, writer, 0, [row("a"), row("b")], [])
     with pytest.raises(JournalInvalid):
         store.seal(SID, writer, -1, [row("a"), row("b")], [])
+
+
+def test_fsync_dir_does_not_raise_on_a_real_directory(tmp_path):
+    # Smoke test for the helper itself -- the durability it buys (a rename
+    # surviving power loss) is not observable from within one process, so
+    # this only confirms it is wired up and safe to call.
+    from app.review.store import _fsync_dir
+    _fsync_dir(tmp_path)
+
+
+def test_a_structurally_complete_but_invalid_event_is_corruption(store, writer):
+    # json.loads("{}") succeeds -- a crash mid-append can only tear an
+    # in-flight write into an INCOMPLETE fragment, never leave behind a
+    # complete, syntactically valid object that is simply the wrong shape.
+    # So this is external corruption, not something to forgive even though
+    # it parses, and not something whose position (first/middle/last)
+    # should matter.
+    d = store.root / SID
+    (d / "events.jsonl").write_text(
+        json.dumps(ev(1, "accept", ids=["a"])) + "\n"
+        + "{}\n"
+        + json.dumps(ev(3, "delete_row", id="b")) + "\n",
+        encoding="utf-8")
+    with pytest.raises(JournalInvalid):
+        store.append(SID, writer, [])
+
+
+def test_events_reads_a_raw_line_separator_char_written_with_ensure_ascii_false(store, writer):
+    # Isolates the READ side of C1 alone: even a line some other writer (or
+    # an older version of this code) wrote with ensure_ascii=False, with the
+    # separator character raw rather than escaped, must still be read back
+    # as one whole event -- _events splits only on "\n".
+    d = store.root / SID
+    line = json.dumps(
+        ev(1, "edit_cell", id="a", field="nominal", new="1 0"), ensure_ascii=False)
+    (d / "events.jsonl").write_text(line + "\n", encoding="utf-8")
+    events = store._events(d)
+    assert len(events) == 1
+    assert events[0]["new"] == "1 0"
+
+
+def test_create_is_not_blocked_by_an_empty_sealed_directory(store, writer):
+    # A crash right after mkdir(sealed) but before any revision file lands
+    # must not permanently lock the session as "sealed" -- _revisions counts
+    # files on disk, not directory existence.
+    (store.root / SID / "sealed").mkdir()
+    w2 = store.create(SID, {"h": 2}, {"rows": [row("a")]})
+    assert w2 != writer
