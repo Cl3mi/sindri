@@ -1,23 +1,27 @@
 # State: HITL Phase 1 — Capture + Finish
 
 Plan: `docs/plans/2026-10-07-hitl-phase1-capture-plan.md`
-Milestone: store (task 4 of 11)
+Milestone: API (task 6 of 11)
 
 ## Completed task IDs
 - Task 1 — journal primitives (`8d8466a`, `051e14d`)
 - Task 2 — replay + mismatches (`24a479d`)
 - Task 3 — session header (`1500c05`, `8ae51b1`)
 - Task 4 — ReviewStore (`8e97074`, `4483672`, `9f94b4d`, `ea7423b`)
+- Task 5 — store wired from env, proposal written at extract, health flag
+  (`72f92fb`, `40737d6`, `262042c`)
+- Task 6 — `/events` and `/seal` endpoints (`bf3b1b2`)
 
 ## What's done
-`app/review/` is complete and pure-Python tested (55 tests in `tests/review/`;
-full suite 1348 passed, 2 skipped). Each task passed spec review and code-quality
-review; Task 4 went through an Opus review that reproduced two data-loss bugs in
-the plan's own store code, now fixed with regression tests.
+`app/review/` is complete and pure-Python tested (55 tests in `tests/review/`).
+`app/main.py` now builds `_REVIEW_STORE` from `SINDRI_REVIEW_DIR`, writes the
+proposal server-side at extract (best-effort, never fails the extraction), and
+exposes `POST /api/session/{id}/events` and `/seal`, both mapping `ReviewError`
+subclasses to their own `.status` (404/409/422). Full suite 1359 passed,
+2 skipped.
 
 ## What's next
-Milestone group 2 — the API: Task 5 (store from env, proposal at extract, health
-flag) and Task 6 (`/events`, `/seal` endpoints).
+Milestone group 3 — UI journal/Finish wiring in `app/static/js/` (task 7+).
 
 ## Decisions / deviations since the plan was written
 - `validate_event` also refuses a `retract` whose `target` is missing, not an
