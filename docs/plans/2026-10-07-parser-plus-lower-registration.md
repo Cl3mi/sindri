@@ -25,3 +25,23 @@ they can never score correct.
 pure correctness fix needs no positive `would_fix` to be kept: it also makes
 such rows renderable as training targets
 (`targets._verified` currently refuses them).
+
+## Result (2026-10-07) — KEPT
+
+`--reparse-check` with the fix, against the same command's baseline on the
+unmodified parser:
+
+| split | n_pairs | identical | would_fix | would_break |
+|---|---|---|---|---|
+| train (`r3-trainpredict`) | 880 | 859 → 859 | 6 → 6 | 0 → 0 |
+| dev (`r5-control`) | 207 | 207 → 207 | 0 → 0 | 0 → 0 |
+| test (`r5-controltest`) | 166 | 166 → 166 | 0 → 0 | 0 → 0 |
+
+Train's 6 are the earlier Ø-zone fix (those dumps predate it), unchanged by
+this one. **No matched row in any split was read with two "+" tolerances**, so
+the fix moves no current metric (`would_fix` 0, below the predicted 0-3; the
+keep rule needs only `would_break == 0`, which holds everywhere). What it
+changes: such a reading no longer yields a malformed lower tolerance, and
+`targets.render_target` now renders a positive lower tolerance with its "+"
+("5 +0,3 +0,1"), so that gold shape round-trips as a training target instead of
+being refused.

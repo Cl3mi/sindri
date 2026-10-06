@@ -81,9 +81,11 @@ def _verified(text: str, gold, hint: str) -> str:
         two positive tolerances  "5 +0,3 0,1"  -> parser drops the lower
         negative nominal         "-3"          -> parser copies it into upper
 
-    None is a formatting problem -- there is no text yielding an empty upper
-    beside a set lower, and "5 +0,3 +0,1" parses to lower='-+0,1'. Enforcing
-    the property here covers every future shape too, at one parse per row.
+    The first and third are not formatting problems -- there is no text
+    yielding an empty upper beside a set lower. The second was a parser bug
+    ("5 +0,3 +0,1" parsed to lower='-+0,1'), fixed 2026-10-07, and now
+    round-trips. Enforcing the property here covers every future shape too, at
+    one parse per row.
 
     The predicate is exactly score._compare_fields': char_type only when gold
     has one, the three value fields always. Stricter would drop rows the metric
@@ -172,5 +174,11 @@ def render_target(gold, hint: str = "") -> str:
     if upper:
         parts.append(upper if upper.startswith(("+", "-")) else f"+{upper}")
     if lower:
-        parts.append(lower if lower.startswith(("+", "-")) else lower)
+        # A positive, non-zero lower tolerance needs its "+": unsigned, the
+        # parser reads it as a second nominal. Zero stays unsigned -- that is
+        # the "Ø6,6 +0,2 0" MAX convention the parser expects.
+        if lower.startswith(("+", "-")) or values_equal(lower, "0"):
+            parts.append(lower)
+        else:
+            parts.append(f"+{lower}")
     return _verified(" ".join(parts), gold, hint)

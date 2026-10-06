@@ -173,26 +173,27 @@ def test_render_target_verifies_its_own_output_against_the_parser():
     which is worse than a dropped row, because it trains the model to emit text
     the parser maps to the wrong fields.
 
-    Three such shapes exist and were found by probing, not by reasoning:
+    Three such shapes were found by probing, not by reasoning:
 
       lower-only tolerance   "5 -0,1"      -> parser reads upper='-0,1'
       two positive tolerances "5 +0,3 0,1" -> parser drops the lower entirely
       negative nominal        "-3"         -> parser copies it into upper too
 
-    None is a formatting problem: there is no text that yields upper='' with a
-    lower set, and '5 +0,3 +0,1' parses to lo='-+0,1'. They are unrenderable
-    with this parser, so they must raise."""
+    Two remain unrenderable with this parser and must raise: there is no text
+    that yields upper='' with a lower set. The third was a PARSER bug ('5 +0,3
+    +0,1' parsed to lo='-+0,1'), fixed 2026-10-07: it now renders as
+    '5 +0,3 +0,1' and round-trips, which the last assertion pins."""
     unrenderable = [
         ("lower-only tolerance", dict(char_type="Maß", nominal="5",
                                       lower_tol="-0,1")),
-        ("two positive tolerances", dict(char_type="Maß", nominal="5",
-                                         upper_tol="0,3", lower_tol="0,1")),
         ("negative nominal", dict(char_type="Maß", nominal="-3")),
     ]
     for name, fields in unrenderable:
         with pytest.raises(UnrenderableRow) as exc:
             render_target(_gold(**fields), "")
         assert exc.value.reason == "not_round_tripping", (name, exc.value.reason)
+    assert render_target(_gold(char_type="Maß", nominal="5", upper_tol="0,3",
+                               lower_tol="0,1"), "") == "5 +0,3 +0,1"
 
 
 def test_the_self_check_uses_the_same_predicate_as_scoring():

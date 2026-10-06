@@ -168,3 +168,35 @@ def test_a_recognised_symbol_still_wins_over_the_zone_default():
 def test_without_a_zone_the_flatness_default_is_unchanged():
     assert parse_value("0,1 A", hint="gdt").char_type == FLATNESS
     assert parse_value("A Ø0,1", hint="gdt").char_type == FLATNESS
+
+
+# --- a positive second tolerance (docs/plans/2026-10-07-parser-plus-lower-registration.md)
+
+def test_two_positive_tolerances_keep_the_lower_ones_sign():
+    """'20 +0,2 +0,1' puts BOTH limits above the nominal (20,1 to 20,2). The
+    second tolerance carries its own '+'; prefixing '-' produced the malformed
+    '-+0,1', a value no gold row can ever equal."""
+    from app.pipeline.parser import parse_value
+    c = parse_value("20 +0,2 +0,1")
+    assert (c.nominal, c.upper_tol, c.lower_tol) == ("20", "0,2", "0,1")
+
+
+def test_the_usual_signed_shapes_are_unchanged():
+    from app.pipeline.parser import parse_value
+    for text, expected in [("20 +0,2 -0,1", ("20", "0,2", "-0,1")),
+                           ("20 -0,1 -0,2", ("20", "-0,1", "-0,2")),
+                           ("Ø6,6 +0,2 0", ("6,6", "0,2", "0")),
+                           ("20 ±0,1", ("20", "0,1", "-0,1"))]:
+        c = parse_value(text)
+        assert (c.nominal, c.upper_tol, c.lower_tol) == expected, text
+
+
+def test_a_positive_lower_tolerance_now_renders_as_a_training_target():
+    """targets._verified refused this shape because the parser could not read
+    it back; with the fix it round-trips (CLAUDE.md: a parser edit moves the
+    training-target path too)."""
+    from app.eval.models import GoldCharacteristic
+    from app.train.targets import render_target
+    gold = GoldCharacteristic(balloon=1, char_type="Distance", nominal="20",
+                              upper_tol="0,2", lower_tol="0,1")
+    assert render_target(gold) == "20 +0,2 +0,1"

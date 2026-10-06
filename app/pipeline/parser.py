@@ -137,7 +137,11 @@ def parse_value(raw: str, hint: str = "") -> Characteristic:
         if len(signed) >= 1:
             c.upper_tol = _norm(_strip_sign(signed[0]))
         if len(signed) >= 2:
-            c.lower_tol = _norm(signed[1]) if signed[1][0] == "-" else "-" + _norm(signed[1])
+            # The second tolerance keeps its OWN sign: "+0,2 +0,1" puts both
+            # limits above the nominal. Prefixing "-" here once produced the
+            # malformed "-+0,1" (2026-10-07 fix).
+            c.lower_tol = (_norm(signed[1]) if signed[1][0] == "-"
+                           else _norm(_strip_sign(signed[1])))
         # a single explicit upper tol followed by an unsigned 0 is a MAX-type
         # zero lower tol (e.g. "Ø6.6 +0.2 0")
         if (len(signed) == 1 and signed[0][0] == "+"
