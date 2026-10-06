@@ -3,7 +3,7 @@
 
 import {
   state, on, emit,
-  apply, opEditCell, opBulkReview, isVisibleRow, counts,
+  apply, opEditCell, opBulkReview, opConfirmSuggestions, isVisibleRow, counts,
 } from './state.js';
 import { flashAndCenter } from './viewer.js';
 
@@ -80,14 +80,34 @@ function bindSelectAll() {
   });
 }
 
+// Which rows "Accept" acts on. Explicitly ticked rows always; otherwise the
+// visible unreviewed ones -- but a low-confidence suggestion is confirmed only
+// when it was ticked or the Low-confidence filter is active, so one click on
+// the default view can never export values nobody looked at.
+export function acceptTargets(selectedIds) {
+  const byId = (id) => state.rows.find((r) => r.id === id);
+  const explicit = selectedIds.length > 0;
+  const ids = explicit
+    ? selectedIds
+    : state.rows.filter(isVisibleRow).filter((r) => !r.reviewed).map((r) => r.id);
+  const allowSugg = explicit || state.filter === 'suggested';
+  const suggested = ids.filter((id) => byId(id)?.suggested);
+  return {
+    confirm: allowSugg ? suggested : [],
+    review: ids.filter((id) => !byId(id)?.suggested),
+  };
+}
+
+export function acceptRows(selectedIds) {
+  const t = acceptTargets(selectedIds);
+  if (t.confirm.length) apply(opConfirmSuggestions(t.confirm));
+  if (t.review.length) apply(opBulkReview(t.review, true));
+}
+
 function bindBulkAccept() {
   document.getElementById('bulk-accept').addEventListener('click', () => {
     const selectedIds = [...body.querySelectorAll('.row-check:checked')].map((cb) => cb.dataset.id);
-    const targetIds = selectedIds.length > 0
-      ? selectedIds
-      : state.rows.filter(isVisibleRow).filter((r) => !r.reviewed).map((r) => r.id);
-    if (targetIds.length === 0) return;
-    apply(opBulkReview(targetIds, true));
+    acceptRows(selectedIds);
   });
 }
 
@@ -127,7 +147,8 @@ function renderRows() {
   for (const r of state.rows) {
     const tr = document.createElement('tr');
     tr.dataset.id = r.id;
-    if (r.needs_review && !r.reviewed) tr.classList.add('review');
+    if (r.suggested) tr.classList.add('suggested');
+    else if (r.needs_review && !r.reviewed) tr.classList.add('review');
     if (r.reviewed) tr.classList.add('reviewed');
     if (r.id === state.selectedId) tr.classList.add('selected');
     if (!isVisibleRow(r)) tr.classList.add('hidden');
@@ -147,8 +168,9 @@ function renderRows() {
     const tdP = document.createElement('td');
     tdP.className = 'pos';
     const dot = document.createElement('span'); dot.className = 'review-dot';
-    if (!(r.needs_review && !r.reviewed) && !r.reviewed) dot.style.visibility = 'hidden';
-    const num = document.createElement('span'); num.className = 'pos-num'; num.textContent = r.pos;
+    if (r.suggested || (!(r.needs_review && !r.reviewed) && !r.reviewed)) dot.style.visibility = 'hidden';
+    const num = document.createElement('span'); num.className = 'pos-num';
+    num.textContent = r.suggested ? '◌ –' : r.pos;
     tdP.appendChild(dot);
     tdP.appendChild(num);
     if (r.note_ref_pos) {
@@ -296,9 +318,13 @@ function renderCounts() {
   document.getElementById('cnt-all').textContent    = c.all;
   document.getElementById('cnt-review').textContent = c.review;
   document.getElementById('cnt-ok').textContent     = c.ok;
+  document.getElementById('cnt-suggested').textContent = c.suggested;
 
-  const reviewedN = state.rows.filter((r) => r.reviewed || !r.needs_review).length;
-  const totalN = state.rows.length;
+  // Balloons only: a suggestion is not a balloon until confirmed, so it is
+  // neither "reviewed" nor outstanding work in this bar.
+  const balloons = state.rows.filter((r) => !r.suggested);
+  const reviewedN = balloons.filter((r) => r.reviewed || !r.needs_review).length;
+  const totalN = balloons.length;
   const prog = document.getElementById('review-progress');
   if (totalN > 0) {
     prog.hidden = false;
@@ -350,7 +376,8 @@ function renderCounts() {
 
 function updateBulkAvailability() {
   const checked = body.querySelectorAll('.row-check:checked').length;
-  const visibleUnreviewed = state.rows.filter(isVisibleRow).filter((r) => !r.reviewed).length;
+  const t = acceptTargets([]);
+  const visibleUnreviewed = t.confirm.length + t.review.length;
   const btn = document.getElementById('bulk-accept');
   btn.disabled = checked === 0 && visibleUnreviewed === 0;
   const label = document.getElementById('bulk-accept-label');

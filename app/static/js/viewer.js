@@ -387,17 +387,44 @@ function renderMarkers() {
     m.style.left = v.x + 'px';
     m.style.top  = v.y + 'px';
     const label = m.querySelector('.label');
-    if (label && label.textContent !== String(r.pos)) label.textContent = r.pos;
-    m.classList.toggle('review',       r.needs_review && !r.reviewed);
+    const text = r.suggested ? '?' : String(r.pos);
+    if (label && label.textContent !== text) label.textContent = text;
+    m.classList.toggle('suggested',    !!r.suggested);
+    m.classList.toggle('review',       !r.suggested && r.needs_review && !r.reviewed);
     m.classList.toggle('has-noteref',  !!r.note_ref_pos);
     m.classList.toggle('selected',     r.id === state.selectedId);
     m.classList.toggle('linked',       r.id === state.hoverId && r.id !== state.selectedId);
-    m.title = `Pos ${r.pos}` + (r.review_reasons?.length ? ' · ' + r.review_reasons.join(', ') : '');
+    m.title = (r.suggested ? 'Low confidence, not ballooned' : `Pos ${r.pos}`)
+      + (r.review_reasons?.length ? ' · ' + r.review_reasons.join(', ') : '');
+    // The region a suggestion would number, outlined so the reviewer sees
+    // WHAT is suggested, not just a floating "?".
+    syncSuggestBox(r);
   }
   // remove markers that no longer exist
   for (const [id, el] of existing) {
     if (!seen.has(id)) el.remove();
   }
+  markerLayer.querySelectorAll('.suggest-box').forEach((b) => {
+    const r = state.rows.find((x) => x.id === b.dataset.id);
+    if (!r || !r.suggested) b.remove();
+  });
+}
+
+function syncSuggestBox(r) {
+  let box = markerLayer.querySelector(`.suggest-box[data-id="${cssEsc(r.id)}"]`);
+  if (!r.suggested || !r.target_region) { if (box) box.remove(); return; }
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'suggest-box';
+    box.dataset.id = r.id;
+    markerLayer.prepend(box);
+  }
+  const a = planToView(r.target_region[0], r.target_region[1]);
+  const b = planToView(r.target_region[2], r.target_region[3]);
+  box.style.left = a.x + 'px';
+  box.style.top = a.y + 'px';
+  box.style.width = (b.x - a.x) + 'px';
+  box.style.height = (b.y - a.y) + 'px';
 }
 
 // ----- exported helpers used by table.js ------------------------------

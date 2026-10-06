@@ -60,6 +60,11 @@
   --accent-bg:     rgba(73, 134, 231, 0.14);
   --accent-ring:   rgba(73, 134, 231, 0.40);
 
+  /* low-confidence suggestion: not ballooned, not exported until confirmed.
+     Never amber -- amber means "needs review" on a row that IS exported. */
+  --suggest:    #a371f7;
+  --suggest-bg: rgba(163, 113, 247, 0.12);
+
   --warn:    #d29922;
   --warn-bg: rgba(210, 153, 34, 0.12);
   --err:     #f85149;

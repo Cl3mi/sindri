@@ -62,6 +62,19 @@
   border-color: var(--warn);
   color: var(--warn);
 }
+/* Low-confidence suggestion: dashed violet balloon labelled "?", and a dashed
+   outline of the region it would number. Confirmed balloons are unchanged. */
+#marker-layer .marker.suggested {
+  border: 2px dashed var(--suggest);
+  color: var(--suggest);
+  background: var(--suggest-bg);
+}
+#marker-layer .suggest-box {
+  position: absolute;
+  border: 1.5px dashed var(--suggest);
+  background: var(--suggest-bg);
+  pointer-events: none;
+}
 #marker-layer .marker.has-noteref::after {
   content: '';
   position: absolute;
@@ -481,6 +494,16 @@ table.inspection tbody tr.review td:first-child {
 table.inspection tbody tr.reviewed {
   box-shadow: inset 2px 0 0 var(--ok);
 }
+table.inspection tbody tr.suggested,
+table.inspection tbody tr.suggested:nth-child(even) {
+  background: var(--suggest-bg);
+  box-shadow: inset 2px 0 0 var(--suggest);
+}
+table.inspection tbody tr.suggested td {
+  color: color-mix(in srgb, var(--suggest) 45%, var(--fg));
+}
+table.inspection tbody tr.suggested td.pos .pos-num { color: var(--suggest); }
+#filter-pills button[data-filter="suggested"] .count { color: var(--suggest); }
 table.inspection tbody tr.linked,
 table.inspection tbody tr:hover {
   background: var(--bg-row-hl);

@@ -26,7 +26,7 @@ export const state = {
   title_block: [],
   selectedId: null,  // selected marker / row id
   hoverId: null,
-  filter: 'all',     // 'all' | 'review' | 'ok'
+  filter: 'all',     // 'all' | 'review' | 'ok' | 'suggested'
   search: '',
   ocrBackend: '—',
   ocrOk: null,       // null | true | false
@@ -105,7 +105,10 @@ export function renumber() {
     const band = Math.round(ay / BAND_TOL) - Math.round(by / BAND_TOL);
     return band !== 0 ? band : ax - bx;
   });
-  state.rows.forEach((r, i) => (r.pos = i + 1));
+  // Suggestions are not balloons: they keep pos 0 until confirmed, so the
+  // numbers a reviewer sees are exactly the numbers that will be exported.
+  let n = 0;
+  state.rows.forEach((r) => (r.pos = r.suggested ? 0 : ++n));
 }
 
 // ===== Operations =====================================================
@@ -179,6 +182,34 @@ export function opEditCell(id, field, newValue) {
   };
 }
 
+// Confirm low-confidence suggestions: each becomes a normal, numbered,
+// reviewed balloon. Undo restores the suggestion exactly.
+export function opConfirmSuggestions(ids) {
+  const confirmed = [];
+  return {
+    label: 'confirm suggestions',
+    do() {
+      confirmed.length = 0;
+      for (const id of ids) {
+        const r = state.rows.find((x) => x.id === id);
+        if (r && r.suggested) {
+          confirmed.push([id, r.reviewed]);
+          r.suggested = false;
+          r.reviewed = true;
+        }
+      }
+      renumber();
+    },
+    undo() {
+      for (const [id, wasReviewed] of confirmed) {
+        const r = state.rows.find((x) => x.id === id);
+        if (r) { r.suggested = true; r.reviewed = wasReviewed; }
+      }
+      renumber();
+    },
+  };
+}
+
 export function opBulkReview(ids, target /* true|false */) {
   const prev = new Map();
   return {
@@ -200,6 +231,8 @@ export function opBulkReview(ids, target /* true|false */) {
 
 // ===== Filtering / counts ============================================
 export function isVisibleRow(r) {
+  if (state.filter === 'suggested') { if (!r.suggested) return false; }
+  else if (state.filter !== 'all' && r.suggested) return false;
   if (state.filter === 'review' && !(r.needs_review && !r.reviewed)) return false;
   if (state.filter === 'ok'     &&  (r.needs_review && !r.reviewed)) return false;
   const q = state.search.trim().toLowerCase();
@@ -208,9 +241,11 @@ export function isVisibleRow(r) {
   return hay.includes(q);
 }
 export function counts() {
-  let review = 0, ok = 0;
+  let review = 0, ok = 0, suggested = 0;
   for (const r of state.rows) {
-    if (r.needs_review && !r.reviewed) review++; else ok++;
+    if (r.suggested) suggested++;
+    else if (r.needs_review && !r.reviewed) review++;
+    else ok++;
   }
-  return { all: state.rows.length, review, ok };
+  return { all: state.rows.length, review, ok, suggested };
 }

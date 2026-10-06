@@ -1,6 +1,7 @@
 // Global keyboard shortcuts that aren't already handled in viewer.js.
 
-import { state, undo, redo, apply, opBulkReview, isVisibleRow } from './state.js';
+import { undo, redo } from './state.js';
+import { acceptRows } from './table.js';
 import { openHelp } from './ui.js';
 
 export function initShortcuts() {
@@ -38,12 +39,13 @@ export function initShortcuts() {
     if (e.key === '1') clickFilter('all');
     if (e.key === '2') clickFilter('review');
     if (e.key === '3') clickFilter('ok');
+    if (e.key === '4') clickFilter('suggested');
 
-    // Accept visible
+    // Accept visible -- the same rule as the Accept button: suggestions are
+    // confirmed only inside the Low-confidence filter (key 4).
     if (e.key.toLowerCase() === 'y' && !e.ctrlKey && !e.metaKey) {
       e.preventDefault();
-      const ids = state.rows.filter(isVisibleRow).filter((r) => !r.reviewed).map((r) => r.id);
-      if (ids.length) apply(opBulkReview(ids, true));
+      acceptRows([]);
     }
   });
 }
