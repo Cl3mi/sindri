@@ -1,0 +1,64 @@
+{
+ "n_docs": 15,
+ "control": {
+  "correct": 70,
+  "escaped": 17,
+  "phantom": 80,
+  "delivered": 167,
+  "delivered_precision": 0.4192,
+  "matched_precision": 0.8046,
+  "recall": 0.717,
+  "cost": 118.7333,
+  "cost_per_weighting": [
+   118.7333,
+   180.8,
+   88.2667,
+   173.1333,
+   87.7333,
+   51.6
+  ],
+  "counts": {
+   "flagged_error": 86,
+   "correct": 70,
+   "flagged_correct": 50,
+   "escaped_error": 17,
+   "missed": 88,
+   "false_detection": 340
+  }
+ },
+ "configs": {
+  "conf_below_099+material_kind+tight_cluster": {
+   "arm": {
+    "correct": 41,
+    "escaped": 7,
+    "phantom": 30,
+    "delivered": 78,
+    "delivered_precision": 0.5256,
+    "matched_precision": 0.8542,
+    "recall": 0.6656,
+    "cost": 117.8667,
+    "cost_per_weighting": [
+     117.8667,
+     188.6,
+     82.7333,
+     164.0667,
+     87.6,
+     50.1333
+    ],
+    "counts": {
+     "flagged_error": 109,
+     "correct": 41,
+     "flagged_correct": 50,
+     "escaped_error": 7,
+     "missed": 104,
+     "false_detection": 267
+    }
+   },
+   "correct_lost": 29,
+   "delta_delivered_precision": 0.1064,
+   "better_under": 5,
+   "passes": true
+  }
+ },
+ "selected": "conf_below_099+material_kind+tight_cluster"
+}

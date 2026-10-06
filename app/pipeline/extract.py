@@ -230,20 +230,22 @@ def _regions_overlap(a, b, min_frac: float = 0.5) -> bool:
     return smaller > 0 and inter / smaller >= min_frac
 
 
-def _apply_active_policy(results):
-    """The kept flag and drop rules, through the SAME functions
-    app/eval/policy_check.py priced them with -- so the offline price and the
-    shipped behaviour cannot drift apart. Flags first on every row, then the
-    drop judged on the original list (drop rules are order-independent);
-    the offline counterfactual applies drops before flags, but no drop rule
-    reads needs_review/review_reasons and no flag rule touches a field a
-    drop rule reads, so the two orders agree."""
+def _apply_active_policy(results, drop_stages=None):
+    """The kept flag and drop rules, through the SAME functions the offline
+    pricing used -- so the price and the shipped behaviour cannot drift apart.
+
+    Flags FIRST, then the drop stages in order. The order is load-bearing since
+    2026-10-06: the phantom drops fire only on rows that would ship UNFLAGGED,
+    so they read the needs_review the flags just set. `drop_stages` defaults to
+    the active ones; app/eval/drop_check.py passes the registered BASE so its
+    control stays the policy the phantom drops were priced against."""
     for c in results:
         extra = pr.apply_flag_rules(c, pr.ACTIVE_FLAG_RULES)
         if extra:
             c.needs_review = True
             c.review_reasons = [*c.review_reasons, *extra]
-    return pr.apply_drop_rules(results, pr.ACTIVE_DROP_RULES)
+    stages = pr.ACTIVE_DROP_STAGES if drop_stages is None else drop_stages
+    return pr.apply_drop_stages(results, stages)
 
 
 def extract(pdf_path, work_dir, dpi: int = 300, backend=None,

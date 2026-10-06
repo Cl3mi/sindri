@@ -216,12 +216,33 @@ def test_other_drop_rules():
     assert not pr.DROP_RULES["repeated_value_nearby"](far, chars)
 
 
-def test_active_sets_are_exactly_what_the_result_doc_kept():
-    """docs/plans/2026-09-25-policy-arms-result.md is the authority: each rule
-    passed train, dev and test individually and jointly. Change both together
-    or not at all."""
+def test_active_sets_are_exactly_what_the_result_docs_kept():
+    """docs/plans/2026-09-25-policy-arms-result.md kept the flags and the first
+    drop stage; docs/plans/2026-10-06-phantom-drops-result.md kept the second.
+    Each passed its registered rule on train, dev and test. Change a result doc
+    and this together, or not at all."""
     assert pr.ACTIVE_FLAG_RULES == ("nondim_kind", "no_tolerance")
-    assert pr.ACTIVE_DROP_RULES == ("contained_duplicate",)
+    assert pr.ACTIVE_DROP_STAGES == (
+        ("contained_duplicate",),
+        ("conf_below_099", "material_kind", "tight_cluster"),
+    )
+    assert pr.active_drop_rules() == ("contained_duplicate", "conf_below_099",
+                                    "material_kind", "tight_cluster")
+
+
+def test_drop_stages_run_in_order_exactly_as_priced():
+    """The phantom drops were priced on dumps contained_duplicate had ALREADY
+    thinned. In one pass over the original list, tight_cluster would also see
+    the duplicate contained_duplicate removes, and delete the box that
+    survived it -- an outcome nobody priced."""
+    outer = _c(pos=1, box=(0, 0, 200, 60), kind="dimension", raw_text="20",
+               nominal="20", confidence=0.995)
+    inner = _c(pos=2, box=(60, 10, 140, 50), kind="dimension", raw_text="20",
+               nominal="20", confidence=0.99)
+    one_pass = pr.apply_drop_rules([outer, inner], pr.active_drop_rules())
+    staged = pr.apply_drop_stages([outer, inner], pr.ACTIVE_DROP_STAGES)
+    assert [c.pos for c in one_pass] == []          # the unpriced outcome
+    assert [c.pos for c in staged] == [1]           # what was priced
 
 
 # --- the phantom drops (docs/plans/2026-10-06-phantom-drops-registration.md) ---
@@ -233,10 +254,11 @@ PHANTOM_DROPS = ("conf_below_090", "conf_below_095", "conf_below_099",
                  "material_kind", "tight_cluster")
 
 
-def test_phantom_drops_are_registered_and_not_active():
+def test_only_the_selected_phantom_configuration_is_active():
     for name in PHANTOM_DROPS:
         assert name in pr.DROP_RULES
-        assert name not in pr.ACTIVE_DROP_RULES
+    for name in ("conf_below_090", "conf_below_095"):
+        assert name not in pr.active_drop_rules()
 
 
 def test_confidence_drops_are_strict_thresholds():

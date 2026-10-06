@@ -152,13 +152,13 @@ def test_active_review_policy_reports_the_threshold_for_run_config_extra():
     # arms-result.md) are active by default, so this reports the full set,
     # not the threshold alone -- see test_extract_policy.py for the
     # empty-rules case that reproduces the old bare dict. Built from
-    # ACTIVE_FLAG_RULES/ACTIVE_DROP_RULES rather than pinning the tuples
+    # ACTIVE_FLAG_RULES/ACTIVE_DROP_STAGES rather than pinning the tuples
     # again here -- tests/test_policy_rules.py is the one authority for what
     # is currently kept, so a keep/revert decision there cannot desync this
     # assertion from it.
     assert active_review_policy() == {
         "review_low_conf": LOW_CONF,
         "flag_rules": list(pr.ACTIVE_FLAG_RULES),
-        "drop_rules": list(pr.ACTIVE_DROP_RULES),
+        "drop_rules": list(pr.active_drop_rules()),
     }
     assert active_review_policy()["review_low_conf"] == 0.8

@@ -10,7 +10,7 @@ from tests.conftest import StubVLMBackend
 
 def test_active_policy_flags_and_drops_through_the_registry(monkeypatch):
     monkeypatch.setattr(pr, "ACTIVE_FLAG_RULES", ("nondim_kind",))
-    monkeypatch.setattr(pr, "ACTIVE_DROP_RULES", ("empty_read",))
+    monkeypatch.setattr(pr, "ACTIVE_DROP_STAGES", (("empty_read",),))
     a = Characteristic(pos=0, kind="gdt", raw_text="0,05",
                        target_region=(0, 0, 10, 10))
     b = Characteristic(pos=0, kind="dimension", raw_text="",
@@ -22,7 +22,7 @@ def test_active_policy_flags_and_drops_through_the_registry(monkeypatch):
 
 def test_a_row_already_flagged_keeps_its_reasons_and_gains_the_rule(monkeypatch):
     monkeypatch.setattr(pr, "ACTIVE_FLAG_RULES", ("nondim_kind",))
-    monkeypatch.setattr(pr, "ACTIVE_DROP_RULES", ())
+    monkeypatch.setattr(pr, "ACTIVE_DROP_STAGES", ())
     a = Characteristic(pos=0, kind="gdt", raw_text="0,05", needs_review=True,
                        review_reasons=["low OCR confidence"],
                        target_region=(0, 0, 10, 10))
@@ -33,7 +33,7 @@ def test_a_row_already_flagged_keeps_its_reasons_and_gains_the_rule(monkeypatch)
 
 def test_run_config_records_the_active_rules(monkeypatch):
     monkeypatch.setattr(pr, "ACTIVE_FLAG_RULES", ("nondim_kind",))
-    monkeypatch.setattr(pr, "ACTIVE_DROP_RULES", ())
+    monkeypatch.setattr(pr, "ACTIVE_DROP_STAGES", ())
     pol = active_review_policy()
     assert pol["flag_rules"] == ["nondim_kind"]
     assert "drop_rules" not in pol
@@ -41,7 +41,7 @@ def test_run_config_records_the_active_rules(monkeypatch):
 
 def test_no_active_rules_leaves_run_config_as_it_was(monkeypatch):
     monkeypatch.setattr(pr, "ACTIVE_FLAG_RULES", ())
-    monkeypatch.setattr(pr, "ACTIVE_DROP_RULES", ())
+    monkeypatch.setattr(pr, "ACTIVE_DROP_STAGES", ())
     assert active_review_policy() == {"review_low_conf": 0.8}
 
 
@@ -68,7 +68,7 @@ def test_extract_applies_active_drop_before_numbering_and_excludes_the_dropped_b
                         lambda image: None)
 
     # A big dimension box wholly containing a small one, both reading the
-    # same value -- exactly what contained_duplicate (in ACTIVE_DROP_RULES by
+    # same value -- exactly what contained_duplicate (in ACTIVE_DROP_STAGES by
     # default) drops. inner_box == box on both so extract skips
     # boxes.tighten_to_ink, which would otherwise perturb these coordinates.
     big = Detection(box=(20, 20, 220, 120), kind="dimension", conf=0.9,

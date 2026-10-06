@@ -225,8 +225,13 @@ def test_summary_command_emits_value_free_digest(tmp_path, capsys, monkeypatch):
     assert len(digest["worst_docs"][0]["doc"]) == 8
 
 
-def test_predict_one_builds_dump_from_stub_backend(tmp_path):
+def test_predict_one_builds_dump_from_stub_backend(tmp_path, monkeypatch):
     from tests.conftest import StubVLMBackend
+    from app.pipeline import policy_rules as pr
+    # The stub reads below 0.99 confidence, which the phantom drops (2026-10-06)
+    # remove unflagged. This test is about building a dump, not about drops, so
+    # it pins the stage that predates them.
+    monkeypatch.setattr(pr, "ACTIVE_DROP_STAGES", (("contained_duplicate",),))
     from app.pipeline.detect import Detection
     pdfs, _ = _setup_corpus(tmp_path)
     backend = StubVLMBackend(detections=[

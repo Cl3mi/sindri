@@ -71,7 +71,7 @@ def test_reapply_policy_scores_with_the_active_rules_and_says_so(
         tmp_path, monkeypatch):
     from app.pipeline import policy_rules as pr
     monkeypatch.setattr(pr, "ACTIVE_FLAG_RULES", ("nondim_kind",))
-    monkeypatch.setattr(pr, "ACTIVE_DROP_RULES", ("empty_read",))
+    monkeypatch.setattr(pr, "ACTIVE_DROP_STAGES", (("empty_read",),))
     run, gold_dir = _write(tmp_path)
     assert _score(tmp_path, run, gold_dir, "--reapply-policy") == 0
     r = json.loads((tmp_path / "r.json").read_text())
@@ -95,7 +95,7 @@ def test_reapply_with_no_rules_and_unchanged_parser_is_identity(
     score exactly -- otherwise the reconstruction itself moves numbers."""
     from app.pipeline import policy_rules as pr
     monkeypatch.setattr(pr, "ACTIVE_FLAG_RULES", ())
-    monkeypatch.setattr(pr, "ACTIVE_DROP_RULES", ())
+    monkeypatch.setattr(pr, "ACTIVE_DROP_STAGES", ())
     run, gold_dir = _write(tmp_path)
     assert _score(tmp_path, run, gold_dir) == 0
     plain = json.loads((tmp_path / "r.json").read_text())

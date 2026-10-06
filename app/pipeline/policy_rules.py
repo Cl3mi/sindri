@@ -20,7 +20,7 @@ Two invariants the counterfactual depends on:
 
 A rule becomes active only when the keep/revert rule in
 docs/plans/2026-09-25-review-quality-arms-plan.md §1 keeps it -- see
-ACTIVE_FLAG_RULES / ACTIVE_DROP_RULES below for what is currently kept."""
+ACTIVE_FLAG_RULES / ACTIVE_DROP_STAGES below for what is currently kept."""
 import math
 import re
 from typing import Callable, Dict, List, Sequence, Tuple
@@ -328,13 +328,42 @@ DROP_RULES: Dict[str, Callable[[Characteristic, Sequence[Characteristic]], bool]
 # exactly from stored dumps: dev 131.87 -> 118.73, test 165.18 -> 149.73,
 # auto-accept precision 0.53 -> 0.80 (dev). r4-control must reproduce it.
 ACTIVE_FLAG_RULES: Tuple[str, ...] = ("nondim_kind", "no_tolerance")
-ACTIVE_DROP_RULES: Tuple[str, ...] = ("contained_duplicate",)
+
+# Drops run in STAGES, each judged on what the previous stage left, because that
+# is how each stage was priced. Stage 2 (kept 2026-10-06,
+# docs/plans/2026-10-06-phantom-drops-result.md: delivered precision rose on
+# train 0.577 -> 0.888, dev 0.419 -> 0.526, test 0.536 -> 0.958) was priced on
+# dumps stage 1 had already thinned. In a single pass, tight_cluster would also
+# see the duplicate contained_duplicate removes and delete the box that
+# survived it, which is an outcome nobody priced.
+ACTIVE_DROP_STAGES: Tuple[Tuple[str, ...], ...] = (
+    ("contained_duplicate",),
+    ("conf_below_099", "material_kind", "tight_cluster"),
+)
+
+
+def active_drop_rules() -> Tuple[str, ...]:
+    """The active drops, flat, for RECORDING (RunConfig.extra["drop_rules"],
+    reapplied_policy) -- never for applying: applying them in one pass is the
+    unpriced outcome ACTIVE_DROP_STAGES exists to prevent. A function, not a
+    constant, so it follows a test that patches the stages, and so a stale
+    patch of the old flat constant fails loudly instead of patching nothing."""
+    return tuple(n for stage in ACTIVE_DROP_STAGES for n in stage)
 
 
 def apply_flag_rules(c: Characteristic, names: Sequence[str]) -> List[str]:
     """The review reasons the named rules add for `c`, in `names` order --
     FLAG_REASONS' human text, not the bare rule name (see its docstring)."""
     return [FLAG_REASONS[n] for n in names if FLAG_RULES[n](c)]
+
+
+def apply_drop_stages(chars: List[Characteristic],
+                      stages: Sequence[Sequence[str]]) -> List[Characteristic]:
+    """Each stage applied to what the previous one kept -- order-independent
+    WITHIN a stage, ordered ACROSS stages, exactly as each stage was priced."""
+    for names in stages:
+        chars = apply_drop_rules(chars, names)
+    return chars
 
 
 def apply_drop_rules(chars: List[Characteristic],

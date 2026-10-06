@@ -67,7 +67,7 @@ def test_identity_when_no_rules_are_active_and_fields_already_match_todays_parse
     not about whatever rules happen to be shipped today."""
     from app.pipeline import policy_rules as pr
     monkeypatch.setattr(pr, "ACTIVE_FLAG_RULES", ())
-    monkeypatch.setattr(pr, "ACTIVE_DROP_RULES", ())
+    monkeypatch.setattr(pr, "ACTIVE_DROP_STAGES", ())
     c = Characteristic(pos=1, id="abc", kind="dimension", char_type="Distance",
                        nominal="20", raw_text="20", confidence=0.99,
                        needs_review=False, review_reasons=[])
@@ -138,8 +138,8 @@ def test_fill_runs_after_drops_so_a_dropped_row_is_never_filled():
                                      "target_region": (120.0, 110.0,
                                                        200.0, 150.0)})
     # the gate: the fixture must actually trip the active drop rule
-    assert [c.pos for c in pr.apply_drop_rules([outer, inner],
-                                               pr.ACTIVE_DROP_RULES)] == [1]
+    assert [c.pos for c in pr.apply_drop_stages([outer, inner],
+                                                pr.ACTIVE_DROP_STAGES)] == [1]
     on = reapply_current_code(_gentol_dump([outer, inner]), fill=True)
     assert [c.pos for c in on.result.characteristics] == [1]
     assert on.result.characteristics[0].upper_tol == "0,2"

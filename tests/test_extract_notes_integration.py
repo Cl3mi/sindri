@@ -40,6 +40,11 @@ def test_t1025300_inline_bullets_appear_in_notes_not_characteristics(
         sample_pdf, tmp_path, monkeypatch):
     import app.pipeline.extract as extract_mod
     import app.pipeline.boxes as boxes_mod
+    from app.pipeline import policy_rules as pr
+    # The stub reads below 0.99 confidence, which the phantom drops (2026-10-06)
+    # remove unflagged. This test is about notes vs characteristics, not
+    # drops, so it pins the stage that predates them.
+    monkeypatch.setattr(pr, "ACTIVE_DROP_STAGES", (("contained_duplicate",),))
 
     # No CV-detected boxes for this scenario.
     monkeypatch.setattr(boxes_mod, "detect_boxes", lambda image: [])

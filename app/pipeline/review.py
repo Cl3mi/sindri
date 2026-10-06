@@ -48,8 +48,8 @@ def active_review_policy() -> dict:
     # mistaken for one without them (the _reusable_dump failure, again).
     if pr.ACTIVE_FLAG_RULES:
         out["flag_rules"] = list(pr.ACTIVE_FLAG_RULES)
-    if pr.ACTIVE_DROP_RULES:
-        out["drop_rules"] = list(pr.ACTIVE_DROP_RULES)
+    if pr.active_drop_rules():
+        out["drop_rules"] = list(pr.active_drop_rules())
     return out
 
 

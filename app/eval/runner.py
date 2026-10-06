@@ -691,7 +691,7 @@ def _cmd_score(args):
         from app.pipeline import policy_rules as pr
         dumps = {doc_id: reapply_current_code(d) for doc_id, d in dumps.items()}
         reapplied = {"flag_rules": list(pr.ACTIVE_FLAG_RULES),
-                    "drop_rules": list(pr.ACTIVE_DROP_RULES),
+                    "drop_rules": list(pr.active_drop_rules()),
                     "reparsed": True}
         print("NOTE: --reapply-policy is scoring dumps re-parsed and "
               "re-flagged under today's code, not as predicted -- the "

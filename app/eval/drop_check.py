@@ -18,6 +18,12 @@ from app.eval.reapply import reapply_current_code
 from app.eval.report import WEIGHT_GRID, auto_accept_precision, recompute_cost
 from app.pipeline.policy_rules import DROP_RULES, apply_drop_rules
 
+# The policy the phantom drops were registered and priced against
+# (2026-10-06): stage 1 only. Pinned, not read from ACTIVE_DROP_STAGES -- once
+# the selected configuration shipped, "today's code" already contains it, and
+# pricing it against itself would show a delta of exactly zero.
+BASE_DROP_STAGES = (("contained_duplicate",),)
+
 _DOSES = ("conf_below_090", "conf_below_095", "conf_below_099")
 # Registered order -- it is also the final tie-break, so it must not be sorted.
 CONFIGS: Dict[str, tuple] = {
@@ -84,7 +90,8 @@ def drop_report(dumps: Dict[str, PredictionDump], golds: Dict[str, GoldDoc],
     for rules in CONFIGS.values():
         assert all(r in DROP_RULES for r in rules), rules
 
-    control = {i: reapply_current_code(dumps[i]) for i in doc_ids}
+    control = {i: reapply_current_code(dumps[i], drop_stages=BASE_DROP_STAGES)
+               for i in doc_ids}
     n_docs = len(doc_ids)
     c_scores = _score_all(control, golds, doc_ids, weights, params)
     c_stats = _stats(c_scores, n_docs)
