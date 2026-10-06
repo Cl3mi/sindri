@@ -271,3 +271,16 @@ export function counts() {
   }
   return { all: state.rows.length, review, ok, suggested };
 }
+
+// The review queue (Phase 1: flagged balloons). Unflagged balloons are counted
+// apart as `unchecked`: the system accepted them and nobody was asked to look,
+// so an explicit accept on one is not evidence it was checked either.
+// Suggestions are not balloons and are neither.
+export function progress() {
+  const balloons = state.rows.filter((r) => !r.suggested);
+  const queue = balloons.filter((r) => r.needs_review);
+  const resolved = queue.filter((r) => r.reviewed).length;
+  return { resolved, total: queue.length, outstanding: queue.length - resolved,
+           unchecked: balloons.length - queue.length };
+}
+export const canFinish = () => progress().outstanding === 0;
