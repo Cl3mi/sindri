@@ -120,6 +120,27 @@ re-scoring `r5-control` / `r5-controltest` through the tray code is identical
 on all 40 digest keys. UI rules have node tests (`tests/js/`, run inside
 pytest; they skip without node).
 
+**REVIEW CAPTURE (HITL phase 1,
+`docs/plans/2026-10-07-hitl-review-grading-design.md`).** With
+`SINDRI_REVIEW_DIR` set, every extraction writes `header.json` and
+`proposal.json` server-side, the UI appends net reviewer operations to
+`events.jsonl`, and Finish & Export — now a single button replacing the two
+export buttons — is single-flight and gated on unresolved flagged rows; it
+seals `sealed/rN.json` only after replaying the journal on the server-held
+proposal and checking the result matches what was exported, recording any
+mismatch rather than silently shipping it. Review capture is best-effort end
+to end: a logging fault never fails an extraction. The progress bar now reads
+"resolved · unchecked" instead of counting unflagged rows as reviewed, so an
+untouched low-confidence row no longer looks done. **That directory is client
+data under §1.** Unset, the app reviews and exports but records nothing, and
+the UI says so. `tests/conftest.py` forces `app.main._REVIEW_STORE` to `None`
+for every test, so an ambient `SINDRI_REVIEW_DIR` in a developer's shell can
+never make the suite write real records; and
+`tests/review/test_journal_replay_parity.py` fuzzes the JS↔Python replay
+contract directly — if it fails, `state.js`'s ops and `app/review/replay.py`
+have drifted apart. Phases 2-5 (forcing, grading, dev validation, return
+bundle) each get their own plan.
+
 **`read-lora-v1` IS NOW HARMFUL UNDER THE SHIPPED POLICY — deployment CLOSED**
 (2026-10-05, `docs/plans/2026-10-05-read-adapter-repricing-result.md`;
 DERIVED, `--reapply-policy` on stored dev dumps, pad 6). The scoped adapter's
@@ -170,7 +191,7 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **1293 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **1362 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). **`tesseract` is a device
 prerequisite** — without the binary six tests fail as `TesseractNotFoundError`
 and read as broken code. `SCHEMA_VERSION` = 1 — do not bump it. Split frozen
@@ -910,7 +931,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 1293 passed, 2 skipped
+python -m pytest -q                          # 1362 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```
