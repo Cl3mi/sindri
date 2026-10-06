@@ -271,7 +271,49 @@ def _theoretical_kind(c, chars):
     return c.kind == "theoretical"
 
 
+# --- phantom drops (2026-10-06, docs/plans/2026-10-06-phantom-drops-registration.md)
+# The client ranks precision over recall at ANY recall, and a third of what the
+# product delivers unflagged on dev is phantoms. These fire ONLY on a row that
+# would ship unflagged: drops run after the flag pass, so needs_review is
+# final, and a flagged row is not delivered -- dropping it could only cost
+# recall, never buy precision.
+
+def _conf_below(threshold: float):
+    def rule(c, chars):
+        return not c.needs_review and c.confidence < threshold
+    return rule
+
+
+def _material_kind(c, chars):
+    return not c.needs_review and c.kind == "material"
+
+
+# A drop rule sees the characteristics, not the page, so the profile's "< 1%
+# of the page diagonal" is registered as a fixed 50 px: ~1% at 300 dpi, between
+# A4 (~43 px) and A3 (~61 px).
+TIGHT_CLUSTER_PX = 50.0
+
+
+def _centre(box):
+    return ((box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0)
+
+
+def _tight_cluster(c, chars):
+    if c.needs_review or c.target_region is None:
+        return False
+    cx, cy = _centre(c.target_region)
+    return any(o is not c and o.target_region is not None
+               and math.dist((cx, cy), _centre(o.target_region))
+               < TIGHT_CLUSTER_PX
+               for o in chars)
+
+
 DROP_RULES: Dict[str, Callable[[Characteristic, Sequence[Characteristic]], bool]] = {
+    "conf_below_090": _conf_below(0.90),
+    "conf_below_095": _conf_below(0.95),
+    "conf_below_099": _conf_below(0.99),
+    "material_kind": _material_kind,
+    "tight_cluster": _tight_cluster,
     "empty_read": _empty_read,
     "contained_duplicate": _contained_duplicate,
     "repeated_value_nearby": _repeated_value_nearby,

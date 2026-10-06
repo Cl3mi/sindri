@@ -222,3 +222,57 @@ def test_active_sets_are_exactly_what_the_result_doc_kept():
     or not at all."""
     assert pr.ACTIVE_FLAG_RULES == ("nondim_kind", "no_tolerance")
     assert pr.ACTIVE_DROP_RULES == ("contained_duplicate",)
+
+
+# --- the phantom drops (docs/plans/2026-10-06-phantom-drops-registration.md) ---
+#
+# Precision at any recall: each fires ONLY on a row that would ship unflagged.
+# A flagged row is not delivered, so dropping it could only cost recall.
+
+PHANTOM_DROPS = ("conf_below_090", "conf_below_095", "conf_below_099",
+                 "material_kind", "tight_cluster")
+
+
+def test_phantom_drops_are_registered_and_not_active():
+    for name in PHANTOM_DROPS:
+        assert name in pr.DROP_RULES
+        assert name not in pr.ACTIVE_DROP_RULES
+
+
+def test_confidence_drops_are_strict_thresholds():
+    for name, t in (("conf_below_090", 0.90), ("conf_below_095", 0.95),
+                    ("conf_below_099", 0.99)):
+        rule = pr.DROP_RULES[name]
+        assert rule(_c(confidence=t - 0.001), [])
+        assert not rule(_c(confidence=t), [])
+
+
+def test_material_drop_is_material_only():
+    assert pr.DROP_RULES["material_kind"](_c(kind="material"), [])
+    assert not pr.DROP_RULES["material_kind"](_c(kind="dimension"), [])
+
+
+def test_tight_cluster_is_a_centre_within_50_px():
+    a = _c(pos=1, box=(0, 0, 100, 40))           # centre (50, 20)
+    near = _c(pos=2, box=(30, 0, 130, 40))       # centre (80, 20): 30 px
+    far = _c(pos=3, box=(60, 0, 160, 40))        # centre (110, 20): 60 px
+    assert pr.DROP_RULES["tight_cluster"](a, [a, near])
+    assert pr.DROP_RULES["tight_cluster"](near, [a, near])
+    assert not pr.DROP_RULES["tight_cluster"](a, [a, far])
+    assert not pr.DROP_RULES["tight_cluster"](a, [a])
+
+
+def test_no_phantom_drop_touches_a_flagged_row():
+    flagged = dict(needs_review=True, review_reasons=["no tolerance read"])
+    a = _c(pos=1, confidence=0.5, kind="material", **flagged)
+    b = _c(pos=2, box=(5, 0, 105, 40), confidence=0.5, kind="material",
+           **flagged)
+    for name in PHANTOM_DROPS:
+        assert not pr.DROP_RULES[name](a, [a, b]), name
+
+
+def test_a_regionless_row_is_never_a_cluster_member():
+    a = _c(pos=1)
+    manual = Characteristic(pos=2, target_region=None)
+    assert not pr.DROP_RULES["tight_cluster"](a, [a, manual])
+    assert not pr.DROP_RULES["tight_cluster"](manual, [a, manual])

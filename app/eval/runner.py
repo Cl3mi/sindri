@@ -647,6 +647,18 @@ def _cmd_score(args):
             print(f"ERROR: unknown rule(s) {unknown}", file=sys.stderr)
             return 1
         joint = (flags, drops) if (flags or drops) else None
+    drop_configs = None
+    if getattr(args, "drop_check", False):
+        from app.eval.drop_check import CONFIGS
+        drop_configs = ([n for n in args.drop_configs.split(",") if n]
+                        if args.drop_configs else list(CONFIGS))
+        unknown = [n for n in drop_configs if n not in CONFIGS]
+        if unknown:
+            # Checked before scoring, like --policy-check's names: a typo
+            # fails in seconds rather than after a full score.
+            print(f"ERROR: unknown drop configuration(s) {unknown}; "
+                  f"registered: {list(CONFIGS)}", file=sys.stderr)
+            return 1
     deck_out = getattr(args, "review_deck", None)
     if deck_out:
         # Checked BEFORE scoring: a bad path fails in seconds, and a refusal
@@ -868,6 +880,19 @@ def _cmd_score(args):
         print(f"phantom-profile: delivered={t['delivered']} "
               f"correct={t['correct']} escaped={t['escaped']} "
               f"phantom={t['phantom']} reconciles={pp['reconciles']}")
+    # The registered phantom drops (2026-10-06): control and arms both built
+    # from the ORIGINAL dumps through today's post-read code, so --reapply-policy
+    # alongside cannot apply that code twice.
+    if drop_configs is not None:
+        from app.eval.drop_check import drop_report
+        dr = drop_report(original_dumps, gold, doc_ids, weights, params,
+                         configs=drop_configs)
+        blob = json.dumps(dr, indent=1)
+        if args.drop_out:
+            Path(args.drop_out).parent.mkdir(parents=True, exist_ok=True)
+            Path(args.drop_out).write_text(blob, encoding="utf-8")
+        print(f"drop-check: control delivered_precision="
+              f"{dr['control']['delivered_precision']} selected={dr['selected']}")
     # The review deck holds client text, so it goes to a file inside a
     # protected root and only its row COUNT is printed -- this stdout may be an
     # agent's context.
@@ -1098,6 +1123,15 @@ def main(argv=None) -> int:
                         "-- profiling dev/test makes them selection data")
     p.add_argument("--phantom-out", default=None,
                    help="write the --phantom-profile JSON here (counts only)")
+    p.add_argument("--drop-check", action="store_true",
+                   help="DIAGNOSTIC: price the registered phantom-drop "
+                        "configurations on delivered precision; counts only")
+    p.add_argument("--drop-configs", default="",
+                   help="comma-separated configurations to price (default: "
+                        "all registered). Dev and test price ONLY the one "
+                        "selected on train")
+    p.add_argument("--drop-out", default=None,
+                   help="write the --drop-check JSON here (counts only)")
     p.add_argument("--reapply-policy", action="store_true",
                    help="score as if today's parser and ACTIVE policy rules "
                         "had produced the dumps -- DERIVED, exact for "

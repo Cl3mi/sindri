@@ -54,7 +54,9 @@ nothing (precision at any recall).
 
 **Selection (binding):** among the configurations that pass on TRAIN, take the
 one with the highest train delivered precision (ties: more delivered correct
-values). Only that configuration is then priced on dev and test, and it is kept
+values, then the order the configurations are listed above, so the simpler
+configuration wins an exact tie; added before any pricing, to make the order
+total). Only that configuration is then priced on dev and test, and it is kept
 iff it passes on both. If it fails either, nothing ships: there is no second
 pick, because a fallback chosen after seeing dev would be selected on dev.
 
