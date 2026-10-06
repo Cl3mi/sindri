@@ -89,6 +89,20 @@ Caveat: "phantom" means "not in gold", and gold balloons a strict subset of
 what the client inspects, so some may be real dimensions the client chose not
 to balloon. They are still balloons the client would have to delete.
 
+**PHANTOM DROPS SHIPPED (2026-10-06, `docs/plans/2026-10-06-phantom-drops-result.md`)**
+as drop STAGE 2: `conf_below_099 + material_kind + tight_cluster`, each firing
+only on a row that would ship unflagged. Registered, selected on train, passed
+dev and test (DERIVED, exact): **delivered precision train 0.577 → 0.888, dev
+0.419 → 0.526, test 0.536 → 0.958**, matched precision up on all three. The
+price: auto-accept rate dev 0.225 → 0.132, test 0.178 → 0.079, 29 correct values
+per split dropped. Dev missed its band: **30 dev phantoms read at ≥ 0.99**, out
+of reach of any confidence rule, and they are the verifier's target.
+**Drops are STAGES** (`ACTIVE_DROP_STAGES`), each judged on what the previous
+stage left, because that is how each was priced; `active_drop_rules()` is for
+recording only. **Flags must precede drops** now, since stage 2 reads
+`needs_review`. New dev/test numbers: 117.87 / 148.82 (reapplied); a native
+predict run should reproduce them.
+
 **`read-lora-v1` IS NOW HARMFUL UNDER THE SHIPPED POLICY — deployment CLOSED**
 (2026-10-05, `docs/plans/2026-10-05-read-adapter-repricing-result.md`;
 DERIVED, `--reapply-policy` on stored dev dumps, pad 6). The scoped adapter's
@@ -139,7 +153,7 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **1176 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **1233 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). **`tesseract` is a device
 prerequisite** — without the binary six tests fail as `TesseractNotFoundError`
 and read as broken code. `SCHEMA_VERSION` = 1 — do not bump it. Split frozen
@@ -868,7 +882,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 1176 passed, 2 skipped
+python -m pytest -q                          # 1233 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```
