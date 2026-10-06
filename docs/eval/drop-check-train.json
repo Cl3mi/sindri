@@ -1,0 +1,384 @@
+{
+ "n_docs": 49,
+ "control": {
+  "correct": 274,
+  "escaped": 89,
+  "phantom": 112,
+  "delivered": 475,
+  "delivered_precision": 0.5768,
+  "matched_precision": 0.7548,
+  "recall": 0.7283,
+  "cost": 113.0408,
+  "cost_per_weighting": [
+   113.0408,
+   185.4286,
+   77.7551,
+   150.0612,
+   91.8571,
+   47.4898
+  ],
+  "counts": {
+   "correct": 274,
+   "escaped_error": 89,
+   "flagged_correct": 169,
+   "flagged_error": 347,
+   "missed": 328,
+   "false_detection": 649
+  }
+ },
+ "configs": {
+  "conf_below_090": {
+   "arm": {
+    "correct": 267,
+    "escaped": 66,
+    "phantom": 80,
+    "delivered": 413,
+    "delivered_precision": 0.6465,
+    "matched_precision": 0.8018,
+    "recall": 0.715,
+    "cost": 112.3673,
+    "cost_per_weighting": [
+     112.3673,
+     186.6122,
+     75.9184,
+     147.7959,
+     90.0612,
+     46.8776
+    ],
+    "counts": {
+     "correct": 267,
+     "escaped_error": 66,
+     "flagged_correct": 169,
+     "flagged_error": 361,
+     "missed": 344,
+     "false_detection": 603
+    }
+   },
+   "correct_lost": 7,
+   "delta_delivered_precision": 0.0697,
+   "better_under": 5,
+   "passes": true
+  },
+  "conf_below_095": {
+   "arm": {
+    "correct": 245,
+    "escaped": 39,
+    "phantom": 55,
+    "delivered": 339,
+    "delivered_precision": 0.7227,
+    "matched_precision": 0.8627,
+    "recall": 0.6918,
+    "cost": 113.8776,
+    "cost_per_weighting": [
+     113.8776,
+     192.1837,
+     75.1224,
+     147.8571,
+     89.7143,
+     46.9796
+    ],
+    "counts": {
+     "correct": 245,
+     "escaped_error": 39,
+     "flagged_correct": 169,
+     "flagged_error": 382,
+     "missed": 372,
+     "false_detection": 557
+    }
+   },
+   "correct_lost": 29,
+   "delta_delivered_precision": 0.1459,
+   "better_under": 4,
+   "passes": true
+  },
+  "conf_below_099": {
+   "arm": {
+    "correct": 175,
+    "escaped": 6,
+    "phantom": 17,
+    "delivered": 198,
+    "delivered_precision": 0.8838,
+    "matched_precision": 0.9669,
+    "recall": 0.6462,
+    "cost": 119.2041,
+    "cost_per_weighting": [
+     119.2041,
+     206.7143,
+     75.5102,
+     150.6531,
+     92.5306,
+     48.2245
+    ],
+    "counts": {
+     "correct": 175,
+     "flagged_correct": 169,
+     "flagged_error": 430,
+     "missed": 427,
+     "false_detection": 471,
+     "escaped_error": 6
+    }
+   },
+   "correct_lost": 99,
+   "delta_delivered_precision": 0.307,
+   "better_under": 1,
+   "passes": true
+  },
+  "material_kind": {
+   "arm": {
+    "correct": 274,
+    "escaped": 84,
+    "phantom": 101,
+    "delivered": 459,
+    "delivered_precision": 0.5969,
+    "matched_precision": 0.7654,
+    "recall": 0.7274,
+    "cost": 112.2041,
+    "cost_per_weighting": [
+     112.2041,
+     184.4898,
+     76.9184,
+     148.6939,
+     90.9796,
+     47.1224
+    ],
+    "counts": {
+     "correct": 274,
+     "escaped_error": 84,
+     "flagged_correct": 169,
+     "flagged_error": 351,
+     "missed": 329,
+     "false_detection": 634
+    }
+   },
+   "correct_lost": 0,
+   "delta_delivered_precision": 0.0201,
+   "better_under": 6,
+   "passes": true
+  },
+  "tight_cluster": {
+   "arm": {
+    "correct": 273,
+    "escaped": 87,
+    "phantom": 104,
+    "delivered": 464,
+    "delivered_precision": 0.5884,
+    "matched_precision": 0.7583,
+    "recall": 0.7266,
+    "cost": 112.898,
+    "cost_per_weighting": [
+     112.898,
+     185.5714,
+     77.449,
+     149.5714,
+     91.6939,
+     47.3673
+    ],
+    "counts": {
+     "correct": 273,
+     "escaped_error": 87,
+     "flagged_correct": 169,
+     "flagged_error": 348,
+     "missed": 330,
+     "false_detection": 640
+    }
+   },
+   "correct_lost": 1,
+   "delta_delivered_precision": 0.0116,
+   "better_under": 5,
+   "passes": true
+  },
+  "conf_below_090+material_kind": {
+   "arm": {
+    "correct": 267,
+    "escaped": 62,
+    "phantom": 73,
+    "delivered": 402,
+    "delivered_precision": 0.6642,
+    "matched_precision": 0.8116,
+    "recall": 0.7142,
+    "cost": 111.8163,
+    "cost_per_weighting": [
+     111.8163,
+     186.0204,
+     75.3469,
+     146.898,
+     89.4286,
+     46.6327
+    ],
+    "counts": {
+     "correct": 267,
+     "escaped_error": 62,
+     "flagged_correct": 169,
+     "flagged_error": 364,
+     "missed": 345,
+     "false_detection": 593
+    }
+   },
+   "correct_lost": 7,
+   "delta_delivered_precision": 0.0874,
+   "better_under": 5,
+   "passes": true
+  },
+  "conf_below_090+material_kind+tight_cluster": {
+   "arm": {
+    "correct": 266,
+    "escaped": 61,
+    "phantom": 72,
+    "delivered": 399,
+    "delivered_precision": 0.6667,
+    "matched_precision": 0.8135,
+    "recall": 0.7133,
+    "cost": 111.8571,
+    "cost_per_weighting": [
+     111.8571,
+     186.2041,
+     75.3061,
+     146.8776,
+     89.4082,
+     46.6327
+    ],
+    "counts": {
+     "correct": 266,
+     "escaped_error": 61,
+     "flagged_correct": 169,
+     "flagged_error": 365,
+     "missed": 346,
+     "false_detection": 591
+    }
+   },
+   "correct_lost": 8,
+   "delta_delivered_precision": 0.0899,
+   "better_under": 5,
+   "passes": true
+  },
+  "conf_below_095+material_kind": {
+   "arm": {
+    "correct": 245,
+    "escaped": 37,
+    "phantom": 52,
+    "delivered": 334,
+    "delivered_precision": 0.7335,
+    "matched_precision": 0.8688,
+    "recall": 0.691,
+    "cost": 113.7347,
+    "cost_per_weighting": [
+     113.7347,
+     192.1224,
+     74.9184,
+     147.5714,
+     89.4898,
+     46.898
+    ],
+    "counts": {
+     "correct": 245,
+     "escaped_error": 37,
+     "flagged_correct": 169,
+     "flagged_error": 383,
+     "missed": 373,
+     "false_detection": 553
+    }
+   },
+   "correct_lost": 29,
+   "delta_delivered_precision": 0.1567,
+   "better_under": 4,
+   "passes": true
+  },
+  "conf_below_095+material_kind+tight_cluster": {
+   "arm": {
+    "correct": 244,
+    "escaped": 36,
+    "phantom": 51,
+    "delivered": 331,
+    "delivered_precision": 0.7372,
+    "matched_precision": 0.8714,
+    "recall": 0.6901,
+    "cost": 113.7755,
+    "cost_per_weighting": [
+     113.7755,
+     192.3061,
+     74.8776,
+     147.551,
+     89.4694,
+     46.898
+    ],
+    "counts": {
+     "correct": 244,
+     "escaped_error": 36,
+     "flagged_correct": 169,
+     "flagged_error": 384,
+     "missed": 374,
+     "false_detection": 551
+    }
+   },
+   "correct_lost": 30,
+   "delta_delivered_precision": 0.1604,
+   "better_under": 4,
+   "passes": true
+  },
+  "conf_below_099+material_kind": {
+   "arm": {
+    "correct": 175,
+    "escaped": 6,
+    "phantom": 17,
+    "delivered": 198,
+    "delivered_precision": 0.8838,
+    "matched_precision": 0.9669,
+    "recall": 0.6462,
+    "cost": 119.2041,
+    "cost_per_weighting": [
+     119.2041,
+     206.7143,
+     75.5102,
+     150.6531,
+     92.5306,
+     48.2245
+    ],
+    "counts": {
+     "correct": 175,
+     "flagged_correct": 169,
+     "flagged_error": 430,
+     "missed": 427,
+     "false_detection": 471,
+     "escaped_error": 6
+    }
+   },
+   "correct_lost": 99,
+   "delta_delivered_precision": 0.307,
+   "better_under": 1,
+   "passes": true
+  },
+  "conf_below_099+material_kind+tight_cluster": {
+   "arm": {
+    "correct": 174,
+    "escaped": 6,
+    "phantom": 16,
+    "delivered": 196,
+    "delivered_precision": 0.8878,
+    "matched_precision": 0.9667,
+    "recall": 0.6454,
+    "cost": 119.3673,
+    "cost_per_weighting": [
+     119.3673,
+     207.0816,
+     75.5714,
+     150.7755,
+     92.6735,
+     48.2653
+    ],
+    "counts": {
+     "correct": 174,
+     "flagged_correct": 169,
+     "flagged_error": 430,
+     "missed": 428,
+     "false_detection": 470,
+     "escaped_error": 6
+    }
+   },
+   "correct_lost": 100,
+   "delta_delivered_precision": 0.311,
+   "better_under": 1,
+   "passes": true
+  }
+ },
+ "selected": "conf_below_099+material_kind+tight_cluster"
+}
