@@ -117,7 +117,11 @@ async def extract_endpoint(session_id: str, request: Request):
             events.put(("result", {
                 "session_id": session_id,
                 "image_url": f"/api/image/{session_id}",
-                "rows": [r.model_dump() for r in result.characteristics],
+                # Suggestions ride in the same list, flagged, so the reviewer
+                # edits them with the existing table; the client keeps them out
+                # of exports and so does _exportable below.
+                "rows": [r.model_dump() for r in
+                         [*result.characteristics, *result.suggestions]],
                 "notes": result.notes.model_dump() if result.notes is not None else None,
                 "marks": result.marks.model_dump() if result.marks is not None else None,
                 "title_block": [t.model_dump() for t in result.title_block],
@@ -171,12 +175,20 @@ def image(session_id: str):
     return FileResponse(png, media_type="image/png")
 
 
+def _exportable(rows):
+    """Confirmed rows only. The UI already omits unconfirmed suggestions; this
+    is the server-side guarantee, because an unconfirmed value in the client's
+    Excel or ballooned PDF is exactly the failure the drops exist to prevent
+    (docs/plans/2026-10-07-suggestion-tray-design.md)."""
+    return [r for r in rows if not r.suggested]
+
+
 @app.post("/api/export")
 def export(req: ExportRequest):
     work = _session_dir(req.session_id)
     work.mkdir(parents=True, exist_ok=True)
     out = work / "inspection.xlsx"
-    write_workbook(req.rows, out, notes=req.notes, marks=req.marks,
+    write_workbook(_exportable(req.rows), out, notes=req.notes, marks=req.marks,
                    title_block=req.title_block)
     return FileResponse(
         out,
@@ -230,7 +242,7 @@ def export_pdf(req: ExportRequest):
     if not src.is_file():
         raise HTTPException(status_code=404, detail="unknown session")
     out = work / "ballooned.pdf"
-    render_ballooned_pdf(src, req.rows, dpi=300, out_path=out)
+    render_ballooned_pdf(src, _exportable(req.rows), dpi=300, out_path=out)
     return FileResponse(out, media_type="application/pdf", filename="ballooned.pdf")
 
 

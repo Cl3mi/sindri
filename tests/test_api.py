@@ -373,3 +373,50 @@ def test_upload_returns_null_marks_when_extract_returns_none(monkeypatch, sample
     test_client = TestClient(main.app)
     data = upload_pdf(test_client, sample_pdf, filename="x.pdf")
     assert data["marks"] is None
+
+
+# --- the suggestion tray (docs/plans/2026-10-07-suggestion-tray-design.md) ---
+
+def test_extract_payload_merges_suggestions_flagged(monkeypatch, sample_pdf):
+    from fastapi.testclient import TestClient
+    import app.main as main
+    from app.models import Characteristic, ExtractionResult
+    monkeypatch.setattr(main, "extract", lambda *a, **kw: ExtractionResult(
+        characteristics=[Characteristic(pos=1, id="a", nominal="20")],
+        suggestions=[Characteristic(pos=0, id="b", nominal="7",
+                                    suggested=True)]))
+    data = upload_pdf(TestClient(main.app), sample_pdf, filename="x.pdf")
+    assert [(r["id"], r["suggested"]) for r in data["rows"]] == \
+        [("a", False), ("b", True)]
+
+
+@pytest.mark.parametrize("endpoint", ["/api/export", "/api/export/pdf"])
+def test_exports_drop_unconfirmed_suggestions_server_side(
+        endpoint, sample_pdf, stub_backend, monkeypatch):
+    """Defence in depth: even when a client sends a suggested row, it is not
+    exported. An unconfirmed value in the client's Excel or ballooned PDF is
+    exactly the failure the phantom drops exist to prevent."""
+    import app.main as main
+    seen = {}
+
+    def fake_xlsx(rows, out, **kw):
+        seen["rows"] = rows
+        out.write_bytes(b"x")
+
+    def fake_pdf(src, rows, dpi, out_path):
+        seen["rows"] = rows
+        out_path.write_bytes(b"%PDF")
+
+    monkeypatch.setattr(main, "write_workbook", fake_xlsx)
+    monkeypatch.setattr(main, "render_ballooned_pdf", fake_pdf)
+    up = upload_pdf(client, sample_pdf)
+    rows = up["rows"] + [{**up["rows"][0], "id": "s", "suggested": True}]
+    r = client.post(endpoint, json={"session_id": up["session_id"],
+                                    "rows": rows})
+    assert r.status_code == 200
+    # the stub reads at 0.9, so the upload itself already carries suggestions
+    # (stage 2 drops them); plus the one forged above -- none may be exported
+    confirmed = [row for row in up["rows"] if not row["suggested"]]
+    assert any(row["suggested"] for row in up["rows"])
+    assert len(seen["rows"]) == len(confirmed)
+    assert all(not row.suggested for row in seen["rows"])
