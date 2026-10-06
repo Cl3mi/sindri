@@ -5,6 +5,7 @@ import { state, on, setSession, clearSession, undo, redo, canUndo, canRedo,
 import { savePdf, runExtraction, deleteSession, exportFile, health,
          postEvents, beaconEvents, sealSession } from './api.js';
 import { createJournal } from './journal.js';
+import { createFinisher } from './finish.js';
 import { initViewer } from './viewer.js';
 import { initTable } from './table.js';
 import {
@@ -24,6 +25,20 @@ const journal = createJournal({
 });
 let flushTimer = null;
 let flushBackoff = 500;
+
+// Flush → seal → export, single-flight, never re-sealing an unchanged
+// journal (finish.js).
+const finisher = createFinisher({
+  journal,
+  canFinish,
+  seal: (sid, body) => sealSession(sid, body),
+  exportAll: async (s) => {
+    const payload = { session_id: s.sessionId, rows: s.rows.filter((r) => !r.suggested),
+                      notes: s.notes, marks: s.marks, title_block: s.title_block };
+    await exportFile('/api/export', payload, 'inspection.xlsx');
+    await exportFile('/api/export/pdf', payload, 'ballooned.pdf');
+  },
+});
 
 function init() {
   initThemeAndDensity();
@@ -58,7 +73,12 @@ function wireHeader() {
       document.getElementById('finish-btn').disabled = false;
     } else {
       chip.hidden = true;
-      document.getElementById('finish-btn').disabled = true;
+      const fin = document.getElementById('finish-btn');
+      fin.disabled = true;
+      // The 'change' handler skips a cleared session, so reset here or the
+      // next drawing opens with the last one's "N flagged rows" state.
+      fin.classList.remove('blocked');
+      fin.title = 'Seal the review and export Excel + ballooned PDF';
       document.getElementById('log-pill').hidden = true;
     }
   });
@@ -290,40 +310,38 @@ function wireFinish() {
 }
 
 async function finish() {
-  if (!canFinish()) {
-    const n = progress().outstanding;
-    toast({ kind: 'warn', title: 'Not finished yet',
-            msg: `${n} flagged row${n === 1 ? '' : 's'} still to resolve — showing them now.` });
-    document.querySelector('#filter-pills button[data-filter="review"]')?.click();
-    return;
-  }
+  const btn = document.getElementById('finish-btn');
+  // A copy, so the sealed rows and the exported files describe one moment
+  // even if an op lands while the run is awaiting the server.
+  const snapshot = {
+    sessionId: state.sessionId,
+    rows: structuredClone(state.rows),
+    reviewedIds: state.rows.filter((r) => r.reviewed).map((r) => r.id),
+    notes: state.notes, marks: state.marks, title_block: state.title_block,
+  };
+  clearTimeout(flushTimer);   // the run flushes itself
+  btn.disabled = true;        // no second click while sealing/exporting
   setBusy('Finishing…');
   try {
-    let sealed = null;
-    if (journal.active) {
-      clearTimeout(flushTimer);
-      const acked = await journal.flush();
-      if (acked < journal.lastSeq) throw new Error('The review log is still saving — try again in a moment.');
-      sealed = await sealSession(state.sessionId, {
-        writer: journal.writer,
-        final_seq: journal.lastSeq,
-        rows: state.rows,
-        reviewed_ids: state.rows.filter((r) => r.reviewed).map((r) => r.id),
-      });
+    const res = await finisher.run(snapshot);
+    if (res.status === 'blocked') {
+      const n = progress().outstanding;
+      toast({ kind: 'warn', title: 'Not finished yet',
+              msg: `${n} flagged row${n === 1 ? '' : 's'} still to resolve — showing them now.` });
+      document.querySelector('#filter-pills button[data-filter="review"]')?.click();
+    } else if (res.status === 'done') {
+      toast({ kind: 'ok', title: 'Finished',
+              msg: res.revision ? `Review sealed as revision r${res.revision}` : 'Exported (review not recorded)' });
     }
-    const payload = { session_id: state.sessionId, rows: state.rows.filter((r) => !r.suggested),
-                      notes: state.notes, marks: state.marks, title_block: state.title_block };
-    await exportFile('/api/export', payload, 'inspection.xlsx');
-    await exportFile('/api/export/pdf', payload, 'ballooned.pdf');
-    setIdle();
-    toast({ kind: 'ok', title: 'Finished',
-            msg: sealed && sealed.revision ? `Review sealed as revision r${sealed.revision}` : 'Exported (review not recorded)' });
   } catch (err) {
-    setIdle();
-    // Finish cleared the flush timer; if its flush failed (e.g. offline),
-    // restart the backoff loop so pending events don't wait for the next edit.
-    if (journal.active && journal.pending.length) scheduleFlush(flushBackoff);
     toast({ kind: 'error', title: 'Finish failed', msg: String(err.message || err) });
+  } finally {
+    setIdle();
+    btn.disabled = !state.sessionId;
+    // The flush timer was cleared above; if events are still pending (a
+    // failed flush while offline, or a blocked run), restart the backoff loop
+    // so they don't wait for the next edit.
+    if (journal.active && journal.pending.length) scheduleFlush(flushBackoff);
   }
 }
 
