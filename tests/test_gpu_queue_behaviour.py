@@ -573,3 +573,41 @@ def test_only_the_two_test_stages_touch_the_test_split(tmp_path):
     _run(tmp_path, env, "awqcontrol", "r4control", "cropctx", "tallpad")
     for line in (calls.read_text().splitlines() if calls.exists() else []):
         assert "--split test" not in line, line
+
+
+# --- the phantom-drop confirmation runs (2026-10-06) -------------------------
+
+_NO_KNOBS = ("SINDRI_CROP", "SINDRI_ADAPTER", "SINDRI_QUANT",
+             "SINDRI_PROPOSALS", "SINDRI_READ_PROMPT", "SINDRI_DETECT_PROMPT")
+
+
+def test_r5control_is_current_code_on_dev(tmp_path):
+    """Native confirmation of the phantom drops, which were DERIVED from
+    r4-control's dumps. Current code, no knob, dev -- so the only difference
+    from r4-control is the second drop stage."""
+    env, calls = _stub_env(tmp_path)
+    assert _run(tmp_path, env, "r5control").returncode == 0
+    line = _podman_line(calls, "r5-control")
+    assert "--split dev" in line, line
+    assert "VLM_MODEL_ID=Qwen/Qwen2.5-VL-72B-Instruct-AWQ" in line, line
+    for knob in _NO_KNOBS:
+        assert knob not in line, line
+    assert line.count("--device") == 1, line
+
+
+def test_r5controltest_is_current_code_on_test(tmp_path):
+    env, calls = _stub_env(tmp_path)
+    assert _run(tmp_path, env, "r5controltest").returncode == 0
+    line = _podman_line(calls, "r5-controltest")
+    assert "--split test" in line and "--split dev" not in line, line
+    assert "VLM_MODEL_ID=Qwen/Qwen2.5-VL-72B-Instruct-AWQ" in line, line
+    for knob in _NO_KNOBS:
+        assert knob not in line, line
+    assert line.count("--device") == 1, line
+
+
+def test_r5control_stays_off_the_test_split(tmp_path):
+    env, calls = _stub_env(tmp_path)
+    _run(tmp_path, env, "r5control")
+    for line in (calls.read_text().splitlines() if calls.exists() else []):
+        assert "--split test" not in line, line
