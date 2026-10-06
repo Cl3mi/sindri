@@ -308,7 +308,21 @@ def _tight_cluster(c, chars):
                for o in chars)
 
 
+# --- verifier candidates (2026-10-07, docs/plans/2026-10-07-verifier-registration.md)
+# A row with no verdict (None) is never dropped: a verdict the model did not
+# give cannot remove a value.
+
+def _verifier_below(threshold: float):
+    def rule(c, chars):
+        return (not c.needs_review and c.verifier_p is not None
+                and c.verifier_p < threshold)
+    return rule
+
+
 DROP_RULES: Dict[str, Callable[[Characteristic, Sequence[Characteristic]], bool]] = {
+    "verifier_below_050": _verifier_below(0.50),
+    "verifier_below_070": _verifier_below(0.70),
+    "verifier_below_090": _verifier_below(0.90),
     "conf_below_090": _conf_below(0.90),
     "conf_below_095": _conf_below(0.95),
     "conf_below_099": _conf_below(0.99),

@@ -143,3 +143,14 @@ def test_fill_runs_after_drops_so_a_dropped_row_is_never_filled():
     on = reapply_current_code(_gentol_dump([outer, inner]), fill=True)
     assert [c.pos for c in on.result.characteristics] == [1]
     assert on.result.characteristics[0].upper_tol == "0,2"
+
+
+def test_a_verifier_verdict_survives_reapplication():
+    """Verdicts are produced on the GPU host and written into the dumps;
+    re-scoring re-parses every row, and a field it does not restore is
+    silently erased -- the verdicts would vanish before they were priced."""
+    c = Characteristic(pos=1, kind="dimension", char_type="Distance",
+                       nominal="20", upper_tol="0,1", lower_tol="-0,1",
+                       raw_text="20 ±0,1", confidence=0.995, verifier_p=0.31)
+    out = reapply_current_code(_dump([c]))
+    assert out.result.characteristics[0].verifier_p == 0.31

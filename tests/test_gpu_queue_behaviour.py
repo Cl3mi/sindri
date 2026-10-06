@@ -611,3 +611,38 @@ def test_r5control_stays_off_the_test_split(tmp_path):
     _run(tmp_path, env, "r5control")
     for line in (calls.read_text().splitlines() if calls.exists() else []):
         assert "--split test" not in line, line
+
+
+# --- the verifier runs (docs/plans/2026-10-07-verifier-registration.md §3) ---
+
+import pytest as _pytest
+
+
+@_pytest.mark.parametrize("stage,src,out,split", [
+    ("verifytrain", "r3-trainpredict", "v1-train", "train"),
+    ("verifydev", "r5-control", "v1-dev", "dev"),
+    ("verifytest", "r5-controltest", "v1-test", "test"),
+])
+def test_verify_stages_run_verify_on_the_registered_source(tmp_path, stage,
+                                                           src, out, split):
+    """A verify stage reads an EXISTING run and writes a new one; it never
+    predicts, so detection and reads stay exactly those of the source run."""
+    env, calls = _stub_env(tmp_path)
+    assert _run(tmp_path, env, stage).returncode == 0
+    line = _podman_line(calls, out)
+    assert "app.eval.runner verify" in line, line
+    assert "runner predict" not in line, line
+    assert f"--run /data/runs/{src}" in line, line
+    assert f"--out /data/runs/{out}" in line, line
+    assert f"--split {split}" in line, line
+    assert "VLM_MODEL_ID=Qwen/Qwen2.5-VL-72B-Instruct-AWQ" in line, line
+    for knob in _NO_KNOBS:
+        assert knob not in line, line
+    assert line.count("--device") == 1, line
+
+
+def test_predict_stages_are_unchanged_by_the_verify_branch(tmp_path):
+    env, calls = _stub_env(tmp_path)
+    assert _run(tmp_path, env, "r5control").returncode == 0
+    line = _podman_line(calls, "r5-control")
+    assert "app.eval.runner predict" in line, line

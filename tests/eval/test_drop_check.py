@@ -109,3 +109,34 @@ def test_input_dumps_are_not_mutated():
     before = dumps["D"].model_dump_json()
     dc.drop_report(dumps, golds, ["D"], ReviewCostWeights(), MatchParams())
     assert dumps["D"].model_dump_json() == before
+
+
+# --- the verifier family (docs/plans/2026-10-07-verifier-registration.md §4)
+
+def test_the_verifier_family_is_the_three_registered_thresholds():
+    assert list(dc.FAMILIES["verifier"]["configs"]) == [
+        "verifier_below_050", "verifier_below_070", "verifier_below_090"]
+
+
+def test_the_verifier_family_is_priced_against_both_current_stages():
+    """A third stage runs after stages 1 and 2; its control is pinned to
+    them, never read from ACTIVE_DROP_STAGES, so shipping it later cannot
+    make it price itself against itself."""
+    assert dc.FAMILIES["verifier"]["base"] == (
+        ("contained_duplicate",),
+        ("conf_below_099", "material_kind", "tight_cluster"))
+    assert dc.FAMILIES["phantom"]["base"] == (("contained_duplicate",),)
+
+
+def test_verifier_family_drops_rows_by_verdict():
+    dumps, golds = _setup()
+    # the fixture's delivered rows: correct (0.99), wrong (0.93), phantom (0.96)
+    # -- stage 2 already drops the two below 0.99, so give the survivor a "no"
+    for c in dumps["D"].result.characteristics:
+        c.confidence = 0.995 if c.raw_text else c.confidence
+        c.verifier_p = 0.2 if c.pos == 4 else 0.95
+    r = dc.drop_report(dumps, golds, ["D"], ReviewCostWeights(), MatchParams(),
+                       family="verifier")
+    assert r["family"] == "verifier"
+    a = r["configs"]["verifier_below_050"]["arm"]
+    assert a["phantom"] == r["control"]["phantom"] - 1

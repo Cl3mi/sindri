@@ -36,6 +36,20 @@ for _d in _DOSES:
     CONFIGS[f"{_d}+material_kind+tight_cluster"] = (_d, "material_kind",
                                                     "tight_cluster")
 
+# The verifier (2026-10-07, docs/plans/2026-10-07-verifier-registration.md):
+# a THIRD stage, so its control is stages 1 and 2 -- pinned here as registered,
+# never read from ACTIVE_DROP_STAGES, for the same reason as BASE_DROP_STAGES.
+VERIFIER_BASE_STAGES = (("contained_duplicate",),
+                        ("conf_below_099", "material_kind", "tight_cluster"))
+VERIFIER_CONFIGS: Dict[str, tuple] = {
+    n: (n,) for n in ("verifier_below_050", "verifier_below_070",
+                      "verifier_below_090")}
+
+FAMILIES = {
+    "phantom": {"base": BASE_DROP_STAGES, "configs": CONFIGS},
+    "verifier": {"base": VERIFIER_BASE_STAGES, "configs": VERIFIER_CONFIGS},
+}
+
 
 def _stats(scores, n_docs: int) -> Dict:
     counts: Dict[str, int] = {}
@@ -79,18 +93,21 @@ def passes(control: Dict, arm: Dict) -> bool:
 def drop_report(dumps: Dict[str, PredictionDump], golds: Dict[str, GoldDoc],
                 doc_ids: Sequence[str], weights: ReviewCostWeights,
                 params: MatchParams,
-                configs: Optional[Sequence[str]] = None) -> Dict:
-    names = list(configs) if configs is not None else list(CONFIGS)
-    unknown = [n for n in names if n not in CONFIGS]
+                configs: Optional[Sequence[str]] = None,
+                family: str = "phantom") -> Dict:
+    fam = FAMILIES[family]
+    registered, base = fam["configs"], fam["base"]
+    names = list(configs) if configs is not None else list(registered)
+    unknown = [n for n in names if n not in registered]
     if unknown:
         raise ValueError(f"unknown drop configuration(s): {unknown}; "
-                         f"registered: {list(CONFIGS)}")
+                         f"registered: {list(registered)}")
     if not doc_ids:
         raise ValueError("drop_report: doc_ids is empty -- nothing to price")
-    for rules in CONFIGS.values():
+    for rules in registered.values():
         assert all(r in DROP_RULES for r in rules), rules
 
-    control = {i: reapply_current_code(dumps[i], drop_stages=BASE_DROP_STAGES)
+    control = {i: reapply_current_code(dumps[i], drop_stages=base)
                for i in doc_ids}
     n_docs = len(doc_ids)
     c_scores = _score_all(control, golds, doc_ids, weights, params)
@@ -102,7 +119,7 @@ def drop_report(dumps: Dict[str, PredictionDump], golds: Dict[str, GoldDoc],
         for i in doc_ids:
             d = control[i].model_copy(deep=True)
             d.result.characteristics = apply_drop_rules(
-                d.result.characteristics, CONFIGS[name])
+                d.result.characteristics, registered[name])
             arm[i] = d
         a_scores = _score_all(arm, golds, doc_ids, weights, params)
         a_stats = _stats(a_scores, n_docs)
@@ -121,9 +138,10 @@ def drop_report(dumps: Dict[str, PredictionDump], golds: Dict[str, GoldDoc],
     passing = [n for n in names if out_configs[n]["passes"]]
     selected = None
     if passing:
-        order = {n: k for k, n in enumerate(CONFIGS)}
+        order = {n: k for k, n in enumerate(registered)}
         selected = min(passing, key=lambda n: (
             -out_configs[n]["arm"]["delivered_precision"],
             -out_configs[n]["arm"]["correct"], order[n]))
-    return {"n_docs": n_docs, "control": c_stats, "configs": out_configs,
+    return {"n_docs": n_docs, "family": family, "control": c_stats,
+            "configs": out_configs,
             "selected": selected}

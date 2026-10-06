@@ -35,7 +35,10 @@ from app.pipeline.review import review_flags
 # note_ref relabel), which is also what `_HINTS.get(c.kind)` must be keyed on
 # to reproduce the hint extract used -- see the module docstring on note_ref.
 _RESTORE_FIELDS = ("pos", "id", "kind", "subtype", "source", "confidence",
-                   "target_region", "balloon_xy", "note_ref_pos")
+                   "target_region", "balloon_xy", "note_ref_pos",
+                   # written by `runner verify` on the GPU host; a re-parse
+                   # that dropped it would erase every verdict before pricing
+                   "verifier_p")
 
 
 def _known_note_positions(result):

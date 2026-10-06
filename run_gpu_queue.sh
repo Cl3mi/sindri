@@ -70,7 +70,7 @@ IMAGE_VLLM="${IMAGE_VLLM:-sindri-vllm}"
 
 if [ -z "$GPU_INDEX" ] || [ ${#STAGES[@]} -eq 0 ]; then
     echo "usage: run_gpu_queue.sh <gpu-index>[,<gpu-index>] <stage> [<stage>...]" >&2
-    echo "stages: trainpredict awqgate base72bnf4 awqcontrol nf4control lora72bnf4 lora72bawq loraread loramerged mergedcontrol vllmcontrol vllmlora hybrid hybridgate awqtest cropctx cropctx48 tallpad r4control r4controltest r5control r5controltest" >&2
+    echo "stages: trainpredict awqgate base72bnf4 awqcontrol nf4control lora72bnf4 lora72bawq loraread loramerged mergedcontrol vllmcontrol vllmlora hybrid hybridgate awqtest cropctx cropctx48 tallpad r4control r4controltest r5control r5controltest verifytrain verifydev verifytest" >&2
     echo "  the hybrid stages serve two checkpoints and need two cards: 0,1" >&2
     exit 2
 fi
@@ -107,12 +107,22 @@ stage_run()    { case "$1" in trainpredict) echo "r3-trainpredict" ;;
                               r4control)    echo "r4-control" ;;
                               r4controltest) echo "r4-controltest" ;;
                               r5control)    echo "r5-control" ;;
-                              r5controltest) echo "r5-controltest" ;; esac; }
+                              r5controltest) echo "r5-controltest" ;;
+                              verifytrain)  echo "v1-train" ;;
+                              verifydev)    echo "v1-dev" ;;
+                              verifytest)   echo "v1-test" ;; esac; }
+# A verify stage reads an EXISTING run and writes a new one with verifier
+# verdicts; it never predicts, so detection and reads stay exactly those of the
+# source (docs/plans/2026-10-07-verifier-registration.md §3). Empty = predict.
+stage_source() { case "$1" in verifytrain) echo "r3-trainpredict" ;;
+                              verifydev)    echo "r5-control" ;;
+                              verifytest)   echo "r5-controltest" ;;
+                              *)            echo "" ;; esac; }
 # The ONLY stages that touch the frozen test split, and deliberately so: it is
 # spendable once per question, and a stage that wandered onto it by accident
 # would burn it while producing a report that merely looks incomparable.
-stage_split()  { case "$1" in trainpredict) echo "train" ;;
-                              awqtest|r4controltest|r5controltest) echo "test" ;;
+stage_split()  { case "$1" in trainpredict|verifytrain) echo "train" ;;
+                              awqtest|r4controltest|r5controltest|verifytest) echo "test" ;;
                               *)            echo "dev" ;; esac; }
 stage_image()  { case "$1" in trainpredict) echo "$IMAGE_OLD" ;;
                               # vLLM cannot share the pinned image: that one is
@@ -191,6 +201,9 @@ stage_why()    { case "$1" in
     hybrid)       echo "THE HYBRID: the 32B localises, the 72B transcribes. The 32B is the best detector and the worst reader measured -- missed 70 vs 88, recall 0.7749 vs 0.7170, field_acc 0.2614 vs 0.4798 -- and Rung 1 established that the detector's WEIGHTS are the only thing that has ever moved missed; its knobs and prompts never did. Judge vs r3-awqcontrol (133.93 scoped), never vs r3-32bawq, which differs in two variables at once. VOID GATES, registered in docs/plans/2026-09-09-hybrid-arm-prediction.md BEFORE this ran: n_pred must be EXACTLY 890 (detection is a pure function of the detect model) and field_acc must be >= 0.40 (below it the reads did not reach the 72B). PREDICTED 164.60, a LOSS of about +30: 18 recovered misses are worth -180 and the 303 extra false detections cost +606 at w=2. The arm is not run for its cost verdict, which is arithmetic; it is run for the ceiling on missed, for whether the 32B's recall survives good reading, and for what the 72B reads on the spurious boxes -- which is the only thing that could size a filter." ;;
     hybridgate)   echo "THE HYBRID'\''S CONTROL, and it is only skippable by the rule the prediction registers. Serves the 72B on BOTH passes through the hybrid machinery, so it prices the two-card device pinning and the delegation layer by themselves. PREDICTION: it reproduces r3-awqcontrol with every per-document delta exactly 0.0, which app/eval/gate.py checks -- the same role awqgate played for the dependency change. Run it only if the hybrid'\''s field_acc lands outside [0.40, 0.52]; inside that band the device change cannot be the explanation, because decoding is greedy and CLAUDE.md section 5 records 16 documents at exactly 0.0 across a GPU device change." ;;
     lora72bawq)   echo "THE DEPLOYMENT QUESTION: an adapter attached to what production actually serves. Judge vs r3-awqcontrol (170.05). Trained on NF4 and served on AWQ, so this arm also measures that quantisation mismatch, whose size is unknown." ;;
+    verifytrain)  echo "VERIFIER VERDICTS on train (selection split): r3-trainpredict's deliverable rows, one yes/no question each on a 3x context crop. Never predicts. Output v1-train is priced on CPU with score --drop-check --drop-family verifier. Registration: docs/plans/2026-10-07-verifier-registration.md." ;;
+    verifydev)    echo "VERIFIER VERDICTS on dev (validation split), source r5-control. Only the configuration selected on train is priced on it." ;;
+    verifytest)   echo "VERIFIER VERDICTS on test (confirmation split), source r5-controltest." ;;
     r5control)    echo "NATIVE CONFIRMATION OF THE PHANTOM DROPS on dev -- current code, no knob; the only change since r4-control is drop stage 2 (conf_below_099 + material_kind + tight_cluster, 2026-10-06). It was DERIVED exactly from r4-control's dumps, so greedy decoding must reproduce it TO THE DECIMAL. PREDICTION, registered: mean_review_cost 117.87, n_pred 474, delivered 78 = correct 41 / escaped 7 / phantom 30, delivered_precision 0.5256, matched precision 0.8542, missed 104. Any difference means the read itself moved (serving, image) or a derivation step is wrong, and the derived numbers are not quotable until explained. Result: docs/plans/2026-10-06-phantom-drops-result.md." ;;
     r5controltest) echo "NATIVE CONFIRMATION OF THE PHANTOM DROPS on the frozen test split -- current code, no knob. Derived exactly from r4-controltest's dumps. PREDICTION, registered: mean_review_cost 148.82, n_pred 281, delivered 24 = correct 23 / escaped 1 / phantom 0, delivered_precision 0.9583, missed 126. Same reading of any difference as r5control." ;;
     r4controltest) echo "THE SHIPPED CONFIGURATION ON THE FROZEN TEST SPLIT -- current code, shipped pad 24, active flag/drop rules, no knob. The policy's test number 149.73 is DERIVED from r3-awqtest, which was predicted at pad 6, so this run measures pad and policy together and CANNOT reproduce 149.73 to the decimal the way r4-control did on dev. PREDICTION, registered 2026-10-05: detection is upstream of the crop, so missed is EXACTLY 108 (contended 39 / isolated 38 / unlocated 31) and n_pred 357 +-5; cost ~147.5 in [144.0, 150.5] (dev's pad move under this policy was 120.93 -> 118.73); auto-accept precision > 0.6986 and rate >= 0.1747. If missed is not 108 the serving changed, not the crop, and nothing is quotable until that is explained. Score: SPLIT=test, scoped, against reapply-test." ;;
@@ -268,14 +281,22 @@ for stage in "${STAGES[@]}"; do
     fi
 
     mkdir -p "$outdir"
+    src="$(stage_source "$stage")"
+    if [ -n "$src" ]; then
+      RUNNER=(python -m app.eval.runner verify --run "/data/runs/$src"
+        --pdfs /data/corpus/originals --out "/data/runs/$run"
+        --splits /data/meta/splits.json --split "$split")
+    else
+      RUNNER=(python -m app.eval.runner predict
+        --pdfs /data/corpus/originals --out "/data/runs/$run"
+        --splits /data/meta/splits.json --split "$split")
+    fi
     RUNCMD=(podman run --rm "${DEVICE_ARGS[@]}"
       $(stage_backend "$stage") $(stage_env "$stage")
       -v sindri-models:/models
       -v "$RROOT":/data:Z
       "$image"
-      python -m app.eval.runner predict
-        --pdfs /data/corpus/originals --out "/data/runs/$run"
-        --splits /data/meta/splits.json --split "$split")
+      "${RUNNER[@]}")
 
     log "launching: ${RUNCMD[*]}"
     # The shipped CDI spec on this host is stale; without binding the corrected

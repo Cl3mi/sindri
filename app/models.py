@@ -34,6 +34,23 @@ def _finite_or_zero(value):
 Confidence = Annotated[float, BeforeValidator(_finite_or_zero)]
 
 
+def _finite_or_none(value):
+    """A model probability that may be absent: NaN/inf become None, never a
+    number. Same r3-awqtest lesson as _finite_or_zero (a NaN makes a dump
+    unreloadable), but None rather than 0.0 here, because 0.0 would read as a
+    confident "no" and a verdict that was never given must not drop a value."""
+    if value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return value
+    return f if math.isfinite(f) else None
+
+
+OptionalProbability = Annotated[Optional[float], BeforeValidator(_finite_or_none)]
+
+
 class Characteristic(BaseModel):
     pos: int
     char_type: str = ""          # Distance|Diameter|Radius|Flatness|Material|Note
@@ -51,6 +68,10 @@ class Characteristic(BaseModel):
     balloon_xy: Optional[Tuple[float, float]] = None        # image-space
     target_region: Optional[Tuple[float, float, float, float]] = None  # x0,y0,x1,y1
     note_ref_pos: Optional[int] = None    # set when subtype == "note_ref"
+    # The verifier's P(yes) that this row is a ballooned characteristic
+    # (pipeline/verifier.py). None = never asked, or no answer -- including
+    # every dump written before the verifier existed.
+    verifier_p: OptionalProbability = None
 
 
 class Note(BaseModel):

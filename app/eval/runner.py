@@ -527,6 +527,11 @@ def _predict_extra(detect_only: bool = False) -> dict:
             **({"detect_only": True} if detect_only else {})}
 
 
+def _cmd_verify(args):
+    from app.eval.verify import cmd_verify
+    return cmd_verify(args)
+
+
 def _cmd_predict(args):
     import os
     from app.pipeline.ocr import get_backend
@@ -649,15 +654,16 @@ def _cmd_score(args):
         joint = (flags, drops) if (flags or drops) else None
     drop_configs = None
     if getattr(args, "drop_check", False):
-        from app.eval.drop_check import CONFIGS
+        from app.eval.drop_check import FAMILIES
+        registered = FAMILIES[args.drop_family]["configs"]
         drop_configs = ([n for n in args.drop_configs.split(",") if n]
-                        if args.drop_configs else list(CONFIGS))
-        unknown = [n for n in drop_configs if n not in CONFIGS]
+                        if args.drop_configs else list(registered))
+        unknown = [n for n in drop_configs if n not in registered]
         if unknown:
             # Checked before scoring, like --policy-check's names: a typo
             # fails in seconds rather than after a full score.
             print(f"ERROR: unknown drop configuration(s) {unknown}; "
-                  f"registered: {list(CONFIGS)}", file=sys.stderr)
+                  f"registered: {list(registered)}", file=sys.stderr)
             return 1
     deck_out = getattr(args, "review_deck", None)
     if deck_out:
@@ -886,7 +892,7 @@ def _cmd_score(args):
     if drop_configs is not None:
         from app.eval.drop_check import drop_report
         dr = drop_report(original_dumps, gold, doc_ids, weights, params,
-                         configs=drop_configs)
+                         configs=drop_configs, family=args.drop_family)
         blob = json.dumps(dr, indent=1)
         if args.drop_out:
             Path(args.drop_out).parent.mkdir(parents=True, exist_ok=True)
@@ -1130,6 +1136,11 @@ def main(argv=None) -> int:
                    help="comma-separated configurations to price (default: "
                         "all registered). Dev and test price ONLY the one "
                         "selected on train")
+    p.add_argument("--drop-family", default="phantom",
+                   choices=("phantom", "verifier"),
+                   help="which registered family to price: the phantom drops "
+                        "(control = stage 1) or the verifier (control = "
+                        "stages 1 and 2)")
     p.add_argument("--drop-out", default=None,
                    help="write the --drop-check JSON here (counts only)")
     p.add_argument("--reapply-policy", action="store_true",
@@ -1159,6 +1170,17 @@ def main(argv=None) -> int:
     p.add_argument("--port", type=int, default=0,
                    help="default: any free port")
     p.set_defaults(fn=_cmd_review_serve)
+
+    p = sub.add_parser("verify", parents=[common])
+    # GPU-host command (docs/plans/2026-10-07-verifier-registration.md §3):
+    # verifier verdicts for the rows today's code would ship unflagged,
+    # written into a copy of --run's dumps. Never scores: gold is not there.
+    p.add_argument("--run", required=True)
+    p.add_argument("--pdfs", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--splits", default=None)
+    p.add_argument("--split", default="dev")
+    p.set_defaults(fn=_cmd_verify)
 
     p = sub.add_parser("compare", parents=[common])
     p.add_argument("report_a"); p.add_argument("report_b")

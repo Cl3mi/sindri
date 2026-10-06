@@ -416,6 +416,43 @@ class VLMBackend:
         text, conf = self._generate_text(_TITLE_PROMPT, image, 128)
         return OcrResult(text=text, confidence=conf)
 
+    def verify_region(self, image: Image.Image) -> Optional[float]:
+        """P(yes) that the outlined region is a characteristic an inspector
+        would balloon, from ONE greedy decoding step
+        (docs/plans/2026-10-07-verifier-registration.md §2). None when the
+        model answers neither yes nor no, or the logits are not finite."""
+        from app.pipeline.verifier import VERIFY_PROMPT, verifier_probability
+        messages = [{"role": "user", "content": [
+            {"type": "image", "image": _cap_long_edge(image.convert("RGB"))},
+            {"type": "text", "text": VERIFY_PROMPT},
+        ]}]
+        inputs = self.processor.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=True,
+            return_dict=True, return_tensors="pt",
+        ).to(self.model.device)
+        with self.torch.inference_mode():
+            out = self.model.generate(
+                **inputs, max_new_tokens=1, do_sample=False,
+                output_scores=True, return_dict_in_generate=True,
+            )
+        probs = self.torch.softmax(out.scores[0][0].float(), dim=-1)
+        p_yes = sum(float(probs[i]) for i in self._answer_ids(("yes", "Yes")))
+        p_no = sum(float(probs[i]) for i in self._answer_ids(("no", "No")))
+        return verifier_probability(p_yes, p_no)
+
+    def _answer_ids(self, words) -> list:
+        """Token ids for the registered answer words. A word that is not a
+        single token is refused loudly: summing a multi-token word's FIRST
+        token would quietly price something other than what was registered."""
+        ids = []
+        for w in words:
+            toks = self.processor.tokenizer.encode(w, add_special_tokens=False)
+            if len(toks) != 1:
+                raise RuntimeError(f"verifier answer {w!r} is {len(toks)} "
+                                   f"tokens for this tokenizer, not 1")
+            ids.append(toks[0])
+        return ids
+
     def detect_regions(self, image: Image.Image):
         from app.pipeline.detect import parse_detections
         messages = [{"role": "user", "content": [

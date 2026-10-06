@@ -298,3 +298,34 @@ def test_a_regionless_row_is_never_a_cluster_member():
     manual = Characteristic(pos=2, target_region=None)
     assert not pr.DROP_RULES["tight_cluster"](a, [a, manual])
     assert not pr.DROP_RULES["tight_cluster"](manual, [a, manual])
+
+
+# --- the verifier candidates (docs/plans/2026-10-07-verifier-registration.md §4)
+
+VERIFIER_DROPS = ("verifier_below_050", "verifier_below_070",
+                  "verifier_below_090")
+
+
+def test_verifier_drops_are_registered_and_not_active():
+    for name in VERIFIER_DROPS:
+        assert name in pr.DROP_RULES
+        assert name not in pr.active_drop_rules()
+
+
+def test_verifier_drops_are_strict_thresholds():
+    for name, t in zip(VERIFIER_DROPS, (0.50, 0.70, 0.90)):
+        rule = pr.DROP_RULES[name]
+        assert rule(_c(verifier_p=t - 0.001), [])
+        assert not rule(_c(verifier_p=t), [])
+
+
+def test_a_row_without_a_verdict_is_never_dropped():
+    for name in VERIFIER_DROPS:
+        assert not pr.DROP_RULES[name](_c(verifier_p=None), [])
+
+
+def test_verifier_drops_never_touch_a_flagged_row():
+    row = _c(verifier_p=0.0, needs_review=True,
+             review_reasons=["no tolerance read"])
+    for name in VERIFIER_DROPS:
+        assert not pr.DROP_RULES[name](row, [row])
