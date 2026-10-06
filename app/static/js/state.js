@@ -67,10 +67,12 @@ export function clearSession() {
 const undoStack = [];
 const redoStack = [];
 
+// Every op carries event(): the review journal's self-description of it (journal.js). Python mirrors these semantics in app/review/replay.py.
 export function apply(op) {
   op.do();
   undoStack.push(op);
   redoStack.length = 0;
+  emit('op', { kind: 'do', op });
   emit('change');
   emit('history');
 }
@@ -79,6 +81,7 @@ export function undo() {
   if (!op) return;
   op.undo();
   redoStack.push(op);
+  emit('op', { kind: 'undo', op });
   emit('change');
   emit('history');
 }
@@ -87,6 +90,7 @@ export function redo() {
   if (!op) return;
   op.do();
   undoStack.push(op);
+  emit('op', { kind: 'do', op });
   emit('change');
   emit('history');
 }
@@ -126,6 +130,8 @@ export function opAddRow(row) {
       renumber();
       if (state.selectedId === row.id) state.selectedId = null;
     },
+    // JSON clone, so a later edit of the row cannot rewrite the logged event
+    event: () => ({ type: 'add_row', row: JSON.parse(JSON.stringify(row)) }),
   };
 }
 
@@ -145,6 +151,7 @@ export function opDeleteRow(id) {
         renumber();
       }
     },
+    event: () => ({ type: 'delete_row', id }),
   };
 }
 
@@ -162,6 +169,7 @@ export function opMoveRow(id, newXY) {
       const r = state.rows.find((x) => x.id === id);
       if (r) r.balloon_xy = oldXY;
     },
+    event: () => ({ type: 'move_row', id, xy: [...newXY] }),
   };
 }
 
@@ -179,6 +187,8 @@ export function opEditCell(id, field, newValue) {
       const r = state.rows.find((x) => x.id === id);
       if (r) r[field] = oldValue;
     },
+    // evaluated after do(), so oldValue is the captured one
+    event: () => ({ type: 'edit_cell', id, field, old: oldValue ?? '', new: newValue }),
   };
 }
 
@@ -207,6 +217,7 @@ export function opConfirmSuggestions(ids) {
       }
       renumber();
     },
+    event: () => ({ type: 'confirm_suggestions', ids: [...ids] }),
   };
 }
 
@@ -226,6 +237,7 @@ export function opBulkReview(ids, target /* true|false */) {
         if (r) r.reviewed = prev.get(id);
       }
     },
+    event: () => ({ type: target ? 'accept' : 'unaccept', ids: [...ids] }),
   };
 }
 
