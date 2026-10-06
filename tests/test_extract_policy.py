@@ -100,3 +100,29 @@ def test_extract_applies_active_drop_before_numbering_and_excludes_the_dropped_b
     # The dropped box's pre-drop region must still be excluded from
     # loose_text, or its text would resurface as an unlabelled title field.
     assert (40, 40, 90, 90) in captured["exclude"]
+
+
+# --- the suggestion tray (docs/plans/2026-10-07-suggestion-tray-design.md) ---
+
+def _dim(**kw):
+    base = dict(pos=0, kind="dimension", raw_text="20 ±0,1", nominal="20",
+                upper_tol="0,1", lower_tol="-0,1", confidence=0.995,
+                target_region=(0, 0, 200, 60))
+    base.update(kw)
+    return Characteristic(**base)
+
+
+def test_stage_two_drops_become_suggestions_and_stage_one_drops_vanish():
+    from app.pipeline.extract import SUGGESTION_REASON, _policy_with_suggestions
+    outer = _dim()
+    dup = _dim(confidence=0.99, target_region=(60, 10, 140, 50))
+    low = _dim(confidence=0.9, target_region=(500, 0, 600, 40))
+    kept, suggestions = _policy_with_suggestions([outer, dup, low])
+    assert kept == [outer]
+    assert suggestions == [low] and low.suggested is True and low.pos == 0
+    assert SUGGESTION_REASON in low.review_reasons
+    assert dup not in suggestions
+
+
+def test_apply_active_policy_still_returns_only_the_kept_rows():
+    assert _apply_active_policy([_dim(confidence=0.9)]) == []

@@ -230,6 +230,31 @@ def _regions_overlap(a, b, min_frac: float = 0.5) -> bool:
     return smaller > 0 and inter / smaller >= min_frac
 
 
+# Plain language, like FLAG_REASONS: this is what the reviewer reads.
+SUGGESTION_REASON = "low confidence — not ballooned; confirm to add"
+
+
+def _policy_with_suggestions(results, drop_stages=None):
+    """(kept, suggestions): the active policy, with rows dropped by stage 2 or
+    later KEPT ASIDE for the reviewer instead of deleted
+    (docs/plans/2026-10-07-suggestion-tray-design.md). Stage 1 removes
+    duplicates of a balloon, which are not suggestions. Flags first, then the
+    stages, exactly as _apply_active_policy has always run them."""
+    for c in results:
+        extra = pr.apply_flag_rules(c, pr.ACTIVE_FLAG_RULES)
+        if extra:
+            c.needs_review = True
+            c.review_reasons = [*c.review_reasons, *extra]
+    stages = pr.ACTIVE_DROP_STAGES if drop_stages is None else drop_stages
+    kept, dropped = pr.split_drop_stages(results, stages)
+    suggestions = [c for stage in dropped[1:] for c in stage]
+    for c in suggestions:
+        c.suggested = True
+        c.pos = 0
+        c.review_reasons = [*c.review_reasons, SUGGESTION_REASON]
+    return kept, suggestions
+
+
 def _apply_active_policy(results, drop_stages=None):
     """The kept flag and drop rules, through the SAME functions the offline
     pricing used -- so the price and the shipped behaviour cannot drift apart.
@@ -239,13 +264,7 @@ def _apply_active_policy(results, drop_stages=None):
     so they read the needs_review the flags just set. `drop_stages` defaults to
     the active ones; app/eval/drop_check.py passes the registered BASE so its
     control stays the policy the phantom drops were priced against."""
-    for c in results:
-        extra = pr.apply_flag_rules(c, pr.ACTIVE_FLAG_RULES)
-        if extra:
-            c.needs_review = True
-            c.review_reasons = [*c.review_reasons, *extra]
-    stages = pr.ACTIVE_DROP_STAGES if drop_stages is None else drop_stages
-    return pr.apply_drop_stages(results, stages)
+    return _policy_with_suggestions(results, drop_stages)[0]
 
 
 def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
@@ -426,7 +445,7 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
     # cannot see. So keep the pre-drop regions for it.
     read_regions = [c.target_region for c in results
                     if c.target_region is not None]
-    results = _apply_active_policy(results)
+    results, suggestions = _policy_with_suggestions(results)
 
     emit("place", "Placing balloons")
     number_characteristics(results)
@@ -434,6 +453,9 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
     # converted to pixels, so a clamped render must use the resolution it was
     # actually drawn at or every balloon drifts away from its callout.
     place_balloons(results, dpi=render.dpi)
+    # Suggestions are placed AFTER the real balloons, in their own pass, so
+    # they can never push a real balloon away from its callout.
+    place_balloons(suggestions, dpi=render.dpi)
     # Free text outside the structured blocks (e.g. margin notes). Exclude the
     # notes/marks/title regions AND every region the main detector already
     # captured, so loose_text only adds text nothing else picked up
@@ -444,6 +466,7 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
                if b is not None]
     exclude += read_regions
     title_fields += tb.loose_text(image, backend, exclude)
-    return ExtractionResult(characteristics=results, notes=notes_obj,
+    return ExtractionResult(characteristics=results, suggestions=suggestions,
+                            notes=notes_obj,
                             title_block=title_fields, marks=marks_obj,
                             render_scale=render.scale)
