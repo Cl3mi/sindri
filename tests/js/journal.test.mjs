@@ -45,3 +45,83 @@ test('undo and redo travel the bus as undo and do', () => {
   off();
   assert.deepEqual(seen.map((x) => x.kind), ['do', 'undo', 'do']);
 });
+
+const { createJournal } = await import('../../app/static/js/journal.js');
+
+function fakeOp(ev) { return { event: () => ev }; }
+function fakeServer() {
+  const held = new Set();
+  const calls = [];
+  return {
+    calls,
+    fail: false,
+    async send(sid, writer, events) {
+      calls.push(events.map((e) => e.seq));
+      if (this.fail) throw new Error('offline');
+      events.forEach((e) => held.add(e.seq));
+      let n = 0; while (held.has(n + 1)) n++;
+      return { contiguous: n };
+    },
+  };
+}
+
+test('numbers events from 1 and turns an undo into a retraction', () => {
+  const j = createJournal({ send: async () => ({ contiguous: 0 }), now: () => 0 });
+  j.start('s', 'w');
+  const op = fakeOp({ type: 'accept', ids: ['a'] });
+  j.record({ kind: 'do', op });
+  j.record({ kind: 'undo', op });
+  assert.deepEqual(j.pending.map((e) => [e.seq, e.type, e.target]),
+    [[1, 'accept', undefined], [2, 'retract', 1]]);
+});
+
+test('a redo is a fresh event, and undoing it retracts the fresh seq', () => {
+  const j = createJournal({ send: async () => ({ contiguous: 0 }), now: () => 0 });
+  j.start('s', 'w');
+  const op = fakeOp({ type: 'delete_row', id: 'b' });
+  j.record({ kind: 'do', op });     // 1
+  j.record({ kind: 'undo', op });   // 2 retract 1
+  j.record({ kind: 'do', op });     // 3
+  j.record({ kind: 'undo', op });   // 4 retract 3
+  assert.equal(j.pending.at(-1).target, 3);
+});
+
+test('records nothing without a writer (logging off)', () => {
+  const j = createJournal({ send: async () => ({ contiguous: 0 }) });
+  j.start('s', null);
+  j.record({ kind: 'do', op: fakeOp({ type: 'accept', ids: [] }) });
+  assert.equal(j.pending.length, 0);
+  assert.equal(j.active, false);
+});
+
+test('flush drops what the server acknowledged and keeps the rest', async () => {
+  const srv = fakeServer();
+  const j = createJournal({ send: srv.send.bind(srv), now: () => 0 });
+  j.start('s', 'w');
+  j.record({ kind: 'do', op: fakeOp({ type: 'accept', ids: ['a'] }) });
+  j.record({ kind: 'do', op: fakeOp({ type: 'accept', ids: ['b'] }) });
+  assert.equal(await j.flush(), 2);
+  assert.equal(j.pending.length, 0);
+  assert.equal(j.acked, 2);
+  assert.equal(j.lastSeq, 2);
+});
+
+test('a failed flush keeps every event for the next attempt', async () => {
+  const srv = fakeServer(); srv.fail = true;
+  const j = createJournal({ send: srv.send.bind(srv), now: () => 0 });
+  j.start('s', 'w');
+  j.record({ kind: 'do', op: fakeOp({ type: 'accept', ids: ['a'] }) });
+  await assert.rejects(j.flush());
+  assert.equal(j.pending.length, 1);
+  srv.fail = false;
+  assert.equal(await j.flush(), 1);
+});
+
+test('concurrent flushes share one request', async () => {
+  const srv = fakeServer();
+  const j = createJournal({ send: srv.send.bind(srv), now: () => 0 });
+  j.start('s', 'w');
+  j.record({ kind: 'do', op: fakeOp({ type: 'accept', ids: ['a'] }) });
+  await Promise.all([j.flush(), j.flush()]);
+  assert.equal(srv.calls.length, 1);
+});
