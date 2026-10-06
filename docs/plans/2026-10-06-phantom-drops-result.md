@@ -10,7 +10,17 @@ Profile: `docs/eval/phantom-profile-train.json`. Digests:
 
 The registered selection rule picked **`conf_below_099 + material_kind +
 tight_cluster`** on train, and it passed the registered keep rule on dev and on
-test. **It ships** as `ACTIVE_DROP_STAGES[1]`. Every number below is DERIVED:
+test. **It ships** as `ACTIVE_DROP_STAGES[1]`.
+
+**MEASURED on both splits (2026-10-06):** native predict runs on current code,
+`r5-control` (dev) and `r5-controltest` (test), reproduce the derived digests
+**identically on all 37 aggregates each**: cost, taxonomy, delivered counts,
+every precision, every diagnostic. Registered beforehand in `run_gpu_queue.sh`
+(`700319a`). Digests: `docs/eval/r5control-scoped-summary.json`,
+`docs/eval/r5controltest-scoped-summary.json`. **`r5-control` (117.87) and
+`r5-controltest` (148.82) are now the dev and test controls.**
+
+The numbers below were first DERIVED:
 CPU re-scores of native dev/test dumps (`r4-control`, `r4-controltest`) and the
 pad-6 train dumps (`r3-trainpredict`), through today's post-read code. The
 reapply path was proven exact by `r4-control`, and it is proven again here: the
@@ -78,8 +88,8 @@ by more than half on test.
 
 ## 6. Open items
 
-1. **GPU confirmation.** Every number here is derived. The next predict run on
-   current code (dev and test) should reproduce §2 to the decimal.
+1. ~~GPU confirmation~~ DONE: `r5-control` / `r5-controltest` reproduced §2
+   identically on all 37 aggregates each.
 2. **The 30 high-confidence dev phantoms** are what remains between dev and
    "every value true", and they are exactly what approach B (a VLM verifier
    asking "is this a ballooned characteristic?") would target. Profile them

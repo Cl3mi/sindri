@@ -100,8 +100,10 @@ of reach of any confidence rule, and they are the verifier's target.
 **Drops are STAGES** (`ACTIVE_DROP_STAGES`), each judged on what the previous
 stage left, because that is how each was priced; `active_drop_rules()` is for
 recording only. **Flags must precede drops** now, since stage 2 reads
-`needs_review`. New dev/test numbers: 117.87 / 148.82 (reapplied); a native
-predict run should reproduce them.
+`needs_review`. **MEASURED natively: `r5-control` (dev 117.87) and
+`r5-controltest` (test 148.82) reproduce the derived digests identically on all
+37 aggregates each. They are now the dev and test controls for every later
+arm** (r4-* are one stage behind).
 
 **`read-lora-v1` IS NOW HARMFUL UNDER THE SHIPPED POLICY — deployment CLOSED**
 (2026-10-05, `docs/plans/2026-10-05-read-adapter-repricing-result.md`;
