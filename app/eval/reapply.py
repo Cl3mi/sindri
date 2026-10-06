@@ -25,7 +25,7 @@ import copy
 from app.eval.models import PredictionDump
 from app.eval.general_tolerance import apply_general_tolerance
 from app.pipeline import policy_rules as pr
-from app.pipeline.extract import _apply_active_policy, _HINTS
+from app.pipeline.extract import _HINTS, _policy_with_suggestions
 from app.pipeline.parser import parse_value
 from app.pipeline.review import review_flags
 
@@ -63,7 +63,10 @@ def reapply_current_code(dump: PredictionDump, fill: bool = False,
     dump = copy.deepcopy(dump)
     known_positions = _known_note_positions(dump.result)
     new_chars = []
-    for c in dump.result.characteristics:
+    # characteristics + suggestions: a dump predicted WITH the reviewer tray
+    # keeps its stage-2+ drops in `suggestions`, and today's policy must see
+    # the same pre-drop set the pipeline saw. Old dumps have no suggestions.
+    for c in [*dump.result.characteristics, *dump.result.suggestions]:
         # "rotation ambiguity" is the one review reason `review_flags` cannot
         # derive from the Characteristic alone -- it comes from a read-time
         # signal extract.py passes in directly -- so it is read back off the
@@ -77,7 +80,9 @@ def reapply_current_code(dump: PredictionDump, fill: bool = False,
         new_chars.append(fresh)
     stages = pr.ACTIVE_DROP_STAGES if drop_stages is None else drop_stages
     if not fill:
-        dump.result.characteristics = _apply_active_policy(new_chars, stages)
+        kept, suggestions = _policy_with_suggestions(new_chars, stages)
+        dump.result.characteristics = kept
+        dump.result.suggestions = suggestions
         return dump
     # The general-tolerance arm (a measurement; the pipeline does not fill),
     # in the order the registration fixed: drops, then the fill, then flags -- so a filled row is
@@ -94,6 +99,8 @@ def reapply_current_code(dump: PredictionDump, fill: bool = False,
         if extra:
             c.needs_review = True
             c.review_reasons = [*c.review_reasons, *extra]
-    dump.result.characteristics = pr.apply_drop_stages(
-        dump.result.characteristics, stages[1:])
+    kept, dropped = pr.split_drop_stages(dump.result.characteristics,
+                                         stages[1:])
+    dump.result.characteristics = kept
+    dump.result.suggestions = [c for stage in dropped for c in stage]
     return dump

@@ -154,3 +154,67 @@ def test_a_verifier_verdict_survives_reapplication():
                        raw_text="20 ±0,1", confidence=0.995, verifier_p=0.31)
     out = reapply_current_code(_dump([c]))
     assert out.result.characteristics[0].verifier_p == 0.31
+
+
+# --- the suggestion tray must not move any measurement ---------------------
+
+def _tray_row(**kw):
+    base = dict(pos=1, kind="dimension", char_type="Distance", nominal="20",
+                upper_tol="0,1", lower_tol="-0,1", raw_text="20 ±0,1",
+                confidence=0.995, target_region=(0.0, 0.0, 100.0, 40.0))
+    base.update(kw)
+    return Characteristic(**base)
+
+
+def test_suggestions_never_reach_the_scorer():
+    """Scoring reads characteristics only: a dump with suggestions scores
+    exactly as without them, so delivered precision cannot see the tray."""
+    from app.eval.models import (GoldCharacteristic, GoldDoc, MatchParams,
+                                 ReviewCostWeights)
+    from app.eval.score import score_doc
+    c = _tray_row(target_region=(400.0, 400.0, 520.0, 440.0))
+    s = _tray_row(pos=0, suggested=True,
+                  target_region=(900.0, 900.0, 1000.0, 940.0))
+    gold = GoldDoc(doc_id="D", pdf="d", excel="d", page_rect=RECT,
+                   characteristics=[GoldCharacteristic(
+                       balloon=1, position_pt=(110, 101), char_type="Distance",
+                       nominal="20")])
+    plain = _dump([c])
+    with_s = _dump([c])
+    with_s.result.suggestions = [s]
+    w, p = ReviewCostWeights(), MatchParams()
+    assert score_doc(plain, gold, w, p).model_dump() == \
+        score_doc(with_s, gold, w, p).model_dump()
+
+
+def test_reapply_starts_from_characteristics_plus_suggestions():
+    """A dump predicted WITH the tray holds stage-2 drops in suggestions;
+    reapplying today's policy must see the same pre-drop set the pipeline
+    saw, or every later drop_check on new dumps would price the wrong set."""
+    keep = _tray_row()
+    sugg = _tray_row(pos=0, confidence=0.9, suggested=True,
+                     target_region=(500.0, 0.0, 600.0, 40.0))
+    # stored as a suggestion, but today's policy would KEEP it: it only comes
+    # back as a characteristic if reapply really starts from the union
+    revived = _tray_row(pos=0, confidence=0.999, suggested=True,
+                        target_region=(900.0, 0.0, 1000.0, 40.0))
+    d = _dump([keep])
+    d.result.suggestions = [sugg, revived]
+    out = reapply_current_code(d)
+    assert sorted(c.confidence for c in out.result.characteristics) == \
+        [0.995, 0.999]
+    assert all(not c.suggested for c in out.result.characteristics)
+    assert [(c.suggested, c.confidence) for c in out.result.suggestions] == \
+        [(True, 0.9)]
+
+
+def test_reapply_of_a_pre_tray_dump_yields_its_drops_as_suggestions():
+    """Old dumps carry their stage-2 rows in characteristics; reapplying now
+    moves them to suggestions -- characteristics stay exactly what was
+    scored before, so no digest moves."""
+    keep = _tray_row()
+    low = _tray_row(pos=2, confidence=0.9,
+                    target_region=(500.0, 0.0, 600.0, 40.0))
+    out = reapply_current_code(_dump([keep, low]))
+    assert [c.pos for c in out.result.characteristics] == [1]
+    assert [c.confidence for c in out.result.suggestions] == [0.9]
