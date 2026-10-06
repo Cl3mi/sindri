@@ -24,8 +24,18 @@ def validate_event(e) -> None:
     # bool is an int subclass; True would silently become seq 1.
     if not isinstance(seq, int) or isinstance(seq, bool) or seq < 1:
         raise JournalError(f"bad seq {seq!r}")
-    if e.get("type") not in EVENT_TYPES:
-        raise JournalError(f"unknown event type {e.get('type')!r}")
+    type_ = e.get("type")
+    if type_ not in EVENT_TYPES:
+        raise JournalError(f"unknown event type {type_!r}")
+    # validate_event is the gate the store runs on every incoming batch, so a
+    # structurally broken retract must be refused at append time -- where it
+    # can be traced to one request -- not discovered at seal time against the
+    # whole journal.
+    if type_ == "retract":
+        target = e.get("target")
+        if (not isinstance(target, int) or isinstance(target, bool)
+                or not (1 <= target < seq)):
+            raise JournalError("retract needs a target seq below its own")
 
 
 def contiguous_seq(seqs: Set[int], start: int = 0) -> int:
@@ -40,7 +50,10 @@ def contiguous_seq(seqs: Set[int], start: int = 0) -> int:
 def net_events(events: Iterable[dict]) -> List[dict]:
     """The operations that survive their undos, in seq order. Undo is LIFO, so
     removing a retracted event and its retraction leaves a sequence whose
-    replay equals the state the reviewer actually ended in."""
+    replay equals the state the reviewer actually ended in.
+
+    Every event must already have passed validate_event (the store validates
+    on append); net_events checks only cross-event consistency."""
     live = {}
     for e in sorted(events, key=lambda x: x["seq"]):
         if e["type"] == "retract":

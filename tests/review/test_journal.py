@@ -26,6 +26,11 @@ def test_vocabulary_is_exactly_phase_one_operations():
     {"seq": True, "type": "accept", "ids": []},       # bool is not a seq
     {"seq": 1, "type": "teleport"},                   # unknown type
     "not a dict",
+    {"seq": 2, "type": "retract"},                    # no target
+    {"seq": 2, "type": "retract", "target": "1"},     # target must be an int
+    {"seq": 2, "type": "retract", "target": True},    # bool is not a target
+    {"seq": 2, "type": "retract", "target": 2},       # target equal to own seq
+    {"seq": 2, "type": "retract", "target": 3},       # target above own seq
 ])
 def test_validate_event_rejects_malformed(bad):
     with pytest.raises(JournalError):
@@ -34,6 +39,10 @@ def test_validate_event_rejects_malformed(bad):
 
 def test_validate_event_accepts_a_wellformed_event():
     validate_event(ev(1, "edit_cell", id="a", field="nominal", old="1", new="2"))
+
+
+def test_validate_event_accepts_a_wellformed_retract():
+    validate_event(ev(2, "retract", target=1))
 
 
 def test_contiguous_seq_stops_at_the_first_gap():
