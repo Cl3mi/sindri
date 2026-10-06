@@ -108,6 +108,25 @@ def test_seal_with_a_gap_is_409(sample_pdf, stub_backend, store):
     r = client.post(f"/api/session/{sid}/seal", json={
         "writer": writer, "final_seq": 2, "rows": result["rows"], "reviewed_ids": []})
     assert r.status_code == 409
+    assert "missing events" in r.json()["detail"]
+
+
+def test_events_without_a_store_reports_logging_off(sample_pdf, stub_backend, monkeypatch):
+    monkeypatch.setattr("app.main._REVIEW_STORE", None)
+    result = extract(sample_pdf)
+    r = client.post(f"/api/session/{result['session_id']}/events", json={
+        "writer": "", "events": []})
+    assert r.status_code == 200
+    assert r.json() == {"contiguous": None, "review_logging": False}
+
+
+def test_a_malformed_event_is_422_with_its_reason(sample_pdf, stub_backend, store):
+    result = extract(sample_pdf)
+    sid, writer = result["session_id"], result["writer"]
+    r = client.post(f"/api/session/{sid}/events", json={"writer": writer, "events": [
+        {"seq": 1, "type": "teleport"}]})
+    assert r.status_code == 422
+    assert "unknown event type" in r.json()["detail"]
 
 
 def test_malformed_session_id_is_404(store):
