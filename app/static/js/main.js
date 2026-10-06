@@ -320,6 +320,9 @@ async function finish() {
             msg: sealed && sealed.revision ? `Review sealed as revision r${sealed.revision}` : 'Exported (review not recorded)' });
   } catch (err) {
     setIdle();
+    // Finish cleared the flush timer; if its flush failed (e.g. offline),
+    // restart the backoff loop so pending events don't wait for the next edit.
+    if (journal.active && journal.pending.length) scheduleFlush(flushBackoff);
     toast({ kind: 'error', title: 'Finish failed', msg: String(err.message || err) });
   }
 }
