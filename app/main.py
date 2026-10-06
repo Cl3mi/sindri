@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import queue
 import re
 import shutil
@@ -24,6 +25,8 @@ from app.pipeline import policy_rules as pr
 from app.pipeline.review import review_flags
 from app.pipeline.place import place_balloons
 from app.pipeline.ballooned_pdf import render_ballooned_pdf
+from app.review.header import build_header
+from app.review.store import ReviewError, ReviewStore
 from PIL import Image
 
 app = FastAPI(title="Sindri")
@@ -46,6 +49,27 @@ def _session_dir(session_id: str) -> Path:
 _BACKEND = get_backend()
 
 
+def _review_store_from_env():
+    """The durable review store, or None when SINDRI_REVIEW_DIR is unset or
+    unwritable. None is not an error: the app still reviews and exports, it
+    just records nothing -- and a session recorded nowhere is never graded,
+    rather than graded wrong (design §6)."""
+    root = os.environ.get("SINDRI_REVIEW_DIR")
+    if not root:
+        return None
+    try:
+        return ReviewStore(Path(root))
+    except OSError:
+        return None
+
+
+_REVIEW_STORE = _review_store_from_env()
+
+
+def _review_consent() -> bool:
+    return os.environ.get("SINDRI_REVIEW_CONSENT", "").lower() in ("1", "true", "yes")
+
+
 class ExportRequest(BaseModel):
     session_id: str
     rows: List[Characteristic]
@@ -63,6 +87,7 @@ class ReadRegionRequest(BaseModel):
 def health():
     status = backend_status()
     status["ocr_backend_active"] = type(_BACKEND).__name__
+    status["review_logging"] = _REVIEW_STORE is not None
     return status
 
 
@@ -114,17 +139,28 @@ async def extract_endpoint(session_id: str, request: Request):
         try:
             result = extract(pdf_path, work_dir=work, dpi=300,
                              backend=_BACKEND, progress=progress)
+            rows = [r.model_dump(mode="json") for r in
+                    [*result.characteristics, *result.suggestions]]
+            writer = None
+            if _REVIEW_STORE is not None:
+                try:
+                    writer = _REVIEW_STORE.create(
+                        session_id, build_header(pdf_path, _review_consent()),
+                        {"rows": rows})
+                except (ReviewError, OSError):
+                    writer = None   # review proceeds unlogged; the UI says so
             events.put(("result", {
                 "session_id": session_id,
                 "image_url": f"/api/image/{session_id}",
                 # Suggestions ride in the same list, flagged, so the reviewer
                 # edits them with the existing table; the client keeps them out
                 # of exports and so does _exportable below.
-                "rows": [r.model_dump() for r in
-                         [*result.characteristics, *result.suggestions]],
+                "rows": rows,
                 "notes": result.notes.model_dump() if result.notes is not None else None,
                 "marks": result.marks.model_dump() if result.marks is not None else None,
                 "title_block": [t.model_dump() for t in result.title_block],
+                "writer": writer,
+                "review_logging": writer is not None,
             }))
         except _Cancelled:
             # client went away — drop the session and stop quietly
