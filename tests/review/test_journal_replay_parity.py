@@ -20,6 +20,34 @@ ROOT = Path(__file__).resolve().parents[2]
 SEED = 12345
 N_SESSIONS = 300
 
+# Every event the journal emits carries these, whatever its type.
+_BASE_KEYS = {"seq", "type", "t_wall", "t_ms"}
+# ...plus these, by type. mismatches() only catches a field replay.py reads
+# AND compares; a key journal.js stops sending (or misnames) for a field
+# replay.py never looks at would pass that check silently, so this is a
+# direct shape assertion instead.
+_TYPE_KEYS = {
+    "edit_cell": {"id", "field", "old", "new"},
+    "move_row": {"id", "xy"},
+    "delete_row": {"id"},
+    "add_row": {"row"},
+    "accept": {"ids"},
+    "unaccept": {"ids"},
+    "confirm_suggestions": {"ids"},
+    "retract": {"target"},
+}
+
+
+def _check_event_shape(e):
+    missing_base = _BASE_KEYS - e.keys()
+    assert not missing_base, (e, missing_base)
+    required = _TYPE_KEYS.get(e["type"])
+    assert required is not None, f"unknown event type {e['type']!r}: {e}"
+    missing = required - e.keys()
+    assert not missing, (e, missing)
+    if e["type"] == "add_row":
+        assert "id" in e["row"], e
+
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
 def test_journal_replay_parity_across_js_and_python():
@@ -33,6 +61,7 @@ def test_journal_replay_parity_across_js_and_python():
 
     for c in cases:
         for e in c["events"]:
+            _check_event_shape(e)
             validate_event(e)   # every event the journal ever emits must pass the server's gate
         net = net_events(c["events"])
         bad = mismatches(replay(c["proposal"], net), c["rows"], c["reviewed_ids"])

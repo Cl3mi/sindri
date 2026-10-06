@@ -145,12 +145,10 @@ test("a stale reply after start() cannot ack or drop another session's events", 
   j.start('A', 'wa');
   for (let i = 0; i < 3; i++) j.record({ kind: 'do', op: fakeOp({ type: 'accept', ids: ['x'] }) });
   const pa = j.flush();
-  await Promise.resolve();         // let the deferred send(A, ...) actually fire
   j.start('B', 'wb');
   j.record({ kind: 'do', op: fakeOp({ type: 'accept', ids: ['y'] }) });
   j.record({ kind: 'do', op: fakeOp({ type: 'accept', ids: ['z'] }) });
   const pb = j.flush();            // B's own request, now in flight
-  await Promise.resolve();         // let the deferred send(B, ...) actually fire
   resolveA({ contiguous: 3 });     // A's late answer must not touch B
   await pa;
   assert.equal(j.sessionId, 'B');
@@ -158,6 +156,27 @@ test("a stale reply after start() cannot ack or drop another session's events", 
   assert.deepEqual(j.pending.map((e) => e.seq), [1, 2]);
   assert.equal(calls.length, 2);   // A's request and B's own -- no overlapping B sends
   void pb;                         // B's request is left unanswered on purpose
+});
+
+test('flush() captures the session at call time, not when the request later fires', async () => {
+  // race2.mjs case A: flush() then start() in the SAME tick. The original
+  // fix read sessionId/writer inside the deferred `.then(() => send(...))`
+  // callback, so a same-tick start() had already overwritten them by the
+  // time send() actually ran -- A's batch went out stamped 'B'/'wb'.
+  const calls = [];
+  const send = async (sid, w, evs) => {
+    calls.push([sid, w, evs.map((e) => e.type)]);
+    return { contiguous: evs.length };
+  };
+  const j = createJournal({ send, now: () => 0 });
+  j.start('A', 'wa');
+  j.record({ kind: 'do', op: fakeOp({ type: 'accept', ids: ['A-row'] }) });
+  const p = j.flush();
+  j.start('B', 'wb');   // same tick -- must not change what the in-flight request is sent as
+  await p;
+  assert.deepEqual(calls, [['A', 'wa', ['accept']]]);
+  assert.equal(j.sessionId, 'B');
+  assert.equal(j.pending.length, 0);
 });
 
 test('flush() after an in-flight request does not strand a newly recorded event', async () => {
@@ -182,7 +201,6 @@ test('flush() after an in-flight request does not strand a newly recorded event'
   j.start('A', 'w');
   j.record({ kind: 'do', op: fakeOp({ type: 'accept', ids: ['a'] }) });
   const p1 = j.flush();                 // batch [1] goes out, slow
-  await Promise.resolve();              // let the deferred send(batch=[1]) actually fire
   j.record({ kind: 'do', op: fakeOp({ type: 'accept', ids: ['b'] }) });
   const p2 = j.flush();                 // seq 2 exists meanwhile -- must not be dropped
   resolvers[0]();                       // server answers the first request

@@ -19,6 +19,18 @@ export function createJournal({ send, now = () => Date.now(),
   let gen = 0;           // bumped by every start(); a reply from a dead generation is ignored
   let seqOf = new WeakMap();   // op -> seq of its most recent 'do' event
 
+  // Calls `send` IMMEDIATELY (not deferred to a microtask -- that would read
+  // sessionId/writer late, see flush()), but still turns a SYNCHRONOUS throw
+  // (a bad fetch call, not a rejected one) into a rejection the caller can
+  // await, instead of throwing out of flush() itself.
+  function callSend(sid, w, batch) {
+    try {
+      return Promise.resolve(send(sid, w, batch));
+    } catch (err) {
+      return Promise.reject(err);
+    }
+  }
+
   function start(sid, w) {
     sessionId = sid; writer = w || null;
     seq = 0; acked = 0; pending = []; inflight = null; inflightTop = 0;
@@ -55,7 +67,10 @@ export function createJournal({ send, now = () => Date.now(),
       // record() can add events above the batch already in flight; chain
       // behind that request rather than handing back its promise as-is --
       // its answer predates the new event, so it would otherwise never be
-      // sent (the stranded-event bug).
+      // sent (the stranded-event bug). If the in-flight request itself
+      // fails, this chained flush rejects without ever sending -- nothing
+      // is lost, since the events are still in `pending` for the caller's
+      // next retry/backoff to pick up.
       if (pending.length && pending[pending.length - 1].seq > inflightTop) {
         return inflight.then(() => flush());
       }
@@ -63,13 +78,16 @@ export function createJournal({ send, now = () => Date.now(),
     }
     if (!pending.length) return Promise.resolve(acked);
     const batch = pending.slice();
+    // Captured here, synchronously, not read inside the `send(...)` call
+    // below: that call is wrapped so a same-tick start() can run before the
+    // request's own promise settles, and reading sessionId/writer at that
+    // later point would stamp the request with whatever session start()
+    // just switched to, not the one the batch actually belongs to.
+    const sid = sessionId;
+    const w = writer;
     const g = gen;
     inflightTop = batch[batch.length - 1].seq;
-    // Wrapped in Promise.resolve().then(...) so a `send` that throws
-    // SYNCHRONOUSLY (not merely returns a rejected promise) still surfaces
-    // as a rejection the caller can await, instead of throwing out of
-    // flush() itself.
-    inflight = Promise.resolve().then(() => send(sessionId, writer, batch))
+    inflight = callSend(sid, w, batch)
       .then(({ contiguous }) => {
         if (g !== gen) return acked;   // start() already replaced this session; ignore the stale reply
         if (!Number.isInteger(contiguous)) {
