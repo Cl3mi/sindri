@@ -1,7 +1,10 @@
 // Entry point: wires modules, health check, file upload, exports.
 
-import { state, on, setSession, clearSession, undo, redo, canUndo, canRedo } from './state.js';
-import { savePdf, runExtraction, deleteSession, exportFile, health } from './api.js';
+import { state, on, setSession, clearSession, undo, redo, canUndo, canRedo,
+         progress, canFinish } from './state.js';
+import { savePdf, runExtraction, deleteSession, exportFile, health,
+         postEvents, beaconEvents, sealSession } from './api.js';
+import { createJournal } from './journal.js';
 import { initViewer } from './viewer.js';
 import { initTable } from './table.js';
 import {
@@ -13,6 +16,14 @@ import { initShortcuts } from './shortcuts.js';
 // Pending upload awaiting confirmation, and the controller for the live run.
 let pendingUpload = null;   // { session_id, fileName }
 let extractAbort = null;    // AbortController while extraction is streaming
+
+// The review journal: every state operation, numbered and flushed to the
+// server (docs/plans/2026-10-07-hitl-review-grading-design.md §2).
+const journal = createJournal({
+  send: (sid, writer, events) => postEvents(sid, writer, events),
+});
+let flushTimer = null;
+let flushBackoff = 500;
 
 function init() {
   initThemeAndDensity();
@@ -26,7 +37,8 @@ function init() {
   wireFooter();
   wireFileInputs();
   wireExtractionControls();
-  wireExports();
+  wireFinish();
+  wireJournal();
   wireUndoRedo();
   pingHealth();
 }
@@ -43,12 +55,11 @@ function wireHeader() {
     if (state.sessionId) {
       chip.hidden = false;
       name.textContent = state.fileName || 'drawing.pdf';
-      document.getElementById('export-xlsx').disabled = false;
-      document.getElementById('export-pdf').disabled = false;
+      document.getElementById('finish-btn').disabled = false;
     } else {
       chip.hidden = true;
-      document.getElementById('export-xlsx').disabled = true;
-      document.getElementById('export-pdf').disabled = true;
+      document.getElementById('finish-btn').disabled = true;
+      document.getElementById('log-pill').hidden = true;
     }
   });
 }
@@ -127,6 +138,12 @@ async function startExtraction() {
     data.fileName = fileName;
     extractStepsDone();
     setSession(data);          // viewer swaps in the page image, hides overlays
+    // Nothing may run between these two lines: setSession clears the
+    // undo/redo stacks, so no op can be applied before the journal starts --
+    // an op applied in between would never be logged, and seal would then
+    // report a replay mismatch for a perfectly healthy session.
+    journal.start(data.session_id, data.writer);
+    document.getElementById('log-pill').hidden = !!data.review_logging;
     hideExtracting();
     setIdle();
     pendingUpload = null;
@@ -229,33 +246,82 @@ function setIdle() {
   pill.className = 'status-pill';
 }
 
-// ===== Exports ======================================================
-function wireExports() {
-  document.getElementById('export-xlsx').addEventListener('click', async () => {
-    try {
-      await exportFile('/api/export',
-        { session_id: state.sessionId, rows: state.rows.filter((r) => !r.suggested), notes: state.notes,
-          marks: state.marks, title_block: state.title_block },
-        'inspection.xlsx');
-      toast({ kind: 'ok', title: 'Excel exported' });
-    } catch (err) {
-      toast({ kind: 'error', title: 'Export failed', msg: String(err.message || err) });
-    }
+// ===== Journal =======================================================
+function wireJournal() {
+  on('op', (e) => {
+    // A journal fault must never break the reviewer's edit: the state has
+    // already changed and 'change' must still fire after this listener.
+    try { journal.record(e); } catch (err) { console.error('review journal', err); }
+    scheduleFlush(500);
   });
-  document.getElementById('export-pdf').addEventListener('click', async () => {
-    setBusy('Rendering ballooned PDF…');
-    try {
-      await exportFile('/api/export/pdf',
-        { session_id: state.sessionId, rows: state.rows.filter((r) => !r.suggested), notes: state.notes,
-          marks: state.marks, title_block: state.title_block },
-        'ballooned.pdf');
-      setIdle();
-      toast({ kind: 'ok', title: 'PDF exported' });
-    } catch (err) {
-      setIdle();
-      toast({ kind: 'error', title: 'Export failed', msg: String(err.message || err) });
-    }
+  // pagehide, not beforeunload: it also fires on mobile tab discards.
+  window.addEventListener('pagehide', () => {
+    if (journal.active) beaconEvents(journal.sessionId, journal.writer, journal.pending);
   });
+}
+
+function scheduleFlush(delay) {
+  clearTimeout(flushTimer);
+  flushTimer = setTimeout(async () => {
+    try {
+      await journal.flush();
+      flushBackoff = 500;
+    } catch {
+      // Keep everything pending and retry, backing off to 10 s; Finish
+      // refuses until the server holds every event, so nothing is lost.
+      flushBackoff = Math.min(flushBackoff * 2, 10000);
+      scheduleFlush(flushBackoff);
+    }
+  }, delay);
+}
+
+// ===== Finish & Export ==============================================
+function wireFinish() {
+  const btn = document.getElementById('finish-btn');
+  on('change', () => {
+    if (!state.sessionId) return;
+    const p = progress();
+    btn.classList.toggle('blocked', !canFinish());
+    btn.title = canFinish()
+      ? 'Seal the review and export Excel + ballooned PDF'
+      : `${p.outstanding} flagged row${p.outstanding === 1 ? '' : 's'} still to resolve`;
+  });
+  btn.addEventListener('click', finish);
+}
+
+async function finish() {
+  if (!canFinish()) {
+    const n = progress().outstanding;
+    toast({ kind: 'warn', title: 'Not finished yet',
+            msg: `${n} flagged row${n === 1 ? '' : 's'} still to resolve — showing them now.` });
+    document.querySelector('#filter-pills button[data-filter="review"]')?.click();
+    return;
+  }
+  setBusy('Finishing…');
+  try {
+    let sealed = null;
+    if (journal.active) {
+      clearTimeout(flushTimer);
+      const acked = await journal.flush();
+      if (acked < journal.lastSeq) throw new Error('The review log is still saving — try again in a moment.');
+      sealed = await sealSession(state.sessionId, {
+        writer: journal.writer,
+        final_seq: journal.lastSeq,
+        rows: state.rows,
+        reviewed_ids: state.rows.filter((r) => r.reviewed).map((r) => r.id),
+      });
+    }
+    const payload = { session_id: state.sessionId, rows: state.rows.filter((r) => !r.suggested),
+                      notes: state.notes, marks: state.marks, title_block: state.title_block };
+    await exportFile('/api/export', payload, 'inspection.xlsx');
+    await exportFile('/api/export/pdf', payload, 'ballooned.pdf');
+    setIdle();
+    toast({ kind: 'ok', title: 'Finished',
+            msg: sealed && sealed.revision ? `Review sealed as revision r${sealed.revision}` : 'Exported (review not recorded)' });
+  } catch (err) {
+    setIdle();
+    toast({ kind: 'error', title: 'Finish failed', msg: String(err.message || err) });
+  }
 }
 
 // ===== Undo / Redo ==================================================

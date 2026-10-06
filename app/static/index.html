@@ -63,6 +63,11 @@
       <span class="dot"></span><span id="ocr-label">OCR</span>
     </span>
 
+    <span class="status-pill warn" id="log-pill" hidden
+          title="SINDRI_REVIEW_DIR is not set or not writable: this review is not recorded and will not be graded">
+      <span class="dot"></span><span>Review logging off</span>
+    </span>
+
     <span class="status-pill" id="status-pill" hidden>
       <span class="dot"></span><span id="status-text">Ready</span>
     </span>
@@ -198,13 +203,10 @@
           <span id="bulk-accept-label">Accept all</span>
         </button>
 
-        <button class="btn" id="export-xlsx" disabled>
+        <button class="btn primary" id="finish-btn" disabled
+                title="Seal the review and export Excel + ballooned PDF">
           <svg class="icon"><use href="#i-download"/></svg>
-          Excel
-        </button>
-        <button class="btn primary" id="export-pdf" disabled>
-          <svg class="icon"><use href="#i-download"/></svg>
-          Ballooned PDF
+          Finish &amp; Export
         </button>
       </div>
 

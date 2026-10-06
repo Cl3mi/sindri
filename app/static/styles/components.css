@@ -348,6 +348,9 @@ body.drag-over #plan-viewport {
 }
 .btn.primary:hover  { background: var(--accent-strong); border-color: var(--accent-strong); }
 .btn.primary:active { filter: brightness(.92); }
+/* Finish while flagged rows remain: still clickable (the click explains and
+   jumps to them), but visibly not ready. */
+.btn.primary.blocked { opacity: .55; }
 .btn.ghost {
   background: transparent;
   border-color: transparent;

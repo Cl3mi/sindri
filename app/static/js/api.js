@@ -118,3 +118,37 @@ export async function health() {
     return null;
   }
 }
+
+export async function postEvents(sessionId, writer, events) {
+  const res = await fetch(`/api/session/${sessionId}/events`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ writer, events }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Could not save the review log' }));
+    throw new Error(err.detail || 'Could not save the review log');
+  }
+  return res.json();
+}
+
+// Last-chance flush when the page goes away; the server dedups by seq, so a
+// beacon that races a normal flush costs nothing.
+export function beaconEvents(sessionId, writer, events) {
+  if (!navigator.sendBeacon || !events.length) return;
+  const blob = new Blob([JSON.stringify({ writer, events })], { type: 'application/json' });
+  navigator.sendBeacon(`/api/session/${sessionId}/events`, blob);
+}
+
+export async function sealSession(sessionId, body) {
+  const res = await fetch(`/api/session/${sessionId}/seal`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Could not finish' }));
+    throw new Error(err.detail || 'Could not finish');
+  }
+  return res.json();
+}
