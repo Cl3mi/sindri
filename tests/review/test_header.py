@@ -5,6 +5,7 @@ import hashlib
 
 from app.pipeline import policy_rules as pr
 from app.pipeline import review as pipeline_review
+from app.pipeline.extract import active_crop_knobs
 from app.review.header import REVIEW_SCHEMA_VERSION, build_header
 
 
@@ -19,7 +20,11 @@ def test_header_records_drawing_and_pipeline_config(sample_pdf, monkeypatch):
     assert h["pipeline"]["flag_rules"] == list(pr.ACTIVE_FLAG_RULES)
     assert h["pipeline"]["drop_stages"] == [list(s) for s in pr.ACTIVE_DROP_STAGES]
     assert h["pipeline"]["low_conf"] == pipeline_review.LOW_CONF
-    assert "crop_knobs" in h["pipeline"]
+    # Pinned, not just presence: the shipped pad (24) differs from the frozen
+    # baseline, so this is non-empty today. A bare "in" check would not catch
+    # a change that made every header record {}, which would make pad-24
+    # sessions indistinguishable from baseline ones.
+    assert h["pipeline"]["crop_knobs"] == active_crop_knobs()
     assert h["created_at"].endswith("+00:00")
 
 

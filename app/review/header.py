@@ -3,6 +3,7 @@ import hashlib
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Union
 
 import fitz  # PyMuPDF
 
@@ -14,7 +15,7 @@ from app.pipeline.extract import active_crop_knobs
 REVIEW_SCHEMA_VERSION = 1
 
 
-def build_header(pdf_path: Path, consent: bool) -> dict:
+def build_header(pdf_path: Union[str, Path], consent: bool) -> dict:
     pdf_path = Path(pdf_path)
     with fitz.open(pdf_path) as doc:
         pages = doc.page_count
