@@ -41,12 +41,22 @@ class JournalInvalid(ReviewError):
     status = 422
 
 
-def _write_json(path: Path, obj) -> None:
+def _atomic_write(path: Path, data: str) -> None:
     # Write-then-rename, so a crash never leaves a half-written record that a
-    # later grade would read as complete.
+    # later grade would read as complete. fsync before the rename: the
+    # client discards an event once it is acknowledged, so an ack must
+    # survive power loss, not just a process crash (directory fsync is not
+    # needed -- os.replace is atomic within the same directory).
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=1))
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp, path)
+
+
+def _write_json(path: Path, obj) -> None:
+    _atomic_write(path, json.dumps(obj, ensure_ascii=False, indent=1))
 
 
 class ReviewStore:
@@ -58,7 +68,8 @@ class ReviewStore:
         # two threads can both read the same "have" set and both write the
         # same seq (a duplicated retract then makes net_events raise at seal
         # and the reviewer can never Finish). Assumes a single worker process
-        # -- it protects threads sharing this instance, not separate processes.
+        # -- it protects threads sharing this instance, not separate processes
+        # (cross-process locking is deferred; Phase 2).
         self._lock = threading.Lock()
 
     # ----- layout ------------------------------------------------------
@@ -68,15 +79,29 @@ class ReviewStore:
             raise UnknownSession(f"no review record for session {sid[:8]}")
         return d
 
-    def _check_writer(self, d: Path, writer: str) -> None:
-        if not secrets.compare_digest((d / "writer").read_text(), writer or ""):
+    def _check_writer(self, d: Path, writer) -> None:
+        try:
+            stored = (d / "writer").read_text(encoding="utf-8")
+        except OSError:
+            # A missing or unreadable writer file is not this server's crash
+            # to expose as a 500 -- to the caller it is indistinguishable
+            # from "someone else's token", so refuse the same way.
+            raise StaleWriter("this drawing was opened elsewhere; reload to continue") from None
+        if not isinstance(writer, str) or not secrets.compare_digest(
+                stored.encode("utf-8"), writer.encode("utf-8")):
             raise StaleWriter("this drawing was opened elsewhere; reload to continue")
 
     def _events(self, d: Path) -> List[dict]:
         f = d / "events.jsonl"
         if not f.is_file():
             return []
-        lines = [l for l in f.read_text().splitlines() if l.strip()]
+        text = f.read_text(encoding="utf-8")
+        # Split only on "\n". str.splitlines() also breaks on U+2028,
+        # U+2029, U+0085 and others, which an edit_cell's free-text value can
+        # legitimately contain; json.dumps writes those raw unless told
+        # otherwise, so a splitlines()-based read would slice one valid JSON
+        # line into fragments that fail to parse as "corrupt" lines.
+        lines = [l for l in text.split("\n") if l.strip()]
         events = []
         for i, l in enumerate(lines):
             try:
@@ -94,26 +119,39 @@ class ReviewStore:
         return events
 
     def _repair_torn_tail(self, d: Path) -> None:
-        # Drop a torn trailing line from disk once it is seen, so a
-        # subsequent append does not write fresh lines after it -- which
-        # would turn forgivable tail garbage into an unforgivable MIDDLE
-        # line the next time this file is read.
+        # Operate on the RAW text, not on split lines: a crash can leave the
+        # file not ending in "\n" in two different shapes that only the raw
+        # bytes distinguish --
+        #   (a) a COMPLETE line simply missing its trailing newline (the
+        #       write returned before the separator landed), or
+        #   (b) a genuinely torn partial line.
+        # Checking only "does the last line parse" (as an earlier version of
+        # this method did) cannot tell them apart once further lines are
+        # appended: a later write lands directly onto (a) with no separator,
+        # merging two JSON objects into one unparsable line, which then
+        # looks torn in turn and gets erased -- losing BOTH events.
         f = d / "events.jsonl"
         if not f.is_file():
             return
-        lines = [l for l in f.read_text().splitlines() if l.strip()]
-        if not lines:
+        text = f.read_text(encoding="utf-8")
+        if not text or text.endswith("\n"):
             return
+        head, sep, tail = text.rpartition("\n")
         try:
-            json.loads(lines[-1])
+            json.loads(tail)
         except json.JSONDecodeError:
-            tmp = d / "events.jsonl.tmp"
-            tmp.write_text("".join(l + "\n" for l in lines[:-1]))
-            os.replace(tmp, f)
+            # Genuinely torn: drop the unterminated fragment, keep the rest.
+            new_text = head + sep
+        else:
+            # A complete event that just never got its newline.
+            new_text = text + "\n"
+        _atomic_write(f, new_text)
 
     def _sealed_through(self, d: Path) -> int:
         seals = sorted((d / "sealed").glob("r*.json")) if (d / "sealed").is_dir() else []
-        return max((json.loads(p.read_text())["final_seq"] for p in seals), default=0)
+        return max(
+            (json.loads(p.read_text(encoding="utf-8"))["final_seq"] for p in seals),
+            default=0)
 
     def _revisions(self, d: Path) -> int:
         return len(list((d / "sealed").glob("r*.json"))) if (d / "sealed").is_dir() else 0
@@ -122,17 +160,30 @@ class ReviewStore:
     def create(self, sid: str, header: dict, proposal: dict) -> str:
         with self._lock:
             d = self.root / sid
-            if (d / "sealed").is_dir():
+            # _revisions (files on disk), not "sealed dir exists": a crash
+            # right after mkdir(sealed) but before any revision is written
+            # would otherwise lock the session as "sealed" forever.
+            if self._revisions(d) > 0:
                 raise JournalInvalid("session already sealed; a re-extraction needs a new session")
             if d.exists():
-                # Re-extraction of an unsealed session: the old proposal no longer
-                # describes what the reviewer sees, so its journal must go with it.
+                events_path = d / "events.jsonl"
+                if events_path.is_file() and events_path.read_text(encoding="utf-8").strip():
+                    # The reviewer has already acted on this session; a
+                    # re-extraction must not silently erase that work.
+                    raise JournalInvalid(
+                        "session already has review events; a re-extraction needs a new session")
+                # Untouched, unsealed session (e.g. a retried extraction
+                # before any review happened): nothing has reviewed it yet,
+                # so it is safe to replace outright.
                 shutil.rmtree(d)
             d.mkdir(parents=True)
             _write_json(d / "header.json", header)
-            _write_json(d / "proposal.json", proposal)
             writer = secrets.token_hex(16)
-            (d / "writer").write_text(writer)
+            _atomic_write(d / "writer", writer)
+            # proposal.json LAST: _dir() treats its existence as "this
+            # session exists", so a crash earlier in create() must not look
+            # like a finished one.
+            _write_json(d / "proposal.json", proposal)
             return writer
 
     def append(self, sid: str, writer: str, events: Iterable[dict]) -> int:
@@ -148,12 +199,19 @@ class ReviewStore:
             self._repair_torn_tail(d)
             through = self._sealed_through(d)
             have = {e["seq"] for e in self._events(d)}
+            # A resend of a seq already on disk is ignored -- first write
+            # wins, which is sound because a session has a single writer.
             new = [e for e in events if e["seq"] > through and e["seq"] not in have]
             if new:
-                with (d / "events.jsonl").open("a") as f:
+                with (d / "events.jsonl").open("a", encoding="utf-8") as f:
                     for e in new:
-                        f.write(json.dumps(e, ensure_ascii=False) + "\n")
+                        # ensure_ascii=True: pure-ASCII lines cost nothing and
+                        # guarantee a value's raw bytes never contain a
+                        # character str.split("\n") would not also split on.
+                        f.write(json.dumps(e) + "\n")
                         have.add(e["seq"])
+                    f.flush()
+                    os.fsync(f.fileno())
             return contiguous_seq(have, start=through)
 
     def seal(self, sid: str, writer: str, final_seq: int,
@@ -161,17 +219,21 @@ class ReviewStore:
         with self._lock:
             d = self._dir(sid)
             self._check_writer(d, writer)
+            through = self._sealed_through(d)
+            if (not isinstance(final_seq, int) or isinstance(final_seq, bool)
+                    or final_seq < through):
+                raise JournalInvalid(f"bad final_seq {final_seq!r}")
             self._repair_torn_tail(d)
             events = self._events(d)
             seqs = {e["seq"] for e in events}
-            through = self._sealed_through(d)
             if contiguous_seq(seqs, start=through) < final_seq:
                 raise JournalGap("the review log is missing events; Finish again once it has caught up")
             if any(s > final_seq for s in seqs):
                 raise JournalInvalid("the review log holds events after the final one")
             try:
                 net = net_events(events)
-                proposal = json.loads((d / "proposal.json").read_text())["rows"]
+                proposal = json.loads(
+                    (d / "proposal.json").read_text(encoding="utf-8"))["rows"]
                 # Replay from the PROPOSAL through every surviving event, including
                 # those kept from earlier seals, so revision N describes the whole
                 # session, not only what changed since N-1.
@@ -189,7 +251,7 @@ class ReviewStore:
                 "net_events": net,
                 "replay_mismatch_ids": bad,
             })
-            tmp = d / "events.jsonl.tmp"
-            tmp.write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in net))
-            os.replace(tmp, d / "events.jsonl")
+            _atomic_write(
+                d / "events.jsonl",
+                "".join(json.dumps(e) + "\n" for e in net))
             return {"revision": rev, "replay_ok": not bad}
