@@ -125,3 +125,135 @@ test('concurrent flushes share one request', async () => {
   await Promise.all([j.flush(), j.flush()]);
   assert.equal(srv.calls.length, 1);
 });
+
+// --- Opus reviewer's fuzzed-contract follow-up (probe/race.mjs, strand.mjs) ---
+
+test("a stale reply after start() cannot ack or drop another session's events", async () => {
+  // race.mjs case 1: A's slow request answers only after start('B') has
+  // already begun a new session. Without a generation counter, A's late
+  // `finally` clears B's inflight handle (breaking single-flight) and A's
+  // contiguous count floods into B's `acked`, silently dropping B's own
+  // unacknowledged events.
+  let resolveA;
+  const calls = [];
+  const send = (sid, w, evs) => {
+    calls.push([sid, evs.map((e) => e.seq)]);
+    if (sid === 'A') return new Promise((r) => { resolveA = r; });
+    return new Promise(() => {});   // B's own request never answers in this test
+  };
+  const j = createJournal({ send, now: () => 0 });
+  j.start('A', 'wa');
+  for (let i = 0; i < 3; i++) j.record({ kind: 'do', op: fakeOp({ type: 'accept', ids: ['x'] }) });
+  const pa = j.flush();
+  await Promise.resolve();         // let the deferred send(A, ...) actually fire
+  j.start('B', 'wb');
+  j.record({ kind: 'do', op: fakeOp({ type: 'accept', ids: ['y'] }) });
+  j.record({ kind: 'do', op: fakeOp({ type: 'accept', ids: ['z'] }) });
+  const pb = j.flush();            // B's own request, now in flight
+  await Promise.resolve();         // let the deferred send(B, ...) actually fire
+  resolveA({ contiguous: 3 });     // A's late answer must not touch B
+  await pa;
+  assert.equal(j.sessionId, 'B');
+  assert.equal(j.acked, 0);
+  assert.deepEqual(j.pending.map((e) => e.seq), [1, 2]);
+  assert.equal(calls.length, 2);   // A's request and B's own -- no overlapping B sends
+  void pb;                         // B's request is left unanswered on purpose
+});
+
+test('flush() after an in-flight request does not strand a newly recorded event', async () => {
+  // strand.mjs: flush() means "everything recorded so far". A flush() called
+  // while a request for an earlier batch is still in flight must not just
+  // hand back that stale promise once a newer event exists -- it has to
+  // chain its own request behind it, or the newer event is never sent.
+  const held = new Set();
+  const sends = [];
+  const resolvers = [];
+  const send = (sid, w, evs) => {
+    sends.push(evs.map((e) => e.seq));
+    return new Promise((resolve) => {
+      resolvers.push(() => {
+        evs.forEach((e) => held.add(e.seq));
+        let n = 0; while (held.has(n + 1)) n++;
+        resolve({ contiguous: n });
+      });
+    });
+  };
+  const j = createJournal({ send, now: () => 0 });
+  j.start('A', 'w');
+  j.record({ kind: 'do', op: fakeOp({ type: 'accept', ids: ['a'] }) });
+  const p1 = j.flush();                 // batch [1] goes out, slow
+  await Promise.resolve();              // let the deferred send(batch=[1]) actually fire
+  j.record({ kind: 'do', op: fakeOp({ type: 'accept', ids: ['b'] }) });
+  const p2 = j.flush();                 // seq 2 exists meanwhile -- must not be dropped
+  resolvers[0]();                       // server answers the first request
+  await p1;
+  while (resolvers.length < 2) await new Promise((r) => setImmediate(r));
+  resolvers[1]();                       // server answers the chained second request
+  assert.equal(await p2, 2);
+  assert.equal(j.pending.length, 0);
+  assert.deepEqual(sends, [[1], [2]]);
+});
+
+test('a malformed ack (non-integer contiguous) rejects instead of corrupting pending', async () => {
+  const j = createJournal({ send: async () => ({}), now: () => 0 });   // no `contiguous` key
+  j.start('s', 'w');
+  j.record({ kind: 'do', op: fakeOp({ type: 'accept', ids: ['a'] }) });
+  await assert.rejects(j.flush(), /bad ack/);
+  assert.equal(j.pending.length, 1);
+  assert.equal(j.acked, 0);
+});
+
+test('a synchronous throw from send is wrapped into a rejection, not thrown from flush()', async () => {
+  const j = createJournal({ send: () => { throw new Error('sync'); }, now: () => 0 });
+  j.start('s', 'w');
+  j.record({ kind: 'do', op: fakeOp({ type: 'accept', ids: ['a'] }) });
+  let p;
+  assert.doesNotThrow(() => { p = j.flush(); });
+  await assert.rejects(p, /sync/);
+  assert.equal(j.pending.length, 1);
+});
+
+test('record ignores a kind it does not know (e.g. a stale "redo" label)', () => {
+  const j = createJournal({ send: async () => ({ contiguous: 0 }), now: () => 0 });
+  j.start('s', 'w');
+  const op = fakeOp({ type: 'accept', ids: ['x'] });
+  j.record({ kind: 'do', op });
+  j.record({ kind: 'redo', op });
+  assert.deepEqual(j.pending.map((e) => [e.seq, e.type, e.target]), [[1, 'accept', undefined]]);
+});
+
+test('a second undo of the same op (no intervening redo) is skipped, not a duplicate retraction', () => {
+  const j = createJournal({ send: async () => ({ contiguous: 0 }), now: () => 0 });
+  j.start('s', 'w');
+  const op = fakeOp({ type: 'accept', ids: ['x'] });
+  j.record({ kind: 'do', op });
+  j.record({ kind: 'undo', op });
+  j.record({ kind: 'undo', op });   // stale: net_events() would reject a second retraction
+  assert.equal(j.pending.length, 2);
+});
+
+test('undo of an op done before start() is skipped; its later redo is a fresh do', () => {
+  const j = createJournal({ send: async () => ({ contiguous: 0 }), now: () => 0 });
+  const op = fakeOp({ type: 'accept', ids: ['x'] });
+  // op was done before start() -- the journal was not recording yet.
+  j.start('s', 'w');
+  j.record({ kind: 'undo', op });
+  assert.equal(j.pending.length, 0);
+  assert.equal(j.lastSeq, 0);
+  j.record({ kind: 'do', op });     // redo of that same op, now logged, is a fresh event
+  assert.deepEqual(j.pending.map((e) => [e.seq, e.type]), [[1, 'accept']]);
+});
+
+test('start() resets seq, acked and pending for the new session', async () => {
+  const srv = fakeServer();
+  const j = createJournal({ send: srv.send.bind(srv), now: () => 0 });
+  j.start('s1', 'w1');
+  j.record({ kind: 'do', op: fakeOp({ type: 'accept', ids: ['a'] }) });
+  await j.flush();
+  assert.equal(j.lastSeq, 1);
+  assert.equal(j.acked, 1);
+  j.start('s2', 'w2');
+  assert.equal(j.lastSeq, 0);
+  assert.equal(j.acked, 0);
+  assert.equal(j.pending.length, 0);
+});

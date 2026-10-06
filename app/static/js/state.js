@@ -67,7 +67,10 @@ export function clearSession() {
 const undoStack = [];
 const redoStack = [];
 
-// Every op carries event(): the review journal's self-description of it (journal.js). Python mirrors these semantics in app/review/replay.py.
+// Every op carries event(): the review journal's self-description of it
+// (journal.js). Python mirrors these semantics in app/review/replay.py --
+// if that file falls out of step with this one, seal reports mismatches on
+// healthy sessions.
 export function apply(op) {
   op.do();
   undoStack.push(op);
@@ -195,6 +198,7 @@ export function opEditCell(id, field, newValue) {
 // Confirm low-confidence suggestions: each becomes a normal, numbered,
 // reviewed balloon. Undo restores the suggestion exactly.
 export function opConfirmSuggestions(ids) {
+  ids = [...new Set(ids)];   // a dup made replay diverge from export; see opBulkReview
   const confirmed = [];
   return {
     label: 'confirm suggestions',
@@ -222,6 +226,12 @@ export function opConfirmSuggestions(ids) {
 }
 
 export function opBulkReview(ids, target /* true|false */) {
+  // A duplicate id made this op's own prev-map overwrite the original value
+  // with the value just applied (do() visits it twice), so undo "restored"
+  // the applied value instead of the original -- unrestorable, and the
+  // divergence this caused between replay and export was the fuzzer's
+  // biggest finding (124 mismatches with dup ids, 0 without).
+  ids = [...new Set(ids)];
   const prev = new Map();
   return {
     label: target ? 'accept rows' : 'unaccept rows',
