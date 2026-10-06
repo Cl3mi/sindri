@@ -105,6 +105,19 @@ recording only. **Flags must precede drops** now, since stage 2 reads
 37 aggregates each. They are now the dev and test controls for every later
 arm** (r4-* are one stage behind).
 
+**DROPPED VALUES ARE NOT LOST ANY MORE: the suggestion tray** (2026-10-07,
+`docs/plans/2026-10-07-suggestion-tray-design.md`). Rows removed by drop stage
+2 and later go to `ExtractionResult.suggestions`, NOT `characteristics`. The
+reviewer UI shows them in the existing table and on the drawing in violet
+(`◌ –`, dashed `?` balloon), edited inline as usual. They are confirmed with
+Accept or `Y` only inside the "Low confidence" filter (or when ticked), and
+**never exported unconfirmed** (UI and server both filter). Stage-1 duplicates
+still vanish. The scorer reads `characteristics` only, and
+`reapply_current_code` starts from `characteristics + suggestions`;
+re-scoring `r5-control` / `r5-controltest` through the tray code is identical
+on all 40 digest keys. UI rules have node tests (`tests/js/`, run inside
+pytest; they skip without node).
+
 **`read-lora-v1` IS NOW HARMFUL UNDER THE SHIPPED POLICY — deployment CLOSED**
 (2026-10-05, `docs/plans/2026-10-05-read-adapter-repricing-result.md`;
 DERIVED, `--reapply-policy` on stored dev dumps, pad 6). The scoped adapter's
@@ -155,7 +168,7 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **1233 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **1289 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). **`tesseract` is a device
 prerequisite** — without the binary six tests fail as `TesseractNotFoundError`
 and read as broken code. `SCHEMA_VERSION` = 1 — do not bump it. Split frozen
@@ -884,7 +897,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 1233 passed, 2 skipped
+python -m pytest -q                          # 1289 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```
