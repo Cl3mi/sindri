@@ -9,19 +9,21 @@ Milestone: API (task 6 of 11)
 - Task 3 — session header (`1500c05`, `8ae51b1`)
 - Task 4 — ReviewStore (`8e97074`, `4483672`, `9f94b4d`, `ea7423b`)
 - Task 5 — store wired from env, proposal written at extract, health flag
-  (`72f92fb`, `40737d6`, `262042c`)
-- Task 6 — `/events` and `/seal` endpoints (`bf3b1b2`)
+  (`40737d6`, `72f92fb`)
+- Task 6 — `/events` and `/seal` endpoints (`bf3b1b2`, `9e4727a`)
 
 ## What's done
 `app/review/` is complete and pure-Python tested (55 tests in `tests/review/`).
 `app/main.py` now builds `_REVIEW_STORE` from `SINDRI_REVIEW_DIR`, writes the
 proposal server-side at extract (best-effort, never fails the extraction), and
 exposes `POST /api/session/{id}/events` and `/seal`, both mapping `ReviewError`
-subclasses to their own `.status` (404/409/422). Full suite 1359 passed,
-2 skipped.
+subclasses to their own `.status` (404/409/422), each proven at the API layer.
+Full suite 1361 passed, 2 skipped.
 
 ## What's next
-Milestone group 3 — UI journal/Finish wiring in `app/static/js/` (task 7+).
+Milestone group 3 — the UI: Task 7 (ops describe themselves, `op` bus), Task 8
+(`journal.js`), Task 9 (`progress()` / `canFinish()`), Task 10 (Finish & Export,
+journal wiring, logging pill), Task 11 (compose env + CLAUDE.md note).
 
 ## Decisions / deviations since the plan was written
 - `validate_event` also refuses a `retract` whose `target` is missing, not an
@@ -37,6 +39,14 @@ Milestone group 3 — UI journal/Finish wiring in `app/static/js/` (task 7+).
   `ReviewError` and falls back to `writer=None` (logging off for that session),
   which is the intended behaviour for a re-extraction after review started.
 - `seal` refuses a non-int or regressive `final_seq`.
+- API (Task 5 review): review capture at extract catches ANY exception and
+  falls back to `writer=None`, logging only the exception type (never `str(e)`,
+  which can carry client text) — a capture fault must never fail an extraction.
+- Tests: an autouse fixture in `tests/conftest.py` sets
+  `app.main._REVIEW_STORE = None` for every test (looked up via `sys.modules`,
+  never imported), so an exported `SINDRI_REVIEW_DIR` can never receive
+  synthetic records; tests that need a store use `tests/test_api_review.py`'s
+  `store` fixture.
 - Deferred to Phase 2 (do NOT build in Phase 1): writer-token rotation /
   `open(sid)` (a second-tab path must never reach for `create()`, which would be
   refused anyway); cross-process `flock`.
