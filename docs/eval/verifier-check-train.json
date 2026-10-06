@@ -1,0 +1,129 @@
+{
+ "n_docs": 49,
+ "family": "verifier",
+ "control": {
+  "correct": 174,
+  "escaped": 6,
+  "phantom": 16,
+  "delivered": 196,
+  "delivered_precision": 0.8878,
+  "matched_precision": 0.9667,
+  "recall": 0.6454,
+  "cost": 119.3673,
+  "cost_per_weighting": [
+   119.3673,
+   207.0816,
+   75.5714,
+   150.7755,
+   92.6735,
+   48.2653
+  ],
+  "counts": {
+   "correct": 174,
+   "flagged_correct": 169,
+   "flagged_error": 430,
+   "missed": 428,
+   "false_detection": 470,
+   "escaped_error": 6
+  }
+ },
+ "configs": {
+  "verifier_below_050": {
+   "arm": {
+    "correct": 173,
+    "escaped": 6,
+    "phantom": 15,
+    "delivered": 194,
+    "delivered_precision": 0.8918,
+    "matched_precision": 0.9665,
+    "recall": 0.6454,
+    "cost": 119.3061,
+    "cost_per_weighting": [
+     119.3061,
+     207.0204,
+     75.5102,
+     150.6531,
+     92.6531,
+     48.2449
+    ],
+    "counts": {
+     "correct": 173,
+     "flagged_correct": 169,
+     "flagged_error": 431,
+     "missed": 428,
+     "false_detection": 468,
+     "escaped_error": 6
+    }
+   },
+   "correct_lost": 1,
+   "delta_delivered_precision": 0.004,
+   "better_under": 6,
+   "passes": false
+  },
+  "verifier_below_070": {
+   "arm": {
+    "correct": 172,
+    "escaped": 6,
+    "phantom": 15,
+    "delivered": 193,
+    "delivered_precision": 0.8912,
+    "matched_precision": 0.9663,
+    "recall": 0.6446,
+    "cost": 119.5102,
+    "cost_per_weighting": [
+     119.5102,
+     207.4286,
+     75.6122,
+     150.8571,
+     92.8163,
+     48.3061
+    ],
+    "counts": {
+     "correct": 172,
+     "flagged_correct": 169,
+     "flagged_error": 431,
+     "missed": 429,
+     "false_detection": 468,
+     "escaped_error": 6
+    }
+   },
+   "correct_lost": 2,
+   "delta_delivered_precision": 0.0034,
+   "better_under": 0,
+   "passes": false
+  },
+  "verifier_below_090": {
+   "arm": {
+    "correct": 171,
+    "escaped": 6,
+    "phantom": 14,
+    "delivered": 191,
+    "delivered_precision": 0.8953,
+    "matched_precision": 0.9661,
+    "recall": 0.6437,
+    "cost": 119.6735,
+    "cost_per_weighting": [
+     119.6735,
+     207.7959,
+     75.6735,
+     150.9796,
+     92.9592,
+     48.3469
+    ],
+    "counts": {
+     "correct": 171,
+     "flagged_correct": 169,
+     "flagged_error": 431,
+     "missed": 430,
+     "false_detection": 467,
+     "escaped_error": 6
+    }
+   },
+   "correct_lost": 3,
+   "delta_delivered_precision": 0.0075,
+   "better_under": 0,
+   "passes": false
+  }
+ },
+ "selected": null
+}

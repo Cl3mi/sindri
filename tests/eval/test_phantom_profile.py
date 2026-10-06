@@ -92,7 +92,7 @@ def test_the_registered_features_are_all_present():
     assert set(_profile()["features"]) == {
         "kind", "confidence", "box_height", "box_width", "aspect",
         "char_type", "nominal_digits", "nominal_decimal", "raw_length",
-        "nearest_other", "page_position", "repeated_nominal"}
+        "nearest_other", "page_position", "repeated_nominal", "verifier_p"}
 
 
 def test_confidence_bands():
@@ -169,3 +169,14 @@ def test_totals_equal_the_digests_delivered_counts():
     assert (t["correct"], t["escaped"], t["phantom"]) == \
         (aa["correct"], aa["escaped"], aa["false_unflagged"])
     assert t["delivered_precision"] == aa["delivered_precision"]
+
+
+def test_verifier_p_band_is_profiled_and_none_is_its_own_bucket():
+    """Explains a verifier result: does P(yes) separate phantoms from correct
+    values at all, or does the model say yes to everything?"""
+    from app.eval import phantom_profile as pp
+    assert pp.verifier_band(None) == "none"
+    assert pp.verifier_band(0.3) == "<0.5"
+    assert pp.verifier_band(0.95) == "0.9-0.99"
+    assert pp.verifier_band(0.995) == ">=0.99"
+    assert "verifier_p" in pp.FEATURES

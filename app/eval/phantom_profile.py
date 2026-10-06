@@ -75,6 +75,13 @@ def nearest_band(frac) -> str:
                                            ">=0.1"))
 
 
+def verifier_band(p) -> str:
+    """The verifier's P(yes); "none" = never asked or no answer."""
+    if p is None:
+        return "none"
+    return _band(p, (0.5, 0.9, 0.99), ("<0.5", "0.5-0.9", "0.9-0.99", ">=0.99"))
+
+
 def page_position(fx: float, fy: float) -> str:
     # The bottom-right corner is where the title block sits on these drawings,
     # and text there is title-block text, not a characteristic. Checked first,
@@ -108,6 +115,7 @@ FEATURES: Dict[str, Callable[[Row], Optional[str]]] = {
     "nearest_other": lambda r: nearest_band(r.nearest),
     "page_position": lambda r: page_position(r.fx, r.fy),
     "repeated_nominal": lambda r: "yes" if r.repeated else "no",
+    "verifier_p": lambda r: verifier_band(r.c.verifier_p),
 }
 
 

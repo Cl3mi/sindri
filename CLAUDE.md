@@ -168,7 +168,7 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **1289 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **1290 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). **`tesseract` is a device
 prerequisite** — without the binary six tests fail as `TesseractNotFoundError`
 and read as broken code. `SCHEMA_VERSION` = 1 — do not bump it. Split frozen
@@ -742,6 +742,17 @@ GPU days.
   tolerance" is refuted. Kept as measurement only (`app/eval/general_tolerance.py`,
   `score --gentol-check`); a test forbids any pipeline import of it. Dev and
   test were never scored with it and remain unseen.
+* **A yes/no VLM verifier for phantoms** ("is the outlined region a callout an
+  inspector would balloon?", 3x context crop; 2026-10-07,
+  `docs/plans/2026-10-07-verifier-result.md`). Registered; closed at train
+  selection. No threshold passes (each drops 1-3 correct values and no wrong
+  ones, so matched precision falls), and the reason is structural: **191 of 196
+  delivered train values, including 14 of 16 phantoms, get P(yes) ≥ 0.9.** The
+  surviving phantoms look like real callouts because they most likely are:
+  real dimensions the client chose not to balloon. Dev and test were never
+  priced. Next routes are a client conversation about their ballooning policy,
+  or a classifier of that policy learned on train gold; no further gold-free
+  question about the drawing.
 * **`predict --detect-only` as a way to cheapen the crop pass.** Detection is
   ~2/3 of per-document cost, not the reads: detection-only measured 10 m 55 s and
   23 m 45 s on dev documents 2 and 3 against a full-predict median of ~16 min, and
@@ -897,7 +908,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 1289 passed, 2 skipped
+python -m pytest -q                          # 1290 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```
