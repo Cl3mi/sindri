@@ -1,0 +1,346 @@
+{
+ "n_docs": 49,
+ "totals": {
+  "correct": 274,
+  "escaped": 89,
+  "phantom": 112,
+  "delivered": 475,
+  "delivered_precision": 0.5768,
+  "untrue_share": 0.4232
+ },
+ "features": {
+  "kind": {
+   "dimension": {
+    "correct": 274,
+    "escaped": 84,
+    "phantom": 101,
+    "n": 459,
+    "untrue_share": 0.4031
+   },
+   "material": {
+    "correct": 0,
+    "escaped": 5,
+    "phantom": 11,
+    "n": 16,
+    "untrue_share": 1.0
+   }
+  },
+  "confidence": {
+   "0.9-0.95": {
+    "correct": 23,
+    "escaped": 27,
+    "phantom": 24,
+    "n": 74,
+    "untrue_share": 0.6892
+   },
+   "0.95-0.98": {
+    "correct": 62,
+    "escaped": 24,
+    "phantom": 31,
+    "n": 117,
+    "untrue_share": 0.4701
+   },
+   "0.98-0.99": {
+    "correct": 8,
+    "escaped": 8,
+    "phantom": 8,
+    "n": 24,
+    "untrue_share": 0.6667
+   },
+   "<0.9": {
+    "correct": 7,
+    "escaped": 24,
+    "phantom": 31,
+    "n": 62,
+    "untrue_share": 0.8871
+   },
+   ">=0.99": {
+    "correct": 174,
+    "escaped": 6,
+    "phantom": 18,
+    "n": 198,
+    "untrue_share": 0.1212
+   }
+  },
+  "box_height": {
+   "120-200": {
+    "correct": 24,
+    "escaped": 28,
+    "phantom": 18,
+    "n": 70,
+    "untrue_share": 0.6571
+   },
+   "28-40": {
+    "correct": 11,
+    "escaped": 1,
+    "phantom": 7,
+    "n": 19,
+    "untrue_share": 0.4211
+   },
+   "40-80": {
+    "correct": 203,
+    "escaped": 41,
+    "phantom": 66,
+    "n": 310,
+    "untrue_share": 0.3452
+   },
+   "80-120": {
+    "correct": 24,
+    "escaped": 16,
+    "phantom": 12,
+    "n": 52,
+    "untrue_share": 0.5385
+   },
+   "<28": {
+    "correct": 3,
+    "escaped": 1,
+    "phantom": 1,
+    "n": 5,
+    "untrue_share": 0.4
+   },
+   ">=200": {
+    "correct": 9,
+    "escaped": 2,
+    "phantom": 8,
+    "n": 19,
+    "untrue_share": 0.5263
+   }
+  },
+  "box_width": {
+   "120-240": {
+    "correct": 210,
+    "escaped": 39,
+    "phantom": 53,
+    "n": 302,
+    "untrue_share": 0.3046
+   },
+   "60-120": {
+    "correct": 19,
+    "escaped": 20,
+    "phantom": 23,
+    "n": 62,
+    "untrue_share": 0.6935
+   },
+   "<60": {
+    "correct": 7,
+    "escaped": 7,
+    "phantom": 9,
+    "n": 23,
+    "untrue_share": 0.6957
+   },
+   ">=240": {
+    "correct": 38,
+    "escaped": 23,
+    "phantom": 27,
+    "n": 88,
+    "untrue_share": 0.5682
+   }
+  },
+  "aspect": {
+   "1-2": {
+    "correct": 36,
+    "escaped": 24,
+    "phantom": 19,
+    "n": 79,
+    "untrue_share": 0.5443
+   },
+   "2-4": {
+    "correct": 175,
+    "escaped": 22,
+    "phantom": 39,
+    "n": 236,
+    "untrue_share": 0.2585
+   },
+   "<1": {
+    "correct": 21,
+    "escaped": 27,
+    "phantom": 26,
+    "n": 74,
+    "untrue_share": 0.7162
+   },
+   ">=4": {
+    "correct": 42,
+    "escaped": 16,
+    "phantom": 28,
+    "n": 86,
+    "untrue_share": 0.5116
+   }
+  },
+  "char_type": {
+   "Diameter": {
+    "correct": 44,
+    "escaped": 17,
+    "phantom": 22,
+    "n": 83,
+    "untrue_share": 0.4699
+   },
+   "Distance": {
+    "correct": 216,
+    "escaped": 60,
+    "phantom": 74,
+    "n": 350,
+    "untrue_share": 0.3829
+   },
+   "Material": {
+    "correct": 0,
+    "escaped": 5,
+    "phantom": 11,
+    "n": 16,
+    "untrue_share": 1.0
+   },
+   "Radius": {
+    "correct": 14,
+    "escaped": 7,
+    "phantom": 5,
+    "n": 26,
+    "untrue_share": 0.4615
+   }
+  },
+  "nominal_digits": {
+   "0": {
+    "correct": 0,
+    "escaped": 1,
+    "phantom": 0,
+    "n": 1,
+    "untrue_share": 1.0
+   },
+   "1": {
+    "correct": 24,
+    "escaped": 18,
+    "phantom": 26,
+    "n": 68,
+    "untrue_share": 0.6471
+   },
+   "2": {
+    "correct": 130,
+    "escaped": 50,
+    "phantom": 61,
+    "n": 241,
+    "untrue_share": 0.4606
+   },
+   "3": {
+    "correct": 97,
+    "escaped": 14,
+    "phantom": 22,
+    "n": 133,
+    "untrue_share": 0.2707
+   },
+   "4+": {
+    "correct": 23,
+    "escaped": 6,
+    "phantom": 3,
+    "n": 32,
+    "untrue_share": 0.2812
+   }
+  },
+  "nominal_decimal": {
+   "no": {
+    "correct": 61,
+    "escaped": 39,
+    "phantom": 51,
+    "n": 151,
+    "untrue_share": 0.596
+   },
+   "yes": {
+    "correct": 213,
+    "escaped": 50,
+    "phantom": 61,
+    "n": 324,
+    "untrue_share": 0.3426
+   }
+  },
+  "raw_length": {
+   "4-7": {
+    "correct": 19,
+    "escaped": 12,
+    "phantom": 30,
+    "n": 61,
+    "untrue_share": 0.6885
+   },
+   "8-15": {
+    "correct": 246,
+    "escaped": 71,
+    "phantom": 77,
+    "n": 394,
+    "untrue_share": 0.3756
+   },
+   "<4": {
+    "correct": 0,
+    "escaped": 1,
+    "phantom": 0,
+    "n": 1,
+    "untrue_share": 1.0
+   },
+   ">=16": {
+    "correct": 9,
+    "escaped": 5,
+    "phantom": 5,
+    "n": 19,
+    "untrue_share": 0.5263
+   }
+  },
+  "nearest_other": {
+   "0.01-0.03": {
+    "correct": 143,
+    "escaped": 42,
+    "phantom": 48,
+    "n": 233,
+    "untrue_share": 0.3863
+   },
+   "0.03-0.1": {
+    "correct": 116,
+    "escaped": 39,
+    "phantom": 42,
+    "n": 197,
+    "untrue_share": 0.4112
+   },
+   "<0.01": {
+    "correct": 8,
+    "escaped": 5,
+    "phantom": 18,
+    "n": 31,
+    "untrue_share": 0.7419
+   },
+   ">=0.1": {
+    "correct": 7,
+    "escaped": 3,
+    "phantom": 4,
+    "n": 14,
+    "untrue_share": 0.5
+   }
+  },
+  "page_position": {
+   "edge": {
+    "correct": 9,
+    "escaped": 6,
+    "phantom": 3,
+    "n": 18,
+    "untrue_share": 0.5
+   },
+   "interior": {
+    "correct": 265,
+    "escaped": 83,
+    "phantom": 109,
+    "n": 457,
+    "untrue_share": 0.4201
+   }
+  },
+  "repeated_nominal": {
+   "no": {
+    "correct": 194,
+    "escaped": 58,
+    "phantom": 68,
+    "n": 320,
+    "untrue_share": 0.3937
+   },
+   "yes": {
+    "correct": 80,
+    "escaped": 31,
+    "phantom": 44,
+    "n": 155,
+    "untrue_share": 0.4839
+   }
+  }
+ },
+ "reconciles": true
+}
