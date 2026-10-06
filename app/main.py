@@ -27,7 +27,7 @@ from app.pipeline.review import review_flags
 from app.pipeline.place import place_balloons
 from app.pipeline.ballooned_pdf import render_ballooned_pdf
 from app.review.header import build_header
-from app.review.store import ReviewStore
+from app.review.store import ReviewError, ReviewStore
 from PIL import Image
 
 app = FastAPI(title="Sindri")
@@ -82,6 +82,18 @@ class ExportRequest(BaseModel):
 class ReadRegionRequest(BaseModel):
     session_id: str
     box: List[float]        # [x0, y0, x1, y1] image-space pixels
+
+
+class EventsRequest(BaseModel):
+    writer: str
+    events: List[dict]
+
+
+class SealRequest(BaseModel):
+    writer: str
+    final_seq: int
+    rows: List[Characteristic]       # every row incl. suggestions; extras like `reviewed` are ignored
+    reviewed_ids: List[str] = []
 
 
 @app.get("/api/health")
@@ -216,6 +228,35 @@ def delete_session(session_id: str):
     work = _session_dir(session_id)
     shutil.rmtree(work, ignore_errors=True)
     return {"ok": True}
+
+
+@app.post("/api/session/{session_id}/events")
+def post_events(session_id: str, req: EventsRequest):
+    """Append reviewer operations. Idempotent by seq, so the UI simply resends
+    everything the reply says is not yet held contiguously."""
+    _session_dir(session_id)         # rejects a malformed id before any path is built
+    if _REVIEW_STORE is None:
+        return {"contiguous": None, "review_logging": False}
+    try:
+        return {"contiguous": _REVIEW_STORE.append(session_id, req.writer, req.events)}
+    except ReviewError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
+
+
+@app.post("/api/session/{session_id}/seal")
+def seal_session(session_id: str, req: SealRequest):
+    """Seal a review revision at the client's final seq. Refuses on a gap: an
+    incomplete log must never be graded (design §2)."""
+    _session_dir(session_id)
+    if _REVIEW_STORE is None:
+        return {"revision": None, "review_logging": False}
+    try:
+        out = _REVIEW_STORE.seal(
+            session_id, req.writer, req.final_seq,
+            [r.model_dump(mode="json") for r in req.rows], req.reviewed_ids)
+    except ReviewError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
+    return {**out, "review_logging": True}
 
 
 @app.get("/api/image/{session_id}")

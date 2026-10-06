@@ -75,3 +75,50 @@ def test_a_review_capture_fault_does_not_fail_the_extraction(
     result = extract(sample_pdf)
     assert result is not None
     assert result["writer"] is None and result["review_logging"] is False
+
+
+def test_events_round_trip_and_seal(sample_pdf, stub_backend, store):
+    result = extract(sample_pdf)
+    sid, writer, rows = result["session_id"], result["writer"], result["rows"]
+    rid = rows[0]["id"]
+    r = client.post(f"/api/session/{sid}/events", json={"writer": writer, "events": [
+        {"seq": 1, "type": "edit_cell", "id": rid, "field": "nominal",
+         "old": rows[0]["nominal"], "new": "7"},
+        {"seq": 2, "type": "accept", "ids": [rid]}]})
+    assert r.status_code == 200 and r.json() == {"contiguous": 2}
+    final = [{**rows[0], "nominal": "7"}, *rows[1:]]
+    r = client.post(f"/api/session/{sid}/seal", json={
+        "writer": writer, "final_seq": 2, "rows": final, "reviewed_ids": [rid]})
+    assert r.status_code == 200
+    assert r.json() == {"revision": 1, "replay_ok": True, "review_logging": True}
+
+
+def test_events_with_a_stale_writer_are_409(sample_pdf, stub_backend, store):
+    sid = extract(sample_pdf)["session_id"]
+    r = client.post(f"/api/session/{sid}/events", json={"writer": "x", "events": []})
+    assert r.status_code == 409
+    assert "opened elsewhere" in r.json()["detail"]
+
+
+def test_seal_with_a_gap_is_409(sample_pdf, stub_backend, store):
+    result = extract(sample_pdf)
+    sid, writer = result["session_id"], result["writer"]
+    client.post(f"/api/session/{sid}/events", json={"writer": writer, "events": [
+        {"seq": 2, "type": "accept", "ids": []}]})
+    r = client.post(f"/api/session/{sid}/seal", json={
+        "writer": writer, "final_seq": 2, "rows": result["rows"], "reviewed_ids": []})
+    assert r.status_code == 409
+
+
+def test_malformed_session_id_is_404(store):
+    r = client.post("/api/session/not-a-hex-id/events", json={"writer": "x", "events": []})
+    assert r.status_code == 404
+
+
+def test_seal_without_a_store_reports_logging_off(sample_pdf, stub_backend, monkeypatch):
+    monkeypatch.setattr("app.main._REVIEW_STORE", None)
+    result = extract(sample_pdf)
+    r = client.post(f"/api/session/{result['session_id']}/seal", json={
+        "writer": "", "final_seq": 0, "rows": result["rows"], "reviewed_ids": []})
+    assert r.status_code == 200
+    assert r.json() == {"revision": None, "review_logging": False}
