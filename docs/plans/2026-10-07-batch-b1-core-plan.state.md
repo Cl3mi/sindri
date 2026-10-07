@@ -1,26 +1,33 @@
 # State: Batch B1 — Core (queue, worker, resume, server-side export)
 
 Plan: `docs/plans/2026-10-07-batch-b1-core-plan.md`
-Milestone: core (task 4 of 11) — next is milestone api (Tasks 5-7)
+Milestone: api (task 7 of 11) — next is milestone ui (Tasks 8-11)
 
 ## Completed task IDs
 - Task 1 — data dir + migrated SQLite index (`ce10e56`)
 - Task 2 — document lifecycle repo (`2bf93b9`, `2693024`, `a4696d3`)
 - Task 3 — ReviewStore.open() / revision() (`3d7715e`, `278b22c`)
 - Task 4 — extraction worker (`e5f4110`, `a75da2d`, `63c7c06`)
+- Task 5 — Runtime + API on the queue + `/open` (`348f7d0`, `ffff519`)
+- Task 6 — journal drives the drawing's state (`bae5564`, `12b52b1`)
+- Task 7 — export only from a sealed revision (`3d640c5`, `56ede9e`, `d98812b`)
 
 ## What's done
-`app/batch/` exists as product code (paths, db, repo, worker) and the review
-store can reopen a session with a rotated writer and read a sealed revision.
-Nothing is wired into `app/main.py` yet; the old SSE flow still serves the UI.
-Every task passed a spec review and an Opus code-quality review; every
-reviewer-reproduced bug is fixed with a regression test. Suite: 1447 passed,
-2 skipped.
+The server side of B1 is complete: uploads stage a document, the background
+worker extracts it, `/open` resumes it with a rotated writer, events/seal move
+it through in_review/finished, and exports render server-side from the sealed
+revision (cached per revision under a lock). Every task passed a spec review
+and an Opus code-quality review; every reviewer-reproduced bug is fixed with a
+regression test. Suite: 1481 passed, 2 skipped. **The browser UI is broken
+from Task 5 until Tasks 9/10** (it still calls the removed SSE / browser-row
+export routes) — that is the plan's sequencing.
 
 ## What's next
-Task 5 (Runtime + API switched to the queue + `/open`) — the integration task,
-Opus. Then Task 6 (journal drives state), Task 7 (export from a sealed revision),
-then the api milestone checkpoint.
+Task 8 (rebuild a review in the browser from `/open`, resume parity), Task 9
+(journal mandatory in the client, api.js on the new endpoints), Task 10
+(interim UI: queue, poll, open, `#doc=` resume), Task 11 (deployment, docs,
+Playwright drive against a stub backend), then the ui milestone checkpoint and
+the guard re-check.
 
 ## Decisions / deviations since the plan was written
 - **Repo `_tx`:** COMMIT sits inside the try and ROLLBACK runs only when
@@ -54,6 +61,31 @@ then the api milestone checkpoint.
   6). The client must continue numbering from `last_seq + 1`, never
   `max(events.seq) + 1` (append keeps the first write of a seq, so a reused seq
   is silently dropped). The parity test should cover a post-seal reopen.
+- **API (Task 5, review fixes):** `DELETE` and `/retry` refuse the worker's
+  current job (409). `/open` reads `result.json` before rotating the writer;
+  missing/corrupt files → 409 "drawing files unavailable". Upload is a sync
+  handler; a write fault is 507 (ENOSPC) / 500, only a parse failure is 400.
+  `runtime()` is built under a lock and refuses (503) after lifespan shutdown.
+  `Runtime` probes the review dir before opening SQLite; `close()` keeps the
+  connection while a timed-out worker loop still runs.
+- **Journal → state (Task 6):** events/seal for a removed row → 404 before any
+  journal write; seal refused (409) unless ready/in_review/finished, checked
+  before `store.seal`; `events_appended` receives append's acknowledged
+  `contiguous`, not the request's max seq. Known, documented windows: a delete
+  between the check and the seal leaves an orphan sealed revision in the kept
+  review dir; an edit between `store.seal` and `mark_finished` leaves
+  `finished` with an unsealed edit until the next event; a Finish retried after
+  `mark_finished` fails writes a second revision.
+- **Export (Task 7):** row checked before any path is created (no orphan
+  `docs/<id>/`); a gone doc dir, missing/corrupt `result.json` or `input.pdf`
+  → 409; any other render fault → 500 "export failed". Cache rN.* rendered
+  once under a per-(doc, rev, kind) lock with a unique temp file.
+  Content-Disposition is sanitised (control chars, quotes, separators) with an
+  RFC 5987 `filename*`. `?rev=0` → 404. `mark_exported` runs on every hit
+  (a re-download is an export). The cache is not invalidated if exporter code
+  changes.
+- **For Task 11:** `Runtime.from_env` defaults to `/data`; document
+  `SINDRI_DATA_DIR` for local dev.
 - Known and deferred: `mark_exported` / `events_appended` are silent on an
   unknown id (API checks existence); retry-from-cancelled is safe only with a
   single worker; `mark_finished` doesn't enforce monotonic revisions; cancel
