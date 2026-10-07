@@ -9,13 +9,17 @@ import tempfile
 import threading
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 from urllib.parse import quote
 import fitz  # PyMuPDF
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from starlette.types import Scope
 from starlette.responses import Response
 from pydantic import BaseModel
@@ -30,9 +34,12 @@ from app.pipeline.place import place_balloons
 from app.pipeline.ballooned_pdf import render_ballooned_pdf
 from app.review.header import build_header
 from app.review.store import ReviewError
+from app.batch import uploads as batch_uploads
+from app.batch.paths import DOC_ID_RE
 from app.batch.repo import BatchError, InvalidTransition
 from app.batch.runtime import Runtime
 from app.batch.pdf_facts import EXTRACT_DPI
+from app.batch.staging import clean_batch_name
 from PIL import Image
 
 log = logging.getLogger(__name__)
@@ -112,8 +119,24 @@ app = FastAPI(title="Sindri", lifespan=lifespan)
 @app.exception_handler(ReviewError)
 async def _domain_error(request, exc):
     # Safe to echo: these messages carry ids[:8], state names and fixed
-    # sentences, never client text.
-    return JSONResponse({"detail": str(exc)}, status_code=exc.status)
+    # sentences, never client text. `extra` carries numbers and a state name
+    # only (an upload's received offset), so a client can resync from it.
+    return JSONResponse({"detail": str(exc), **getattr(exc, "extra", {})},
+                        status_code=exc.status)
+
+
+# Routes whose request bodies carry client file and folder names.
+_IMPORT_PATHS = ("/api/uploads", "/api/batches")
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error(request, exc):
+    """FastAPI's default 422 body echoes the offending input; on the import
+    routes that is a client file or folder name (CLAUDE.md §1). A fixed
+    sentence there; the default everywhere else."""
+    if request.url.path.startswith(_IMPORT_PATHS):
+        return JSONResponse({"detail": "request rejected: malformed fields"}, status_code=422)
+    return await request_validation_exception_handler(request, exc)
 
 
 def _doc_dir(doc_id: str) -> Path:
@@ -121,6 +144,21 @@ def _doc_dir(doc_id: str) -> Path:
         return runtime().data.doc_dir(doc_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="unknown document")
+
+
+def _batch_id(batch_id: str) -> str:
+    if not DOC_ID_RE.fullmatch(batch_id or ""):
+        raise HTTPException(status_code=404, detail="unknown batch")
+    return batch_id
+
+
+def _batch_name(name) -> str:
+    # The repo stores a name as given; this is the only gate between a bidi
+    # override or a control character and the mass-export ZIP's folders.
+    clean = clean_batch_name(name)
+    if clean is None:
+        raise HTTPException(status_code=400, detail="not a usable batch name")
+    return clean
 
 
 def _doc_view(doc_id: str) -> dict:
@@ -151,11 +189,33 @@ class SealRequest(BaseModel):
     reviewed_ids: List[str] = []
 
 
+class BatchCreate(BaseModel):
+    name: Optional[str] = None
+
+
+class BatchRename(BaseModel):
+    name: str
+
+
+class UploadCreate(BaseModel):
+    batch_id: str
+    name: str
+    size: int
+    fingerprint: str
+    rel_path: str = ""
+    last_modified: Optional[int] = None
+
+
 @app.get("/api/health")
 def health():
     status = backend_status()
     status["ocr_backend_active"] = type(_BACKEND).__name__
-    status["worker_running"] = runtime().worker.running
+    rt = runtime()
+    status["worker_running"] = rt.worker.running
+    # The free-disk reserve (batch design §5): what is left, and the floor
+    # below which uploads answer 507.
+    status["disk_free_mb"] = rt.uploads.free_mb()
+    status["min_free_mb"] = rt.uploads.min_free_bytes // batch_uploads.MIB
     return status
 
 
@@ -201,6 +261,87 @@ def upload(file: UploadFile = File(...)):
         shutil.rmtree(work, ignore_errors=True)
         raise
     return {"session_id": doc_id, "fileName": name, "pages": pages}
+
+
+@app.post("/api/batches")
+def create_batch(req: BatchCreate):
+    """A draft import (decision 10). The browser names it after the ZIP or
+    folder, or its LOCAL date and time (decision 27). A name-less request
+    gets a fallback in the server's clock, labelled UTC because the server
+    cannot know the user's zone. Editable later."""
+    rt = runtime()
+    name = (_batch_name(req.name) if req.name is not None
+            else datetime.now(timezone.utc).strftime("Import %Y-%m-%d %H:%M UTC"))
+    return rt.repo.create_batch(name)
+
+
+@app.get("/api/batches")
+def list_batches():
+    return {"batches": runtime().repo.list_batches()}
+
+
+@app.get("/api/batches/{batch_id}")
+def get_batch(batch_id: str):
+    """The staging view's data: rows with their facts and Include state,
+    unfinished uploads, ignored ZIP entries, and counts that reconcile."""
+    return runtime().repo.staging(_batch_id(batch_id))
+
+
+@app.patch("/api/batches/{batch_id}")
+def rename_batch(batch_id: str, req: BatchRename):
+    return runtime().repo.rename_batch(_batch_id(batch_id), _batch_name(req.name))
+
+
+@app.post("/api/uploads")
+def create_upload(req: UploadCreate):
+    """Start -- or, for the same file in the same draft, resume -- a chunked
+    upload (batch design §2). Answers the offset to send from."""
+    return runtime().uploads.create(
+        batch_id=req.batch_id, name=req.name, size=req.size,
+        last_modified=req.last_modified, rel_path=req.rel_path,
+        fingerprint=req.fingerprint)
+
+
+_CHUNK_TOO_LARGE = "chunk too large or of unknown length"
+
+
+@app.put("/api/uploads/{upload_id}")
+async def put_upload_chunk(upload_id: str, offset: int, request: Request):
+    """One chunk at `offset`. Async only to read the body; the write and its
+    fsync block, so they run in the threadpool. A 409 carries `received`:
+    the client continues from there, never from what it thinks it sent.
+
+    Bounded by MAX_CHUNK: a missing or larger Content-Length is refused
+    before a byte is read, and the read itself stops at the bound in case
+    the header lies. That bounds one REQUEST's memory, not a file: a file
+    of any size still arrives in as many chunks as it needs (decision 29)."""
+    limit = batch_uploads.MAX_CHUNK          # read per call: tests lower it
+    try:
+        declared = int(request.headers["content-length"])
+    except (KeyError, ValueError):
+        raise HTTPException(status_code=413, detail=_CHUNK_TOO_LARGE)
+    if declared < 0 or declared > limit:
+        raise HTTPException(status_code=413, detail=_CHUNK_TOO_LARGE)
+    body = bytearray()
+    async for piece in request.stream():
+        body += piece
+        if len(body) > limit:
+            raise HTTPException(status_code=413, detail=_CHUNK_TOO_LARGE)
+    rt = runtime()
+    return await run_in_threadpool(rt.uploads.put, upload_id, offset, bytes(body))
+
+
+@app.post("/api/uploads/{upload_id}/complete")
+def complete_upload(upload_id: str):
+    """Verify, hash and stage. Idempotent: a retry after a lost reply gets
+    the same documents. A plain def: hashing and PDF inspection block."""
+    return runtime().uploads.complete(upload_id)
+
+
+@app.delete("/api/uploads/{upload_id}")
+def delete_upload(upload_id: str):
+    runtime().uploads.delete(upload_id)
+    return {"ok": True}
 
 
 @app.get("/api/documents/{doc_id}")

@@ -6,8 +6,13 @@ from pathlib import Path
 from app.batch.db import connect, migrate
 from app.batch.paths import DataDir
 from app.batch.repo import Repo
+from app.batch.uploads import MIB, Uploads
 from app.batch.worker import Worker
 from app.review.store import ReviewStore
+
+# The free-disk reserve (batch design §2): below it, uploads and unpacking
+# answer 507 so an import can never fill the disk under a review journal.
+DEFAULT_MIN_FREE_MB = 2048
 
 
 def _probe_writable(root: Path) -> None:
@@ -20,7 +25,8 @@ def _probe_writable(root: Path) -> None:
 
 
 class Runtime:
-    def __init__(self, data_dir, review_dir, extract_fn, header_fn):
+    def __init__(self, data_dir, review_dir, extract_fn, header_fn,
+                 min_free_mb: int = DEFAULT_MIN_FREE_MB):
         self.data = DataDir(data_dir)
         # The review dir is checked BEFORE the index is opened, so a boot
         # refused for an unwritable journal leaves no connection behind.
@@ -33,13 +39,17 @@ class Runtime:
             self.conn.close()
             raise
         self.repo = Repo(self.conn)
+        self.uploads = Uploads(self.repo, self.data, min_free_bytes=min_free_mb * MIB)
         self.worker = Worker(self.repo, self.data, self.store, extract_fn, header_fn)
 
     @classmethod
     def from_env(cls, extract_fn, header_fn) -> "Runtime":
         data = Path(os.environ.get("SINDRI_DATA_DIR") or "/data")
         reviews = Path(os.environ.get("SINDRI_REVIEW_DIR") or data / "reviews")
-        return cls(data, reviews, extract_fn, header_fn)
+        # A malformed value fails the boot loudly rather than running with no
+        # reserve. "0" turns the guard off (the test suite does).
+        min_free = int(os.environ.get("SINDRI_MIN_FREE_MB") or DEFAULT_MIN_FREE_MB)
+        return cls(data, reviews, extract_fn, header_fn, min_free_mb=min_free)
 
     def start(self) -> None:
         self.worker.start()

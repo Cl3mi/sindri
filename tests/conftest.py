@@ -16,6 +16,10 @@ def _isolated_runtime(tmp_path, monkeypatch):
     touches app.main doesn't pay to load the OCR backend."""
     monkeypatch.setenv("SINDRI_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("SINDRI_REVIEW_DIR", str(tmp_path / "data" / "reviews"))
+    # No disk reserve in tests: a developer's /tmp can have less free space
+    # than the deployment default (2048 MB), and every upload test would then
+    # fail with 507. The reserve itself is tested with injected free space.
+    monkeypatch.setenv("SINDRI_MIN_FREE_MB", "0")
     mod = sys.modules.get("app.main")
     if mod is not None:
         monkeypatch.setattr(mod, "_RUNTIME", None)
