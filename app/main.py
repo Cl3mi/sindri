@@ -20,9 +20,10 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
+from starlette.requests import ClientDisconnect
 from starlette.types import Scope
 from starlette.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictInt
 from app.models import Characteristic, NoteBlock, MarkBlock, TitleField
 from app.pipeline.extract import extract
 from app.pipeline.ocr import get_backend, backend_status
@@ -200,10 +201,12 @@ class BatchRename(BaseModel):
 class UploadCreate(BaseModel):
     batch_id: str
     name: str
-    size: int
+    # Strict: lax pydantic reads `true` as 1, "7" as 7 and 7.0 as 7 -- a
+    # size or a resume key the client never sent. Those get the fixed 422.
+    size: StrictInt
     fingerprint: str
     rel_path: str = ""
-    last_modified: Optional[int] = None
+    last_modified: Optional[StrictInt] = None
 
 
 @app.get("/api/health")
@@ -214,7 +217,13 @@ def health():
     status["worker_running"] = rt.worker.running
     # The free-disk reserve (batch design §5): what is left, and the floor
     # below which uploads answer 507.
-    status["disk_free_mb"] = rt.uploads.free_mb()
+    try:
+        status["disk_free_mb"] = rt.uploads.free_mb()
+    except OSError as e:
+        # Health must still answer; None says "not measured", never a
+        # plausible number. TYPE only: the error's text names the path.
+        log.warning("health: free disk space unavailable: %s", type(e).__name__)
+        status["disk_free_mb"] = None
     status["min_free_mb"] = rt.uploads.min_free_bytes // batch_uploads.MIB
     return status
 
@@ -315,6 +324,9 @@ async def put_upload_chunk(upload_id: str, offset: int, request: Request):
     before a byte is read, and the read itself stops at the bound in case
     the header lies. That bounds one REQUEST's memory, not a file: a file
     of any size still arrives in as many chunks as it needs (decision 29)."""
+    # First: a server shutting down answers 503 before reading up to
+    # MAX_CHUNK bytes it would only throw away.
+    rt = runtime()
     limit = batch_uploads.MAX_CHUNK          # read per call: tests lower it
     try:
         declared = int(request.headers["content-length"])
@@ -323,12 +335,21 @@ async def put_upload_chunk(upload_id: str, offset: int, request: Request):
     if declared < 0 or declared > limit:
         raise HTTPException(status_code=413, detail=_CHUNK_TOO_LARGE)
     body = bytearray()
-    async for piece in request.stream():
-        body += piece
-        if len(body) > limit:
-            raise HTTPException(status_code=413, detail=_CHUNK_TOO_LARGE)
-    rt = runtime()
-    return await run_in_threadpool(rt.uploads.put, upload_id, offset, bytes(body))
+    try:
+        async for piece in request.stream():
+            body += piece
+            if len(body) > limit:
+                raise HTTPException(status_code=413, detail=_CHUNK_TOO_LARGE)
+    except ClientDisconnect:
+        # Routine on a resumable path (a closed lid, a dropped link), not a
+        # fault: nothing was written and the offset has not moved, so the
+        # client resumes from it. No traceback; the id only once it is known
+        # to be an id, never anything the client chose.
+        log.info("upload %s: client gone mid-chunk, nothing written",
+                 upload_id[:8] if DOC_ID_RE.fullmatch(upload_id) else "(malformed)")
+        raise HTTPException(status_code=400, detail="the chunk did not arrive whole")
+    # The bytearray itself: a bytes() copy would double the request's peak.
+    return await run_in_threadpool(rt.uploads.put, upload_id, offset, body)
 
 
 @app.post("/api/uploads/{upload_id}/complete")

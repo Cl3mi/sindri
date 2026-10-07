@@ -183,12 +183,21 @@ def test_a_chunk_of_unknown_length_is_413():
     assert main.runtime().data.part_path(up["upload_id"]).read_bytes() == b""
 
 
-def _raw_put(path, query, headers, pieces):
+def _pieces(*pieces, disconnect=False):
+    """Body messages; with `disconnect`, the client goes away after the last
+    piece instead of finishing the body."""
+    msgs = [{"type": "http.request", "body": p,
+             "more_body": disconnect or i < len(pieces) - 1}
+            for i, p in enumerate(pieces)]
+    return msgs + ([{"type": "http.disconnect"}] if disconnect else [])
+
+
+def _raw_put(path, query, headers, messages):
     """Drive the ASGI app directly: an HTTP client always sends an honest
-    Content-Length, and the bound must hold when the header lies."""
+    Content-Length and never vanishes mid-body, and the handler must cope
+    with both. Returns (status, json body, messages never received)."""
     sent = []
-    queue = [{"type": "http.request", "body": p, "more_body": i < len(pieces) - 1}
-             for i, p in enumerate(pieces)]
+    queue = list(messages)
 
     async def receive():
         return queue.pop(0) if queue else {"type": "http.disconnect"}
@@ -204,19 +213,69 @@ def _raw_put(path, query, headers, pieces):
     asyncio.run(main.app(scope, receive, send_))
     status = next(m["status"] for m in sent if m["type"] == "http.response.start")
     body = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
-    return status, json.loads(body)
+    return status, json.loads(body), queue
 
 
 def test_a_lying_content_length_cannot_carry_more_than_the_bound(monkeypatch):
-    """Declares 5 bytes, sends 11 in pieces: the read stops at the bound and
-    nothing reaches the part file."""
+    """Declares 5 bytes, sends 16 in pieces: the read stops at the first
+    piece past the bound -- the last is never even received -- and nothing
+    reaches the part file."""
     import app.batch.uploads as uploads_mod
     monkeypatch.setattr(uploads_mod, "MAX_CHUNK", 10)
     up = new_upload(new_batch()["id"], b"x" * 20)
-    status, body = _raw_put(f"/api/uploads/{up['upload_id']}", "offset=0",
-                            [("content-length", "5")], [b"x" * 4, b"x" * 4, b"x" * 3])
+    last = _pieces(b"x" * 4, b"x" * 4, b"x" * 4, b"y" * 4)[-1]
+    status, body, unread = _raw_put(
+        f"/api/uploads/{up['upload_id']}", "offset=0", [("content-length", "5")],
+        _pieces(b"x" * 4, b"x" * 4, b"x" * 4, b"y" * 4))
     assert (status, body) == (413, {"detail": "chunk too large or of unknown length"})
+    assert unread[:1] == [last]
     assert main.runtime().data.part_path(up["upload_id"]).read_bytes() == b""
+
+
+def test_a_client_gone_mid_chunk_is_a_quiet_400_and_writes_nothing(caplog):
+    """A dropped connection is routine on the resumable path (a closed lid,
+    a flaky link): no 500, no traceback, and the offset stays where it was
+    so the client resumes from it."""
+    caplog.set_level(logging.DEBUG)
+    up = new_upload(new_batch()["id"], b"x" * 20)
+    status, body, _ = _raw_put(f"/api/uploads/{up['upload_id']}", "offset=0",
+                               [("content-length", "10")], _pieces(b"x" * 4, disconnect=True))
+    assert (status, body) == (400, {"detail": "the chunk did not arrive whole"})
+    assert main.runtime().data.part_path(up["upload_id"]).read_bytes() == b""
+    assert main.runtime().repo.get_upload(up["upload_id"])["received"] == 0
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_a_shutting_down_server_refuses_a_chunk_before_reading_it(monkeypatch):
+    """503 before up to MAX_CHUNK bytes are read for nothing."""
+    up = new_upload(new_batch()["id"], b"x" * 20)
+    monkeypatch.setattr(main, "_SHUT_DOWN", True)
+    msgs = _pieces(b"x" * 4, b"x" * 4)
+    status, _, unread = _raw_put(f"/api/uploads/{up['upload_id']}", "offset=0",
+                                 [("content-length", "8")], msgs)
+    assert status == 503 and len(unread) == 2
+
+
+@pytest.mark.parametrize("field,value", [("size", True), ("size", "7"), ("size", 7.0),
+                                         ("last_modified", True), ("last_modified", "7")])
+def test_numbers_are_strict_on_upload_create(field, value):
+    """pydantic's lax mode would take `true` as 1 and "7" as 7 -- a size or
+    a resume key the client never meant. Refused with the fixed 422."""
+    req = {"batch_id": new_batch()["id"], "name": "a.pdf", "size": 7, "fingerprint": "f" * 64,
+           field: value}
+    r = client.post("/api/uploads", json=req)
+    assert (r.status_code, r.json()) == (422, {"detail": "request rejected: malformed fields"})
+
+
+def test_health_survives_an_unreadable_disk(monkeypatch, caplog):
+    rt = main.runtime()
+
+    def broken(path):
+        raise PermissionError("/secret/path")
+    monkeypatch.setattr(rt.uploads, "_free", broken)
+    r = client.get("/api/health")
+    assert r.status_code == 200 and r.json()["disk_free_mb"] is None
+    assert "secret" not in "\n".join(rec.getMessage() for rec in caplog.records)
 
 
 def test_a_malformed_import_request_never_echoes_its_fields():

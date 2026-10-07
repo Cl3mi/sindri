@@ -27,6 +27,11 @@ def _probe_writable(root: Path) -> None:
 class Runtime:
     def __init__(self, data_dir, review_dir, extract_fn, header_fn,
                  min_free_mb: int = DEFAULT_MIN_FREE_MB):
+        # Checked first, before anything is opened or created. A negative
+        # reserve would let uploads overdraw the disk -- silently worse than
+        # no reserve at all.
+        if min_free_mb < 0:
+            raise ValueError("the free-disk reserve cannot be negative")
         self.data = DataDir(data_dir)
         # The review dir is checked BEFORE the index is opened, so a boot
         # refused for an unwritable journal leaves no connection behind.
@@ -46,8 +51,9 @@ class Runtime:
     def from_env(cls, extract_fn, header_fn) -> "Runtime":
         data = Path(os.environ.get("SINDRI_DATA_DIR") or "/data")
         reviews = Path(os.environ.get("SINDRI_REVIEW_DIR") or data / "reviews")
-        # A malformed value fails the boot loudly rather than running with no
-        # reserve. "0" turns the guard off (the test suite does).
+        # A malformed or negative value fails the boot loudly rather than
+        # running with no reserve. "0" turns the guard off (the test suite
+        # does).
         min_free = int(os.environ.get("SINDRI_MIN_FREE_MB") or DEFAULT_MIN_FREE_MB)
         return cls(data, reviews, extract_fn, header_fn, min_free_mb=min_free)
 
