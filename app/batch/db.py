@@ -5,7 +5,9 @@ Repo's lock. WAL so a list request never waits on the worker's writes;
 synchronous=FULL because a drawing the server said it queued must survive
 power loss, like an acknowledged journal event does. Schema changes are
 numbered migrations keyed on PRAGMA user_version -- append an entry, never
-edit one that has shipped."""
+edit one that has shipped. Migration 2 also moves B1's never-started staged
+drawings into draft batches, because from B2 on only Start queues a staged
+drawing."""
 import sqlite3
 
 MIGRATIONS = [
@@ -46,6 +48,35 @@ MIGRATIONS = [
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
     );
+    """,
+    # 2: chunked uploads and staging (batch B2, design §1-§2)
+    """
+    CREATE TABLE upload (
+        id TEXT PRIMARY KEY,
+        batch_id TEXT NOT NULL REFERENCES batch(id),
+        name TEXT NOT NULL,
+        rel_path TEXT NOT NULL DEFAULT '',
+        size INTEGER NOT NULL,
+        last_modified INTEGER,
+        fingerprint TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        received INTEGER NOT NULL DEFAULT 0,
+        state TEXT NOT NULL,
+        ignored TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE INDEX upload_resume ON upload(batch_id, fingerprint);
+    ALTER TABLE document ADD COLUMN upload_id TEXT;
+    ALTER TABLE document ADD COLUMN size INTEGER;
+    ALTER TABLE document ADD COLUMN unreadable INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE document ADD COLUMN included INTEGER;
+    CREATE INDEX document_sha256 ON document(sha256);
+    CREATE INDEX document_batch ON document(batch_id);
+    UPDATE batch SET draft = 1
+        WHERE id IN (SELECT batch_id FROM document WHERE state = 'staged');
+    UPDATE document SET included = CASE WHEN pages = 1 THEN 1 ELSE 0 END
+        WHERE state = 'staged';
     """,
 ]
 
