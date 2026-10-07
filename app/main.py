@@ -3,12 +3,14 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import threading
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import quote
 import fitz  # PyMuPDF
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
@@ -127,14 +129,6 @@ def _doc_view(doc_id: str) -> dict:
             "exported_revision": doc["exported_revision"],
             "queue_position": rt.repo.queue_position(doc_id),
             "progress": rt.worker.progress_of(doc_id)}
-
-
-class ExportRequest(BaseModel):
-    session_id: str
-    rows: List[Characteristic]
-    notes: Optional[NoteBlock] = None
-    marks: Optional[MarkBlock] = None
-    title_block: List[TitleField] = []
 
 
 class ReadRegionRequest(BaseModel):
@@ -304,7 +298,7 @@ def post_events(session_id: str, req: EventsRequest):
 
     The row is looked up BEFORE anything reaches the journal: a stale tab
     holding a writer for a drawing whose row was removed (the review dir
-    deliberately survives a delete, CLAUDE.md §1) must get 404, not a journal
+    deliberately survives a delete, batch design §2 queue controls) must get 404, not a journal
     write for a document the index no longer knows about -- `events_appended`
     is a silent no-op on an unknown id, so without this check the write would
     go through and nothing would ever say so."""
@@ -335,7 +329,7 @@ def seal_session(session_id: str, req: SealRequest):
     (store lock below, repo lock inside `get`/`mark_finished`). In that race
     `mark_finished` then 404s on the now-missing row, and the revision it
     sealed sits as an orphan in the review dir, which a delete deliberately
-    keeps anyway (CLAUDE.md §1) -- so nothing is lost, it is just unlisted."""
+    keeps anyway (batch design §2 queue controls) -- so nothing is lost, it is just unlisted."""
     _doc_dir(session_id)
     rt = runtime()
     doc = rt.repo.get(session_id)
@@ -375,18 +369,83 @@ def _exportable(rows):
     return [r for r in rows if not r.suggested]
 
 
-@app.post("/api/export")
-def export(req: ExportRequest):
-    work = _doc_dir(req.session_id)
-    work.mkdir(parents=True, exist_ok=True)
-    out = work / "inspection.xlsx"
-    write_workbook(_exportable(req.rows), out, notes=req.notes, marks=req.marks,
-                   title_block=req.title_block)
-    return FileResponse(
-        out,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        filename="inspection.xlsx",
-    )
+_EXPORT_KINDS = {
+    "xlsx": ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx"),
+    "pdf": ("application/pdf", "_ballooned.pdf"),
+}
+
+# CR/LF could inject a header line, a quote would close the quoted-string
+# early, and a path separator has no business inside a filename at all --
+# `file_name` comes straight from the untrusted upload (main.upload stores it
+# raw), so both the ASCII fallback and the RFC 5987 form below are built from
+# a sanitised copy, never the original string.
+_HEADER_UNSAFE = re.compile(r'[\r\n"\\/]')
+
+
+def _content_disposition(filename: str) -> str:
+    """`attachment; filename="..."; filename*=UTF-8''...` for a download name
+    that may not be ASCII or well-formed at all. The quoted-string fallback is
+    for clients that ignore filename*; both forms use the same sanitised name,
+    so neither can disagree with the other about what is being sent."""
+    safe = _HEADER_UNSAFE.sub("_", filename)
+    ascii_name = safe.encode("ascii", "replace").decode("ascii").replace("?", "_")
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(safe, safe='')}"
+
+
+def _render_export(work: Path, rev: int, kind: str, sealed: dict) -> Path:
+    """Render revision `rev` once and cache it, so a repeated or mass export
+    of the same revision is the same bytes (batch design §4). The rows come
+    from the SEALED revision, never from a browser."""
+    out = work / "exports" / f"r{rev}.{kind}"
+    if out.is_file():
+        return out
+    out.parent.mkdir(exist_ok=True)
+    rows = _exportable([Characteristic.model_validate(r) for r in sealed["rows"]])
+    # Temp name keeps the real extension: openpyxl and PyMuPDF both choose
+    # behaviour by it. Renamed into place only once complete, so a reader
+    # racing a first render never sees a half-written file (concurrent first
+    # exports of the same revision are not serialised otherwise).
+    tmp = out.with_name(f"r{rev}.tmp.{kind}")
+    if kind == "xlsx":
+        result = json.loads((work / "result.json").read_text(encoding="utf-8"))
+        write_workbook(
+            rows, tmp,
+            notes=NoteBlock.model_validate(result["notes"]) if result["notes"] else None,
+            marks=MarkBlock.model_validate(result["marks"]) if result["marks"] else None,
+            title_block=[TitleField.model_validate(t) for t in result["title_block"]])
+    else:
+        render_ballooned_pdf(work / "input.pdf", rows, dpi=300, out_path=tmp)
+    tmp.replace(out)
+    return out
+
+
+@app.get("/api/documents/{doc_id}/export/{kind}")
+def export_document(doc_id: str, kind: str, rev: Optional[int] = None):
+    """Render and cache an export of a SEALED revision -- never from rows a
+    browser sends. The row must exist before any path under docs/ is built or
+    created, so an id nobody owns never gets even an empty directory."""
+    work = _doc_dir(doc_id)
+    if kind not in _EXPORT_KINDS:
+        raise HTTPException(status_code=404, detail="unknown export kind")
+    rt = runtime()
+    doc = rt.repo.get(doc_id)
+    rev = rev or doc["final_revision"]
+    if not rev:
+        raise HTTPException(status_code=409, detail="finish the review before exporting")
+    sealed = rt.store.revision(doc_id, rev)
+    try:
+        path = _render_export(work, rev, kind, sealed)
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        # Handled, not a 500: the traceback would log the full path, and with
+        # it the whole document id. TYPE and id[:8] only (CLAUDE.md §1).
+        log.warning("export %s r%s.%s: files unavailable: %s",
+                    doc_id[:8], rev, kind, type(e).__name__)
+        raise HTTPException(status_code=409, detail="drawing files unavailable")
+    rt.repo.mark_exported(doc_id, rev)
+    media, suffix = _EXPORT_KINDS[kind]
+    disposition = _content_disposition(Path(doc["file_name"]).stem + suffix)
+    return FileResponse(path, media_type=media,
+                        headers={"Content-Disposition": disposition})
 
 
 @app.post("/api/read_region")
@@ -425,17 +484,6 @@ def read_region(req: ReadRegionRequest):
         c.review_reasons = [*c.review_reasons, *extra]
     place_balloons([c])
     return c.model_dump()
-
-
-@app.post("/api/export/pdf")
-def export_pdf(req: ExportRequest):
-    work = _doc_dir(req.session_id)
-    src = work / "input.pdf"
-    if not src.is_file():
-        raise HTTPException(status_code=404, detail="unknown session")
-    out = work / "ballooned.pdf"
-    render_ballooned_pdf(src, _exportable(req.rows), dpi=300, out_path=out)
-    return FileResponse(out, media_type="application/pdf", filename="ballooned.pdf")
 
 
 class NoCacheStaticFiles(StaticFiles):

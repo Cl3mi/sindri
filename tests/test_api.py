@@ -148,29 +148,128 @@ def test_read_region_returns_parsed_characteristic(sample_pdf, stub_backend):
     assert row["balloon_xy"] is not None
 
 
-def test_export_xlsx_roundtrip(sample_pdf, stub_backend):
-    up = upload_pdf(client, sample_pdf)
-    r = client.post("/api/export",
-                    json={"session_id": up["session_id"], "rows": up["rows"]})
+def finished(test_client, sample_pdf, rows_fn=lambda rows: rows):
+    """Extract, then seal revision 1 with `rows_fn(rows)` as the final rows."""
+    up = upload_pdf(test_client, sample_pdf)
+    rows = rows_fn(up["rows"])
+    r = test_client.post(f"/api/session/{up['session_id']}/seal", json={
+        "writer": up["writer"], "final_seq": 0, "rows": rows,
+        "reviewed_ids": []})
+    assert r.status_code == 200, r.text
+    return up["session_id"]
+
+
+def test_export_xlsx_from_the_sealed_revision(sample_pdf, stub_backend):
+    sid = finished(client, sample_pdf)
+    r = client.get(f"/api/documents/{sid}/export/xlsx")
     assert r.status_code == 200
     assert r.headers["content-type"].startswith(
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    assert len(r.content) > 0
+    assert 'filename="sample.xlsx"' in r.headers["content-disposition"]
+    assert client.get(f"/api/documents/{sid}").json()["exported_revision"] == 1
 
 
-def test_export_pdf_roundtrip(sample_pdf, stub_backend):
-    up = upload_pdf(client, sample_pdf)
-    r = client.post("/api/export/pdf",
-                    json={"session_id": up["session_id"], "rows": up["rows"]})
-    assert r.status_code == 200
-    assert r.headers["content-type"] == "application/pdf"
-    assert r.content[:4] == b"%PDF"
+def test_export_pdf_from_the_sealed_revision(sample_pdf, stub_backend):
+    sid = finished(client, sample_pdf)
+    r = client.get(f"/api/documents/{sid}/export/pdf?rev=1")
+    assert r.status_code == 200 and r.content[:4] == b"%PDF"
+    assert 'filename="sample_ballooned.pdf"' in r.headers["content-disposition"]
 
 
-def test_export_rejects_path_traversal_session_id():
-    r = client.post("/api/export", json={
-        "session_id": "../../../../tmp/sindri_pwn_test", "rows": [{"pos": 1}]})
-    assert r.status_code == 404
+def test_an_unfinished_drawing_cannot_be_exported(sample_pdf, stub_backend):
+    sid = upload_pdf(client, sample_pdf)["session_id"]
+    assert client.get(f"/api/documents/{sid}/export/xlsx").status_code == 409
+
+
+def test_export_rejects_an_unknown_kind_and_a_malformed_id(sample_pdf, stub_backend):
+    sid = finished(client, sample_pdf)
+    assert client.get(f"/api/documents/{sid}/export/docx").status_code == 404
+    assert client.get("/api/documents/not-a-valid-uuid/export/xlsx").status_code == 404
+
+
+def test_export_of_an_unknown_well_formed_id_creates_no_directory():
+    """A well-formed but unknown id must 404 on the ROW check before any path
+    under docs/ is built -- never an orphan directory for an id nobody owns."""
+    import app.main as main
+    doc_id = "0" * 32
+    assert client.get(f"/api/documents/{doc_id}/export/xlsx").status_code == 404
+    assert not main.runtime().data.doc_dir(doc_id).exists()
+
+
+def test_export_with_missing_result_file_is_a_clean_409(sample_pdf, stub_backend):
+    """The xlsx export reads result.json for notes/marks/title_block; if it is
+    gone (same class of fault as /open's missing result.json) this is a clean
+    409, not a 500 whose traceback would log the full path."""
+    import app.main as main
+    sid = finished(client, sample_pdf)
+    (main.runtime().data.doc_dir(sid) / "result.json").unlink()
+    r = client.get(f"/api/documents/{sid}/export/xlsx")
+    assert r.status_code == 409
+    assert sid not in r.json()["detail"]
+
+
+def test_a_repeated_export_is_byte_identical(sample_pdf, stub_backend):
+    """Rendered once per revision and cached, so the single export and B4's
+    mass export of the same revision are the same bytes."""
+    sid = finished(client, sample_pdf)
+    a = client.get(f"/api/documents/{sid}/export/xlsx").content
+    b = client.get(f"/api/documents/{sid}/export/xlsx").content
+    assert a == b
+
+
+def test_export_carries_the_title_block(sample_pdf, monkeypatch, tmp_path):
+    from openpyxl import load_workbook
+    from app.models import Characteristic, ExtractionResult, TitleField
+    import app.main as main
+    monkeypatch.setattr(main, "extract", lambda *a, **kw: ExtractionResult(
+        characteristics=[Characteristic(pos=1, id="a", nominal="20")],
+        title_block=[TitleField(label="Sheet / Blatt", label_en="Sheet",
+                                label_de="Blatt", value="1/1")]))
+    sid = finished(client, sample_pdf)
+    out = tmp_path / "got.xlsx"
+    out.write_bytes(client.get(f"/api/documents/{sid}/export/xlsx").content)
+    wb = load_workbook(out)
+    assert wb["Title Block"].cell(2, 3).value == "1/1"
+
+
+@pytest.mark.parametrize("kind", ["xlsx", "pdf"])
+def test_exports_drop_unconfirmed_suggestions_server_side(
+        kind, sample_pdf, stub_backend, monkeypatch):
+    """Defence in depth: a suggested row in the sealed revision is still not
+    exported. An unconfirmed value in the client's Excel or ballooned PDF is
+    exactly the failure the phantom drops exist to prevent."""
+    import app.main as main
+    seen = {}
+
+    def fake_xlsx(rows, out, **kw):
+        seen["rows"] = list(rows)
+        out.write_bytes(b"x")
+
+    def fake_pdf(src, rows, dpi, out_path):
+        seen["rows"] = list(rows)
+        out_path.write_bytes(b"%PDF")
+
+    monkeypatch.setattr(main, "write_workbook", fake_xlsx)
+    monkeypatch.setattr(main, "render_ballooned_pdf", fake_pdf)
+    sid = finished(client, sample_pdf,
+                   lambda rows: rows + [{**rows[0], "id": "s", "suggested": True}])
+    assert client.get(f"/api/documents/{sid}/export/{kind}").status_code == 200
+    assert seen["rows"] and all(not r.suggested for r in seen["rows"])
+
+
+def test_content_disposition_sanitises_a_hostile_filename():
+    """filename comes from the untrusted upload name. CR/LF must never reach a
+    header (injection), a quote must not close the quoted-string early, and a
+    separator has no business in a filename; the RFC 5987 form carries the
+    real (sanitised) name for everyone else."""
+    import app.main as main
+    header = main._content_disposition('a"b\r\nEvil: 1/../héllo.pdf')
+    assert "\r" not in header and "\n" not in header
+    assert header.count('filename="') == 1
+    ascii_part = header.split('filename="')[1].split('"')[0]
+    assert '"' not in ascii_part and "\r" not in ascii_part and "\n" not in ascii_part
+    assert "/" not in ascii_part and "\\" not in ascii_part
+    assert "filename*=UTF-8''" in header
 
 
 def test_image_rejects_bad_session_id():
@@ -321,48 +420,6 @@ def test_static_assets_force_revalidation(path):
     assert "no-cache" in r.headers.get("cache-control", "")
 
 
-def test_export_includes_title_block_sheet(tmp_path, monkeypatch):
-    from fastapi.testclient import TestClient
-    import app.main as main
-    from openpyxl import load_workbook
-    import uuid
-
-    client = TestClient(main.app)
-    session_id = uuid.uuid4().hex
-    main.runtime().data.doc_dir(session_id).mkdir(parents=True, exist_ok=True)
-
-    payload = {
-        "session_id": session_id,
-        "rows": [],
-        "notes": None,
-        "title_block": [
-            {"label": "Sheet / Blatt", "label_en": "Sheet", "label_de": "Blatt",
-             "value": "1/1"}
-        ],
-    }
-    resp = client.post("/api/export", json=payload)
-    assert resp.status_code == 200
-    out = tmp_path / "got.xlsx"
-    out.write_bytes(resp.content)
-    wb = load_workbook(out)
-    assert "Title Block" in wb.sheetnames
-    assert wb["Title Block"].cell(2, 3).value == "1/1"
-
-
-def test_export_request_accepts_marks_field():
-    """The export endpoint's request body must accept a `marks` field of
-    type Optional[MarkBlock] — symmetric with the existing `notes` field."""
-    from app.main import ExportRequest
-    from app.models import MarkBlock
-
-    req = ExportRequest(session_id="abc", rows=[], notes=None, marks=None)
-    assert req.marks is None
-
-    block = MarkBlock(region=(0, 0, 1, 1), marks=[])
-    req2 = ExportRequest(session_id="abc", rows=[], marks=block)
-    assert req2.marks == block
-
-
 def test_upload_returns_marks_field(monkeypatch, sample_pdf):
     """Extraction result carries `marks` alongside `notes`."""
     from fastapi.testclient import TestClient
@@ -409,38 +466,6 @@ def test_extract_payload_merges_suggestions_flagged(monkeypatch, sample_pdf):
     data = upload_pdf(TestClient(main.app), sample_pdf, filename="x.pdf")
     assert [(r["id"], r["suggested"]) for r in data["rows"]] == \
         [("a", False), ("b", True)]
-
-
-@pytest.mark.parametrize("endpoint", ["/api/export", "/api/export/pdf"])
-def test_exports_drop_unconfirmed_suggestions_server_side(
-        endpoint, sample_pdf, stub_backend, monkeypatch):
-    """Defence in depth: even when a client sends a suggested row, it is not
-    exported. An unconfirmed value in the client's Excel or ballooned PDF is
-    exactly the failure the phantom drops exist to prevent."""
-    import app.main as main
-    seen = {}
-
-    def fake_xlsx(rows, out, **kw):
-        seen["rows"] = rows
-        out.write_bytes(b"x")
-
-    def fake_pdf(src, rows, dpi, out_path):
-        seen["rows"] = rows
-        out_path.write_bytes(b"%PDF")
-
-    monkeypatch.setattr(main, "write_workbook", fake_xlsx)
-    monkeypatch.setattr(main, "render_ballooned_pdf", fake_pdf)
-    up = upload_pdf(client, sample_pdf)
-    rows = up["rows"] + [{**up["rows"][0], "id": "s", "suggested": True}]
-    r = client.post(endpoint, json={"session_id": up["session_id"],
-                                    "rows": rows})
-    assert r.status_code == 200
-    # the stub reads at 0.9, so the upload itself already carries suggestions
-    # (stage 2 drops them); plus the one forged above -- none may be exported
-    confirmed = [row for row in up["rows"] if not row["suggested"]]
-    assert any(row["suggested"] for row in up["rows"])
-    assert len(seen["rows"]) == len(confirmed)
-    assert all(not row.suggested for row in seen["rows"])
 
 
 # --- the queue API: failure paths, lifespan (batch design §1, §3) ---
