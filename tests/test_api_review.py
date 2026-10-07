@@ -120,3 +120,80 @@ def test_a_malformed_event_is_422_with_its_reason(sample_pdf, stub_backend):
 def test_malformed_session_id_is_404():
     r = client.post("/api/session/not-a-hex-id/events", json={"writer": "x", "events": []})
     assert r.status_code == 404
+
+
+def doc_state(sid):
+    return client.get(f"/api/documents/{sid}").json()
+
+
+def test_a_first_review_event_moves_ready_into_review(sample_pdf, stub_backend):
+    result = extract(sample_pdf)
+    sid, writer = result["session_id"], result["writer"]
+    client.post(f"/api/session/{sid}/events", json={"writer": writer, "events": [
+        {"seq": 1, "type": "accept", "ids": []}]})
+    assert doc_state(sid)["state"] == "in_review"
+
+
+def test_seal_finishes_the_drawing_and_a_later_edit_reopens_it(sample_pdf, stub_backend):
+    result = extract(sample_pdf)
+    sid, writer, rows = result["session_id"], result["writer"], result["rows"]
+    r = client.post(f"/api/session/{sid}/seal", json={
+        "writer": writer, "final_seq": 0, "rows": rows, "reviewed_ids": []})
+    assert r.status_code == 200
+    d = doc_state(sid)
+    assert (d["state"], d["final_revision"]) == ("finished", 1)
+    reopened = client.post(f"/api/documents/{sid}/open").json()
+    client.post(f"/api/session/{sid}/events", json={"writer": reopened["writer"], "events": [
+        {"seq": 1, "type": "accept", "ids": []}]})
+    assert doc_state(sid)["state"] == "in_review"
+
+
+def test_events_for_a_removed_documents_row_are_404_and_untouched(sample_pdf, stub_backend):
+    """A stale tab holding a writer for a drawing whose ROW was deleted (the
+    review dir deliberately survives a delete, CLAUDE.md §1) must be refused
+    before anything reaches the journal -- not merely report a stale write."""
+    result = extract(sample_pdf)
+    sid, writer = result["session_id"], result["writer"]
+    assert client.delete(f"/api/documents/{sid}").status_code == 200
+    events_path = main.runtime().store.root / sid / "events.jsonl"
+    assert not events_path.exists()
+    r = client.post(f"/api/session/{sid}/events", json={"writer": writer, "events": [
+        {"seq": 1, "type": "accept", "ids": []}]})
+    assert r.status_code == 404
+    assert not events_path.exists()
+
+
+def test_seal_for_a_removed_documents_row_is_404_and_untouched(sample_pdf, stub_backend):
+    result = extract(sample_pdf)
+    sid, writer, rows = result["session_id"], result["writer"], result["rows"]
+    assert client.delete(f"/api/documents/{sid}").status_code == 200
+    sealed_dir = main.runtime().store.root / sid / "sealed"
+    r = client.post(f"/api/session/{sid}/seal", json={
+        "writer": writer, "final_seq": 0, "rows": rows, "reviewed_ids": []})
+    assert r.status_code == 404
+    assert not sealed_dir.exists()
+
+
+def test_seal_is_refused_when_the_index_says_not_ready_for_review(sample_pdf, stub_backend):
+    """The document row can land outside ready/in_review/finished while an
+    older tab still holds a valid writer for the review session already on
+    disk (e.g. mid-retry, before the worker re-creates the session) -- a
+    sealed revision must never be written for that drawing."""
+    result = extract(sample_pdf)
+    sid, writer, rows = result["session_id"], result["writer"], result["rows"]
+    rt = main.runtime()
+    rt.repo._conn.execute("UPDATE document SET state = 'extracting' WHERE id = ?", (sid,))
+    sealed_dir = rt.store.root / sid / "sealed"
+    r = client.post(f"/api/session/{sid}/seal", json={
+        "writer": writer, "final_seq": 0, "rows": rows, "reviewed_ids": []})
+    assert r.status_code == 409
+    assert not sealed_dir.exists()
+
+
+def test_an_event_above_a_gap_is_not_acknowledged_and_state_stays_ready(sample_pdf, stub_backend):
+    result = extract(sample_pdf)
+    sid, writer = result["session_id"], result["writer"]
+    r = client.post(f"/api/session/{sid}/events", json={"writer": writer, "events": [
+        {"seq": 2, "type": "accept", "ids": []}]})
+    assert r.status_code == 200 and r.json() == {"contiguous": 0}
+    assert doc_state(sid)["state"] == "ready"

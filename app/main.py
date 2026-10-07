@@ -300,19 +300,48 @@ def open_document(doc_id: str):
 @app.post("/api/session/{session_id}/events")
 def post_events(session_id: str, req: EventsRequest):
     """Append reviewer operations. Idempotent by seq, so the UI simply resends
-    everything the reply says is not yet held contiguously."""
+    everything the reply says is not yet held contiguously.
+
+    The row is looked up BEFORE anything reaches the journal: a stale tab
+    holding a writer for a drawing whose row was removed (the review dir
+    deliberately survives a delete, CLAUDE.md §1) must get 404, not a journal
+    write for a document the index no longer knows about -- `events_appended`
+    is a silent no-op on an unknown id, so without this check the write would
+    go through and nothing would ever say so."""
     _doc_dir(session_id)             # rejects a malformed id before any path is built
-    return {"contiguous": runtime().store.append(session_id, req.writer, req.events)}
+    rt = runtime()
+    rt.repo.get(session_id)          # 404s via UnknownDocument if the row is gone
+    contiguous = rt.store.append(session_id, req.writer, req.events)
+    if contiguous > 0:
+        # Only what the store actually ACKNOWLEDGED moves the drawing --
+        # events above a gap are unacked and the next open() trims them, so
+        # crediting the request's own max seq would move the state for
+        # events that never actually landed.
+        rt.repo.events_appended(session_id, contiguous)
+    return {"contiguous": contiguous}
 
 
 @app.post("/api/session/{session_id}/seal")
 def seal_session(session_id: str, req: SealRequest):
     """Seal a review revision at the client's final seq. Refuses on a gap: an
-    incomplete log must never be graded (design §2)."""
+    incomplete log must never be graded (design §2).
+
+    The index's state is checked, and the row's existence along with it,
+    BEFORE store.seal runs: a sealed revision must never be written to disk
+    for a drawing the index does not say is ready/in_review/finished (e.g. a
+    stale tab mid-retry, before the worker re-creates the review session) or
+    for one whose row was removed."""
     _doc_dir(session_id)
-    return runtime().store.seal(
+    rt = runtime()
+    doc = rt.repo.get(session_id)
+    if doc["state"] not in ("ready", "in_review", "finished"):
+        raise InvalidTransition(
+            f"drawing is {doc['state']}, not ready for review")
+    out = rt.store.seal(
         session_id, req.writer, req.final_seq,
         [r.model_dump(mode="json") for r in req.rows], req.reviewed_ids)
+    rt.repo.mark_finished(session_id, out["revision"], req.final_seq)
+    return out
 
 
 @app.get("/api/image/{session_id}")
