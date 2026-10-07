@@ -69,10 +69,20 @@ export async function sealSession(sessionId, body) {
   return res.json();
 }
 
-async function jsonOrThrow(res, fallback) {
+// A FastAPI validation error (422) carries `detail` as an array of error
+// objects, not a string -- `err.detail || fallback` happily stringified one
+// of those to "[object Object]" instead of falling back. Only a STRING
+// detail is ever shown; any other shape (array, object, or no body at all)
+// falls back, and a body that parsed but holds a non-string detail says so
+// with the status code rather than silently reusing the caller's fallback
+// (which is usually written for a 404, not a validation error).
+export async function jsonOrThrow(res, fallback) {
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: fallback }));
-    throw new Error(err.detail || fallback);
+    let body = null;
+    try { body = await res.json(); } catch { /* no JSON body at all */ }
+    if (body && typeof body.detail === 'string') throw new Error(body.detail);
+    if (body && body.detail !== undefined) throw new Error(`request rejected (${res.status})`);
+    throw new Error(fallback);
   }
   return res.json();
 }
@@ -95,6 +105,23 @@ export async function deleteDocument(id) {
   try { await fetch(docUrl(id), { method: 'DELETE' }); } catch { /* best effort */ }
 }
 
+// The server always sends both forms (app/main.py _content_disposition):
+// `filename="<ascii-sanitised>"; filename*=UTF-8''<percent-encoded>`. Prefer
+// the UTF-8 form so a non-ASCII name (umlauts, etc.) downloads under its real
+// name instead of the "_"-mangled ASCII fallback. The old single regex
+// `/filename="?([^"]+)"?/` made the quotes optional, so on an UNQUOTED match
+// `[^"]+` ran to the end of the header and swallowed the following
+// `; filename*=...` parameter whole -- the quoted branch below requires the
+// closing quote for exactly that reason.
+export function contentDispositionFilename(header, fallback) {
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(header || '');
+  if (star) {
+    try { return decodeURIComponent(star[1]); } catch { /* malformed percent-encoding: fall through */ }
+  }
+  const quoted = /filename="([^"]+)"/.exec(header || '');
+  return quoted ? quoted[1] : fallback;
+}
+
 // Download a sealed revision's file; the server names it after the drawing.
 export async function downloadExport(id, kind, revision) {
   const res = await fetch(docUrl(id, `/export/${kind}?rev=${revision}`));
@@ -102,8 +129,7 @@ export async function downloadExport(id, kind, revision) {
     const err = await res.json().catch(() => ({ detail: 'Export failed' }));
     throw new Error(err.detail || 'Export failed');
   }
-  const name = /filename="?([^"]+)"?/.exec(res.headers.get('content-disposition') || '')?.[1]
-    || `drawing.${kind}`;
+  const name = contentDispositionFilename(res.headers.get('content-disposition'), `drawing.${kind}`);
   const blob = await res.blob();
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
