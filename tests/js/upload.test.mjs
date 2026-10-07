@@ -593,3 +593,66 @@ test('the SHA-256 padding length is plain arithmetic, so it never wraps at 2 GiB
   assert.equal(paddedLength(2 ** 31), 2 ** 31 + 64);
   assert.equal(paddedLength(2 ** 32 + 100), 2 ** 32 + 128);
 });
+
+test('a slow link still imports: a chunk is given time in proportion to its bytes', async () => {
+  // Decision 29: no upload limits. A fixed two minutes would need 70 KB/s
+  // for an 8 MiB chunk, and a slow factory uplink would time out every PUT
+  // forever. The floor is 16 KiB/s: 8 MiB gets 512 s.
+  const MiB = 1024 * 1024;
+  const server = fakeServer();
+  let clock = 0;
+  const timers = [];
+  const timeout = (ms) => { const c = new AbortController(); timers.push({ at: clock + ms, c }); return c.signal; };
+  const advance = (t) => { clock = t; for (const x of timers) if (x.at <= clock) x.c.abort(); };
+  let hung = 0;
+  let rejected = false;
+  const fetch = (url, init) => {
+    if (init.method === 'PUT' && hung === 0) {
+      hung += 1;
+      return new Promise((_, reject) => init.signal.addEventListener('abort', () => {
+        rejected = true;
+        reject(new DOMException('timed out', 'TimeoutError'));
+      }));
+    }
+    return server.fetch(url, init);
+  };
+  const run = uploadFile({ file: fileOf(bytes(8 * MiB)), batchId: 'b', fetch, sleep: noSleep,
+    now: () => clock, timeout });
+  while (!hung) await new Promise((r) => setImmediate(r));
+  advance(121 * 1000);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(rejected, false, 'an 8 MiB chunk is not timed out at 121 s');
+  advance((8 * MiB) / (16 * 1024) * 1000 + 1000);
+  const done = await run;
+  assert.equal(rejected, true);
+  assert.equal(done.state, 'complete');
+  assert.deepEqual(puts(server), [0]);
+});
+
+test('a stopped import says why: the first give-up reason, not a guess', async () => {
+  // A server answering 503 for ten minutes is reachable; the files it
+  // stopped must not be told it could not be reached.
+  let clock = 0;
+  const timers = [];
+  let ticking = false;
+  const tick = () => {
+    if (ticking) return;
+    ticking = true;
+    setImmediate(() => {
+      ticking = false;
+      if (!timers.length) return;
+      timers.sort((a, b) => a.at - b.at);
+      const t = timers.shift();
+      clock = Math.max(clock, t.at);
+      t.wake();
+      tick();
+    });
+  };
+  const sleep = (ms) => new Promise((wake) => { timers.push({ at: clock + ms, wake }); tick(); });
+  const fetch = async () => json(503, { detail: 'unavailable' });
+  const files = [0, 1, 2, 3, 4].map((i) => fileOf(bytes(50), `f${i}.pdf`));
+  const results = await importFiles(files, { batchId: 'b', fetch, sleep, now: () => clock });
+  assert.ok(results.every((r) => !r.ok && !r.error.fatal));
+  assert.deepEqual(results.slice(3).map((r) => r.error.message),
+    Array(2).fill('not attempted: server error (503)'));
+});

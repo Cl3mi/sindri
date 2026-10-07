@@ -109,6 +109,10 @@ test('the import wrappers send what the import routes expect', async () => {
     await api.getBatch('a/b');
     await api.startBatch('a?b');
     assert.deepEqual(sent.map((s) => s[0]), ['/api/batches/a%2Fb', '/api/batches/a%3Fb/start']);
+    sent.length = 0;
+    await api.getDocument('d/1');
+    await api.setIncluded('d?1', true);
+    assert.deepEqual(sent.map((s) => s[0]), ['/api/documents/d%2F1', '/api/documents/d%3F1/include']);
     globalThis.fetch = async () => fakeRes(409, { detail: 'the import changed' });
     await assert.rejects(api.startBatch('b1'),
       (err) => err.status === 409 && err.message === 'the import changed');

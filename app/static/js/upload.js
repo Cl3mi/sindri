@@ -189,6 +189,13 @@ const cancelled = () => new UploadError('upload cancelled', { fatal: true });
 // the same server lock.
 export const ATTEMPT_TIMEOUT_MS = 2 * 60 * 1000;
 export const COMPLETE_TIMEOUT_MS = 30 * 60 * 1000;
+// A chunk's timer scales with its bytes, never below ATTEMPT_TIMEOUT_MS:
+// decision 29 sets no upload limits, so a slow factory uplink must still
+// import. A fixed two minutes would demand ~70 KB/s for an 8 MiB chunk and
+// time out every PUT on a slower link, forever. 16 KiB/s is the floor a
+// link must sustain: 8 MiB gets 512 s.
+export const MIN_RATE_BYTES_PER_S = 16 * 1024;
+export const chunkTimeoutMs = (n) => Math.max(ATTEMPT_TIMEOUT_MS, Math.ceil((n / MIN_RATE_BYTES_PER_S) * 1000));
 const defaultTimeout = (ms) => (typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(ms) : null);
 
 // The user's cancel and this attempt's timer, as one signal. Without
@@ -301,7 +308,7 @@ export async function uploadFile({
       const end = Math.min(file.size, received + chunkSize);
       const r = await call('PUT', `/api/uploads/${id}?offset=${received}`,
         file.slice(received, end), { 'Content-Type': 'application/octet-stream' },
-        (x) => isCount(x.received) && x.received <= file.size);
+        (x) => isCount(x.received) && x.received <= file.size, chunkTimeoutMs(end - received));
       // 200 and 409 both say where the server now stands -- which may be
       // BEHIND where this client got to. After a lost reply the retry is a
       // 409 whose `received` already counts the chunk, so it is not sent
@@ -322,19 +329,20 @@ export async function uploadFile({
 // stops the others; each result is { ok: true, ...completion } or
 // { ok: false, error }.
 //
-// But once one file has given up on an unreachable server (a non-fatal
-// error: its retry budget ran out), files not yet started are not
-// attempted: the budget is per file, so 300 queued files would otherwise
-// each sit out ten minutes -- hours before the import ends. Their error is
-// non-fatal too, so selecting them again resumes. Files already running
-// finish their own budget. A cancel marks every file not yet started as
-// cancelled, without reading it.
-export const NOT_ATTEMPTED = 'not attempted: the server could not be reached';
+// But once one file has given up for now (a non-fatal error: its retry
+// budget ran out on a dropped connection, a 5xx, or a completion still
+// running), files not yet started are not attempted: the budget is per
+// file, so 300 queued files would otherwise each sit out ten minutes --
+// hours before the import ends. Their error is non-fatal too, so selecting
+// them again resumes, and it carries the FIRST give-up's reason: a server
+// answering 503 is not one that "could not be reached". Files already
+// running finish their own budget. A cancel marks every file not yet
+// started as cancelled, without reading it.
 
 export async function importFiles(files, { parallel = PARALLEL, onFile = () => {}, ...opts } = {}) {
   const results = new Array(files.length);
   let next = 0;
-  let unreachable = false;
+  let stopped = null;                          // the first give-up's reason
   async function lane() {
     while (next < files.length) {
       const i = next++;
@@ -343,8 +351,8 @@ export async function importFiles(files, { parallel = PARALLEL, onFile = () => {
         onFile(i, { done: true, result: results[i] });
         continue;
       }
-      if (unreachable) {
-        results[i] = { ok: false, error: new UploadError(NOT_ATTEMPTED) };
+      if (stopped !== null) {
+        results[i] = { ok: false, error: new UploadError(`not attempted: ${stopped}`) };
         onFile(i, { done: true, result: results[i] });
         continue;
       }
@@ -356,7 +364,7 @@ export async function importFiles(files, { parallel = PARALLEL, onFile = () => {
         results[i] = { ok: true, ...done };
       } catch (error) {
         results[i] = { ok: false, error };
-        if (error instanceof UploadError && !error.fatal) unreachable = true;
+        if (error instanceof UploadError && !error.fatal && stopped === null) stopped = error.message;
       }
       onFile(i, { done: true, result: results[i] });
     }

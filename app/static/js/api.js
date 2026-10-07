@@ -93,7 +93,9 @@ export async function jsonOrThrow(res, fallback) {
   return res.json();
 }
 
-const docUrl = (id, tail = '') => `/api/documents/${id}${tail}`;
+// An id is a path SEGMENT: encoded, so a stray '/' or '?' can never
+// address another route.
+const docUrl = (id, tail = '') => `/api/documents/${encodeURIComponent(id)}${tail}`;
 
 export const getDocument = async (id) => jsonOrThrow(await fetch(docUrl(id)), 'Drawing not found');
 export const enqueueDocument = async (id) =>
