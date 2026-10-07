@@ -2,7 +2,7 @@
 
     <root>/<session_id>/header.json      server, at extract
                         proposal.json    server, at extract -- never client-supplied
-                        writer           the session's single-writer token
+                        writer           the session's single-writer token (rotated by open())
                         events.jsonl     appended from the UI; net form after a seal
                         sealed/rN.json   one per Finish
 
@@ -70,6 +70,11 @@ def _atomic_write(path: Path, data: str) -> None:
 
 def _write_json(path: Path, obj) -> None:
     _atomic_write(path, json.dumps(obj, ensure_ascii=False, indent=1))
+
+
+# Public name for app.batch, which writes result.json with the same
+# durability guarantees as a review record.
+write_json_atomic = _write_json
 
 
 class ReviewStore:
@@ -296,3 +301,56 @@ class ReviewStore:
                 d / "events.jsonl",
                 "".join(json.dumps(e) + "\n" for e in net))
             return {"revision": rev, "replay_ok": not bad}
+
+    def open(self, sid: str) -> dict:
+        """Reopen a session for review (batch design §3): a NEW writer token,
+        so whichever tab held the old one is refused from now on (latest
+        opener wins, decision 25), plus everything the browser needs to
+        rebuild the review -- the proposal, the net events, and the seq to
+        continue numbering from."""
+        with self._lock:
+            d = self._dir(sid)
+            self._repair_torn_tail(d)
+            through = self._sealed_through(d)
+            events = self._events(d)
+            # Below `through` a seal's compaction leaves holes that are not
+            # gaps, so every event at or under it is kept; above it, only the
+            # contiguous run the server has acknowledged.
+            top = contiguous_seq({e["seq"] for e in events}, start=through)
+            kept = sorted((e for e in events if e["seq"] <= top), key=lambda e: e["seq"])
+            try:
+                net = net_events(kept)
+                proposal = json.loads(
+                    (d / "proposal.json").read_text(encoding="utf-8"))["rows"]
+            except JournalError as exc:
+                raise JournalInvalid(str(exc)) from exc
+            except (KeyError, TypeError) as exc:
+                raise JournalInvalid(f"corrupt review record: {exc}") from exc
+            # Nothing on disk changes until the review is known to rebuild: a
+            # refused open must not lock the working tab out (writer) or
+            # throw away its unacknowledged events (trim) for nothing.
+            if len(kept) != len(events):
+                # Above a hole: never acknowledged, owned by the tab this open
+                # replaces, and would collide with the new tab's numbering --
+                # append keeps the FIRST write of a seq, so the new tab's edit
+                # would be the one silently discarded.
+                _atomic_write(d / "events.jsonl",
+                              "".join(json.dumps(e) + "\n" for e in kept))
+            writer = secrets.token_hex(16)
+            _atomic_write(d / "writer", writer)
+            return {"writer": writer, "proposal": proposal, "events": net, "last_seq": top}
+
+    def revision(self, sid: str, n: int = None) -> dict:
+        """A sealed revision -- the latest when `n` is None. Exports are
+        rendered from this, never from rows a browser sends (batch design §4)."""
+        with self._lock:
+            d = self._dir(sid)
+            if n is None:
+                n = self._revisions(d)
+            # bool is an int subclass; True must not quietly mean r1.
+            if not isinstance(n, int) or isinstance(n, bool) or n < 1:
+                raise UnknownSession(f"no sealed revision for session {sid[:8]}")
+            p = d / "sealed" / f"r{n}.json"
+            if not p.is_file():
+                raise UnknownSession(f"no sealed revision r{n} for session {sid[:8]}")
+            return json.loads(p.read_text(encoding="utf-8"))

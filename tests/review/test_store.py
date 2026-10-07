@@ -316,3 +316,86 @@ def test_create_is_not_blocked_by_an_empty_sealed_directory(store, writer):
     (store.root / SID / "sealed").mkdir()
     w2 = store.create(SID, {"h": 2}, {"rows": [row("a")]})
     assert w2 != writer
+
+
+# ----- reopen (batch design §3) -----------------------------------------
+
+def test_open_rotates_the_writer_so_the_older_tab_is_refused(store, writer):
+    store.append(SID, writer, [ev(1, "accept", ids=["a"])])
+    opened = store.open(SID)
+    assert opened["writer"] != writer
+    with pytest.raises(StaleWriter):
+        store.append(SID, writer, [ev(2, "accept", ids=["b"])])
+    assert store.append(SID, opened["writer"], [ev(2, "accept", ids=["b"])]) == 2
+
+
+def test_open_returns_the_proposal_the_net_events_and_the_last_seq(store, writer):
+    store.append(SID, writer, [ev(1, "accept", ids=["a"]), ev(2, "delete_row", id="b"),
+                               ev(3, "retract", target=2)])
+    opened = store.open(SID)
+    assert [r["id"] for r in opened["proposal"]] == ["a", "b"]
+    assert [e["seq"] for e in opened["events"]] == [1]
+    assert opened["last_seq"] == 3
+
+
+def test_open_after_a_seal_continues_from_the_sealed_seq(store, writer):
+    store.append(SID, writer, [ev(1, "accept", ids=["a"]), ev(2, "unaccept", ids=["a"]),
+                               ev(3, "retract", target=2)])
+    rows = [{**row("a"), "reviewed": True}, row("b")]
+    store.seal(SID, writer, 3, rows, ["a"])
+    opened = store.open(SID)
+    assert opened["last_seq"] == 3
+    assert [e["seq"] for e in opened["events"]] == [1]
+
+
+def test_open_drops_events_stranded_above_a_gap(store, writer):
+    """An event above a hole was never acknowledged (acks are contiguous), so
+    its tab still held it -- and that tab is the one this open just replaced.
+    Left on disk it would collide with the new tab's seq numbers, and append
+    keeps the FIRST write of a seq, silently discarding the new edit."""
+    store.append(SID, writer, [ev(1, "accept", ids=["a"]), ev(3, "delete_row", id="b")])
+    opened = store.open(SID)
+    assert opened["last_seq"] == 1
+    assert store.append(SID, opened["writer"], [ev(2, "accept", ids=["b"]),
+                                                ev(3, "unaccept", ids=["b"])]) == 3
+    lines = (store.root / SID / "events.jsonl").read_text().splitlines()
+    assert [json.loads(l)["type"] for l in lines] == ["accept", "accept", "unaccept"]
+
+
+def test_open_an_unknown_session_is_refused(store):
+    with pytest.raises(UnknownSession):
+        store.open(SID)
+
+
+def test_a_refused_open_changes_nothing_on_disk(store, writer):
+    """An open that cannot rebuild the review (here: a retract of a seq that
+    is no longer live) must leave the session exactly as it found it.
+    Rotating the writer first would lock the working tab out of a session
+    nobody can reopen; trimming first would discard its stranded events for
+    nothing."""
+    store.append(SID, writer, [ev(1, "accept", ids=["a"]), ev(2, "retract", target=1),
+                               ev(3, "retract", target=1), ev(5, "accept", ids=["b"])])
+    before = (store.root / SID / "events.jsonl").read_text()
+    with pytest.raises(JournalInvalid):
+        store.open(SID)
+    assert (store.root / SID / "events.jsonl").read_text() == before
+    assert store.append(SID, writer, []) == 3
+
+
+def test_revision_reads_a_sealed_revision_or_the_latest(store, writer):
+    store.seal(SID, writer, 0, [row("a"), row("b")], [])
+    store.append(SID, writer, [ev(1, "accept", ids=["a"])])
+    store.seal(SID, writer, 1, [{**row("a"), "reviewed": True}, row("b")], ["a"])
+    assert store.revision(SID)["revision"] == 2
+    assert store.revision(SID, 1)["reviewed_ids"] == []
+    with pytest.raises(UnknownSession):
+        store.revision(SID, 3)
+
+
+def test_revision_refuses_when_nothing_is_sealed(store, writer):
+    with pytest.raises(UnknownSession):
+        store.revision(SID)
+    with pytest.raises(UnknownSession):
+        store.revision(SID, 0)
+    with pytest.raises(UnknownSession):
+        store.revision(SID, True)
