@@ -3,9 +3,12 @@
 
 import { state, on, restoreSession, clearSession, undo, redo,
          canUndo, canRedo, progress, canFinish } from './state.js';
-import { savePdf, getDocument, enqueueDocument, cancelDocument, openDocument,
-         deleteDocument, downloadExport, health, postEvents, beaconEvents,
-         sealSession } from './api.js';
+import { getDocument, cancelDocument, openDocument, deleteDocument, downloadExport,
+         health, postEvents, beaconEvents, sealSession, createBatch, getBatch,
+         startBatch, discardBatch, setIncluded } from './api.js';
+import { uploadFile, UploadError, forgetDraft } from './upload.js';
+import { importSingle } from './importone.js';
+import { badgesFor } from './badges.js';
 import { createJournal } from './journal.js';
 import { createFinisher, createExporter } from './finish.js';
 import { restoreReview, flushBeforeLeaving, afterFlush } from './reopen.js';
@@ -20,7 +23,10 @@ import { initShortcuts } from './shortcuts.js';
 
 // The drawing this tab is waiting on (staged or extracting). Extraction runs
 // on the server; closing the tab no longer stops it (batch design §1).
-let waitingOn = null;     // { id, fileName, pages }
+// row: its staging row; file: the File it was imported from in THIS tab
+// (absent when reached by link), so Start / Cancel can forget its draft.
+let waitingOn = null;     // { id, batchId, fileName, pages, row, file }
+let uploading = false;    // a file is on its way to the server (chunked, batch design §2)
 let pollTimer = null;     // the wait-for-ready poll only
 let stopTimer = null;     // Stop's cancel/remove loop -- its own timer, so a late poll can never kill it
 let stopping = false;     // Stop pressed; waiting for the worker to let go
@@ -103,8 +109,8 @@ async function resumeFromHash() {
 }
 
 async function routeDocument(doc) {
-  waitingOn = { id: doc.id, fileName: doc.file_name, pages: doc.pages };
-  if (doc.state === 'staged') showConfirm(doc.file_name, doc.pages);
+  waitingOn = { id: doc.id, batchId: doc.batch_id, fileName: doc.file_name, pages: doc.pages };
+  if (doc.state === 'staged') await showStaged(doc);
   else if (doc.state === 'queued' || doc.state === 'extracting') { showExtracting(doc.file_name); pollUntilReady(); }
   else if (['ready', 'in_review', 'finished'].includes(doc.state)) await loadForReview(doc.id);
   else {
@@ -114,6 +120,25 @@ async function routeDocument(doc) {
     hideExtracting();
     backToEmptyOrCurrent();
   }
+}
+
+// A staged drawing reached from its link: the confirm screen needs its
+// staging row (badges, Include) from the import it sits in. On failure the
+// tab must not keep waiting on it, or no upload would ever be accepted.
+async function showStaged(doc) {
+  let row;
+  try {
+    row = (await getBatch(doc.batch_id)).documents.find((r) => r.id === doc.id);
+  } catch (err) {
+    waitingOn = null;
+    throw err;
+  }
+  if (!row) {
+    waitingOn = null;
+    throw Object.assign(new Error('Drawing not found'), { status: 404 });
+  }
+  waitingOn.row = row;
+  showConfirm(row);
 }
 
 // After backing out of a drawing: the review still on screen (a drawing
@@ -174,8 +199,16 @@ function wireFooter() {
 function wireFileInputs() {
   const main  = document.getElementById('file-input');
   const empty = document.getElementById('file-input-empty');
-  main.addEventListener('change',  (e) => e.target.files[0] && handleFile(e.target.files[0]));
-  empty.addEventListener('change', (e) => e.target.files[0] && handleFile(e.target.files[0]));
+  // The value is cleared once read: a picker still holding a file fires no
+  // 'change' when that same file is chosen again -- and choosing it again
+  // is exactly how an interrupted upload resumes.
+  const pick = (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (file) handleFile(file);
+  };
+  main.addEventListener('change', pick);
+  empty.addEventListener('change', pick);
 }
 
 async function handleFile(file) {
@@ -203,19 +236,51 @@ async function handleFile(file) {
                : 'Cancel or stop it before opening another drawing.' });
     return;
   }
+  if (uploading) {
+    toast({ kind: 'warn', title: 'A drawing is uploading', msg: 'Try again once it has arrived.' });
+    return;
+  }
+  // One PDF at a time on this interim screen: a ZIP stages many drawings,
+  // which only B3's staging view can show.
   if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
     toast({ kind: 'warn', title: 'Unsupported file', msg: 'Please drop a .pdf' });
     return;
   }
-  setBusy(`Opening ${file.name}…`);
+  uploading = true;
+  setBusy(`Uploading ${file.name}…`);
+  // The draft memory and its fallbacks live in importone.js (node-tested):
+  // remembered before the first byte, resumed when the same file is
+  // selected again, discarded only on a fatal failure.
+  const storage = (() => { try { return window.localStorage; } catch { return null; } })();
   try {
-    const meta = await savePdf(file);
-    waitingOn = { id: meta.session_id, fileName: meta.fileName || file.name, pages: meta.pages };
-    setHash(meta.session_id);
-    showConfirm(waitingOn.fileName, meta.pages);
+    const out = await importSingle({
+      file, storage, createBatch, getBatch, discardBatch,
+      uploadFile,
+      onProgress: (sent, total) =>
+        setBusy(`Uploading ${file.name}… ${total ? Math.floor((100 * sent) / total) : 100}%`),
+    });
+    if (out.unreadable) {
+      toast({ kind: 'error', title: 'Could not read the PDF',
+              msg: 'The file is damaged or password-protected, so it cannot be extracted.' });
+      return;
+    }
+    const { row } = out;
+    waitingOn = { id: row.id, batchId: out.batchId, fileName: row.file_name, pages: row.pages, row, file };
+    setHash(row.id);
+    showConfirm(row);
   } catch (err) {
-    toast({ kind: 'error', title: 'Could not open PDF', msg: String(err.message || err) });
+    if (err instanceof UploadError && !err.fatal) {
+      // The server or the network is away for now (the client already
+      // retried for minutes). The draft and what arrived of the file stay.
+      toast({ kind: 'warn', title: 'Upload interrupted',
+              msg: 'Select the same file again to continue where it stopped.' });
+    } else {
+      // Refused, disk full, or a fault before any upload began: the draft
+      // is already discarded -- nothing worth resuming.
+      toast({ kind: 'error', title: 'Could not upload the PDF', msg: String(err?.message || err) });
+    }
   } finally {
+    uploading = false;
     setIdle();
   }
 }
@@ -227,13 +292,30 @@ function wireExtractionControls() {
   document.getElementById('ex-stop').addEventListener('click', stopExtraction);
 }
 
-function showConfirm(fileName, pages) {
+function showConfirm(row) {
   document.getElementById('plan-empty').hidden = true;
   document.getElementById('plan-extracting').hidden = true;
-  document.getElementById('cf-file').textContent = fileName;
+  document.getElementById('cf-file').textContent = row.file_name;
   document.getElementById('cf-pages').textContent =
-    `${pages} page${pages === 1 ? '' : 's'} · ready to extract`;
+    `${row.pages} page${row.pages === 1 ? '' : 's'} · ready to extract`;
+  // The staging warnings (multi-page, oversized, duplicate) -- as TEXT: a
+  // duplicate's badge quotes another drawing's file and batch names. A file
+  // they excluded by default is started with "Include and start", which
+  // says what the press does: it is the explicit permission decision 26
+  // asks for.
+  const warn = document.getElementById('cf-warn');
+  const badges = badgesFor(row);
+  warn.textContent = badges.map((b) => b.text).join(' · ');
+  warn.hidden = badges.length === 0;
+  setStartLabel(row.included ? 'Start extraction' : 'Include and start');
   document.getElementById('plan-confirm').hidden = false;
+}
+
+// The button's last text node is its label (index.html: icon, then text).
+function setStartLabel(text) {
+  const btn = document.getElementById('cf-start');
+  const node = [...btn.childNodes].reverse().find((n) => n.nodeType === Node.TEXT_NODE && n.textContent.trim());
+  if (node) node.textContent = ` ${text} `;
 }
 
 function backToEmpty() {
@@ -242,26 +324,54 @@ function backToEmpty() {
   document.getElementById('plan-empty').hidden = false;
 }
 
+// The draft is no longer one to resume into (started or discarded). Only
+// known for a file imported in this tab; a stale memory left behind is
+// harmless -- the next import of that file finds the draft gone or started
+// and starts a fresh one (importone.js).
+function forgetImported(w) {
+  if (!w?.file) return;
+  forgetDraft((() => { try { return window.localStorage; } catch { return null; } })(), w.file);
+}
+
 function cancelConfirm() {
-  if (waitingOn) deleteDocument(waitingOn.id);
+  // The whole batch of one goes: its staged file and the draft itself.
+  // (Interim only -- B3's staging view removes single rows of a larger draft.)
+  if (waitingOn) {
+    forgetImported(waitingOn);
+    discardBatch(waitingOn.batchId);
+  }
   waitingOn = null;
   backToEmptyOrCurrent();
 }
 
 async function startExtraction() {
-  if (!waitingOn) return;
+  const w = waitingOn;
+  if (!w) return;
   document.getElementById('plan-confirm').hidden = true;
-  showExtracting(waitingOn.fileName);
+  showExtracting(w.fileName);
   try {
-    await enqueueDocument(waitingOn.id);
-    if (!waitingOn || stopping) return;   // Stop pressed while queueing: Stop owns it now
+    // Excluded by default (out of scope or a duplicate): the press of
+    // "Include and start" is the user including it (decision 26).
+    if (w.row && !w.row.included) w.row = await setIncluded(w.id, true);
+    await startBatch(w.batchId);
+    forgetImported(w);
+    if (waitingOn !== w || stopping) return;   // Stop pressed meanwhile: Stop owns it now
     pollUntilReady();
   } catch (err) {
-    if (!waitingOn || stopping) return;
+    if (waitingOn !== w || stopping) return;
+    // The reply may have been lost after the server included it or started
+    // the import. Ask before offering Start again: a drawing that is no
+    // longer staged is on its way, so wait for it like any other.
+    try {
+      const doc = await getDocument(w.id);
+      if (waitingOn !== w || stopping) return;
+      if (doc.state !== 'staged') { forgetImported(w); pollUntilReady(); return; }
+    } catch { /* unknown: offer Start again; a second Start is refused harmlessly */ }
+    if (waitingOn !== w || stopping) return;
     hideExtracting();
     // Still staged on the server: offer it again rather than strand it.
-    showConfirm(waitingOn.fileName, waitingOn.pages);
-    toast({ kind: 'error', title: 'Could not queue', msg: String(err.message || err) });
+    showConfirm(w.row);
+    toast({ kind: 'error', title: 'Could not start', msg: String(err?.message || err) });
   }
 }
 

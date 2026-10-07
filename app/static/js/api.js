@@ -1,17 +1,5 @@
 // Thin fetch wrappers — single place for endpoint URLs.
 
-// Save a PDF (no extraction). Resolves to { session_id, fileName, pages }.
-export async function savePdf(file) {
-  const fd = new FormData();
-  fd.append('file', file);
-  const res = await fetch('/api/upload', { method: 'POST', body: fd });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: 'Upload failed' }));
-    throw new Error(err.detail || 'Upload failed');
-  }
-  return res.json();
-}
-
 export async function readRegion(sessionId, box) {
   const res = await fetch('/api/read_region', {
     method: 'POST',
@@ -98,8 +86,6 @@ export async function jsonOrThrow(res, fallback) {
 const docUrl = (id, tail = '') => `/api/documents/${encodeURIComponent(id)}${tail}`;
 
 export const getDocument = async (id) => jsonOrThrow(await fetch(docUrl(id)), 'Drawing not found');
-export const enqueueDocument = async (id) =>
-  jsonOrThrow(await fetch(docUrl(id, '/enqueue'), { method: 'POST' }), 'Could not queue the drawing');
 export const cancelDocument = async (id) =>
   jsonOrThrow(await fetch(docUrl(id, '/cancel'), { method: 'POST' }), 'Could not cancel');
 export const retryDocument = async (id) =>

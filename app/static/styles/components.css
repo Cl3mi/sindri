@@ -257,6 +257,13 @@ body.drag-over #plan-viewport {
   color: var(--fg-muted);
   font-size: var(--fs-sm);
 }
+/* Staging warnings on the interim confirm screen (badges.js): multi-page,
+   oversized, duplicate. Pressing "Include and start" with them showing is
+   the permission. */
+#plan-confirm .cf-warn {
+  color: var(--warn);
+  margin-top: 8px;
+}
 #plan-confirm .cf-actions {
   display: flex;
   justify-content: center;
