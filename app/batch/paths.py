@@ -27,6 +27,13 @@ _DRIVE = re.compile(r"^[A-Za-z]:")
 _REFUSED_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
 
 
+def has_refused_chars(s: str) -> bool:
+    """True if `s` carries a character no client-supplied name may hold.
+    Shared by safe_rel_parts and staging.clean_batch_name: both end up as
+    folder names shown to the user and written into the mass-export ZIP."""
+    return any(unicodedata.category(ch) in _REFUSED_CATEGORIES for ch in s)
+
+
 def safe_rel_parts(name) -> Optional[List[str]]:
     """The components of a client-supplied relative path -- a ZIP entry
     name, or a folder upload's webkitRelativePath -- or None if it is unsafe:
@@ -51,7 +58,7 @@ def safe_rel_parts(name) -> Optional[List[str]]:
     if not isinstance(name, str):
         return None
     s = unicodedata.normalize("NFC", name)
-    if any(unicodedata.category(ch) in _REFUSED_CATEGORIES for ch in s):
+    if has_refused_chars(s):
         return None
     s = s.replace("\\", "/")
     if s.startswith("/") or _DRIVE.match(s):

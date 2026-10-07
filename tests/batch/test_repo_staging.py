@@ -10,6 +10,7 @@ import pytest
 
 from app.batch import db
 from app.batch.repo import InvalidTransition, Repo, UnknownBatch, UnknownUpload, UploadConflict
+from app.batch.staging import clean_batch_name
 
 
 @pytest.fixture
@@ -116,6 +117,43 @@ def test_the_offset_moves_only_from_where_it_stands(repo):
     assert e.value.extra == {"received": 4, "state": "receiving"}
     with pytest.raises(UnknownUpload):
         repo.upload_received("0" * 32, 0, 4)
+
+
+def test_the_offset_never_runs_past_the_file_or_stands_still(repo):
+    """An offset beyond the declared size would let begin_completion's
+    `received = size` never hold (or hold wrongly); one that does not
+    advance is not a chunk. Either way the caller is told the true offset."""
+    up = upload(repo, repo.create_batch("b")["id"])
+    for bad in (11, 0):
+        with pytest.raises(UploadConflict) as e:
+            repo.upload_received(up["id"], 0, bad)
+        assert e.value.extra == {"received": 0, "state": "receiving"}
+    assert repo.upload_received(up["id"], 0, 10) == 10
+
+
+def test_a_reset_only_moves_the_offset_down(repo):
+    """reset_received says "the disk holds less than the index counted"; it
+    can never invent bytes. A reset to where the offset already stands (the
+    first chunk of an upload whose part file does not exist yet) or above it
+    changes nothing and is not an error."""
+    up = upload(repo, repo.create_batch("b")["id"])
+    repo.upload_received(up["id"], 0, 4)
+    for not_down in (8, 4):
+        repo.reset_received(up["id"], not_down)
+        assert repo.get_upload(up["id"])["received"] == 4
+    repo.reset_received(up["id"], 1)
+    assert repo.get_upload(up["id"])["received"] == 1
+
+
+@pytest.mark.parametrize("bad", ["a\x85b", "a b", "a‮b", "a​b", "a\x00b", "", "  ", "x" * 201])
+def test_a_batch_name_refuses_what_a_folder_name_refuses(bad):
+    """It becomes a folder in the mass-export ZIP (design §4): a NEL or line
+    separator forges a line, a bidi override makes the shown name lie."""
+    assert clean_batch_name(bad) is None
+
+
+def test_a_batch_name_is_nfc_and_stripped():
+    assert clean_batch_name("  Lieferung München ") == "Lieferung München"
 
 
 def test_completion_needs_every_byte(repo):

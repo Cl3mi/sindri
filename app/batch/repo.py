@@ -296,12 +296,16 @@ class Repo:
     def upload_received(self, upload_id, offset: int, received: int) -> int:
         """Move the offset once the bytes are on disk. Guarded on the OLD
         offset: of two writers racing the same chunk only one moves it, the
-        other gets UploadConflict with the real offset."""
+        other gets UploadConflict with the real offset. The new offset must
+        also ADVANCE and stay within the declared size: past it,
+        begin_completion's `received = size` could never hold, and a chunk
+        that moves nothing is not a chunk."""
         with self._tx() as c:
             cur = c.execute(
                 "UPDATE upload SET received = ?, updated_at = ?"
-                " WHERE id = ? AND state = 'receiving' AND received = ?",
-                (received, self._clock(), upload_id, offset))
+                " WHERE id = ? AND state = 'receiving' AND received = ?"
+                " AND ? > received AND ? <= size",
+                (received, self._clock(), upload_id, offset, received, received))
             if cur.rowcount == 0:
                 u = self._upload(c, upload_id)
                 raise UploadConflict("the upload has moved on", received=u["received"],
@@ -310,11 +314,15 @@ class Repo:
 
     def reset_received(self, upload_id, received: int) -> None:
         """The part file holds less than the index counted (lost or cut
-        short outside this process): only bytes on disk count."""
+        short outside this process): only bytes on disk count. It only ever
+        moves the offset DOWN -- it can never invent bytes. A reset to where
+        the offset already stands or above it changes nothing and is not an
+        error: uploads.py resets to 0 whenever the part file is missing,
+        which includes the first chunk of every upload."""
         with self._tx() as c:
             c.execute("UPDATE upload SET received = ?, updated_at = ?"
-                      " WHERE id = ? AND state = 'receiving'",
-                      (received, self._clock(), upload_id))
+                      " WHERE id = ? AND state = 'receiving' AND received > ?",
+                      (received, self._clock(), upload_id, received))
 
     def begin_completion(self, upload_id) -> None:
         with self._tx() as c:

@@ -2,12 +2,16 @@
 staging API returns.
 
 One module, so the Include default the repo STORES and the flags the API
-SHOWS come from the same functions: a row can never be excluded by default
-for a reason the staging view does not display."""
+SHOWS come from the same functions: at staging time, a row is never
+excluded by default for a reason the staging view does not display. (Only
+at staging time: Include is stored once, then it is the user's. A copy
+whose original is later removed loses its duplicate badge but keeps the
+Include it was staged with.)"""
 import json
-import re
+import unicodedata
 
-_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+from app.batch.paths import has_refused_chars
+
 MAX_BATCH_NAME = 200
 
 
@@ -26,13 +30,19 @@ def default_included(*, unreadable, pages, oversized, duplicate) -> bool:
 
 
 def clean_batch_name(name):
-    """The name stripped, or None if it cannot be a batch name: empty,
-    longer than MAX_BATCH_NAME, or carrying control characters (it becomes a
-    folder name in the mass-export ZIP, design §4)."""
+    """The name NFC-normalised and stripped, or None if it cannot be a
+    batch name: empty, longer than MAX_BATCH_NAME, or carrying a character
+    paths.safe_rel_parts refuses in a folder name -- control (incl. NEL),
+    format (bidi overrides, zero-width) or line/paragraph separators. It
+    becomes a folder name in the mass-export ZIP (design §4), so it obeys
+    the same rule as the folders a ZIP or folder upload brings in. NFC so a
+    name typed on macOS and elsewhere is one name. (Leading and trailing
+    whitespace, which str.strip() also takes NEL and U+2028 to be, is
+    stripped rather than refused.)"""
     if not isinstance(name, str):
         return None
-    s = name.strip()
-    if not s or len(s) > MAX_BATCH_NAME or _CONTROL.search(s):
+    s = unicodedata.normalize("NFC", name).strip()
+    if not s or len(s) > MAX_BATCH_NAME or has_refused_chars(s):
         return None
     return s
 

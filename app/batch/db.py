@@ -10,6 +10,14 @@ drawings into draft batches, because from B2 on only Start queues a staged
 drawing."""
 import sqlite3
 
+# ROWID IS DATA HERE. `document` and `upload` have TEXT primary keys, so
+# their rowid is implicit -- and duplicate order (repo._STAGING_SELECT, the
+# migration-2 Include rule), staging and upload listing order, and the
+# queue's tie-break all depend on it. A future migration that rebuilds
+# either table (create new, copy, drop, rename) MUST copy it explicitly:
+#     INSERT INTO new (rowid, ...) SELECT rowid, ... FROM old
+# or the copy renumbers rows and silently changes which file is the original.
+# (A plain VACUUM may renumber them too; do not add one without the same care.)
 MIGRATIONS = [
     # 1: batches, documents, settings
     """
