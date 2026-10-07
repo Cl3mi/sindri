@@ -383,6 +383,17 @@ class Repo:
             c.execute("DELETE FROM upload WHERE id = ?", (upload_id,))
             return dict(row)
 
+    def delete_untouched_upload(self, upload_id) -> bool:
+        """Take back a row this create inserted, but only if nobody has used
+        it since: True if it was removed. Between the insert and the
+        create's failure another tab may have resumed the row (a resume
+        bumps updated_at) or sent bytes (received > 0) -- the upload is then
+        theirs, and a failure of ours must not take it from them."""
+        with self._tx() as c:
+            return c.execute(
+                "DELETE FROM upload WHERE id = ? AND state = 'receiving' AND received = 0"
+                " AND updated_at = created_at", (upload_id,)).rowcount > 0
+
     def rename_batch(self, batch_id, name: str) -> dict:
         with self._tx() as c:
             self._batch(c, batch_id)

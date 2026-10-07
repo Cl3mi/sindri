@@ -106,6 +106,55 @@ def test_a_resume_racing_the_first_create_keeps_the_row_and_the_part(h, monkeypa
     assert h.data.part_path(a["upload_id"]).read_bytes() == data[:CHUNK]
 
 
+def test_a_failed_new_create_never_takes_a_racing_resume_with_it(h, monkeypatch):
+    """Tab A inserts the row; tab B resumes it and sends a chunk; then A's
+    own disk check fails. A's failure is A's: B's row and bytes stay."""
+    data = pdf_bytes()
+    real = h.repo.create_upload
+    state = {"inside": False}
+
+    def racing(**kw):
+        row, resumed = real(**kw)
+        if not state["inside"]:
+            state["inside"] = True
+            b = h.create(data)
+            h.uploads.put(b["upload_id"], 0, data[:CHUNK])
+            h.free = 1000                          # the disk now sits at the reserve
+        return row, resumed
+    monkeypatch.setattr(h.repo, "create_upload", racing)
+    with pytest.raises(DiskFull):
+        h.create(data)
+    (uid,) = [r[0] for r in h.repo._conn.execute("SELECT id FROM upload")]
+    assert h.repo.get_upload(uid)["received"] == CHUNK
+    assert h.data.part_path(uid).read_bytes() == data[:CHUNK]
+
+
+def test_a_failed_new_create_removes_only_what_it_made(h, monkeypatch):
+    """Its own untouched row goes, and the part only if this call created
+    it: a part someone else created is their progress."""
+    def failing_dir_sync(path):
+        raise OSError(errno.EIO, "boom")
+    monkeypatch.setattr(uploads_mod, "_fsync_dir", failing_dir_sync)
+    with pytest.raises(BatchError) as e:
+        h.create(b"x" * 10)
+    assert e.value.status == 500
+    assert h.repo._conn.execute("SELECT COUNT(*) FROM upload").fetchone()[0] == 0
+    assert list(h.data.uploads.iterdir()) == []
+
+    real_open = open
+
+    def opening(path, mode="r", *a, **kw):
+        if mode == "xb":
+            with real_open(path, "wb") as f:
+                f.write(b"theirs")
+        return real_open(path, mode, *a, **kw)
+    monkeypatch.setattr(uploads_mod, "open", opening, raising=False)
+    with pytest.raises(BatchError):
+        h.create(b"y" * 10)
+    (part,) = h.data.uploads.iterdir()
+    assert part.read_bytes() == b"theirs"
+
+
 def test_a_part_file_that_appears_under_the_exclusive_create_is_kept(h, monkeypatch):
     """The exclusive create itself fails with FileExistsError (the file
     appeared between the check and the create). That is the part this
@@ -129,9 +178,12 @@ def test_a_part_file_that_appears_under_the_exclusive_create_is_kept(h, monkeypa
     {"name": "a.exe"}, {"name": "a/b.pdf"}, {"name": "a\x01.pdf"}, {"name": "  "},
     {"name": "exe.‮fdp.pdf"},
     {"fingerprint": "xyz"}, {"fingerprint": "f" * 64 + "\n"}, {"size": -1},
-    {"size": True}, {"rel_path": "../out"},
+    {"size": True}, {"size": 2 ** 63}, {"rel_path": "../out"},
+    {"last_modified": "yesterday"}, {"last_modified": True}, {"last_modified": 1.5},
+    {"last_modified": 2 ** 60},
 ], ids=["extension", "separator", "control", "blank", "bidi", "fingerprint",
-        "fingerprint-newline", "size", "size-bool", "rel_path"])
+        "fingerprint-newline", "size", "size-bool", "size-huge", "rel_path",
+        "mtime-str", "mtime-bool", "mtime-float", "mtime-huge"])
 def test_create_refuses_what_cannot_be_imported(h, kw):
     args = dict(batch_id=h.batch, name="a.pdf", size=10, last_modified=None, rel_path="",
                 fingerprint="f" * 64)
@@ -245,6 +297,111 @@ def test_a_lost_part_file_accepts_offset_zero_straight_away(h):
     assert h.data.part_path(uid).read_bytes() == data[:CHUNK]
 
 
+@pytest.mark.parametrize("mtime", [None, 0, 1759831200000, -86400000],
+                         ids=["none", "epoch", "ms", "before-1970"])
+def test_a_browser_modification_time_is_accepted(h, mtime):
+    up = h.uploads.create(batch_id=h.batch, name="a.pdf", size=10, last_modified=mtime,
+                          rel_path="", fingerprint="f" * 64)
+    assert up["received"] == 0
+
+
+def test_a_part_cut_short_mid_upload_is_resent_from_what_it_holds(h):
+    """The part holds fewer bytes than the index counted (cut short outside
+    this process). Writing at the index's offset would seek past the end and
+    leave a zero-filled hole the drawing would be staged with: the next PUT
+    is told where the bytes really end instead."""
+    data = pdf_bytes()
+    uid = h.create(data)["upload_id"]
+    h.uploads.put(uid, 0, data[:CHUNK])
+    h.uploads.put(uid, CHUNK, data[CHUNK:2 * CHUNK])
+    with open(h.data.part_path(uid), "r+b") as f:
+        f.truncate(CHUNK // 2)
+    with pytest.raises(UploadConflict) as e:
+        h.uploads.put(uid, 2 * CHUNK, data[2 * CHUNK:3 * CHUNK])
+    assert e.value.extra == {"received": CHUNK // 2, "state": "receiving"}
+    for off in range(CHUNK // 2, len(data), CHUNK):
+        h.uploads.put(uid, off, data[off:off + CHUNK])
+    (row,) = h.uploads.complete(uid)["documents"]
+    assert (h.data.doc_dir(row["id"]) / "input.pdf").read_bytes() == data
+    assert h.repo.get(row["id"])["sha256"] == hashlib.sha256(data).hexdigest()
+
+
+def test_a_part_shared_with_another_file_is_never_written(h):
+    """A part with a second link (left behind by a completion that could not
+    clean up) shares its inode with a staged drawing: writing through it
+    would change that drawing's bytes."""
+    data = pdf_bytes()
+    uid = h.create(data)["upload_id"]
+    h.uploads.put(uid, 0, data[:CHUNK])
+    other = h.data.root / "other"
+    os.link(h.data.part_path(uid), other)
+    with pytest.raises(BatchError) as e:
+        h.uploads.put(uid, CHUNK, data[CHUNK:2 * CHUNK])
+    assert e.value.status == 500
+    assert other.read_bytes() == data[:CHUNK]
+    assert h.repo.get_upload(uid)["received"] == CHUNK
+
+
+def test_an_empty_upload_whose_part_vanished_still_completes(h):
+    uid = h.create(b"")["upload_id"]
+    h.data.part_path(uid).unlink()
+    (row,) = h.uploads.complete(uid)["documents"]
+    assert row["unreadable"] and row["size"] == 0
+    assert (h.data.doc_dir(row["id"]) / "input.pdf").read_bytes() == b""
+
+
+def test_without_hard_links_the_drawing_is_copied(h, monkeypatch):
+    def no_link(src, dst):
+        raise OSError(errno.EXDEV, "cross-device")
+    monkeypatch.setattr(uploads_mod.os, "link", no_link)
+    data = pdf_bytes()
+    (row,) = h.imported(data)["documents"]
+    assert (h.data.doc_dir(row["id"]) / "input.pdf").read_bytes() == data
+
+
+def test_a_link_failure_that_is_not_about_links_is_a_fault_not_a_copy(h, monkeypatch):
+    """Only 'this filesystem cannot link' falls back to copying; an I/O
+    error is reported, and the completion is rolled back for a retry."""
+    def broken(src, dst):
+        raise OSError(errno.EIO, "boom", "/secret/path")
+    monkeypatch.setattr(uploads_mod.os, "link", broken)
+    copied = []
+    monkeypatch.setattr(uploads_mod.shutil, "copyfile", lambda *a: copied.append(a))
+    data = pdf_bytes()
+    uid = h.send(data)
+    with pytest.raises(BatchError) as e:
+        h.uploads.complete(uid)
+    assert e.value.status == 500 and "secret" not in str(e.value)
+    assert copied == [] and h.doc_dirs() == []
+    assert h.repo.get_upload(uid)["state"] == "receiving"
+
+
+def test_a_cleanup_that_fails_halfway_leaves_its_dir_marked(h, monkeypatch):
+    """A failed completion removes the drawing's files first and its
+    .importing marker LAST: if the removal stops halfway, what is left is
+    still marked, so the startup sweep can finish it -- never an unmarked
+    dir with no row, which nothing would ever remove."""
+    import pathlib
+    data = pdf_bytes()
+    uid = h.send(data)
+
+    def failing(upload_id, docs, ignored):
+        raise sqlite3.OperationalError("disk I/O error")
+    monkeypatch.setattr(h.repo, "finish_completion", failing)
+    real_unlink = pathlib.Path.unlink
+
+    def unlink(self, missing_ok=False):
+        if self.name == "input.pdf":
+            raise PermissionError(errno.EACCES, "no")
+        return real_unlink(self, missing_ok=missing_ok)
+    monkeypatch.setattr(pathlib.Path, "unlink", unlink)
+    with pytest.raises(sqlite3.OperationalError):
+        h.uploads.complete(uid)
+    (left,) = h.doc_dirs()
+    assert (h.data.docs / left / IMPORTING_MARKER).exists()
+    assert h.repo.get_upload(uid)["state"] == "receiving"
+
+
 def test_low_disk_is_507_and_writes_nothing(h):
     data = pdf_bytes()
     uid = h.create(data)["upload_id"]
@@ -341,10 +498,16 @@ def test_complete_with_a_part_longer_than_the_file_starts_again(h):
     uid = h.send(data)
     with open(h.data.part_path(uid), "ab") as f:
         f.write(b"junk")
+    # The part is started again as a NEW file, never truncated in place: an
+    # inode it shares (a staged drawing's) must keep its bytes.
+    other = h.data.root / "other"
+    os.link(h.data.part_path(uid), other)
     with pytest.raises(UploadConflict) as e:
         h.uploads.complete(uid)
     assert e.value.extra == {"received": 0, "state": "receiving"}
     assert h.data.part_path(uid).read_bytes() == b""
+    assert other.read_bytes() == data + b"junk"
+    other.unlink()
     assert h.doc_dirs() == []
     for off in range(0, len(data), CHUNK):
         h.uploads.put(uid, off, data[off:off + CHUNK])

@@ -57,6 +57,20 @@ _NAME_UNSAFE = re.compile(r"[\x00-\x1f\x7f/\\]")
 # Importable kinds by extension. The browser filters too; this is the
 # server's word.
 _KINDS = {".pdf": "pdf"}
+# SQLite stores a signed 64-bit integer: a bigger size would fail inside the
+# insert as a 500 instead of being refused as a 400. Not a size LIMIT
+# (decision 29) -- no disk holds 8 EiB.
+_MAX_SIZE = 2 ** 63
+# A browser's File.lastModified is milliseconds since the epoch, a JS
+# number: past the safe-integer range it is not a time a browser sent.
+# Before 1970 is allowed -- a wrong clock is no reason to refuse a drawing.
+_MAX_MTIME = 2 ** 53
+# os.link errors that mean "this filesystem cannot hard-link here", where a
+# copy is the right fallback. Anything else (EIO, ENOSPC, a vanished part)
+# is a fault, and copying would only hide it.
+_NO_LINK = frozenset(e for e in (errno.EXDEV, errno.EPERM, errno.EMLINK,
+                                 getattr(errno, "ENOTSUP", None),
+                                 getattr(errno, "EOPNOTSUPP", None)) if e is not None)
 
 
 class DiskFull(BatchError):
@@ -160,8 +174,12 @@ class Uploads:
         kind = upload_kind(name)
         if kind is None:
             raise BatchError("only PDF files can be imported")
-        if not _is_count(size):
+        if not _is_count(size) or size >= _MAX_SIZE:
             raise BatchError("size must be a whole number of bytes")
+        if last_modified is not None and not (
+                isinstance(last_modified, int) and not isinstance(last_modified, bool)
+                and abs(last_modified) <= _MAX_MTIME):
+            raise BatchError("last_modified must be a time in milliseconds")
         if not isinstance(fingerprint, str) or not FINGERPRINT_RE.fullmatch(fingerprint):
             raise BatchError("fingerprint must be 64 lowercase hex characters")
         parts = safe_rel_parts(rel_path or "")
@@ -179,36 +197,35 @@ class Uploads:
         # remove, so the row is re-read and its offset answered as it stands.
         with self._lock(uid):
             part = self.data.part_path(uid)
-            row = self.repo.get_upload(uid)
-            if row["state"] == "receiving" and not part.exists():
-                # A resumed upload whose part vanished: the index counts
-                # bytes the disk lost. Only bytes on disk count.
-                self.repo.reset_received(uid, 0)
-                row = self.repo.get_upload(uid)
+            made = False
             try:
+                row = self._sync_to_part(uid, part)
                 # What is still to come, not the whole file: a resumed
                 # upload needs room only for the rest.
                 self.guard_disk(row["size"] - row["received"])
-            except DiskFull:
-                if not resumed:
-                    self.repo.delete_upload(uid)
-                    part.unlink(missing_ok=True)
-                raise
-            if row["state"] == "receiving" and not part.exists():
-                try:
+                if row["state"] == "receiving" and not part.exists():
                     try:
                         with open(part, "xb"):
                             pass
+                        made = True
                     except FileExistsError:
                         # Someone created it first (a racing resume's PUT):
                         # that IS the part file this upload needs.
                         pass
                     _fsync_dir(part.parent)
-                except OSError as e:
-                    if not resumed:
-                        self.repo.delete_upload(uid)
+            except BaseException as e:
+                # Take back only what THIS call made: the row if nobody has
+                # resumed or fed it since, and the part only if this call
+                # created it. Anything else is another tab's progress.
+                try:
+                    if not resumed and self.repo.delete_untouched_upload(uid) and made:
                         part.unlink(missing_ok=True)
+                except Exception as cleanup_error:
+                    log.warning("upload %s: failed create not taken back: %s",
+                                uid[:8], type(cleanup_error).__name__)
+                if isinstance(e, OSError):
                     raise self._storage_error(e, uid) from None
+                raise
         log.info("upload %s %s at %d of %d bytes", uid[:8],
                  "resumed" if resumed else "created", row["received"], row["size"])
         return {"upload_id": uid, "received": row["received"], "state": row["state"],
@@ -220,14 +237,9 @@ class Uploads:
         if not _is_count(offset):
             raise BatchError("offset must be a whole number of bytes")
         with self._lock(upload_id):
-            up = self.repo.get_upload(upload_id)
-            if up["state"] == "receiving" and not part.exists():
-                # The part vanished (removed by hand, lost with a disk) while
-                # the index still counts its bytes: they are gone, so the
-                # honest offset is 0. Checked BEFORE the offset, so a client
-                # already restarting at 0 is accepted straight away.
-                self.repo.reset_received(upload_id, 0)
-                up = self.repo.get_upload(upload_id)
+            # Checked BEFORE the offset, so a client already resending from
+            # where the bytes really end is accepted straight away.
+            up = self._sync_to_part(upload_id, part)
             if up["state"] != "receiving":
                 raise UploadConflict("the upload is no longer receiving",
                                      received=up["received"], state=up["state"])
@@ -242,6 +254,14 @@ class Uploads:
             try:
                 new = not part.exists()
                 with open(part, "wb" if new else "r+b") as f:
+                    if os.fstat(f.fileno()).st_nlink > 1:
+                        # The part shares its inode with another name -- a
+                        # staged drawing's input.pdf left by a completion
+                        # that could not clean up. Writing would change
+                        # that drawing's bytes under its sha256.
+                        log.warning("upload %s not stored: part is linked elsewhere",
+                                    upload_id[:8])
+                        raise StorageFault()
                     f.seek(offset)
                     f.write(body)
                     # Bytes past this chunk can only be a write whose offset
@@ -274,18 +294,24 @@ class Uploads:
             # The index is the client's count; the part file is what the
             # server holds. Only bytes on disk count.
             held = part.stat().st_size if part.exists() else 0
-            if held > up["size"]:
-                # put never writes past the declared size, so these bytes
-                # came from outside this process and none of the file can be
-                # trusted. (Resetting to `size` would answer 409 at `size`
-                # forever.) Start the file again.
-                try:
-                    with open(part, "r+b") as f:
-                        f.truncate(0)
-                        os.fsync(f.fileno())
-                except OSError as e:
-                    raise self._storage_error(e, upload_id) from None
-                held = 0
+            try:
+                if held > up["size"]:
+                    # put never writes past the declared size, so these
+                    # bytes came from outside this process and none of the
+                    # file can be trusted. (Resetting to `size` would answer
+                    # 409 at `size` forever.) Start the file again -- as a
+                    # NEW inode, never truncated in place: the old one may
+                    # also be a staged drawing's input.pdf.
+                    part.unlink()
+                    held = 0
+                if held == 0 and not part.exists():
+                    # Recreated empty: a zero-byte upload is then complete
+                    # as it stands, and any other resends into it.
+                    with open(part, "xb"):
+                        pass
+                    _fsync_dir(part.parent)
+            except OSError as e:
+                raise self._storage_error(e, upload_id) from None
             if held != up["size"]:
                 # The index counted bytes the file does not hold: the client
                 # resends from what is really there.
@@ -301,7 +327,7 @@ class Uploads:
                 rows = self.repo.finish_completion(upload_id, docs, ignored)
             except BaseException as e:
                 for d in created:
-                    shutil.rmtree(d, ignore_errors=True)
+                    self._remove_import_dir(d)
                 try:
                     self.repo.abort_completion(upload_id)
                 except Exception as abort_error:
@@ -329,6 +355,42 @@ class Uploads:
         """(documents to stage, ignored entries) for one completed upload."""
         return [self._stage_pdf(part, up, created)], []
 
+    @staticmethod
+    def _remove_import_dir(d) -> None:
+        """Undo a docs/<id>/ whose rows never committed: its contents first,
+        the .importing marker LAST, then the dir. A removal that stops
+        halfway leaves a dir that is still marked, which the startup sweep
+        finishes -- never an unmarked dir with no row, which nothing would
+        ever remove."""
+        try:
+            for child in d.iterdir():
+                if child.name == IMPORTING_MARKER:
+                    continue
+                if child.is_dir() and not child.is_symlink():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+            (d / IMPORTING_MARKER).unlink(missing_ok=True)
+            d.rmdir()
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            log.warning("import dir %s not removed: %s", d.name[:8], type(e).__name__)
+
+    def _sync_to_part(self, upload_id, part) -> dict:
+        """The upload's row, its offset first brought down to the bytes the
+        part file really holds (a missing part holds 0). Only bytes on disk
+        count: a part cut short outside this process would otherwise take
+        the next chunk past its end, and the gap would read back as zeros
+        in the staged drawing. Caller holds the upload's lock."""
+        up = self.repo.get_upload(upload_id)
+        if up["state"] == "receiving":
+            held = part.stat().st_size if part.exists() else 0
+            if held < up["received"]:
+                self.repo.reset_received(upload_id, held)
+                up = self.repo.get_upload(upload_id)
+        return up
+
     def _new_doc_dir(self, created):
         doc_id = uuid.uuid4().hex
         d = self.data.doc_dir(doc_id)
@@ -347,7 +409,9 @@ class Uploads:
             # stays whole until the rows commit, so a failed completion is
             # simply retried.
             os.link(part, target)
-        except OSError:
+        except OSError as e:
+            if e.errno not in _NO_LINK:
+                raise
             # A filesystem without hard links (some network mounts).
             self.guard_disk(up["size"])
             shutil.copyfile(part, target)

@@ -261,6 +261,23 @@ def test_delete_upload_removes_only_an_unfinished_one(repo):
         repo.delete_upload(rows[0]["upload_id"])
 
 
+def test_an_untouched_upload_is_deleted_but_a_resumed_or_fed_one_is_not(repo):
+    """A create that fails after inserting its row takes the row back only
+    if nobody else has used it since: another tab may have resumed it (which
+    bumps updated_at) or sent bytes, and that is its upload now."""
+    b = repo.create_batch("b")["id"]
+    up = upload(repo, b)
+    assert repo.delete_untouched_upload(up["id"]) is True
+    assert repo.delete_untouched_upload(up["id"]) is False
+    resumed = upload(repo, b)
+    upload(repo, b)                                    # resumes it
+    assert repo.delete_untouched_upload(resumed["id"]) is False
+    fed = upload(repo, b, fingerprint="e" * 64)
+    repo.upload_received(fed["id"], 0, 4)
+    assert repo.delete_untouched_upload(fed["id"]) is False
+    assert repo.get_upload(resumed["id"]) and repo.get_upload(fed["id"])
+
+
 def test_a_batch_can_be_renamed_and_listed(repo):
     b = repo.create_batch("Import 2026-10-07 14:30")["id"]
     assert repo.rename_batch(b, "Lieferung 12")["name"] == "Lieferung 12"
