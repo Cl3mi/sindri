@@ -26,6 +26,7 @@ let stopTimer = null;     // Stop's cancel/remove loop -- its own timer, so a la
 let stopping = false;     // Stop pressed; waiting for the worker to let go
 let stopGaveUp = false;   // removal kept failing; the Stop button now closes the overlay
 let resuming = false;     // the #doc link is still being opened at page load
+let opening = 0;          // loadForReview calls in progress (a count, so an overlap cannot clear it early)
 let finishing = false;    // a Finish is running: never switch drawings under it
 let staleShown = false;   // "opened in another tab" already said for this drawing
 // A ready drawing the reviewer chose NOT to switch to yet, because the open
@@ -184,6 +185,10 @@ async function handleFile(file) {
   // refusal names a control the reviewer actually has on screen.
   if (resuming) {
     toast({ kind: 'warn', title: 'Still opening the linked drawing', msg: 'Try again in a moment.' });
+    return;
+  }
+  if (opening) {
+    toast({ kind: 'warn', title: 'A drawing is opening', msg: 'Try again in a moment.' });
     return;
   }
   if (pendingOpen) {
@@ -378,7 +383,19 @@ function confirmLeaveUnsaved() {
 
 // `skipFlush`: the reviewer already left the open drawing (closed it), or
 // its writer was taken by another tab -- asking again would be pointless.
-async function loadForReview(id, { skipFlush = false } = {}) {
+// While a drawing is opening no upload is accepted: on the auto-open path
+// waitingOn is already null, so without this a drop would slip in and its
+// confirm panel would be left under the opened review with a dead Start.
+async function loadForReview(id, opts) {
+  opening++;
+  try {
+    return await openForReview(id, opts);
+  } finally {
+    opening--;
+  }
+}
+
+async function openForReview(id, { skipFlush = false } = {}) {
   // Taken synchronously, before any await, so a second flush tick cannot
   // start a second open of the same waiting drawing. "Stay" re-sets it.
   if (pendingOpen === id) {
@@ -393,7 +410,7 @@ async function loadForReview(id, { skipFlush = false } = {}) {
       // Stay -- but keep the other drawing: it opens by itself once this
       // one's changes are saved (scheduleFlush → afterFlush), and its link
       // is on screen in case this tab goes away first.
-      waitingOn = null;
+      if (waitingOn?.id === id) waitingOn = null;   // never another drawing's
       pendingOpen = id;
       hideExtracting();
       backToEmptyOrCurrent();
@@ -418,7 +435,7 @@ async function loadForReview(id, { skipFlush = false } = {}) {
     clearTimeout(flushTimer);
     flushBackoff = 500;
     staleShown = false;
-    waitingOn = null;
+    if (waitingOn?.id === id) waitingOn = null;   // never another drawing's
     setHash(id);
     hideExtracting();
     const n = data.rows.length;
@@ -427,7 +444,7 @@ async function loadForReview(id, { skipFlush = false } = {}) {
             msg: nEv ? `Review restored (${nEv} change${nEv === 1 ? '' : 's'})`
                      : `${n} characteristic${n === 1 ? '' : 's'} extracted` });
   } catch (err) {
-    waitingOn = null;
+    if (waitingOn?.id === id) waitingOn = null;   // never another drawing's
     hideExtracting();
     toast({ kind: 'error', title: 'Could not open the drawing',
             msg: state.sessionId && state.sessionId !== id
