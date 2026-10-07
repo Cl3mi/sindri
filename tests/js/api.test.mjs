@@ -58,17 +58,18 @@ test('jsonOrThrow resolves the parsed body on a 2xx response', async () => {
 
 // Stop removes a drawing only once the worker has let go of it: DELETE is
 // refused (409) while a cancelled run is still unwinding, which can take
-// minutes. The caller retries until this reports success.
-test('deleteDocument reports whether the drawing was actually removed', async () => {
+// minutes. The caller waits out a 409 but must tell it apart from a server
+// fault or a dropped network, so the status comes back (0 = no response).
+test('deleteDocument reports whether the drawing was removed, and why not', async () => {
   const { deleteDocument } = await import('../../app/static/js/api.js');
   const saved = globalThis.fetch;
   try {
     globalThis.fetch = async () => ({ ok: false, status: 409 });
-    assert.equal(await deleteDocument('a'.repeat(32)), false);
+    assert.deepEqual(await deleteDocument('a'.repeat(32)), { ok: false, status: 409 });
     globalThis.fetch = async () => ({ ok: true, status: 200 });
-    assert.equal(await deleteDocument('a'.repeat(32)), true);
+    assert.deepEqual(await deleteDocument('a'.repeat(32)), { ok: true, status: 200 });
     globalThis.fetch = async () => { throw new TypeError('offline'); };
-    assert.equal(await deleteDocument('a'.repeat(32)), false);
+    assert.deepEqual(await deleteDocument('a'.repeat(32)), { ok: false, status: 0 });
   } finally {
     globalThis.fetch = saved;
   }

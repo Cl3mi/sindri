@@ -53,3 +53,19 @@ export async function flushBeforeLeaving(journal, confirmLeave) {
   if (acked >= journal.lastSeq) return true;
   return !!confirmLeave();
 }
+
+// What follows a background flush of the open drawing's journal, when the
+// reviewer may have chosen to stay on it rather than lose unsaved changes
+// while another drawing (`pendingOpen`) waited to open. That drawing must
+// not be forgotten: it opens by itself once the journal has drained.
+//   'open'  -- nothing left to save: switch to pendingOpen now
+//   'flush' -- events landed during the flush; flush again before switching
+//   'idle'  -- nothing waiting; the next edit schedules the next flush
+//   'retry' -- back off and try again
+//   'stale' -- another tab holds the writer; no retry can ever succeed here
+export function afterFlush({ ok, stale = false, pending, pendingOpen }) {
+  if (stale) return 'stale';
+  if (!ok) return 'retry';
+  if (!pendingOpen) return 'idle';
+  return pending ? 'flush' : 'open';
+}

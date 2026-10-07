@@ -100,15 +100,16 @@ export const openDocument = async (id) =>
   jsonOrThrow(await fetch(docUrl(id, '/open'), { method: 'POST' }), 'Could not open the drawing');
 
 // Best-effort removal of a drawing the user backed out of. Never throws;
-// resolves whether it was removed -- the server refuses (409) while a
-// cancelled run is still unwinding, so Stop retries until this says true.
+// resolves { ok, status } (status 0 = no response). The server refuses
+// (409) while a cancelled run is still unwinding, which Stop waits out; any
+// other failure is a real fault it must not spin on forever (stop.js).
 export async function deleteDocument(id) {
-  if (!id) return false;
+  if (!id) return { ok: false, status: 0 };
   try {
     const res = await fetch(docUrl(id), { method: 'DELETE' });
-    return res.ok;
+    return { ok: res.ok, status: res.status };
   } catch {
-    return false;
+    return { ok: false, status: 0 };
   }
 }
 

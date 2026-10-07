@@ -110,3 +110,31 @@ test('a flush the server only partly acknowledged also asks', async () => {
   await flushBeforeLeaving(journalWith({ pending: 2, ackTo: 4 }), () => { asked++; return true; });
   assert.equal(asked, 1);
 });
+
+// ---- a drawing waiting behind an unsaved review -------------------------
+// The reviewer chose to stay because the open drawing's changes had not
+// saved; the drawing they were switching to must stay reachable and open by
+// itself once the journal drains, never be forgotten.
+const { afterFlush } = await import('../../app/static/js/reopen.js');
+
+test('a drained journal opens the drawing that was waiting behind it', () => {
+  assert.equal(afterFlush({ ok: true, pending: 0, pendingOpen: 'b' }), 'open');
+});
+
+test('events recorded during the flush keep it flushing before the switch', () => {
+  assert.equal(afterFlush({ ok: true, pending: 2, pendingOpen: 'b' }), 'flush');
+});
+
+test('with nothing waiting, a successful flush just idles until the next edit', () => {
+  assert.equal(afterFlush({ ok: true, pending: 2, pendingOpen: null }), 'idle');
+  assert.equal(afterFlush({ ok: true, pending: 0, pendingOpen: null }), 'idle');
+});
+
+test('a failed flush backs off and retries, waiting drawing or not', () => {
+  assert.equal(afterFlush({ ok: false, pending: 2, pendingOpen: 'b' }), 'retry');
+  assert.equal(afterFlush({ ok: false, pending: 2, pendingOpen: null }), 'retry');
+});
+
+test('a writer taken by another tab stops retrying -- nothing more can save here', () => {
+  assert.equal(afterFlush({ ok: false, stale: true, pending: 2, pendingOpen: 'b' }), 'stale');
+});

@@ -8,7 +8,8 @@ import { savePdf, getDocument, enqueueDocument, cancelDocument, openDocument,
          sealSession } from './api.js';
 import { createJournal } from './journal.js';
 import { createFinisher, createExporter } from './finish.js';
-import { restoreReview, flushBeforeLeaving } from './reopen.js';
+import { restoreReview, flushBeforeLeaving, afterFlush } from './reopen.js';
+import { nextStopStep } from './stop.js';
 import { initViewer } from './viewer.js';
 import { initTable } from './table.js';
 import {
@@ -22,6 +23,12 @@ import { initShortcuts } from './shortcuts.js';
 let waitingOn = null;     // { id, fileName, pages }
 let pollTimer = null;
 let stopping = false;     // Stop pressed; waiting for the worker to let go
+let stopGaveUp = false;   // removal kept failing; the Stop button now closes the overlay
+// A ready drawing the reviewer chose NOT to switch to yet, because the open
+// one's changes had not saved. It opens by itself once they have
+// (afterFlush); until then it is the one drawing this tab is waiting on.
+let pendingOpen = null;   // id
+let closePendingToast = null;
 
 // The review journal: every state operation, numbered and flushed to the
 // server (docs/plans/2026-10-07-hitl-review-grading-design.md §2). It is
@@ -155,7 +162,7 @@ async function handleFile(file) {
   if (!file) return;
   // One waiting drawing per tab: a second upload would orphan the first,
   // which only its link could ever reach again (B3 adds a list).
-  if (waitingOn) {
+  if (waitingOn || pendingOpen) {
     toast({ kind: 'warn', title: 'A drawing is already waiting',
             msg: 'Cancel or stop it before opening another drawing.' });
     return;
@@ -255,6 +262,7 @@ function pollUntilReady() {
 // once the worker lets go (DELETE is refused until then); the interim UI
 // has no list to come back to (B3 adds one).
 async function stopExtraction() {
+  if (stopGaveUp) { closeStopOverlay(); return; }
   if (!waitingOn || stopping) return;
   stopping = true;
   clearTimeout(pollTimer);
@@ -267,17 +275,51 @@ async function stopExtraction() {
   removeWhenStopped(id);
 }
 
-function removeWhenStopped(id) {
+// A 409 (still stopping) is waited out for as long as it takes; other
+// failures in a row give up visibly after a few (stop.js), leaving a way out.
+function removeWhenStopped(id, failures = 0) {
   clearTimeout(pollTimer);
   pollTimer = setTimeout(async () => {
-    if (!(await deleteDocument(id))) { removeWhenStopped(id); return; }
-    stopping = false;
-    waitingOn = null;
-    document.getElementById('ex-stop').disabled = false;
-    hideExtracting();
-    backToEmptyOrCurrent();
+    const next = nextStopStep(await deleteDocument(id), failures);
+    if (next.step === 'wait' || next.step === 'retry') {
+      if (next.step === 'retry') {
+        document.getElementById('ex-detail').textContent =
+          'Cancelled — the server has not removed it yet; still trying…';
+      }
+      removeWhenStopped(id, next.failures);
+      return;
+    }
+    if (next.step === 'give_up') {
+      stopGaveUp = true;
+      document.getElementById('ex-title').textContent = 'Could not remove the drawing';
+      document.getElementById('ex-detail').textContent =
+        'It is cancelled and will not be extracted, but the server did not remove it. Close this and carry on.';
+      setStopLabel('Close');
+      document.getElementById('ex-stop').disabled = false;
+      return;
+    }
+    closeStopOverlay();
     toast({ kind: 'ok', title: 'Stopped', msg: 'The drawing was removed.' });
   }, 1500);
+}
+
+function closeStopOverlay() {
+  clearTimeout(pollTimer);
+  stopping = false;
+  stopGaveUp = false;
+  waitingOn = null;
+  setStopLabel('Stop');
+  document.getElementById('ex-stop').disabled = false;
+  hideExtracting();
+  backToEmptyOrCurrent();
+}
+
+// The button's last text node is its label (index.html: icon, then text).
+function setStopLabel(text) {
+  const btn = document.getElementById('ex-stop');
+  const node = [...btn.childNodes].reverse().find((n) => n.nodeType === Node.TEXT_NODE && n.textContent.trim());
+  if (node) node.textContent = ` ${text} `;
+  btn.title = text === 'Close' ? 'Close (the drawing stays cancelled)' : 'Stop extraction';
 }
 
 function confirmLeaveUnsaved() {
@@ -292,16 +334,27 @@ async function loadForReview(id) {
   // go to the server first -- or the reviewer decides, never silence.
   if (journal.active && journal.sessionId !== id) {
     if (!(await flushBeforeLeaving(journal, confirmLeaveUnsaved))) {
+      // Stay -- but keep the other drawing: it opens by itself once this
+      // one's changes are saved (scheduleFlush → afterFlush), and its link
+      // is on screen in case this tab goes away first.
       waitingOn = null;
+      pendingOpen = id;
       hideExtracting();
       backToEmptyOrCurrent();
-      toast({ kind: 'warn', title: 'Stayed on this drawing',
-              msg: 'The other drawing is ready on the server; open its link once this one has saved.' });
-      if (journal.pending.length) scheduleFlush(flushBackoff);
+      closePendingToast?.();
+      closePendingToast = toast({ kind: 'warn', title: 'Stayed on this drawing', timeout: 0,
+        msg: 'The other drawing opens by itself once this one\'s changes are saved. '
+           + `Its link: ${location.origin}${location.pathname}#doc=${id}` });
+      scheduleFlush(flushBackoff);
       return;
     }
     // Left anyway: one last best-effort try for whatever is still pending.
     if (journal.pending.length) beaconEvents(journal.sessionId, journal.writer, journal.pending);
+  }
+  if (pendingOpen === id) {
+    pendingOpen = null;
+    closePendingToast?.();
+    closePendingToast = null;
   }
   setBusy('Opening drawing…');
   try {
@@ -426,21 +479,31 @@ function wireJournal() {
 function scheduleFlush(delay) {
   clearTimeout(flushTimer);
   flushTimer = setTimeout(async () => {
+    let ok = true;
+    let stale = false;
     try {
       await journal.flush();
       flushBackoff = 500;
     } catch (err) {
+      ok = false;
       // Another tab opened this drawing and holds the writer now; every
       // retry would be refused the same way (B3 replaces this with a
       // read-only banner).
-      if (/opened elsewhere/.test(err?.message || '')) {
+      stale = /opened elsewhere/.test(err?.message || '');
+    }
+    switch (afterFlush({ ok, stale, pending: journal.pending.length, pendingOpen })) {
+      case 'open':  loadForReview(pendingOpen); break;
+      case 'flush': scheduleFlush(500); break;
+      case 'stale':
         toast({ kind: 'warn', title: 'Opened in another tab', msg: 'Reload to continue here.' });
-        return;
-      }
-      // Keep everything pending and retry, backing off to 10 s; Finish
-      // refuses until the server holds every event, so nothing is lost.
-      flushBackoff = Math.min(flushBackoff * 2, 10000);
-      scheduleFlush(flushBackoff);
+        break;
+      case 'retry':
+        // Keep everything pending and retry, backing off to 10 s; Finish
+        // refuses until the server holds every event, so nothing is lost.
+        flushBackoff = Math.min(flushBackoff * 2, 10000);
+        scheduleFlush(flushBackoff);
+        break;
+      default: break;   // idle: the next edit schedules the next flush
     }
   }, delay);
 }
@@ -489,8 +552,9 @@ async function finish() {
     btn.disabled = !state.sessionId;
     // The flush timer was cleared above; if events are still pending (a
     // failed flush while offline, or a blocked run), restart the backoff loop
-    // so they don't wait for the next edit.
-    if (journal.active && journal.pending.length) scheduleFlush(flushBackoff);
+    // so they don't wait for the next edit -- and keep the loop alive while
+    // a drawing waits to open behind this one (it opens once drained).
+    if (journal.active && (journal.pending.length || pendingOpen)) scheduleFlush(flushBackoff);
   }
 }
 
