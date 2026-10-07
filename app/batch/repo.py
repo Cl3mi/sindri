@@ -39,9 +39,10 @@ class InvalidTransition(BatchError):
 
 
 def _now() -> str:
-    # Wall-clock UTC. Fixed microsecond precision because queue order compares
-    # these as STRINGS: plain isoformat() drops ".000000" when microsecond is
-    # 0, and "...:05+00:00" sorts after "...:05.123456+00:00".
+    # Wall-clock UTC. Queue order compares these as STRINGS, so they are fixed
+    # width: string order equals time order by construction. Plain isoformat()
+    # drops the fraction on a whole second, which today still sorts correctly
+    # only because '+' < '.' -- a coincidence, not a guarantee.
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 

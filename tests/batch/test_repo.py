@@ -180,9 +180,10 @@ def test_a_failed_write_rolls_back_whole_and_leaves_the_repo_usable(repo):
 
 
 def test_timestamps_sort_as_strings_even_on_a_whole_second(monkeypatch):
-    """Queue order compares queued_at as TEXT. Plain isoformat() drops the
-    fraction when microsecond is 0, and "12:00:05+00:00" then sorts AFTER
-    "12:00:05.000001+00:00" -- a later upload would jump the queue."""
+    """Queue order compares queued_at as TEXT, so timestamps are fixed width
+    and string order equals time order by construction. Plain isoformat()
+    drops the fraction on a whole second; that still sorts correctly today
+    only because '+' < '.', so pin the format rather than rely on it."""
     from datetime import datetime as real, timezone
 
     from app.batch import repo as repo_mod
@@ -197,7 +198,8 @@ def test_timestamps_sort_as_strings_even_on_a_whole_second(monkeypatch):
 
     monkeypatch.setattr(repo_mod, "datetime", Fixed)
     first, second = repo_mod._now(), repo_mod._now()
-    assert first.endswith("05.000000+00:00") and first < second
+    assert first == "2026-10-07T12:00:05.000000+00:00"
+    assert len(first) == len(second) and first < second
 
 
 class _FailingCommit:
