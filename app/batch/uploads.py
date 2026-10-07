@@ -10,8 +10,10 @@ the index side is Repo.
                 and a restart loses at most the chunk in flight.
     complete -> verify the bytes ON DISK against the declared size, then
                 stage: a PDF becomes one staged document (full SHA-256,
-                pages, oversized, unreadable). Idempotent: a repeated call
-                returns what was staged.
+                pages, oversized, unreadable), a ZIP one per PDF inside it
+                (unzip.py decides which entries; everything else is listed
+                as ignored). Idempotent: a repeated call returns what was
+                staged.
 
 A free-disk reserve (SINDRI_MIN_FREE_MB) answers 507 at every step that
 writes, so an import can never fill the disk under a review journal. It is a
@@ -28,11 +30,14 @@ import shutil
 import threading
 import unicodedata
 import uuid
+import zipfile
+import zlib
 from typing import Optional
 
 from app.batch.paths import DOC_ID_RE, has_refused_chars, safe_rel_parts
 from app.batch.pdf_facts import pdf_facts
 from app.batch.repo import BatchError, UnknownBatch, UnknownUpload, UploadConflict
+from app.batch.unzip import Ignored, classify
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +54,13 @@ FINGERPRINT_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 # a lost or replaced index can never make the sweep delete real drawings.
 IMPORTING_MARKER = ".importing"
 _COPY_PIECE = MIB
+# What reading a damaged entry can raise: a CRC mismatch, a broken deflate
+# stream, a truncated archive, an unsupported compression method, an
+# encrypted entry unzip.py did not see flagged. Each makes that ONE entry
+# ignored, never the whole import. OSError is deliberately absent: a disk
+# that fails under the part file is the server's fault, not the entry's.
+_ENTRY_ERRORS = (zipfile.BadZipFile, zlib.error, EOFError, NotImplementedError,
+                 RuntimeError, ValueError)
 # The name is stored and shown, and becomes a file name in the mass-export
 # ZIP (design §4); a separator or control character has no business in it.
 # (has_refused_chars adds format and line-separator characters: a bidi
@@ -56,7 +68,7 @@ _COPY_PIECE = MIB
 _NAME_UNSAFE = re.compile(r"[\x00-\x1f\x7f/\\]")
 # Importable kinds by extension. The browser filters too; this is the
 # server's word.
-_KINDS = {".pdf": "pdf"}
+_KINDS = {".pdf": "pdf", ".zip": "zip"}
 # SQLite stores a signed 64-bit integer: a bigger size would fail inside the
 # insert as a 500 instead of being refused as a 400. Not a size LIMIT
 # (decision 29) -- no disk holds 8 EiB.
@@ -78,6 +90,10 @@ class DiskFull(BatchError):
 
     def __init__(self):
         super().__init__("not enough free disk space on the server")
+
+
+class _EntryUnreadable(Exception):
+    pass
 
 
 class StorageFault(BatchError):
@@ -173,7 +189,7 @@ class Uploads:
             raise BatchError("not a usable file name")
         kind = upload_kind(name)
         if kind is None:
-            raise BatchError("only PDF files can be imported")
+            raise BatchError("only PDF and ZIP files can be imported")
         if not _is_count(size) or size >= _MAX_SIZE:
             raise BatchError("size must be a whole number of bytes")
         if last_modified is not None and not (
@@ -353,7 +369,81 @@ class Uploads:
 
     def _stage_files(self, part, up, created):
         """(documents to stage, ignored entries) for one completed upload."""
+        if up["kind"] == "zip":
+            return self._stage_zip(part, up, created)
         return [self._stage_pdf(part, up, created)], []
+
+    def _stage_zip(self, part, up, created):
+        """One staged document per PDF entry, in archive order; every other
+        entry listed as ignored. A damaged ENTRY is ignored alone and the
+        rest still staged -- the user sees which one and why. Anything else
+        (the disk guard, a write fault) raises, and complete() rolls the
+        whole upload back for a retry: all of it is staged or none, so a
+        retried completion can never stage an entry twice."""
+        docs, ignored = [], []
+        try:
+            zf = zipfile.ZipFile(part)
+        except (zipfile.BadZipFile, EOFError, ValueError, NotImplementedError):
+            # Not an archive at all (or one whose directory is unreadable):
+            # listed under the upload's own name, nothing staged.
+            return [], [Ignored(up["name"], "unreadable_zip").as_dict()]
+        with zf:
+            for info in zf.infolist():
+                entry = classify(info)
+                if entry is None:
+                    continue
+                if isinstance(entry, Ignored):
+                    ignored.append(entry.as_dict())
+                    continue
+                doc_id, d = self._new_doc_dir(created)
+                target = d / "input.pdf"
+                try:
+                    sha256, size = self._copy_entry(zf, info, target)
+                except _EntryUnreadable:
+                    # Marker last (_remove_import_dir): should the removal
+                    # stop halfway, the dir is still marked and rowless, and
+                    # the startup sweep finishes it.
+                    created.remove(d)
+                    self._remove_import_dir(d)
+                    ignored.append(Ignored(info.filename, "unreadable_entry").as_dict())
+                    continue
+                _fsync_dir(d)
+                facts = pdf_facts(target)
+                docs.append({
+                    "id": doc_id, "file_name": entry.file_name,
+                    # A ZIP picked from inside a folder upload keeps both.
+                    "rel_path": "/".join(p for p in (up["rel_path"], entry.folder) if p),
+                    "size": size, "sha256": sha256, "pages": facts.pages,
+                    "oversized": facts.oversized, "unreadable": not facts.readable})
+        return docs, ignored
+
+    def _copy_entry(self, zf, info, target):
+        """Stream one entry to `target`, hashing as it goes. The disk guard
+        runs per piece, on the bytes actually decompressed: an entry's
+        declared size can lie, and decompression can expand a small archive
+        into a full disk. Size and hash are measured, never taken from the
+        entry's header."""
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            src = zf.open(info)
+        except _ENTRY_ERRORS as e:
+            raise _EntryUnreadable() from e
+        with src, open(target, "xb") as out:
+            while True:
+                try:
+                    piece = src.read(_COPY_PIECE)
+                except _ENTRY_ERRORS as e:
+                    raise _EntryUnreadable() from e
+                if not piece:
+                    break
+                self.guard_disk(len(piece))
+                out.write(piece)
+                digest.update(piece)
+                size += len(piece)
+            out.flush()
+            os.fsync(out.fileno())
+        return digest.hexdigest(), size
 
     @staticmethod
     def _remove_import_dir(d) -> None:

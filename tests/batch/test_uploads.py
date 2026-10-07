@@ -3,9 +3,12 @@ written at the server's offset and fsynced before the index moves, a
 completion that verifies, hashes and stages, and a free-disk reserve."""
 import errno
 import hashlib
+import io
 import logging
 import os
 import sqlite3
+import stat
+import zipfile
 
 import pytest
 
@@ -594,3 +597,155 @@ def test_logs_carry_ids_and_counts_never_a_file_name(h, caplog):
     text = "\n".join(r.getMessage() for r in caplog.records)
     assert uid[:8] in text
     assert "Geheim" not in text and "Meier" not in text and uid not in text
+
+
+def zip_bytes(entries, compression=zipfile.ZIP_DEFLATED):
+    """entries: (name or ZipInfo, data)."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression) as zf:
+        for name, data in entries:
+            zf.writestr(name, data)
+    return buf.getvalue()
+
+
+def symlink_entry(name):
+    i = zipfile.ZipInfo(name)
+    i.external_attr = (stat.S_IFLNK | 0o777) << 16
+    return i
+
+
+def test_a_zip_is_unpacked_into_staged_drawings_and_the_rest_listed(h):
+    a, b = pdf_bytes(), pdf_bytes(pages=2)
+    blob = zip_bytes([
+        ("Teile/Welle/w1.pdf", a), ("Teile/Flansch/f1.pdf", b), ("Teile/Stückliste.txt", b"x"),
+        ("../../evil.pdf", a), (symlink_entry("link.pdf"), "/etc/passwd"),
+        ("kaputt.pdf", b"not a pdf at all"), ("Teile/", b""),
+    ])
+    done = h.imported(blob, name="Lieferung.zip")
+    rows = {r["file_name"]: r for r in done["documents"]}
+    assert set(rows) == {"w1.pdf", "f1.pdf", "kaputt.pdf"}
+    assert (rows["w1.pdf"]["rel_path"], rows["w1.pdf"]["included"]) == ("Teile/Welle", True)
+    assert (rows["f1.pdf"]["pages"], rows["f1.pdf"]["included"]) == (2, False)
+    assert rows["kaputt.pdf"]["unreadable"] is True
+    assert sorted((i["name"], i["reason"]) for i in done["ignored"]) == [
+        ("../../evil.pdf", "unsafe_path"), ("Teile/Stückliste.txt", "not_pdf"),
+        ("link.pdf", "symlink")]
+    assert (h.data.doc_dir(rows["w1.pdf"]["id"]) / "input.pdf").read_bytes() == a
+    assert h.repo.get(rows["w1.pdf"]["id"])["sha256"] == hashlib.sha256(a).hexdigest()
+    # Nothing was written but three drawing dirs, each holding only its input.
+    assert len(h.doc_dirs()) == 3
+    for d in h.data.docs.iterdir():
+        assert sorted(p.name for p in d.iterdir()) == ["input.pdf"]
+    assert list(h.data.uploads.iterdir()) == []
+    assert h.repo.staging(h.batch)["uploads"][0]["ignored"] == done["ignored"]
+
+
+def test_a_completed_zip_answers_a_repeat_with_what_it_staged(h):
+    uid = h.send(zip_bytes([("a.pdf", pdf_bytes()), ("n.txt", b"x")]), name="z.zip")
+    first = h.uploads.complete(uid)
+    assert h.uploads.complete(uid) == first
+    assert len(h.doc_dirs()) == 1
+
+
+def test_a_zip_from_a_folder_upload_keeps_both_folders(h):
+    done = h.imported(zip_bytes([("Welle/w1.pdf", pdf_bytes())]), name="z.zip", rel_path="Kunde")
+    assert done["documents"][0]["rel_path"] == "Kunde/Welle"
+
+
+def test_two_identical_drawings_in_one_zip(h):
+    a = pdf_bytes()
+    first, second = h.imported(zip_bytes([("x/a.pdf", a), ("y/a.pdf", a)]), name="z.zip")["documents"]
+    assert first["included"] and second["duplicate_of"]["id"] == first["id"]
+    assert second["included"] is False
+
+
+def test_two_entries_with_one_name_are_both_staged(h):
+    """An archive may repeat a name (zipfile warns, and writes it). Each
+    entry is its own drawing in its own dir -- nothing is written to a path
+    built from the name, so neither can overwrite the other -- and the user
+    sees both, rather than one silently winning."""
+    a, b = pdf_bytes(), pdf_bytes(pages=2)
+    with pytest.warns(UserWarning):
+        blob = zip_bytes([("x/a.pdf", a), ("x/a.pdf", b)])
+    rows = h.imported(blob, name="z.zip")["documents"]
+    assert [(r["rel_path"], r["file_name"]) for r in rows] == [("x", "a.pdf")] * 2
+    assert sorted((h.data.doc_dir(r["id"]) / "input.pdf").read_bytes() for r in rows) == sorted([a, b])
+
+
+def test_a_corrupt_entry_is_ignored_and_the_rest_staged(h):
+    a, b = pdf_bytes(), pdf_bytes()
+    blob = bytearray(zip_bytes([("good.pdf", a), ("bad.pdf", b)], compression=zipfile.ZIP_STORED))
+    # rindex: a and b are the same bytes, so the LAST copy is bad.pdf's.
+    at = bytes(blob).rindex(b) + len(b) // 2
+    blob[at] ^= 0xFF                      # stored data no longer matches its CRC
+    done = h.imported(bytes(blob), name="z.zip")
+    assert [r["file_name"] for r in done["documents"]] == ["good.pdf"]
+    assert done["ignored"] == [{"name": "bad.pdf", "reason": "unreadable_entry"}]
+    assert len(h.doc_dirs()) == 1
+
+
+def test_a_file_named_zip_that_is_not_one_is_listed_not_staged(h):
+    done = h.imported(b"not a zip", name="z.zip")
+    assert (done["state"], done["documents"]) == ("complete", [])
+    assert done["ignored"] == [{"name": "z.zip", "reason": "unreadable_zip"}]
+    assert h.doc_dirs() == []
+    assert h.uploads.complete(done["upload_id"]) == done
+
+
+def test_low_disk_while_unpacking_is_507_and_leaves_nothing(h):
+    blob = zip_bytes([("a.pdf", pdf_bytes()), ("b.pdf", pdf_bytes())])
+    uid = h.send(blob, name="z.zip")
+    h.free = 1000 + 10                    # room for the archive, not for its contents
+    with pytest.raises(DiskFull):
+        h.uploads.complete(uid)
+    assert h.doc_dirs() == []
+    assert h.repo.get_upload(uid)["state"] == "receiving"
+    h.free = 10 ** 12
+    assert len(h.uploads.complete(uid)["documents"]) == 2
+
+
+def test_a_zip_bomb_is_stopped_by_the_disk_guard_not_its_header(h, monkeypatch):
+    """A few KiB of deflate expand into MiBs. The guard is asked per piece
+    with the bytes actually decompressed, so a lying or huge declared size
+    can neither sneak past it nor be refused up front (no size limit,
+    decision 29): the disk decides."""
+    blob = zip_bytes([("bomb.pdf", b"\0" * (8 * uploads_mod.MIB))])
+    assert len(blob) < 64 * 1024
+    uid = h.send(blob, name="z.zip")
+    asked = []
+    real = h.uploads.guard_disk
+    monkeypatch.setattr(h.uploads, "guard_disk",
+                        lambda need=0: (asked.append(need), real(need))[1])
+    # A disk that really fills: 3 MiB above the reserve, less what is unpacked.
+    h.uploads._free = lambda path: 1000 + 3 * uploads_mod.MIB - sum(
+        p.stat().st_size for p in h.data.docs.rglob("*") if p.is_file())
+    with pytest.raises(DiskFull):
+        h.uploads.complete(uid)
+    assert asked and max(asked) <= uploads_mod.MIB
+    assert h.doc_dirs() == []
+    assert h.repo.get_upload(uid)["state"] == "receiving"
+
+
+def test_a_write_fault_while_unpacking_is_a_fault_not_an_ignored_entry(h, monkeypatch):
+    """Only a damaged ENTRY is ignored. A disk that fails to take its bytes
+    is the server's fault: reported by kind, everything rolled back, the
+    upload retryable -- never a drawing silently listed as unreadable."""
+    uid = h.send(zip_bytes([("a.pdf", pdf_bytes())]), name="z.zip")
+
+    def failing(fd):
+        raise OSError(errno.EIO, "boom", "/secret/path")
+    monkeypatch.setattr(uploads_mod.os, "fsync", failing)
+    with pytest.raises(BatchError) as e:
+        h.uploads.complete(uid)
+    assert e.value.status == 500 and "secret" not in str(e.value)
+    assert h.doc_dirs() == []
+    assert h.repo.get_upload(uid)["state"] == "receiving"
+
+
+def test_zip_entry_names_are_never_logged(h, caplog):
+    caplog.set_level(logging.DEBUG)
+    blob = zip_bytes([("Kunde Meier/Geheim.pdf", pdf_bytes()), ("Geheim.txt", b"x"),
+                      ("Kaputt-Geheim.pdf", b"not a pdf")])
+    h.imported(blob, name="Vertraulich.zip")
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "Geheim" not in text and "Meier" not in text and "Vertraulich" not in text
