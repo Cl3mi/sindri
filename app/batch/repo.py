@@ -206,6 +206,14 @@ class Repo:
         return [{**batch_view(r), "documents": r["documents"], "uploading": r["uploading"]}
                 for r in rows]
 
+    def batch_document_ids(self, batch_id) -> list:
+        """The batch's document ids in staging order; [] for an unknown
+        batch: the callers mark files from this snapshot, they do not judge
+        (start_batch / delete_batch do, against `expected_ids`)."""
+        with self._lock:
+            return [r["id"] for r in self._conn.execute(
+                "SELECT id FROM document WHERE batch_id = ? ORDER BY rowid", (batch_id,)).fetchall()]
+
     def get_upload(self, upload_id) -> dict:
         with self._lock:
             return self._upload(self._conn, upload_id)

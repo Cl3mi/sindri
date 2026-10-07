@@ -23,7 +23,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect
 from starlette.types import Scope
 from starlette.responses import Response
-from pydantic import BaseModel, StrictInt
+from pydantic import BaseModel, StrictBool, StrictInt
 from app.models import Characteristic, NoteBlock, MarkBlock, TitleField
 from app.pipeline.extract import extract
 from app.pipeline.ocr import get_backend, backend_status
@@ -165,7 +165,8 @@ def _batch_name(name) -> str:
 def _doc_view(doc_id: str) -> dict:
     rt = runtime()
     doc = rt.repo.get(doc_id)
-    return {"id": doc["id"], "file_name": doc["file_name"], "pages": doc["pages"],
+    return {"id": doc["id"], "file_name": doc["file_name"], "batch_id": doc["batch_id"],
+            "pages": doc["pages"],
             "state": doc["state"], "error_type": doc["error_type"],
             "final_revision": doc["final_revision"],
             "exported_revision": doc["exported_revision"],
@@ -207,6 +208,10 @@ class UploadCreate(BaseModel):
     fingerprint: str
     rel_path: str = ""
     last_modified: Optional[StrictInt] = None
+
+
+class IncludeRequest(BaseModel):
+    included: StrictBool        # lax pydantic would read "no" or 0 as a choice
 
 
 @app.get("/api/health")
@@ -362,6 +367,38 @@ def complete_upload(upload_id: str):
 @app.delete("/api/uploads/{upload_id}")
 def delete_upload(upload_id: str):
     runtime().uploads.delete(upload_id)
+    return {"ok": True}
+
+
+@app.post("/api/documents/{doc_id}/include")
+def include_document(doc_id: str, req: IncludeRequest):
+    """Tick or untick a staged drawing's Include box. Including an
+    out-of-scope file is the explicit permission (decision 26) and is
+    stored; an unreadable PDF is refused (409)."""
+    _doc_dir(doc_id)
+    return runtime().repo.set_included(doc_id, req.included)
+
+
+@app.post("/api/batches/{batch_id}/start")
+def start_batch(batch_id: str):
+    """Queue the included drawings, drop the excluded ones with their files,
+    end the draft (design §2). The only way a staged drawing is queued. A
+    refusal (409) changes nothing; the UI reloads and the user decides
+    again -- never a silent retry."""
+    rt = runtime()
+    out = rt.uploads.start_batch(_batch_id(batch_id))
+    rt.worker.wake()
+    log.info("batch %s started: %d queued, %d dropped",
+             batch_id[:8], len(out["queued"]), len(out["dropped"]))
+    return {"queued": len(out["queued"]), "dropped": len(out["dropped"]),
+            "documents": out["queued"]}
+
+
+@app.delete("/api/batches/{batch_id}")
+def discard_batch(batch_id: str):
+    """Discard an import that has not started: its staged drawings, its
+    unfinished uploads, their files. Idempotent; a started batch is 409."""
+    runtime().uploads.discard_batch(_batch_id(batch_id))
     return {"ok": True}
 
 

@@ -51,9 +51,11 @@ MAX_CHUNK = 64 * MIB
 # \A...\Z and fullmatch, like paths.DOC_ID_RE: `$` also matches before a
 # trailing newline, and a fingerprint is part of the resume key.
 FINGERPRINT_RE = re.compile(r"\A[0-9a-f]{64}\Z")
-# Marks a docs/<id>/ written by a completion whose index rows have not
-# committed yet. Only a marked dir with no row is ever swept at startup, so
-# a lost or replaced index can never make the sweep delete real drawings.
+# Marks a docs/<id>/ whose row an index transaction is creating (a
+# completion) or may remove (Start's dropped rows, Discard). Only a marked
+# dir with no row is ever swept at startup, and a marked dir WITH a row is
+# only unmarked -- so a lost or replaced index can never make the sweep
+# delete real drawings.
 IMPORTING_MARKER = ".importing"
 _COPY_PIECE = MIB
 # What reading a damaged entry can raise: a CRC mismatch, a broken deflate
@@ -170,10 +172,19 @@ class Uploads:
         # like app.main's export locks (single process, decision 5).
         self._locks = {}
         self._locks_guard = threading.Lock()
+        # One lock per batch, held by a completion from its commit until its
+        # markers are off, and by Start / Discard from their snapshot until
+        # their commit (see start_batch). Lock order: an upload's lock may
+        # be held when a batch's is taken, never the other way round.
+        self._batch_locks = {}
 
     def _lock(self, upload_id) -> threading.Lock:
         with self._locks_guard:
             return self._locks.setdefault(upload_id, threading.Lock())
+
+    def _batch_lock(self, batch_id) -> threading.Lock:
+        with self._locks_guard:
+            return self._batch_locks.setdefault(batch_id, threading.Lock())
 
     def _part(self, upload_id):
         try:
@@ -359,7 +370,17 @@ class Uploads:
                 if created:
                     _fsync_dir(self.data.docs)
                 ignored = summarise_ignored(ignored)
-                rows = self.repo.finish_completion(upload_id, docs, ignored)
+                # The commit and the unmarking under the batch's lock: a
+                # Start or Discard that snapshotted these rows in between
+                # would mark their dirs, and this unlink would then strip
+                # ITS marker -- after its commit, a crash would leave an
+                # unmarked dir with no row, which nothing ever removes.
+                # (_unmark never raises, so a committed completion is never
+                # rolled back below.)
+                with self._batch_lock(up["batch_id"]):
+                    rows = self.repo.finish_completion(upload_id, docs, ignored)
+                    # Committed: the rows own the dirs now, so the markers go.
+                    self._unmark(created)
             except BaseException as e:
                 for d in created:
                     self._remove_import_dir(d)
@@ -371,10 +392,7 @@ class Uploads:
                 if isinstance(e, OSError):
                     raise self._storage_error(e, upload_id) from None
                 raise
-            # Committed: the rows own the dirs now, so the markers go, and
-            # the part (whose bytes are hard-linked or copied) is spent.
-            for d in created:
-                (d / IMPORTING_MARKER).unlink(missing_ok=True)
+            # The part (whose bytes are hard-linked or copied) is spent.
             part.unlink(missing_ok=True)
         log.info("upload %s complete: %d staged, %d ignored",
                  upload_id[:8], len(rows), ignored["total"])
@@ -564,3 +582,87 @@ class Uploads:
         with self._lock(upload_id):
             self.repo.delete_upload(upload_id)
             part.unlink(missing_ok=True)
+
+    # ----- start and discard: rows go first, files follow -------------------
+    def _mark(self, batch_id, doc_ids) -> list:
+        """Mark each drawing dir BEFORE a transaction that may remove its
+        row: a crash after the commit leaves a marked dir with no row, which
+        the startup sweep removes; a crash before it leaves a marked dir
+        with its row, which the sweep only unmarks. All or none: a marker
+        that cannot be written unmarks the rest and refuses the step."""
+        marked = []
+        try:
+            for doc_id in doc_ids:
+                d = self.data.doc_dir(doc_id)
+                if d.is_dir():
+                    (d / IMPORTING_MARKER).write_bytes(b"")
+                    marked.append(d)
+        except OSError as e:
+            self._unmark(marked)
+            log.warning("batch %s: dirs not marked: %s", batch_id[:8], type(e).__name__)
+            raise DiskFull() if e.errno == errno.ENOSPC else StorageFault() from None
+        return marked
+
+    @staticmethod
+    def _unmark(dirs) -> None:
+        """Take markers off dirs whose rows stand. Never raises: a marker
+        left on a dir WITH a row is harmless (the startup sweep only strips
+        it), whereas raising here could roll back work that committed."""
+        for d in dirs:
+            try:
+                (d / IMPORTING_MARKER).unlink(missing_ok=True)
+            except OSError as e:
+                log.warning("import dir %s not unmarked: %s", d.name[:8], type(e).__name__)
+
+    def _guarded(self, batch_id, step):
+        """Snapshot the draft's drawings, mark their dirs, then run the repo
+        `step` with that snapshot as `expected_ids` -- all under the batch's
+        lock, so no completion can commit or unmark in between. The repo
+        refuses (409, "the import changed") a draft that no longer matches
+        the snapshot: a row staged since has an UNMARKED dir that a crash
+        after the commit would leak. A refusal is not retried here -- the
+        user reloads and decides again. On any refusal or failure every
+        marker comes off and nothing has changed. Returns (repo result,
+        dirs marked)."""
+        with self._batch_lock(batch_id):
+            snapshot = self.repo.batch_document_ids(batch_id)
+            marked = self._mark(batch_id, snapshot)
+            try:
+                return step(batch_id, expected_ids=snapshot), marked
+            except BaseException:
+                self._unmark(marked)        # refused or failed: every row still stands
+                raise
+
+    def start_batch(self, batch_id) -> dict:
+        """Repo.start_batch, with the dropped drawings' dirs removed after
+        the commit (marker last, so a removal that stops halfway is still
+        swept). The queued drawings' dirs are unmarked. Returns the repo's
+        {queued, dropped}."""
+        out, marked = self._guarded(batch_id, self.repo.start_batch)
+        dropped = set(out["dropped"])
+        self._unmark(d for d in marked if d.name not in dropped)
+        for doc_id in out["dropped"]:
+            self._remove_import_dir(self.data.doc_dir(doc_id))
+        return out
+
+    def discard_batch(self, batch_id) -> None:
+        """Repo.delete_batch, then the files: the staged drawings' dirs and
+        the part files of unfinished uploads. Idempotent for an unknown
+        batch; a started one is refused (409) with its markers taken off."""
+        out, _ = self._guarded(batch_id, self.repo.delete_batch)
+        if out is None:
+            return
+        for uid in out["uploads"]:
+            # Under the upload's lock (and no longer the batch's -- see the
+            # lock order in __init__): a chunk being written finishes first,
+            # then finds its row gone and removes its part itself.
+            with self._lock(uid):
+                try:
+                    self.data.part_path(uid).unlink(missing_ok=True)
+                except OSError as e:
+                    # Committed already; the stray-part sweep finishes it.
+                    log.warning("upload %s: part not removed: %s", uid[:8], type(e).__name__)
+        for doc_id in out["documents"]:
+            self._remove_import_dir(self.data.doc_dir(doc_id))
+        log.info("batch %s discarded: %d staged, %d uploads",
+                 batch_id[:8], len(out["documents"]), len(out["uploads"]))

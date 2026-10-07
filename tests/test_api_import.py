@@ -301,3 +301,213 @@ def test_blocking_handlers_run_off_the_event_loop():
     for handler in (main.create_upload, main.complete_upload, main.delete_upload,
                     main.create_batch, main.get_batch):
         assert not inspect.iscoroutinefunction(handler)
+
+
+def test_including_an_out_of_scope_file_records_the_permission():
+    _, done = import_file(pdf_bytes(pages=3))
+    (row,) = done["documents"]
+    assert row["included"] is False
+    r = client.post(f"/api/documents/{row['id']}/include", json={"included": True})
+    assert (r.json()["included"], r.json()["allowed_out_of_scope"]) == (True, True)
+
+
+@pytest.mark.parametrize("value", ["no", "false", 0, 1, None])
+def test_include_takes_only_a_real_boolean(value):
+    """Lax pydantic reads "no", "false" and 0 as False and 1 as True -- an
+    Include choice (and for an out-of-scope file, a permission) the user
+    never sent. Refused, and the row keeps its own."""
+    _, done = import_file(pdf_bytes())
+    doc_id = done["documents"][0]["id"]
+    r = client.post(f"/api/documents/{doc_id}/include", json={"included": value})
+    assert r.status_code == 422
+    batch = client.get(f"/api/documents/{doc_id}").json()["batch_id"]
+    (row,) = client.get(f"/api/batches/{batch}").json()["documents"]
+    assert row["included"] is True
+
+
+def test_an_unreadable_pdf_cannot_be_included():
+    _, done = import_file(b"not a pdf at all")
+    r = client.post(f"/api/documents/{done['documents'][0]['id']}/include", json={"included": True})
+    assert r.status_code == 409
+
+
+def test_start_queues_the_included_and_drops_the_rest():
+    batch_id = new_batch()["id"]
+    _, ok = import_file(pdf_bytes(), batch_id=batch_id)
+    _, multi = import_file(pdf_bytes(pages=2), name="b.pdf", batch_id=batch_id)
+    _, bad = import_file(b"not a pdf at all", name="c.pdf", batch_id=batch_id)
+    keep = ok["documents"][0]["id"]
+    drop = [multi["documents"][0]["id"], bad["documents"][0]["id"]]
+    r = client.post(f"/api/batches/{batch_id}/start")
+    assert r.json() == {"queued": 1, "dropped": 2, "documents": [keep]}
+    doc = client.get(f"/api/documents/{keep}").json()
+    assert (doc["state"], doc["queue_position"]) == ("queued", 1)
+    for d in drop:
+        assert client.get(f"/api/documents/{d}").status_code == 404
+        assert not main.runtime().data.doc_dir(d).exists()
+    assert client.get(f"/api/batches/{batch_id}").json()["batch"]["draft"] is False
+
+
+def test_start_wakes_the_worker(monkeypatch):
+    woke = []
+    monkeypatch.setattr(main.runtime().worker, "wake", lambda: woke.append(1))
+    batch_id, _ = import_file(pdf_bytes())
+    client.post(f"/api/batches/{batch_id}/start")
+    assert woke == [1]
+
+
+def test_start_is_refused_with_nothing_included_or_while_uploading():
+    batch_id, done = import_file(pdf_bytes(pages=2))
+    assert client.post(f"/api/batches/{batch_id}/start").status_code == 409
+    client.post(f"/api/documents/{done['documents'][0]['id']}/include", json={"included": True})
+    new_upload(batch_id, pdf_bytes(), name="late.pdf")
+    r = client.post(f"/api/batches/{batch_id}/start")
+    assert r.status_code == 409 and "uploading" in r.json()["detail"]
+    assert client.get(f"/api/batches/{batch_id}").json()["batch"]["draft"] is True
+
+
+def test_start_carries_the_permission_onto_every_out_of_scope_drawing():
+    batch_id, done = import_file(pdf_bytes(width=7000, height=5000))
+    doc_id = done["documents"][0]["id"]
+    client.post(f"/api/documents/{doc_id}/include", json={"included": True})
+    client.post(f"/api/batches/{batch_id}/start")
+    (row,) = client.get(f"/api/batches/{batch_id}").json()["documents"]
+    assert (row["state"], row["out_of_scope"], row["allowed_out_of_scope"]) == ("queued", True, True)
+
+
+def test_discarding_an_import_removes_its_files_and_parts():
+    batch_id, done = import_file(pdf_bytes())
+    up = new_upload(batch_id, pdf_bytes(), name="late.pdf")
+    rt = main.runtime()
+    doc_dir = rt.data.doc_dir(done["documents"][0]["id"])
+    part = rt.data.part_path(up["upload_id"])
+    assert doc_dir.is_dir() and part.exists()
+    assert client.delete(f"/api/batches/{batch_id}").status_code == 200
+    assert not doc_dir.exists() and not part.exists()
+    assert client.get(f"/api/batches/{batch_id}").status_code == 404
+    assert client.delete(f"/api/batches/{batch_id}").status_code == 200       # idempotent
+
+
+def test_a_started_import_cannot_be_discarded():
+    batch_id, _ = import_file(pdf_bytes())
+    client.post(f"/api/batches/{batch_id}/start")
+    assert client.delete(f"/api/batches/{batch_id}").status_code == 409
+
+
+def test_a_drawing_in_a_draft_cannot_be_queued_one_by_one():
+    _, done = import_file(pdf_bytes())
+    assert client.post(f"/api/documents/{done['documents'][0]['id']}/enqueue").status_code == 409
+
+
+def test_the_document_view_names_its_batch():
+    batch_id, done = import_file(pdf_bytes())
+    assert client.get(f"/api/documents/{done['documents'][0]['id']}").json()["batch_id"] == batch_id
+
+
+def test_include_start_and_discard_reject_malformed_ids():
+    assert client.post("/api/documents/nope/include", json={"included": True}).status_code == 404
+    assert client.post("/api/batches/nope/start").status_code == 404
+    assert client.delete("/api/batches/nope").status_code == 404
+
+
+def test_start_and_discard_leave_no_marker_behind_refused_or_not():
+    """Both mark the dirs whose rows they may remove, so a crash after the
+    commit leaves those sweepable (Task 9) -- and must take the markers off
+    again on every path that does not end in removing the dir."""
+    rt = main.runtime()
+    batch_id, done = import_file(pdf_bytes(pages=2))
+    doc_id = done["documents"][0]["id"]
+    d = rt.data.doc_dir(doc_id)
+    assert client.post(f"/api/batches/{batch_id}/start").status_code == 409     # nothing included
+    assert not (d / ".importing").exists()
+    client.post(f"/api/documents/{doc_id}/include", json={"included": True})
+    assert client.post(f"/api/batches/{batch_id}/start").status_code == 200
+    assert d.is_dir() and not (d / ".importing").exists()
+    assert client.delete(f"/api/batches/{batch_id}").status_code == 409         # started
+    assert not (d / ".importing").exists()
+
+
+def _start_or_discard(step, batch_id):
+    return (client.post(f"/api/batches/{batch_id}/start") if step == "start"
+            else client.delete(f"/api/batches/{batch_id}"))
+
+
+@pytest.mark.parametrize("step", ["start", "discard"])
+def test_every_dir_is_marked_before_the_transaction(monkeypatch, step):
+    """A crash after the commit must find every removed row's dir marked
+    (the sweep's only licence to delete) -- so the markers are on disk when
+    the repo is called, and the repo is handed the snapshot that was
+    marked, so it can refuse a draft that no longer matches it."""
+    rt = main.runtime()
+    batch_id = new_batch()["id"]
+    ids = [import_file(pdf_bytes(pages=p), name=f"{p}.pdf", batch_id=batch_id)[1]
+           ["documents"][0]["id"] for p in (1, 2)]
+    seen = {}
+    name = "start_batch" if step == "start" else "delete_batch"
+    real = getattr(rt.repo, name)
+
+    def spy(batch, expected_ids=None):
+        seen["marked"] = [(rt.data.doc_dir(i) / ".importing").exists() for i in ids]
+        seen["expected"] = list(expected_ids)
+        return real(batch, expected_ids=expected_ids)
+    monkeypatch.setattr(rt.repo, name, spy)
+    assert _start_or_discard(step, batch_id).status_code == 200
+    assert seen == {"marked": [True, True], "expected": ids}
+
+
+@pytest.mark.parametrize("step", ["start", "discard"])
+def test_a_row_staged_after_the_snapshot_refuses_and_changes_nothing(monkeypatch, caplog, step):
+    """The snapshot is what was marked. A row it does not hold has an
+    unmarked dir that a crash after the commit would leak forever, so the
+    step is refused (the UI reloads, nothing retries silently), its markers
+    come off, and every row, dir and the draft stay as they were."""
+    caplog.set_level(logging.DEBUG)
+    rt = main.runtime()
+    batch_id, first = import_file(pdf_bytes(), name="Geheim-1.pdf")
+    _, late = import_file(pdf_bytes(pages=2), name="Geheim-2.pdf", batch_id=batch_id)
+    ids = [first["documents"][0]["id"], late["documents"][0]["id"]]
+    monkeypatch.setattr(rt.repo, "batch_document_ids", lambda b: ids[:1])
+    r = _start_or_discard(step, batch_id)
+    assert (r.status_code, r.json()) == (409, {"detail": "the import changed — reload it"})
+    view = client.get(f"/api/batches/{batch_id}").json()
+    assert view["batch"]["draft"] is True
+    assert [(d["id"], d["state"]) for d in view["documents"]] == [(i, "staged") for i in ids]
+    for i in ids:
+        d = rt.data.doc_dir(i)
+        assert (d / "input.pdf").exists() and not (d / ".importing").exists()
+    assert "Geheim" not in r.text + "\n".join(rec.getMessage() for rec in caplog.records)
+
+
+def test_a_completion_cannot_slip_between_the_snapshot_and_the_commit(monkeypatch):
+    """A completion commits its rows and only THEN takes its own markers
+    off. Were a Start or Discard to snapshot and mark in between, that late
+    unlink would strip a marker it had just written, and a crash after its
+    commit would leave an unmarked, rowless dir nothing ever removes. So a
+    completion's commit-and-unmark and a Start/Discard's snapshot-to-commit
+    exclude each other."""
+    import threading
+    rt = main.runtime()
+    batch_id = new_batch()["id"]
+    uid = send(batch_id, pdf_bytes())
+    real_finish = rt.repo.finish_completion
+    results = {}
+
+    def finish_then_race(upload_id, docs, ignored):
+        rows = real_finish(upload_id, docs, ignored)
+        t = threading.Thread(target=rt.uploads.discard_batch, args=(batch_id,))
+        t.start()
+        t.join(0.3)
+        # Not "is the thread alive": after its commit the discard waits on
+        # the UPLOAD's lock to remove the part anyway. What must not have
+        # happened yet is its snapshot-to-commit -- the rows still stand.
+        results["rows_meanwhile"] = rt.repo.batch_document_ids(batch_id)
+        results["thread"] = t
+        return rows
+    monkeypatch.setattr(rt.repo, "finish_completion", finish_then_race)
+    done = client.post(f"/api/uploads/{uid}/complete").json()
+    results["thread"].join(5)
+    assert not results["thread"].is_alive()
+    assert results["rows_meanwhile"] == [done["documents"][0]["id"]]
+    # The discard ran once the completion was done, saw its row, removed it.
+    assert not rt.data.doc_dir(done["documents"][0]["id"]).exists()
+    assert client.get(f"/api/batches/{batch_id}").status_code == 404
