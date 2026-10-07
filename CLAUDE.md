@@ -121,25 +121,41 @@ on all 40 digest keys. UI rules have node tests (`tests/js/`, run inside
 pytest; they skip without node).
 
 **REVIEW CAPTURE (HITL phase 1,
-`docs/plans/2026-10-07-hitl-review-grading-design.md`).** With
-`SINDRI_REVIEW_DIR` set, every extraction writes `header.json` and
-`proposal.json` server-side, the UI appends net reviewer operations to
-`events.jsonl`, and Finish & Export — now a single button replacing the two
-export buttons — is single-flight and gated on unresolved flagged rows; it
-seals `sealed/rN.json` only after replaying the journal on the server-held
-proposal and checking the result matches what was exported, recording any
-mismatch rather than silently shipping it. Review capture is best-effort end
-to end: a logging fault never fails an extraction. The progress bar now reads
-"resolved · unchecked" instead of counting unflagged rows as reviewed, so an
-untouched low-confidence row no longer looks done. **That directory is client
-data under §1.** Unset, the app reviews and exports but records nothing, and
-the UI says so. `tests/conftest.py` forces `app.main._REVIEW_STORE` to `None`
-for every test, so an ambient `SINDRI_REVIEW_DIR` in a developer's shell can
-never make the suite write real records; and
+`docs/plans/2026-10-07-hitl-review-grading-design.md`).** Every extraction
+writes `header.json` and `proposal.json` server-side into the review dir
+(`SINDRI_REVIEW_DIR`, default `<SINDRI_DATA_DIR>/reviews`), the UI appends net
+reviewer operations to `events.jsonl`, and Finish & Export — a single button —
+is single-flight and gated on unresolved flagged rows; it seals
+`sealed/rN.json` by replaying the journal on the server-held proposal, and the
+exports are rendered server-side from that sealed revision (batch B1 below).
+Since B1 the journal is mandatory: a failed review-record write fails the
+drawing (with Retry) rather than shipping an unrecorded review. The progress
+bar reads "resolved · unchecked" instead of counting unflagged rows as
+reviewed, so an untouched low-confidence row no longer looks done. **That
+directory is client data under §1.** `tests/conftest.py` gives every test its
+own data and review dir, so an ambient `SINDRI_DATA_DIR` /
+`SINDRI_REVIEW_DIR` in a developer's shell can never make the suite write
+real records; and
 `tests/review/test_journal_replay_parity.py` fuzzes the JS↔Python replay
 contract directly — if it fails, `state.js`'s ops and `app/review/replay.py`
 have drifted apart. Phases 2-5 (forcing, grading, dev validation, return
 bundle) each get their own plan.
+
+**BATCH B1: EXTRACTION RUNS IN THE BACKGROUND** (`docs/plans/2026-10-07-batch-async-review-design.md`).
+`app/batch/` (product code; the boundary test forbids `app.eval` imports)
+holds a SQLite index under `SINDRI_DATA_DIR` (default `/data`), one
+extraction worker thread (single process, enforced by a lock file), and the
+`Runtime` that `app.main.runtime()` builds lazily. Upload stages a drawing,
+`/api/documents/{id}/enqueue` queues it, the browser polls, and
+`/api/documents/{id}/open` rebuilds the review from the server's journal with
+a fresh writer token (latest tab wins). **The review journal is mandatory
+now** — the "logging off" mode is gone and an unwritable review dir fails the
+boot. Exports render from the sealed revision only. `tests/conftest.py` gives
+every test its own data and review dir. **Local dev must set
+`SINDRI_DATA_DIR`** (e.g. to a scratch directory): the default `/data` is
+usually not writable outside the container and the app fails loudly on first
+use. B2 (import), B3 (work list), B4 (mass export, retention, token) follow,
+each with its own plan.
 
 **`read-lora-v1` IS NOW HARMFUL UNDER THE SHIPPED POLICY — deployment CLOSED**
 (2026-10-05, `docs/plans/2026-10-05-read-adapter-repricing-result.md`;
@@ -191,7 +207,7 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **1388 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **1483 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). **`tesseract` is a device
 prerequisite** — without the binary six tests fail as `TesseractNotFoundError`
 and read as broken code. `SCHEMA_VERSION` = 1 — do not bump it. Split frozen
@@ -931,7 +947,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 1388 passed, 2 skipped
+python -m pytest -q                          # 1483 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```

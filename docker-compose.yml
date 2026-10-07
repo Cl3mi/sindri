@@ -7,7 +7,9 @@ services:
       - ./data:/data
     environment:
       - OCR_BACKEND=tesseract
-      # Durable review records (docs/plans/2026-10-07-hitl-review-grading-design.md).
-      # Client data: never inside the image, never in /tmp.
+      # Drawings, the queue index and review records
+      # (docs/plans/2026-10-07-batch-async-review-design.md). Client data:
+      # never inside the image, never in /tmp. Run a single uvicorn worker.
+      - SINDRI_DATA_DIR=/data
       - SINDRI_REVIEW_DIR=/data/reviews
       - SINDRI_REVIEW_CONSENT=0
