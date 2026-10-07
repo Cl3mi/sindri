@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import shutil
+import tempfile
 import threading
 import uuid
 from contextlib import asynccontextmanager
@@ -375,11 +376,13 @@ _EXPORT_KINDS = {
 }
 
 # CR/LF could inject a header line, a quote would close the quoted-string
-# early, and a path separator has no business inside a filename at all --
-# `file_name` comes straight from the untrusted upload (main.upload stores it
-# raw), so both the ASCII fallback and the RFC 5987 form below are built from
-# a sanitised copy, never the original string.
-_HEADER_UNSAFE = re.compile(r'[\r\n"\\/]')
+# early, a path separator has no business inside a filename at all, and any
+# OTHER control character (tab, 0x01, DEL, ...) is just as capable of
+# confusing a header parser -- `file_name` comes straight from the untrusted
+# upload (main.upload stores it raw), so both the ASCII fallback and the
+# RFC 5987 form below are built from a sanitised copy, never the original
+# string.
+_HEADER_UNSAFE = re.compile(r'[\x00-\x1f\x7f"\\/]')
 
 
 def _content_disposition(filename: str) -> str:
@@ -392,55 +395,120 @@ def _content_disposition(filename: str) -> str:
     return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(safe, safe='')}"
 
 
-def _render_export(work: Path, rev: int, kind: str, sealed: dict) -> Path:
+# One lock per (doc_id, rev, kind): two requests racing the FIRST export of a
+# revision must not share a fixed temp name -- the loser's rename would raise
+# FileNotFoundError on what was otherwise a perfectly good export, or (worse)
+# a half-written file could be renamed into place and served. The dict itself
+# is touched from more than one thread, hence its own small guard.
+_EXPORT_LOCKS: dict = {}
+_EXPORT_LOCKS_GUARD = threading.Lock()
+
+
+def _export_lock(key) -> threading.Lock:
+    with _EXPORT_LOCKS_GUARD:
+        return _EXPORT_LOCKS.setdefault(key, threading.Lock())
+
+
+class _InputUnavailable(Exception):
+    """One of the export's INPUTS -- the sealed rows, result.json, or
+    input.pdf -- is missing or unreadable. Raised instead of letting the
+    underlying OSError/ValueError/KeyError/RuntimeError escape, so
+    export_document can tell this apart from a fault in the EXPORTER itself
+    (app.excel / app.pipeline.ballooned_pdf): that is a bug and must 500, not
+    be reported as "the files are gone"."""
+
+
+def _render_export(doc_id: str, work: Path, rev: int, kind: str, sealed: dict) -> Path:
     """Render revision `rev` once and cache it, so a repeated or mass export
     of the same revision is the same bytes (batch design §4). The rows come
-    from the SEALED revision, never from a browser."""
+    from the SEALED revision, never from a browser.
+
+    `mark_exported` (in the caller) runs on every call, cache hit or not: a
+    re-download still IS an export, and an explicit older `?rev=` moving
+    `exported_revision` backward is correct -- that field means "last
+    exported", not "highest ever sealed". The cached rN.* is never
+    invalidated if the exporter's own code changes later; delete
+    docs/<id>/exports/ by hand to force a rebuild."""
     out = work / "exports" / f"r{rev}.{kind}"
     if out.is_file():
         return out
-    out.parent.mkdir(exist_ok=True)
-    rows = _exportable([Characteristic.model_validate(r) for r in sealed["rows"]])
-    # Temp name keeps the real extension: openpyxl and PyMuPDF both choose
-    # behaviour by it. Renamed into place only once complete, so a reader
-    # racing a first render never sees a half-written file (concurrent first
-    # exports of the same revision are not serialised otherwise).
-    tmp = out.with_name(f"r{rev}.tmp.{kind}")
-    if kind == "xlsx":
-        result = json.loads((work / "result.json").read_text(encoding="utf-8"))
-        write_workbook(
-            rows, tmp,
-            notes=NoteBlock.model_validate(result["notes"]) if result["notes"] else None,
-            marks=MarkBlock.model_validate(result["marks"]) if result["marks"] else None,
-            title_block=[TitleField.model_validate(t) for t in result["title_block"]])
-    else:
-        render_ballooned_pdf(work / "input.pdf", rows, dpi=300, out_path=tmp)
-    tmp.replace(out)
-    return out
+    with _export_lock((doc_id, rev, kind)):
+        if out.is_file():      # a concurrent first render finished while we waited
+            return out
+        out.parent.mkdir(exist_ok=True)
+        try:
+            rows = _exportable([Characteristic.model_validate(r) for r in sealed["rows"]])
+            notes = marks = title_block = None
+            src = None
+            if kind == "xlsx":
+                result = json.loads((work / "result.json").read_text(encoding="utf-8"))
+                notes = NoteBlock.model_validate(result["notes"]) if result["notes"] else None
+                marks = MarkBlock.model_validate(result["marks"]) if result["marks"] else None
+                title_block = [TitleField.model_validate(t) for t in result["title_block"]]
+            else:
+                src = work / "input.pdf"
+                if not src.is_file():
+                    raise _InputUnavailable("input.pdf is missing")
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            raise _InputUnavailable from e
+
+        # A unique name per attempt -- the single fixed temp name this used
+        # to use let a second concurrent render clobber or lose the first's
+        # file. Removed in `finally` whether or not the rename below ran (it
+        # is already gone once `replace` succeeds; unlink then no-ops).
+        fd, tmp_name = tempfile.mkstemp(
+            dir=out.parent, prefix=f"r{rev}.", suffix=f".tmp.{kind}")
+        os.close(fd)
+        tmp = Path(tmp_name)
+        try:
+            if kind == "xlsx":
+                write_workbook(rows, tmp, notes=notes, marks=marks, title_block=title_block)
+            else:
+                try:
+                    render_ballooned_pdf(src, rows, dpi=300, out_path=tmp)
+                except (fitz.FileDataError, fitz.FileNotFoundError) as e:
+                    # PyMuPDF's own exceptions for a missing/corrupt PDF are
+                    # RuntimeError subclasses, not OSError -- without this
+                    # they would escape as an unhandled 500 with a traceback
+                    # naming the full path.
+                    raise _InputUnavailable from e
+            tmp.replace(out)
+        finally:
+            tmp.unlink(missing_ok=True)
+        return out
 
 
 @app.get("/api/documents/{doc_id}/export/{kind}")
 def export_document(doc_id: str, kind: str, rev: Optional[int] = None):
     """Render and cache an export of a SEALED revision -- never from rows a
-    browser sends. The row must exist before any path under docs/ is built or
-    created, so an id nobody owns never gets even an empty directory."""
+    browser sends. `_doc_dir` only COMPUTES this path, never creates it; the
+    row itself must exist (checked below) before any directory under docs/ is
+    actually created, so an id nobody owns never gets even an empty
+    exports/ folder."""
     work = _doc_dir(doc_id)
     if kind not in _EXPORT_KINDS:
         raise HTTPException(status_code=404, detail="unknown export kind")
     rt = runtime()
     doc = rt.repo.get(doc_id)
-    rev = rev or doc["final_revision"]
-    if not rev:
+    if rev is None:
+        rev = doc["final_revision"]
+    if rev is None:
         raise HTTPException(status_code=409, detail="finish the review before exporting")
     sealed = rt.store.revision(doc_id, rev)
     try:
-        path = _render_export(work, rev, kind, sealed)
-    except (OSError, ValueError, KeyError, TypeError) as e:
+        path = _render_export(doc_id, work, rev, kind, sealed)
+    except _InputUnavailable as e:
         # Handled, not a 500: the traceback would log the full path, and with
-        # it the whole document id. TYPE and id[:8] only (CLAUDE.md §1).
-        log.warning("export %s r%s.%s: files unavailable: %s",
-                    doc_id[:8], rev, kind, type(e).__name__)
+        # it the whole document id. TYPE only (CLAUDE.md §1).
+        log.warning("export %s r%s.%s: input unavailable: %s",
+                    doc_id[:8], rev, kind, type(e.__cause__ or e).__name__)
         raise HTTPException(status_code=409, detail="drawing files unavailable")
+    except Exception as e:
+        # A fault in the EXPORTER, not a missing input -- a fixed sentence,
+        # never the exception's own text, which could carry client data.
+        log.warning("export %s r%s.%s: render failed: %s",
+                    doc_id[:8], rev, kind, type(e).__name__)
+        raise HTTPException(status_code=500, detail="export failed")
     rt.repo.mark_exported(doc_id, rev)
     media, suffix = _EXPORT_KINDS[kind]
     disposition = _content_disposition(Path(doc["file_name"]).stem + suffix)

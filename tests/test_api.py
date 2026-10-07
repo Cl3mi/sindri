@@ -259,17 +259,128 @@ def test_exports_drop_unconfirmed_suggestions_server_side(
 
 def test_content_disposition_sanitises_a_hostile_filename():
     """filename comes from the untrusted upload name. CR/LF must never reach a
-    header (injection), a quote must not close the quoted-string early, and a
-    separator has no business in a filename; the RFC 5987 form carries the
-    real (sanitised) name for everyone else."""
+    header (injection), a quote must not close the quoted-string early, a
+    separator has no business in a filename, and any other control character
+    (tab, 0x01, DEL) is just as capable of confusing a header parser; the
+    RFC 5987 form carries the real (sanitised) name for everyone else."""
     import app.main as main
-    header = main._content_disposition('a"b\r\nEvil: 1/../héllo.pdf')
+    header = main._content_disposition('a"b\r\nEvil: 1/../héllo\t\x01\x7f.pdf')
     assert "\r" not in header and "\n" not in header
+    assert "\t" not in header and "\x01" not in header and "\x7f" not in header
     assert header.count('filename="') == 1
     ascii_part = header.split('filename="')[1].split('"')[0]
     assert '"' not in ascii_part and "\r" not in ascii_part and "\n" not in ascii_part
     assert "/" not in ascii_part and "\\" not in ascii_part
+    assert "\t" not in ascii_part and "\x01" not in ascii_part and "\x7f" not in ascii_part
     assert "filename*=UTF-8''" in header
+
+
+def test_export_rev_zero_and_negative_are_404(sample_pdf, stub_backend):
+    """`?rev=0` must not be treated as "no rev given" (0 is falsy, but a real
+    revision argument) -- it must look up revision 0, which never exists, and
+    404 like any other unknown revision."""
+    sid = finished(client, sample_pdf)
+    assert client.get(f"/api/documents/{sid}/export/xlsx?rev=0").status_code == 404
+    assert client.get(f"/api/documents/{sid}/export/xlsx?rev=-1").status_code == 404
+
+
+def test_export_pdf_with_missing_input_file_is_a_clean_409(sample_pdf, stub_backend):
+    """input.pdf gone is the same class of fault as a missing result.json: a
+    clean 409, never a 500 from PyMuPDF's own FileNotFoundError (a RuntimeError
+    subclass, not an OSError -- it would otherwise escape uncaught)."""
+    import app.main as main
+    sid = finished(client, sample_pdf)
+    (main.runtime().data.doc_dir(sid) / "input.pdf").unlink()
+    r = client.get(f"/api/documents/{sid}/export/pdf")
+    assert r.status_code == 409
+    assert sid not in r.json()["detail"]
+
+
+def test_export_pdf_with_corrupt_input_file_is_a_clean_409(sample_pdf, stub_backend):
+    """A present but unreadable input.pdf raises PyMuPDF's FileDataError, also
+    a RuntimeError subclass -- still an input fault, not a server bug."""
+    import app.main as main
+    sid = finished(client, sample_pdf)
+    (main.runtime().data.doc_dir(sid) / "input.pdf").write_bytes(b"not a pdf at all")
+    r = client.get(f"/api/documents/{sid}/export/pdf")
+    assert r.status_code == 409
+    assert sid not in r.json()["detail"]
+
+
+def test_an_unexpected_render_fault_is_a_500_with_a_fixed_body(
+        sample_pdf, stub_backend, monkeypatch):
+    """A bug in the exporter itself (not a missing/unreadable input) must
+    never be reported as "the files are gone" -- and the body is a fixed
+    sentence, never the exception's own text."""
+    import app.main as main
+
+    def broken(*a, **kw):
+        raise TypeError("boom: /some/sensitive/path")
+
+    monkeypatch.setattr(main, "write_workbook", broken)
+    sid = finished(client, sample_pdf)
+    r = client.get(f"/api/documents/{sid}/export/xlsx")
+    assert r.status_code == 500
+    assert r.json() == {"detail": "export failed"}
+
+
+def test_render_export_renders_once_under_concurrent_first_calls(
+        sample_pdf, stub_backend, monkeypatch):
+    """Two callers racing the FIRST export of a revision must not share a
+    fixed temp name: the loser must not see a FileNotFoundError from a rename
+    the winner already completed, or a half-written file. The lock makes the
+    two calls mutually exclusive, so the exporter is expected to run exactly
+    ONCE -- the second caller, arriving while the first still holds the lock
+    (a `started` event lets it know that, rather than guessing with a sleep),
+    must simply wait and then get the already-rendered, byte-identical file."""
+    import threading
+    import app.main as main
+
+    sid = finished(client, sample_pdf)
+    work = main.runtime().data.doc_dir(sid)
+    sealed = main.runtime().store.revision(sid, 1)
+    calls = []
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_write(rows, out, **kw):
+        calls.append(1)
+        started.set()
+        assert release.wait(timeout=5), "second caller never reached the lock"
+        with open(out, "wb") as f:
+            f.write(b"x" * 2000)
+
+    monkeypatch.setattr(main, "write_workbook", slow_write)
+    results = []
+
+    def go():
+        try:
+            p = main._render_export(sid, work, 1, "xlsx", sealed)
+            results.append(("ok", p.read_bytes()))
+        except Exception as e:
+            results.append(("err", e))
+
+    first = threading.Thread(target=go)
+    first.start()
+    assert started.wait(timeout=5), "first caller never started rendering"
+    second = threading.Thread(target=go)
+    second.start()
+    # No signal for "blocked on the lock" exists (that is the point: from the
+    # outside it looks identical to "not started yet"), so this is the one
+    # deliberate sleep in the suite -- long enough that a second caller which
+    # was NOT blocked (the bug) would have already raced past the lock, run
+    # its own render, and corrupted `calls`/the output file before it is
+    # released below.
+    import time
+    time.sleep(0.2)
+    release.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert [r[0] for r in results] == ["ok", "ok"]
+    assert results[0][1] == results[1][1] == b"x" * 2000
+    assert len(calls) == 1
+    assert list((work / "exports").glob("*.tmp.*")) == []
 
 
 def test_image_rejects_bad_session_id():
