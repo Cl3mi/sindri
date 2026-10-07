@@ -182,12 +182,38 @@ def test_seal_is_refused_when_the_index_says_not_ready_for_review(sample_pdf, st
     result = extract(sample_pdf)
     sid, writer, rows = result["session_id"], result["writer"], result["rows"]
     rt = main.runtime()
+    # No public route reaches this state for a drawing that already has a
+    # review session -- a `ready` row only moves forward via the API -- so
+    # the row is flipped directly as defence-in-depth against the window
+    # described above, not a scenario the API itself can walk into.
     rt.repo._conn.execute("UPDATE document SET state = 'extracting' WHERE id = ?", (sid,))
     sealed_dir = rt.store.root / sid / "sealed"
     r = client.post(f"/api/session/{sid}/seal", json={
         "writer": writer, "final_seq": 0, "rows": rows, "reviewed_ids": []})
     assert r.status_code == 409
     assert not sealed_dir.exists()
+
+
+def test_resending_sealed_events_leaves_the_drawing_finished(sample_pdf, stub_backend):
+    """A retried Finish, or a tab that never saw the seal response, resends
+    events the store already sealed. Those are below `through` and filtered
+    out by append() as not new, so they must not move a finished drawing --
+    only a genuinely new event past the seal does."""
+    result = extract(sample_pdf)
+    sid, writer, rows = result["session_id"], result["writer"], result["rows"]
+    client.post(f"/api/session/{sid}/events", json={"writer": writer, "events": [
+        {"seq": 1, "type": "accept", "ids": []}]})
+    r = client.post(f"/api/session/{sid}/seal", json={
+        "writer": writer, "final_seq": 1, "rows": rows, "reviewed_ids": []})
+    assert r.status_code == 200
+    assert doc_state(sid)["state"] == "finished"
+    r = client.post(f"/api/session/{sid}/events", json={"writer": writer, "events": [
+        {"seq": 1, "type": "accept", "ids": []}]})
+    assert r.status_code == 200
+    assert doc_state(sid)["state"] == "finished"
+    client.post(f"/api/session/{sid}/events", json={"writer": writer, "events": [
+        {"seq": 2, "type": "accept", "ids": []}]})
+    assert doc_state(sid)["state"] == "in_review"
 
 
 def test_an_event_above_a_gap_is_not_acknowledged_and_state_stays_ready(sample_pdf, stub_backend):

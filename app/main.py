@@ -327,10 +327,15 @@ def seal_session(session_id: str, req: SealRequest):
     incomplete log must never be graded (design §2).
 
     The index's state is checked, and the row's existence along with it,
-    BEFORE store.seal runs: a sealed revision must never be written to disk
-    for a drawing the index does not say is ready/in_review/finished (e.g. a
-    stale tab mid-retry, before the worker re-creates the review session) or
-    for one whose row was removed."""
+    BEFORE store.seal runs: a sealed revision is not written to disk for a
+    drawing the index does not say is ready/in_review/finished (e.g. a stale
+    tab mid-retry, before the worker re-creates the review session). This is
+    not an absolute "never" -- a delete can still commit between this
+    `repo.get` and `store.seal`, since the two live behind separate locks
+    (store lock below, repo lock inside `get`/`mark_finished`). In that race
+    `mark_finished` then 404s on the now-missing row, and the revision it
+    sealed sits as an orphan in the review dir, which a delete deliberately
+    keeps anyway (CLAUDE.md §1) -- so nothing is lost, it is just unlisted."""
     _doc_dir(session_id)
     rt = runtime()
     doc = rt.repo.get(session_id)
@@ -340,6 +345,16 @@ def seal_session(session_id: str, req: SealRequest):
     out = rt.store.seal(
         session_id, req.writer, req.final_seq,
         [r.model_dump(mode="json") for r in req.rows], req.reviewed_ids)
+    # store.seal and mark_finished are not one atomic step -- the store's own
+    # lock and the repo's are separate -- so an event that lands in the gap
+    # between them is sealed on disk but not yet reflected in the index; the
+    # drawing reads `finished` with that edit unsealed until the next new
+    # event moves it back to in_review. Acceptable because the UI's Finish is
+    # single-flight, so nothing else is writing events at the same moment.
+    # And if mark_finished itself fails after store.seal succeeded (e.g. a
+    # transient sqlite I/O error) a retried Finish calls store.seal again and
+    # writes a SECOND revision -- this recovers rather than no-ops, it is not
+    # idempotent.
     rt.repo.mark_finished(session_id, out["revision"], req.final_seq)
     return out
 
