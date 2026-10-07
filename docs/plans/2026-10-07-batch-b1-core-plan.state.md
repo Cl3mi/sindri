@@ -1,7 +1,7 @@
 # State: Batch B1 — Core (queue, worker, resume, server-side export)
 
 Plan: `docs/plans/2026-10-07-batch-b1-core-plan.md`
-Milestone: api (task 7 of 11) — next is milestone ui (Tasks 8-11)
+Milestone: ui (task 11 of 11) — B1 COMPLETE; next is the B2 (import) plan, on the operator's go
 
 ## Completed task IDs
 - Task 1 — data dir + migrated SQLite index (`ce10e56`)
@@ -11,23 +11,40 @@ Milestone: api (task 7 of 11) — next is milestone ui (Tasks 8-11)
 - Task 5 — Runtime + API on the queue + `/open` (`348f7d0`, `ffff519`)
 - Task 6 — journal drives the drawing's state (`bae5564`, `12b52b1`)
 - Task 7 — export only from a sealed revision (`3d640c5`, `56ede9e`, `d98812b`)
+- Task 8 — rebuild a review in the browser, resume parity (`baf7ccc`, `c8e988b`)
+- Task 9 — journal mandatory in the client (`00a2e00`, `2d351d8`)
+- Task 10 — interim UI: queue, wait, open, `#doc=` resume (`4cb05b7`, `b8c2c51`, `8356090`, `7645626`)
+- Task 11 — compose data dir + CLAUDE.md (`b5532af`); this checkpoint
 
 ## What's done
-The server side of B1 is complete: uploads stage a document, the background
-worker extracts it, `/open` resumes it with a rotated writer, events/seal move
-it through in_review/finished, and exports render server-side from the sealed
-revision (cached per revision under a lock). Every task passed a spec review
-and an Opus code-quality review; every reviewer-reproduced bug is fixed with a
-regression test. Suite: 1481 passed, 2 skipped. **The browser UI is broken
-from Task 5 until Tasks 9/10** (it still calls the removed SSE / browser-row
-export routes) — that is the plan's sequencing.
+B1 is complete. Extraction runs in the background worker with no browser
+attached; a drawing reopens from `#doc=<id>` exactly where the reviewer
+stopped (proposal + net journal replayed through state.js, undo restored,
+numbering from `last_seq + 1`); the latest tab wins; Finish seals and exports
+server-side from the sealed revision. Every task passed a spec review and a
+code-quality review (Opus for Tasks 2-5 and every data-integrity or client
+task); every reviewer-reproduced bug is fixed with a regression test.
+Verified: suite **1483 passed, 2 skipped** (node tests inside pytest: 84);
+guard **32 passed, 0 failed**.
+
+**Real-browser drive (Task 11 Step 4; throwaway, scratchpad, stub backend with
+a 5 s extract delay; node playwright-core + cached chromium): 5/5 PASS.**
+1. Upload → confirm → Start: overlay "Extracting … stub delay", 33 rows loaded,
+   URL `#doc=…`.
+2. Edit + accept, reload → "Review restored (2 changes)", both present; Undo
+   reverts the accept and keeps the edit.
+3. Same link in a second tab + edit → first tab's next edit shows "Opened in
+   another tab" (server 409 StaleWriter).
+4. Finish in tab 2 → "Review sealed as revision r1", downloads `sample.xlsx`
+   and `sample_ballooned` (pdf); document `finished`, `final_revision` 1,
+   `exported_revision` 1.
+5. Second drawing: Start, tab closed while `extracting` → API shows `ready`
+   with no tab open; reopening the link loads it.
 
 ## What's next
-Task 8 (rebuild a review in the browser from `/open`, resume parity), Task 9
-(journal mandatory in the client, api.js on the new endpoints), Task 10
-(interim UI: queue, poll, open, `#doc=` resume), Task 11 (deployment, docs,
-Playwright drive against a stub backend), then the ui milestone checkpoint and
-the guard re-check.
+Nothing in B1. Do not push; do not start B2 until the operator says so. B2
+(chunked upload, ZIP/folder, duplicates, scope badges, staging API) gets its
+own plan, written just in time from the design.
 
 ## Decisions / deviations since the plan was written
 - **Repo `_tx`:** COMMIT sits inside the try and ROLLBACK runs only when
@@ -84,8 +101,37 @@ the guard re-check.
   RFC 5987 `filename*`. `?rev=0` → 404. `mark_exported` runs on every hit
   (a re-download is an export). The cache is not invalidated if exporter code
   changes.
-- **For Task 11:** `Runtime.from_env` defaults to `/data`; document
-  `SINDRI_DATA_DIR` for local dev.
+- **Resume (Task 8):** `restoreSession` builds every op before touching the
+  session (a bad event leaves the previous drawing intact); `journal.resume`
+  refuses a non-integer/negative `last_seq`; the parity fuzz asserts
+  contiguous post-reload numbering, a post-seal-shaped reopen and an undo of a
+  restored op.
+- **Client API (Task 9):** downloads read RFC 5987 `filename*` first; a
+  non-string error `detail` (FastAPI 422) reads as "request rejected (422)";
+  errors carry `status`.
+- **Interim UI (Task 10) — beyond the plan:** new `reopen.js`
+  (`restoreReview`, `flushBeforeLeaving`, `afterFlush`) and `stop.js`
+  (`nextStopStep`) so the ordering is node-tested. Before opening another
+  drawing the current journal is flushed (confirm "leave anyway" beacons);
+  edits made while `/open` is in flight are beaconed with the old writer.
+  `/open` also returns `sealed_seq` and `finisher.seed()` makes a no-edit
+  Finish after a reload re-export instead of sealing a redundant revision;
+  `createExporter` skips an already-downloaded kind on retry. Stop = cancel
+  (re-sent until accepted) then DELETE, waiting out 409 while the worker
+  unwinds, giving up visibly with Close after 5 other failures; DELETE 404 =
+  done. Upload is refused while a drawing waits, stops, resumes or opens. A
+  drawing that becomes ready behind an unsaved review waits (toast shows its
+  `#doc=` link) and opens once the journal drains, on close, or immediately
+  if another tab took the writer. `#doc` is cleared only on a 404.
+- **Task 11:** the plan had the implementer edit this state file; per the
+  operator it was written by the controller instead, in its own commit.
+  CLAUDE.md's REVIEW CAPTURE paragraph was corrected for the mandatory
+  journal; local dev must set `SINDRI_DATA_DIR`.
+- **Known, left for B3:** no `hashchange` listener; polling continues while
+  the tab is hidden; a ready drawing switches the screen automatically; stale
+  detection matches the server's message text; a flush that is only partly
+  acknowledged with nothing waiting is retried on the next edit, not by timer.
+  Lock dict for exports grows by one small lock per (drawing, revision, kind).
 - Known and deferred: `mark_exported` / `events_appended` are silent on an
   unknown id (API checks existence); retry-from-cancelled is safe only with a
   single worker; `mark_finished` doesn't enforce monotonic revisions; cancel
