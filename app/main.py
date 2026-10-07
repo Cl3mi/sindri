@@ -435,6 +435,15 @@ def _render_export(doc_id: str, work: Path, rev: int, kind: str, sealed: dict) -
     with _export_lock((doc_id, rev, kind)):
         if out.is_file():      # a concurrent first render finished while we waited
             return out
+        if not work.is_dir():
+            # The row can outlive its files (a delete race, and routinely
+            # after a future retention purge). Without this check
+            # `mkdir(exist_ok=True)` below would find its own parent gone
+            # and raise FileNotFoundError -- an input fault, not a bug -- and
+            # recreating docs/<id>/ just to hold an empty exports/ directory
+            # would be exactly the orphan the row-must-exist-first rule
+            # elsewhere in this module exists to avoid.
+            raise _InputUnavailable("document directory is gone")
         out.parent.mkdir(exist_ok=True)
         try:
             rows = _exportable([Characteristic.model_validate(r) for r in sealed["rows"]])

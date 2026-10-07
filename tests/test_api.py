@@ -208,6 +208,24 @@ def test_export_with_missing_result_file_is_a_clean_409(sample_pdf, stub_backend
     assert sid not in r.json()["detail"]
 
 
+def test_export_with_a_deleted_doc_dir_is_a_clean_409_and_stays_deleted(
+        sample_pdf, stub_backend):
+    """The row can outlive its files (a delete race, and routinely after a
+    future retention purge): docs/<id>/ itself gone must be the same class of
+    fault as any other missing input, never a 500 from the bare
+    `mkdir(exist_ok=True)` finding its parent absent -- and the directory must
+    not be silently recreated just because an export was attempted."""
+    import shutil
+    import app.main as main
+    sid = finished(client, sample_pdf)
+    work = main.runtime().data.doc_dir(sid)
+    shutil.rmtree(work)
+    r = client.get(f"/api/documents/{sid}/export/xlsx")
+    assert r.status_code == 409
+    assert sid not in r.json()["detail"]
+    assert not work.exists()
+
+
 def test_a_repeated_export_is_byte_identical(sample_pdf, stub_backend):
     """Rendered once per revision and cached, so the single export and B4's
     mass export of the same revision are the same bytes."""
