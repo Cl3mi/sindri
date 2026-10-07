@@ -104,9 +104,9 @@ def test_stored_and_deflated_pdfs_are_staged(method):
 
 
 @pytest.mark.parametrize("name,shown", [
-    ("a\x01b.pdf", "a�b.pdf"),
-    ("exe.‮fdp.pdf", "exe.�fdp.pdf"),
-    ("x\n../evil.pdf", "x�../evil.pdf"),
+    ("a\x01b.pdf", "a\ufffdb.pdf"),
+    ("exe.\u202efdp.pdf", "exe.\ufffdfdp.pdf"),
+    ("x\n../evil.pdf", "x\ufffd../evil.pdf"),
 ])
 def test_an_ignored_name_is_listed_with_its_refused_characters_replaced(name, shown):
     """The name is shown to the user: a bidi override would make it lie
@@ -116,15 +116,15 @@ def test_an_ignored_name_is_listed_with_its_refused_characters_replaced(name, sh
 
 
 def test_an_ignored_name_is_listed_nfc_and_bounded():
-    long = "Brücke/" + "x" * 1000 + ".txt"
+    long = "Bru\u0308cke/" + "x" * 1000 + ".txt"
     got = classify(info(long))
     assert got.reason == "not_pdf"
-    assert got.name.startswith("Brücke/") and got.name.endswith("…")
+    assert got.name.startswith("Br\u00fccke/") and got.name.endswith("\u2026")
     assert len(got.name) == 255
 
 
 def test_shown_name():
     assert shown_name("ok.pdf") == "ok.pdf"
-    assert shown_name("a\x00b") == "a�b"
+    assert shown_name("a\x00b") == "a\ufffdb"
     assert shown_name("y" * 255) == "y" * 255
-    assert shown_name("y" * 256) == "y" * 254 + "…"
+    assert shown_name("y" * 256) == "y" * 254 + "\u2026"

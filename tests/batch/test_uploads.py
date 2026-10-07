@@ -834,6 +834,24 @@ def test_entries_sharing_a_local_header_are_ignored_unopened(h, capfd):
     assert "Geheim" not in out and "Geheim" not in err
 
 
+def test_a_directory_pointing_outside_the_file_is_unreadable_not_a_disk_fault(h):
+    """The end record claims the central directory starts 100 bytes later
+    than it does. zipfile still finds it (it corrects by the difference), but
+    shifts every header_offset by -100: the first entry's becomes negative,
+    and seeking there raises OSError(EINVAL) -- WITH an errno, so it would
+    read as the disk failing and answer 500 on every retry. An entry whose
+    local header lies outside the file is the archive's damage: listed,
+    never opened."""
+    b = bytearray(zip_bytes([("a.pdf", pdf_bytes())], zipfile.ZIP_STORED))
+    eocd = b.rindex(b"PK\x05\x06")
+    (cd_offset,) = struct.unpack_from("<I", b, eocd + 16)
+    struct.pack_into("<I", b, eocd + 16, cd_offset + 100)
+    done = h.imported(bytes(b), name="z.zip")
+    assert done["documents"] == [] and h.doc_dirs() == []
+    assert done["ignored"] == [{"name": "a.pdf", "reason": "unreadable_entry"}]
+    assert list(h.data.uploads.iterdir()) == []
+
+
 def test_more_than_a_thousand_ignored_entries_are_counted_not_all_listed(h):
     entries = [(f"n{i}.txt", b"") for i in range(1002)] + [("../a.pdf", b"x")]
     done = h.imported(zip_bytes(entries, zipfile.ZIP_STORED), name="z.zip")

@@ -412,6 +412,7 @@ class Uploads:
         with zf:
             infos = zf.infolist()
             shared = shared_headers(infos)
+            part_size = part.stat().st_size
             for info in infos:
                 entry = classify(info)
                 if entry is None:
@@ -419,9 +420,16 @@ class Uploads:
                 if isinstance(entry, Ignored):
                     ignored.append(entry.as_dict())
                     continue
-                if info.header_offset in shared:
-                    # Never opened: zipfile's own check would WARN with the
-                    # entry's name, and a warning reaches the server log.
+                if (info.header_offset in shared
+                        or not 0 <= info.header_offset < part_size):
+                    # Never opened, the archive's damage:
+                    # - a local header shared with another record (an
+                    #   overlap bomb): zipfile's own check would WARN with
+                    #   the entry's name, and a warning reaches the log;
+                    # - a local header outside the file (a lying end record
+                    #   shifts every offset): the seek raises EINVAL, an
+                    #   OSError WITH an errno that would read as the disk
+                    #   failing -- a 500 on every retry.
                     ignored.append(ignored_entry(info.filename, "unreadable_entry").as_dict())
                     continue
                 doc_id, d = self._new_doc_dir(created)

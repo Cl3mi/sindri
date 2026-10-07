@@ -45,10 +45,10 @@ def shown_name(s: str) -> str:
     name lie about its extension, nor a newline forge a line); at most
     SHOWN_NAME_MAX characters, the cut marked with an ellipsis."""
     s = unicodedata.normalize("NFC", s)
-    s = "".join("�" if unicodedata.category(ch) in _REFUSED_CATEGORIES else ch
+    s = "".join("\ufffd" if unicodedata.category(ch) in _REFUSED_CATEGORIES else ch
                 for ch in s)
     if len(s) > SHOWN_NAME_MAX:
-        s = s[:SHOWN_NAME_MAX - 1] + "…"
+        s = s[:SHOWN_NAME_MAX - 1] + "\u2026"
     return s
 
 
