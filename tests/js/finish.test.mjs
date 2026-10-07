@@ -30,10 +30,11 @@ function harness({ journal = fakeJournal(), canFinish = () => true,
     seal: async (sid, body) => {
       if (sealGate) await sealGate;
       calls.seals.push({ sid, ...body });
-      return { revision: ++rev, replay_ok: true, review_logging: true };
+      return { revision: ++rev, replay_ok: true };
     },
-    exportAll: async () => {
+    exportAll: async (s, revision) => {
       calls.exports++;
+      calls.exportedRevision = revision;
       if (fails > 0) { fails--; throw new Error('export failed'); }
     },
   });
@@ -97,26 +98,17 @@ test('an edit after a finished review seals a new revision', async () => {
   assert.equal(calls.seals[1].final_seq, 4);
 });
 
-test('logging switches off during the flush: no seal, export still runs, revision null', async () => {
-  // journal.flush() itself is what the real journal.js does when the server
-  // answers {contiguous: null, review_logging: false} mid-session: it flips
-  // `active` false as a SIDE EFFECT of the very flush() call finish.js is
-  // about to await. Before this, finish.js read `journal.active` only once
-  // at the top and so still tried to seal with a stale writer/seq after the
-  // flush had already turned logging off underneath it.
-  const journal = fakeJournal({ active: true, lastSeq: 3 });
-  journal.flush = async () => { journal.active = false; journal.writer = null; return 0; };
-  const { finisher, calls } = harness({ journal });
-  assert.deepEqual(await finisher.run(snap()), { status: 'done', revision: null });
+test('a drawing without a review log cannot be finished', async () => {
+  const { finisher, calls } = harness({ journal: fakeJournal({ active: false }) });
+  await assert.rejects(finisher.run(snap()), /reopen/);
   assert.equal(calls.seals.length, 0);
-  assert.equal(calls.exports, 1);
+  assert.equal(calls.exports, 0);
 });
 
-test('logging off: no flush-gated seal, exports still run', async () => {
-  const { finisher, calls } = harness({ journal: fakeJournal({ active: false }) });
-  assert.deepEqual(await finisher.run(snap()), { status: 'done', revision: null });
-  assert.equal(calls.seals.length, 0);
-  assert.equal(calls.exports, 1);
+test('export receives the revision it must render', async () => {
+  const { finisher, calls } = harness();
+  await finisher.run(snap());
+  assert.equal(calls.exportedRevision, 1);
 });
 
 test('a new session forgets the previous session\'s seal', async () => {

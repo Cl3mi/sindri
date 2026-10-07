@@ -12,70 +12,6 @@ export async function savePdf(file) {
   return res.json();
 }
 
-// Run extraction for a saved session and stream progress.
-// `onProgress({ step, detail, current, total })` is called per step; the
-// resolved value is the final extraction result. Pass an AbortController
-// `signal` to stop mid-run — an aborted fetch rejects with an AbortError.
-export async function runExtraction(sessionId, onProgress, signal) {
-  const res = await fetch(`/api/extract/${sessionId}`, { method: 'POST', signal });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: 'Extraction failed' }));
-    throw new Error(err.detail || 'Extraction failed');
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = '';
-  let result = null;
-  let errDetail = null;
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-
-    let sep;
-    while ((sep = buf.indexOf('\n\n')) !== -1) {
-      const block = buf.slice(0, sep);
-      buf = buf.slice(sep + 2);
-      const ev = parseEvent(block);
-      if (!ev) continue;
-      if (ev.event === 'progress') onProgress && onProgress(ev.data);
-      else if (ev.event === 'result') result = ev.data;
-      else if (ev.event === 'error') errDetail = ev.data && ev.data.detail;
-    }
-  }
-
-  if (errDetail) throw new Error(errDetail);
-  if (!result) throw new Error('Extraction ended without a result');
-  return result;
-}
-
-// Discard a saved session (fire-and-forget).
-export async function deleteSession(sessionId) {
-  if (!sessionId) return;
-  try {
-    await fetch(`/api/session/${sessionId}`, { method: 'DELETE' });
-  } catch {
-    /* best-effort cleanup */
-  }
-}
-
-function parseEvent(block) {
-  let event = 'message';
-  const dataLines = [];
-  for (const line of block.split('\n')) {
-    if (line.startsWith('event:')) event = line.slice(6).trim();
-    else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
-  }
-  if (!dataLines.length) return null;
-  try {
-    return { event, data: JSON.parse(dataLines.join('\n')) };
-  } catch {
-    return null;
-  }
-}
-
 export async function readRegion(sessionId, box) {
   const res = await fetch('/api/read_region', {
     method: 'POST',
@@ -87,26 +23,6 @@ export async function readRegion(sessionId, box) {
     throw new Error(err.detail || 'Region read failed');
   }
   return res.json();
-}
-
-export async function exportFile(endpoint, payload, filename) {
-  const res = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: 'Export failed' }));
-    throw new Error(err.detail || 'Export failed');
-  }
-  const blob = await res.blob();
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
 export async function health() {
@@ -151,4 +67,49 @@ export async function sealSession(sessionId, body) {
     throw new Error(err.detail || 'Could not finish');
   }
   return res.json();
+}
+
+async function jsonOrThrow(res, fallback) {
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: fallback }));
+    throw new Error(err.detail || fallback);
+  }
+  return res.json();
+}
+
+const docUrl = (id, tail = '') => `/api/documents/${id}${tail}`;
+
+export const getDocument = async (id) => jsonOrThrow(await fetch(docUrl(id)), 'Drawing not found');
+export const enqueueDocument = async (id) =>
+  jsonOrThrow(await fetch(docUrl(id, '/enqueue'), { method: 'POST' }), 'Could not queue the drawing');
+export const cancelDocument = async (id) =>
+  jsonOrThrow(await fetch(docUrl(id, '/cancel'), { method: 'POST' }), 'Could not cancel');
+export const retryDocument = async (id) =>
+  jsonOrThrow(await fetch(docUrl(id, '/retry'), { method: 'POST' }), 'Could not retry');
+export const openDocument = async (id) =>
+  jsonOrThrow(await fetch(docUrl(id, '/open'), { method: 'POST' }), 'Could not open the drawing');
+
+// Fire-and-forget removal of a staged drawing the user backed out of.
+export async function deleteDocument(id) {
+  if (!id) return;
+  try { await fetch(docUrl(id), { method: 'DELETE' }); } catch { /* best effort */ }
+}
+
+// Download a sealed revision's file; the server names it after the drawing.
+export async function downloadExport(id, kind, revision) {
+  const res = await fetch(docUrl(id, `/export/${kind}?rev=${revision}`));
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Export failed' }));
+    throw new Error(err.detail || 'Export failed');
+  }
+  const name = /filename="?([^"]+)"?/.exec(res.headers.get('content-disposition') || '')?.[1]
+    || `drawing.${kind}`;
+  const blob = await res.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }

@@ -1,6 +1,6 @@
 // Finish & Export (docs/plans/2026-10-07-hitl-review-grading-design.md §2):
-// flush the journal, seal the review, export. Pure apart from the injected
-// functions, so node can test it.
+// flush the journal, seal the review, export THAT revision from the server.
+// Pure apart from the injected functions, so node can test it.
 //
 // One review pass must seal exactly one revision -- grading reads the sealed
 // revisions, and a redundant sealed/rN.json for an unchanged journal is noise
@@ -22,38 +22,26 @@ export function createFinisher({ journal, seal, exportAll, canFinish }) {
     try {
       const { sessionId, rows, reviewedIds } = snapshot;
       if (sealed && sealed.sessionId !== sessionId) sealed = null;
-      let revision = null;
-      if (journal.active) {
-        // Read once, with the snapshot: rows and final_seq must describe the
-        // same moment. An edit made mid-run lands above it, and the server
-        // refuses that seal rather than recording a replay mismatch.
-        const seq = journal.lastSeq;
-        const acked = await journal.flush();
-        // flush() itself can be what turns logging off: the server answers
-        // {contiguous: null, review_logging: false} mid-flush (its store
-        // disappeared since this session started), and journal.js reacts by
-        // clearing its own writer. Re-check AFTER the await, not only the
-        // `journal.active` this branch was entered on -- that read is now
-        // stale, and sealing with a writer the server just discarded would
-        // 409 for no reason, when exporting unrecorded is exactly what an
-        // already-off session does everywhere else.
-        if (journal.active) {
-          if (acked < seq) throw new Error('The review log is still saving — try again in a moment.');
-          if (sealed && sealed.seq === seq) {
-            revision = sealed.revision;
-          } else {
-            const res = await seal(sessionId, {
-              writer: journal.writer,
-              final_seq: seq,
-              rows,
-              reviewed_ids: reviewedIds,
-            });
-            revision = res.revision;
-            sealed = { sessionId, seq, revision };
-          }
-        }
+      // The journal is mandatory (batch design decision 30): a review the
+      // server cannot replay is never exported.
+      if (!journal.active) throw new Error('This drawing has no review log — reopen it to continue.');
+      // Read once, with the snapshot: rows and final_seq must describe the
+      // same moment. An edit made mid-run lands above it, and the server
+      // refuses that seal rather than recording a replay mismatch.
+      const seq = journal.lastSeq;
+      const acked = await journal.flush();
+      if (acked < seq) throw new Error('The review log is still saving — try again in a moment.');
+      let revision;
+      if (sealed && sealed.seq === seq) {
+        revision = sealed.revision;
+      } else {
+        const res = await seal(sessionId, {
+          writer: journal.writer, final_seq: seq, rows, reviewed_ids: reviewedIds,
+        });
+        revision = res.revision;
+        sealed = { sessionId, seq, revision };
       }
-      await exportAll(snapshot);
+      await exportAll(snapshot, revision);
       return { status: 'done', revision };
     } finally {
       running = false;
