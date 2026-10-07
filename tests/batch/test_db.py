@@ -7,6 +7,7 @@ import pytest
 
 from app.batch import db
 from app.batch.paths import DataDir, safe_rel_parts
+from app.batch.repo import Repo
 
 
 def test_migrate_creates_the_schema_and_stamps_its_version(tmp_path):
@@ -99,19 +100,38 @@ def test_migration_2_turns_a_b1_staged_drawing_into_a_draft_import(tmp_path, mon
     assert {r["oversized"] for r in rows.values()} == {None}
 
 
-def test_migration_2_gives_every_batch_an_updated_at_from_its_creation(tmp_path, monkeypatch):
-    """The empty-draft sweep ages a draft by its last change; a batch from
-    before the column existed was last changed, as far as anyone knows,
-    when it was created."""
+def test_migration_3_gives_a_version_2_index_its_batch_updated_at(tmp_path, monkeypatch):
+    """Dev data dirs from earlier B2 commits sit at version 2, whose schema
+    has no batch.updated_at -- so the column is a NEW migration, never an
+    edit to 2 (append-only even before shipping: the version travels with
+    the data dir). A batch from before it was last changed, as far as
+    anyone knows, when it was created."""
     full = db.MIGRATIONS
     conn = db.connect(tmp_path / "s.db")
-    monkeypatch.setattr(db, "MIGRATIONS", full[:1])
-    db.migrate(conn)
+    monkeypatch.setattr(db, "MIGRATIONS", full[:2])
+    assert db.migrate(conn) == 2
+    assert "updated_at" not in {r[1] for r in conn.execute("PRAGMA table_info(batch)")}
     t = "2026-10-07T00:00:00.000000+00:00"
-    conn.execute("INSERT INTO batch (id, name, draft, created_at) VALUES ('b', 'x', 0, ?)", (t,))
+    conn.execute("INSERT INTO batch (id, name, draft, created_at) VALUES ('b', 'x', 1, ?)", (t,))
     monkeypatch.setattr(db, "MIGRATIONS", full)
-    db.migrate(conn)
+    assert db.migrate(conn) == 3
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
     assert conn.execute("SELECT updated_at FROM batch WHERE id = 'b'").fetchone()[0] == t
+    made = Repo(conn).create_batch("new")
+    assert conn.execute("SELECT updated_at FROM batch WHERE id = ?",
+                        (made["id"],)).fetchone()[0] is not None
+
+
+@pytest.mark.parametrize("start", [0, 1])
+def test_a_fresh_or_b1_index_ends_at_version_3(tmp_path, monkeypatch, start):
+    full = db.MIGRATIONS
+    conn = db.connect(tmp_path / "s.db")
+    monkeypatch.setattr(db, "MIGRATIONS", full[:start])
+    db.migrate(conn)
+    monkeypatch.setattr(db, "MIGRATIONS", full)
+    assert db.migrate(conn) == 3
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert "updated_at" in {r[1] for r in conn.execute("PRAGMA table_info(batch)")}
 
 
 def test_part_path_refuses_anything_but_a_hex_id(tmp_path):

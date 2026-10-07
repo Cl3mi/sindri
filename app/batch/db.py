@@ -5,7 +5,9 @@ Repo's lock. WAL so a list request never waits on the worker's writes;
 synchronous=FULL because a drawing the server said it queued must survive
 power loss, like an acknowledged journal event does. Schema changes are
 numbered migrations keyed on PRAGMA user_version -- append an entry, never
-edit one that has shipped. Migration 2 also moves B1's never-started staged
+edit one that has shipped. Append-only even before a migration ships to a
+server: dev data dirs carry the version too, and an edited migration never
+reaches a dir already past it. Migration 2 also moves B1's never-started staged
 drawings into draft batches, because from B2 on only Start queues a staged
 drawing."""
 import sqlite3
@@ -75,12 +77,6 @@ MIGRATIONS = [
         updated_at TEXT NOT NULL
     );
     CREATE INDEX upload_resume ON upload(batch_id, fingerprint);
-    -- A draft's last change: the empty-draft sweep removes a draft IDLE for
-    -- a week, not one merely created a week ago and emptied today. A batch
-    -- from before this column was last changed, as far as anyone knows,
-    -- when it was created.
-    ALTER TABLE batch ADD COLUMN updated_at TEXT;
-    UPDATE batch SET updated_at = created_at;
     -- No REFERENCES upload(id): Start deletes a batch's upload rows while
     -- the documents they produced live on, so the link is history, not a
     -- constraint.
@@ -109,6 +105,15 @@ MIGRATIONS = [
                 WHERE x.sha256 = document.sha256 AND x.rowid < document.rowid) THEN 0
             ELSE 1 END
         WHERE state = 'staged';
+    """,
+    # 3: batch idleness (batch B2 Task 9)
+    """
+    -- A draft's last change: the empty-draft sweep removes a draft IDLE for
+    -- a week, not one merely created a week ago and emptied today. A batch
+    -- from before this column was last changed, as far as anyone knows,
+    -- when it was created.
+    ALTER TABLE batch ADD COLUMN updated_at TEXT;
+    UPDATE batch SET updated_at = created_at;
     """,
 ]
 
