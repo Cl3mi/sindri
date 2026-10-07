@@ -32,6 +32,7 @@ from app.review.header import build_header
 from app.review.store import ReviewError
 from app.batch.repo import BatchError, InvalidTransition
 from app.batch.runtime import Runtime
+from app.batch.pdf_facts import EXTRACT_DPI
 from PIL import Image
 
 log = logging.getLogger(__name__)
@@ -47,8 +48,9 @@ def _review_consent() -> bool:
 
 def _extract(pdf_path, work_dir, progress):
     # Late-bound on purpose: tests monkeypatch `extract` and `_BACKEND` on
-    # this module, and the worker must see those patches.
-    return extract(pdf_path, work_dir=work_dir, dpi=300, backend=_BACKEND,
+    # this module, and the worker must see those patches. EXTRACT_DPI is the
+    # dpi staging's `oversized` badge is measured at (app/batch/pdf_facts.py).
+    return extract(pdf_path, work_dir=work_dir, dpi=EXTRACT_DPI, backend=_BACKEND,
                    progress=progress)
 
 
