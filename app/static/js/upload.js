@@ -113,7 +113,10 @@ export async function fingerprint(file, subtle = globalThis.crypto?.subtle) {
     // (A read failure DURING the upload surfaces inside fetch instead, as
     // a rejected request -- indistinguishable there from a network drop,
     // so it is retried until the budget runs out, then reported non-fatal.)
-    throw new UploadError('the file could not be read', { fatal: true });
+    // `reason` names it: the draft is not at fault, so a caller keeps a
+    // remembered draft's partial bytes for the next selection (importone.js).
+    throw Object.assign(new UploadError('the file could not be read', { fatal: true }),
+                        { reason: 'file_unreadable' });
   }
   const size = new TextEncoder().encode(`${file.size}:`);
   const all = new Uint8Array(size.length + head.length + tail.length);
@@ -134,7 +137,8 @@ export async function fingerprint(file, subtle = globalThis.crypto?.subtle) {
 // it there (decision 21; the server only resumes within the same draft).
 // `storage` is localStorage in the browser, injected so node can test it;
 // every access is guarded, since storage can be full or disabled.
-const draftKey = (file) => `sindri.import:${file.name}:${file.size}:${file.lastModified}`;
+const DRAFT_PREFIX = 'sindri.import:';
+const draftKey = (file) => `${DRAFT_PREFIX}${file.name}:${file.size}:${file.lastModified}`;
 
 export function recallDraft(storage, file) {
   try { return storage?.getItem(draftKey(file)) || null; } catch { return null; }
@@ -146,6 +150,22 @@ export function rememberDraft(storage, file, batchId) {
 
 export function forgetDraft(storage, file) {
   try { storage?.removeItem(draftKey(file)); } catch { /* nothing to undo */ }
+}
+
+// Every remembered file of one draft, by the draft id alone: a drawing
+// reached by its link has no File to forget by, yet its Start or Cancel
+// ends the draft. Keys are collected first -- removing while indexing
+// would skip the key that slides into the freed slot.
+export function forgetDraftsOf(storage, batchId) {
+  if (!batchId) return;
+  try {
+    const mine = [];
+    for (let i = 0; i < storage.length; i++) {
+      const k = storage.key(i);
+      if (k?.startsWith(DRAFT_PREFIX) && storage.getItem(k) === batchId) mine.push(k);
+    }
+    for (const k of mine) storage.removeItem(k);
+  } catch { /* resume is a convenience; a stale memory falls back (importone.js) */ }
 }
 
 // A wait that ends early on cancel, so Cancel never sits out a 20 s backoff.

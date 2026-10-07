@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 
 const {
   uploadFile, importFiles, fingerprint, sha256Hex, relPathOf, batchNameFor, UploadError,
-  RETRY_BUDGET_MS, MAX_WAIT_MS, recallDraft, rememberDraft, forgetDraft,
+  RETRY_BUDGET_MS, MAX_WAIT_MS, recallDraft, rememberDraft, forgetDraft, forgetDraftsOf,
   isImportable, ACCEPT, paddedLength,
 } = await import('../../app/static/js/upload.js');
 
@@ -395,6 +395,33 @@ test('the draft of an interrupted file is remembered per file, and storage fault
   assert.equal(recallDraft(undefined, a), null);
 });
 
+test('every remembered file of one draft is forgotten by the draft id alone', () => {
+  // A drawing reached by its link has no File to forget by; Start or Cancel
+  // of its draft must still clear the memory pointing at it.
+  const store = new Map();
+  const storage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)),
+                    removeItem: (k) => store.delete(k), key: (i) => [...store.keys()][i] ?? null,
+                    get length() { return store.size; } };
+  const a = fileOf(bytes(10), 'a.pdf');
+  const b = fileOf(bytes(11), 'b.pdf');
+  const c = fileOf(bytes(12), 'c.pdf');
+  rememberDraft(storage, a, 'batch-1');
+  rememberDraft(storage, b, 'batch-1');
+  rememberDraft(storage, c, 'batch-2');
+  storage.setItem('other.app', 'batch-1');            // not ours: never touched
+  forgetDraftsOf(storage, 'batch-1');
+  assert.equal(recallDraft(storage, a), null);
+  assert.equal(recallDraft(storage, b), null);
+  assert.equal(recallDraft(storage, c), 'batch-2');
+  assert.equal(storage.getItem('other.app'), 'batch-1');
+  const broken = { get length() { throw new Error('denied'); }, key() { throw new Error('denied'); },
+                   getItem() { throw new Error('denied'); }, removeItem() { throw new Error('denied'); } };
+  forgetDraftsOf(broken, 'batch-1');
+  forgetDraftsOf(null, 'batch-1');
+  forgetDraftsOf(storage, null);
+  assert.equal(recallDraft(storage, c), 'batch-2');
+});
+
 test('the fingerprint is a key for resuming, not a content hash', async () => {
   // It tells apart files that differ at either end, and deliberately not
   // ones that differ only in the middle: duplicates are found by the
@@ -537,7 +564,10 @@ test('a file that cannot be read is a fatal error of its own, not a network faul
   await assert.rejects(
     uploadFile({ file: spyFile(bytes(100), 'a.pdf', { fail: true }), batchId: 'b', fetch: server.fetch,
       sleep: noSleep }),
-    (err) => err instanceof UploadError && err.fatal && err.message === 'the file could not be read');
+    (err) => err instanceof UploadError && err.fatal && err.message === 'the file could not be read'
+      // Named, so the caller can tell "this file, now" from a refusal of the
+      // draft: a remembered draft's partial bytes are kept for it.
+      && err.reason === 'file_unreadable');
   assert.equal(server.calls.length, 0);
 });
 

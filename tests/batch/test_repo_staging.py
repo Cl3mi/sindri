@@ -254,6 +254,19 @@ def test_a_repeated_completion_reports_what_it_staged(repo):
         1, {"not_pdf": 1})
 
 
+def test_the_staging_view_carries_each_uploads_fingerprint(repo):
+    """The interim UI answers a re-selected file from a completed upload in
+    its remembered draft instead of uploading it again. Name, size and
+    modification time alone would take a different file copied with its
+    times kept (`cp -p`) for the one already there, so the client compares
+    the fingerprint too. It is a hash of the file's ends, not client text."""
+    b = repo.create_batch("b")["id"]
+    up = upload(repo, b, fingerprint="a" * 64)
+    (view_up,) = repo.staging(b)["uploads"]
+    assert view_up["id"] == up["id"]
+    assert view_up["fingerprint"] == "a" * 64
+
+
 def test_delete_upload_removes_only_an_unfinished_one(repo):
     b = repo.create_batch("b")["id"]
     up = upload(repo, b)

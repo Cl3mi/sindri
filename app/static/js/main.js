@@ -6,8 +6,8 @@ import { state, on, restoreSession, clearSession, undo, redo,
 import { getDocument, cancelDocument, openDocument, deleteDocument, downloadExport,
          health, postEvents, beaconEvents, sealSession, createBatch, getBatch,
          startBatch, discardBatch, setIncluded } from './api.js';
-import { uploadFile, UploadError, forgetDraft } from './upload.js';
-import { importSingle } from './importone.js';
+import { uploadFile, UploadError, forgetDraft, forgetDraftsOf } from './upload.js';
+import { importSingle, stagesOnly } from './importone.js';
 import { badgesFor } from './badges.js';
 import { createJournal } from './journal.js';
 import { createFinisher, createExporter } from './finish.js';
@@ -274,6 +274,11 @@ async function handleFile(file) {
       // retried for minutes). The draft and what arrived of the file stay.
       toast({ kind: 'warn', title: 'Upload interrupted',
               msg: 'Select the same file again to continue where it stopped.' });
+    } else if (err?.reason === 'file_unreadable') {
+      // Moved, changed or locked since it was chosen. What arrived of it
+      // is kept (importone.js) if the import had begun before.
+      toast({ kind: 'error', title: 'Could not read the file',
+              msg: 'It was moved or changed since it was chosen. Select it again.' });
     } else {
       // Refused, disk full, or a fault before any upload began: the draft
       // is already discarded -- nothing worth resuming.
@@ -329,8 +334,12 @@ function backToEmpty() {
 // harmless -- the next import of that file finds the draft gone or started
 // and starts a fresh one (importone.js).
 function forgetImported(w) {
-  if (!w?.file) return;
-  forgetDraft((() => { try { return window.localStorage; } catch { return null; } })(), w.file);
+  if (!w) return;
+  const storage = (() => { try { return window.localStorage; } catch { return null; } })();
+  // Reached by its link, there is no File to forget by: every memory
+  // pointing at the draft goes instead.
+  if (w.file) forgetDraft(storage, w.file);
+  else forgetDraftsOf(storage, w.batchId);
 }
 
 function cancelConfirm() {
@@ -350,6 +359,20 @@ async function startExtraction() {
   document.getElementById('plan-confirm').hidden = true;
   showExtracting(w.fileName);
   try {
+    // Start queues EVERY included drawing of the draft, and this screen
+    // shows one. A second copy (an earlier attempt's, or another tab's)
+    // would be extracted unseen, so Start is refused unless the draft holds
+    // exactly the drawing on screen.
+    const view = await getBatch(w.batchId);
+    if (waitingOn !== w || stopping) return;
+    if (!stagesOnly(view, w.id)) {
+      hideExtracting();
+      showConfirm(w.row);
+      toast({ kind: 'error', title: 'Cannot start this import',
+              msg: 'It holds more than this drawing (an earlier attempt or another tab). '
+                 + 'Cancel it and select the file again.' });
+      return;
+    }
     // Excluded by default (out of scope or a duplicate): the press of
     // "Include and start" is the user including it (decision 26).
     if (w.row && !w.row.included) w.row = await setIncluded(w.id, true);

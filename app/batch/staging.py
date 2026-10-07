@@ -61,6 +61,10 @@ def upload_view(u) -> dict:
         ignored = summarise_ignored(ignored)
     return {"id": u["id"], "name": u["name"], "rel_path": u["rel_path"],
             "size": u["size"], "received": u["received"], "state": u["state"],
+            # A hash of the file's ends (never client text): the interim UI
+            # checks a re-selected file against a completed upload with it,
+            # since name, size and mtime survive `cp -p` onto other content.
+            "fingerprint": u["fingerprint"],
             "kind": u["kind"], "ignored": ignored["listed"],
             "ignored_total": ignored["total"], "ignored_by_reason": ignored["by_reason"]}
 
