@@ -369,10 +369,10 @@ def test_open_an_unknown_session_is_refused(store):
 
 def test_a_refused_open_changes_nothing_on_disk(store, writer):
     """An open that cannot rebuild the review (here: a retract of a seq that
-    is no longer live) must leave the session exactly as it found it.
-    Rotating the writer first would lock the working tab out of a session
-    nobody can reopen; trimming first would discard its stranded events for
-    nothing."""
+    is no longer live) must change nothing beyond the torn-tail repair, which
+    runs first and is safe on its own. Rotating the writer first would lock
+    the working tab out of a session nobody can reopen; trimming first would
+    discard its stranded events for nothing."""
     store.append(SID, writer, [ev(1, "accept", ids=["a"]), ev(2, "retract", target=1),
                                ev(3, "retract", target=1), ev(5, "accept", ids=["b"])])
     before = (store.root / SID / "events.jsonl").read_text()
@@ -399,3 +399,30 @@ def test_revision_refuses_when_nothing_is_sealed(store, writer):
         store.revision(SID, 0)
     with pytest.raises(UnknownSession):
         store.revision(SID, True)
+
+
+def test_open_after_a_seal_trims_a_gap_above_the_sealed_seq(store, writer):
+    """The contiguous run restarts at the sealed seq: 4 continues it and is
+    kept, 6 sits above the hole at 5 and belongs to the replaced tab."""
+    store.append(SID, writer, [ev(1, "accept", ids=["a"]), ev(2, "unaccept", ids=["a"]),
+                               ev(3, "retract", target=2)])
+    store.seal(SID, writer, 3, [{**row("a"), "reviewed": True}, row("b")], ["a"])
+    store.append(SID, writer, [ev(4, "delete_row", id="b"), ev(6, "accept", ids=["b"])])
+    opened = store.open(SID)
+    assert opened["last_seq"] == 4
+    assert [e["seq"] for e in opened["events"]] == [1, 4]
+    lines = (store.root / SID / "events.jsonl").read_text().splitlines()
+    assert [json.loads(l)["seq"] for l in lines] == [1, 4]
+    assert store.append(SID, opened["writer"], [ev(5, "unaccept", ids=["a"])]) == 5
+
+
+@pytest.mark.parametrize("op", ["open", "seal"])
+def test_a_proposal_that_is_not_json_is_a_journal_error(store, writer, op):
+    # json.JSONDecodeError is a ValueError, not a KeyError/TypeError -- left
+    # uncaught it is a 500 on every open/seal of that session, forever.
+    (store.root / SID / "proposal.json").write_text("{not json", encoding="utf-8")
+    with pytest.raises(JournalInvalid):
+        if op == "open":
+            store.open(SID)
+        else:
+            store.seal(SID, writer, 0, [], [])

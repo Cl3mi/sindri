@@ -276,7 +276,7 @@ class ReviewStore:
                 bad = mismatches(replay(proposal, net), rows, reviewed_ids)
             except JournalError as exc:
                 raise JournalInvalid(str(exc)) from exc
-            except (KeyError, TypeError) as exc:
+            except (KeyError, TypeError, json.JSONDecodeError) as exc:
                 # Every EVENT on the journal is validated on the way in and
                 # out (append-time validate_event, read-time _events). But
                 # proposal.json is not re-validated on every seal, so a
@@ -324,11 +324,12 @@ class ReviewStore:
                     (d / "proposal.json").read_text(encoding="utf-8"))["rows"]
             except JournalError as exc:
                 raise JournalInvalid(str(exc)) from exc
-            except (KeyError, TypeError) as exc:
+            except (KeyError, TypeError, json.JSONDecodeError) as exc:
                 raise JournalInvalid(f"corrupt review record: {exc}") from exc
-            # Nothing on disk changes until the review is known to rebuild: a
-            # refused open must not lock the working tab out (writer) or
-            # throw away its unacknowledged events (trim) for nothing.
+            # Nothing on disk changes beyond the torn-tail repair (safe on its
+            # own) until the review is known to rebuild: a refused open must
+            # not lock the working tab out (writer) or throw away its
+            # unacknowledged events (trim) for nothing.
             if len(kept) != len(events):
                 # Above a hole: never acknowledged, owned by the tab this open
                 # replaces, and would collide with the new tab's numbering --
