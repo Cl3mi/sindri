@@ -94,7 +94,9 @@ def test_a_review_rebuilt_from_the_server_matches_and_keeps_replaying():
             _check_event_shape(e)
             validate_event(e)
         held = net_events(c["events_before_reload"])
-        if all(e["seq"] < c["last_seq"] for e in held):
+        # `held and`: an empty net set would make all() vacuously true and
+        # count a case that tells nothing about holes in the numbering
+        if held and all(e["seq"] < c["last_seq"] for e in held):
             gapped += 1
         after = c["events"][len(c["events_before_reload"]):]
         seqs = [e["seq"] for e in after]

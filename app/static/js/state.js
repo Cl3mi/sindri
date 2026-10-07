@@ -276,14 +276,19 @@ export function opFromEvent(e) {
 // history is not restored. Returns [op, seq] pairs for journal.resume(), so
 // undoing a restored op retracts the seq the server holds it under.
 export function restoreSession(payload, events) {
+  // Every op is built BEFORE the session is touched (opFromEvent is pure),
+  // so an event that cannot be rebuilt throws with the previous session
+  // still intact -- not a half-built table while the journal still points
+  // at the old session.
+  const pairs = events.map((e) => [opFromEvent(e), e.seq]);
   setSession(payload);
-  const pairs = [];
-  for (const e of events) {
-    const op = opFromEvent(e);
+  for (const [op] of pairs) {
     op.do();
     undoStack.push(op);
-    pairs.push([op, e.seq]);
   }
+  // A restored add_row selects its row as the live op does; on a reload
+  // nothing was clicked, so start with no selection.
+  state.selectedId = null;
   emit('change');
   emit('history');
   return pairs;

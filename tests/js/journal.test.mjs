@@ -383,3 +383,31 @@ test('a post-seal reopen numbers past last_seq, never past the highest net event
 test('a restored op that cannot be rebuilt refuses instead of guessing', () => {
   assert.throws(() => S.opFromEvent({ seq: 2, type: 'retract', target: 1 }), /retract/);
 });
+
+test('a restore that fails leaves the previous session untouched, not half-built', () => {
+  load([row('a'), row('b')]);
+  S.apply(S.opEditCell('a', 'nominal', '7'));
+  const before = JSON.parse(JSON.stringify(S.state.rows));
+  assert.throws(() => S.restoreSession(
+    { session_id: 's2', image_url: '', rows: [row('x')], notes: null },
+    [{ seq: 1, type: 'accept', ids: ['x'] }, { seq: 2, type: 'bogus' }]), /bogus/);
+  assert.equal(S.state.sessionId, 's');
+  assert.deepEqual(S.state.rows, before);
+  assert.equal(S.canUndo(), true);                 // the old undo stack survives too
+});
+
+test('restoreSession clears the selection a restored add_row would leave', () => {
+  load([row('a')]);
+  S.restoreSession({ session_id: 's', image_url: '', rows: [row('a')], notes: null },
+    [{ seq: 1, type: 'add_row', row: row('m', { source: 'manual' }) }]);
+  assert.equal(S.state.selectedId, null);
+});
+
+test('resume refuses a last_seq that is not a non-negative integer', () => {
+  const j = createJournal({ send: async () => ({ contiguous: 0 }), now: () => 0 });
+  for (const bad of [undefined, null, NaN, -1, 2.5, '6']) {
+    assert.throws(() => j.resume('s', 'w', bad, []), /last_seq/);
+  }
+  j.resume('s', 'w', 0, []);
+  assert.equal(j.lastSeq, 0);
+});

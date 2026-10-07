@@ -48,6 +48,11 @@ export function createJournal({ send, now = () => Date.now(),
   // events have holes where undone ops were retracted, and the store keeps
   // the first write of a seq, so reusing one would be dropped yet acked.
   function resume(sid, w, lastSeq, opSeqs = []) {
+    // Same guard as the ack in flush(): a NaN/undefined/negative last_seq
+    // would poison seq and acked, and every later event's numbering.
+    if (!Number.isInteger(lastSeq) || lastSeq < 0) {
+      throw new Error(`bad last_seq from server: ${lastSeq}`);
+    }
     start(sid, w);
     seq = lastSeq;
     acked = lastSeq;
