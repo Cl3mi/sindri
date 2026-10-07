@@ -141,6 +141,13 @@ class Worker:
             result_path.unlink(missing_ok=True)
             self._settle(doc_id, self.repo.mark_failed, f"review_store:{type(e).__name__}")
             return
+        except OSError as e:
+            # A transient read fault is not corruption: keep the file for a
+            # GPU-free Retry, but fail the drawing rather than strand it
+            # `extracting` until the next restart.
+            log.warning("result unreadable for %s: %s", doc_id[:8], type(e).__name__)
+            self._settle(doc_id, self.repo.mark_failed, f"review_store:{type(e).__name__}")
+            return
         try:
             self.store.create(doc_id, self.header_fn(d / "input.pdf"), {"rows": rows})
         except Exception as e:
@@ -172,6 +179,8 @@ class Worker:
 
     # ----- background loop ----------------------------------------------
     def start(self) -> None:
+        """Not thread-safe: call start()/stop() from one thread (the app's
+        lifespan does)."""
         if self._thread is not None:
             if self._thread.is_alive():
                 if not self._stop.is_set():
@@ -223,6 +232,8 @@ class Worker:
                 self._wake.clear()
 
     def stop(self, timeout: float = 5.0) -> None:
+        """Not thread-safe: call start()/stop() from one thread (the app's
+        lifespan does)."""
         self._stop.set()
         self._wake.set()
         if self._thread is None:

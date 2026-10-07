@@ -243,6 +243,26 @@ def test_an_unreadable_result_is_discarded_so_the_next_retry_re_extracts(h):
     assert h.extract_calls == 1
 
 
+def test_an_io_error_reading_the_result_fails_the_drawing_and_keeps_the_file(h, monkeypatch):
+    """A transient read fault is not corruption: the drawing fails (never
+    stranded `extracting`) and result.json stays for a GPU-free Retry."""
+    import pathlib
+    h.queue()
+    result = h.data.doc_dir(A) / "result.json"
+    result.write_text('{"rows": []}')
+    real = pathlib.Path.read_text
+
+    def denied(self, *a, **k):
+        if self == result:
+            raise PermissionError("denied")
+        return real(self, *a, **k)
+    monkeypatch.setattr(pathlib.Path, "read_text", denied)
+    h.worker.run_once()
+    d = h.repo.get(A)
+    assert (d["state"], d["error_type"]) == ("failed", "review_store:PermissionError")
+    assert result.is_file()
+
+
 def test_a_failing_transition_is_logged_not_raised(h, caplog):
     """A database fault while settling must not escape into the loop as a
     stray traceback; the row stays `extracting` and start() requeues it."""
