@@ -1,0 +1,433 @@
+"""The file side of the upload protocol (batch design §2): part files
+written at the server's offset and fsynced before the index moves, a
+completion that verifies, hashes and stages, and a free-disk reserve."""
+import errno
+import hashlib
+import logging
+import os
+import sqlite3
+
+import pytest
+
+from app.batch import db
+from app.batch import uploads as uploads_mod
+from app.batch.paths import DataDir
+from app.batch.repo import (BatchError, InvalidTransition, Repo, UnknownBatch,
+                            UnknownUpload, UploadConflict)
+from app.batch.uploads import FINGERPRINT_RE, IMPORTING_MARKER, DiskFull, Uploads
+from tests.batch.pdfs import pdf_bytes
+
+CHUNK = 100
+
+
+class H:
+    def __init__(self, tmp_path):
+        self.data = DataDir(tmp_path / "data")
+        conn = db.connect(self.data.db_path)
+        db.migrate(conn)
+        self.repo = Repo(conn)
+        self.free = 10 ** 12
+        self.uploads = Uploads(self.repo, self.data, min_free_bytes=1000,
+                               free_bytes=lambda path: self.free)
+        self.batch = self.repo.create_batch("b")["id"]
+
+    def create(self, data, name="a.pdf", rel_path="", batch=None):
+        return self.uploads.create(batch_id=batch or self.batch, name=name, size=len(data),
+                                   last_modified=None, rel_path=rel_path,
+                                   fingerprint=hashlib.sha256(data).hexdigest())
+
+    def send(self, data, **kw):
+        up = self.create(data, **kw)
+        for off in range(up["received"], len(data), CHUNK):
+            self.uploads.put(up["upload_id"], off, data[off:off + CHUNK])
+        return up["upload_id"]
+
+    def imported(self, data, **kw):
+        return self.uploads.complete(self.send(data, **kw))
+
+    def doc_dirs(self):
+        return sorted(p.name for p in self.data.docs.iterdir())
+
+
+@pytest.fixture
+def h(tmp_path):
+    return H(tmp_path)
+
+
+def test_create_starts_at_zero_with_an_empty_part_file(h):
+    up = h.create(b"x" * 10)
+    assert (up["received"], up["state"], up["resumed"]) == (0, "receiving", False)
+    assert h.data.part_path(up["upload_id"]).read_bytes() == b""
+
+
+def test_re_selecting_the_file_resumes_at_the_server_offset(h):
+    data = pdf_bytes()
+    up = h.create(data)
+    h.uploads.put(up["upload_id"], 0, data[:CHUNK])
+    again = h.create(data)
+    assert (again["upload_id"], again["received"], again["resumed"]) == (up["upload_id"], CHUNK, True)
+
+
+def test_resuming_an_upload_whose_part_vanished_resumes_at_zero(h):
+    """The index counted bytes the disk no longer holds: the resume answers
+    the honest offset and the part file is there again for the first chunk."""
+    data = pdf_bytes()
+    uid = h.create(data)["upload_id"]
+    h.uploads.put(uid, 0, data[:CHUNK])
+    h.data.part_path(uid).unlink()
+    again = h.create(data)
+    assert (again["upload_id"], again["received"]) == (uid, 0)
+    assert h.data.part_path(uid).read_bytes() == b""
+    assert h.uploads.put(uid, 0, data[:CHUNK]) == {"received": CHUNK}
+
+
+def test_a_resume_racing_the_first_create_keeps_the_row_and_the_part(h, monkeypatch):
+    """Tab A creates the upload row; before A creates the part file, tab B
+    re-selects the same file, resumes A's row and sends a chunk (creating the
+    part). A's exclusive create then finds the file there. That is B's
+    upload making progress, not a fault: A must neither delete the row nor
+    B's bytes, and must answer the true offset."""
+    data = pdf_bytes()
+    real = h.repo.create_upload
+    state = {"inside": False}
+
+    def racing(**kw):
+        row, resumed = real(**kw)
+        if not state["inside"]:
+            state["inside"] = True
+            b = h.create(data)                       # tab B: resumes A's row
+            assert (b["upload_id"], b["resumed"]) == (row["id"], True)
+            h.uploads.put(b["upload_id"], 0, data[:CHUNK])
+        return row, resumed
+    monkeypatch.setattr(h.repo, "create_upload", racing)
+    a = h.create(data)
+    assert (a["resumed"], a["received"]) == (False, CHUNK)
+    assert h.repo.get_upload(a["upload_id"])["received"] == CHUNK
+    assert h.data.part_path(a["upload_id"]).read_bytes() == data[:CHUNK]
+
+
+def test_a_part_file_that_appears_under_the_exclusive_create_is_kept(h, monkeypatch):
+    """The exclusive create itself fails with FileExistsError (the file
+    appeared between the check and the create). That is the part this
+    upload needs, holding someone's progress: the row stays, the bytes
+    stay, and the create succeeds."""
+    real_open = open
+
+    def opening(path, mode="r", *a, **kw):
+        if mode == "xb":
+            with real_open(path, "wb") as f:
+                f.write(b"theirs")
+        return real_open(path, mode, *a, **kw)
+    monkeypatch.setattr(uploads_mod, "open", opening, raising=False)
+    up = h.create(b"x" * 10)
+    assert (up["resumed"], up["state"]) == (False, "receiving")
+    assert h.repo.get_upload(up["upload_id"])["state"] == "receiving"
+    assert h.data.part_path(up["upload_id"]).read_bytes() == b"theirs"
+
+
+@pytest.mark.parametrize("kw", [
+    {"name": "a.exe"}, {"name": "a/b.pdf"}, {"name": "a\x01.pdf"}, {"name": "  "},
+    {"name": "exe.‮fdp.pdf"},
+    {"fingerprint": "xyz"}, {"fingerprint": "f" * 64 + "\n"}, {"size": -1},
+    {"size": True}, {"rel_path": "../out"},
+], ids=["extension", "separator", "control", "blank", "bidi", "fingerprint",
+        "fingerprint-newline", "size", "size-bool", "rel_path"])
+def test_create_refuses_what_cannot_be_imported(h, kw):
+    args = dict(batch_id=h.batch, name="a.pdf", size=10, last_modified=None, rel_path="",
+                fingerprint="f" * 64)
+    args.update(kw)
+    with pytest.raises(BatchError) as e:
+        h.uploads.create(**args)
+    # A fixed sentence: never the client's file name echoed back.
+    assert e.value.status == 400 and "a.exe" not in str(e.value)
+    assert h.repo._conn.execute("SELECT COUNT(*) FROM upload").fetchone()[0] == 0
+
+
+def test_the_fingerprint_pattern_is_anchored_at_both_ends():
+    """`$` also matches before a trailing newline; \\Z does not."""
+    assert FINGERPRINT_RE.fullmatch("f" * 64)
+    for bad in ("f" * 64 + "\n", "\n" + "f" * 64, "f" * 63, "F" * 64):
+        assert not FINGERPRINT_RE.fullmatch(bad)
+        assert not FINGERPRINT_RE.match(bad)
+
+
+def test_unknown_and_started_batches_are_refused(h):
+    with pytest.raises(UnknownBatch):
+        h.create(b"x", batch="0" * 32)
+    with pytest.raises(UnknownBatch):
+        h.create(b"x", batch="0" * 32 + "\n")
+    h.repo._conn.execute("UPDATE batch SET draft = 0")
+    with pytest.raises(InvalidTransition):
+        h.create(b"x")
+
+
+def test_a_chunk_at_the_wrong_offset_is_409_with_the_true_offset(h):
+    data = pdf_bytes()
+    up = h.create(data)
+    with pytest.raises(UploadConflict) as e:
+        h.uploads.put(up["upload_id"], CHUNK, data[CHUNK:2 * CHUNK])
+    assert e.value.extra == {"received": 0, "state": "receiving"}
+
+
+@pytest.mark.parametrize("offset", [-1, "0", None, True], ids=["negative", "str", "none", "bool"])
+def test_a_malformed_offset_is_400(h, offset):
+    uid = h.create(b"x" * 10)["upload_id"]
+    with pytest.raises(BatchError) as e:
+        h.uploads.put(uid, offset, b"x")
+    assert e.value.status == 400
+
+
+def test_a_malformed_upload_id_is_404(h):
+    for bad in ("../x", "0" * 32 + "\n", None):
+        with pytest.raises(UnknownUpload):
+            h.uploads.put(bad, 0, b"x")
+        with pytest.raises(UnknownUpload):
+            h.uploads.complete(bad)
+
+
+def test_a_retried_chunk_after_a_lost_reply_is_not_written_twice(h):
+    """The reply to a PUT is lost and the client sends the same chunk again.
+    The server already holds it: 409 with the advanced offset, and the file
+    holds the chunk once."""
+    data = pdf_bytes()
+    uid = h.create(data)["upload_id"]
+    assert h.uploads.put(uid, 0, data[:CHUNK]) == {"received": CHUNK}
+    with pytest.raises(UploadConflict) as e:
+        h.uploads.put(uid, 0, data[:CHUNK])
+    assert e.value.extra["received"] == CHUNK
+    assert h.data.part_path(uid).read_bytes() == data[:CHUNK]
+
+
+def test_a_chunk_is_fsynced_before_the_index_moves(h, monkeypatch):
+    """A restart loses at most the chunk in flight (decision 21). Were the
+    index moved first, a crash could leave it counting bytes the disk never
+    got."""
+    order = []
+    real_fsync, real_received = os.fsync, h.repo.upload_received
+    monkeypatch.setattr(uploads_mod.os, "fsync",
+                        lambda fd: (order.append("fsync"), real_fsync(fd))[1])
+    monkeypatch.setattr(h.repo, "upload_received",
+                        lambda *a: (order.append("index"), real_received(*a))[1])
+    uid = h.create(b"x" * 10)["upload_id"]
+    order.clear()
+    h.uploads.put(uid, 0, b"x" * 10)
+    assert order == ["fsync", "index"]
+
+
+def test_a_chunk_past_the_declared_size_or_an_empty_one_is_400(h):
+    uid = h.create(b"x" * 10)["upload_id"]
+    for body in (b"x" * 11, b""):
+        with pytest.raises(BatchError) as e:
+            h.uploads.put(uid, 0, body)
+        assert e.value.status == 400
+    assert h.repo.get_upload(uid)["received"] == 0
+
+
+def test_a_lost_part_file_restarts_the_upload_from_zero(h):
+    data = pdf_bytes()
+    uid = h.create(data)["upload_id"]
+    h.uploads.put(uid, 0, data[:CHUNK])
+    h.data.part_path(uid).unlink()
+    with pytest.raises(UploadConflict) as e:
+        h.uploads.put(uid, CHUNK, data[CHUNK:2 * CHUNK])
+    assert e.value.extra == {"received": 0, "state": "receiving"}
+    assert h.uploads.put(uid, 0, data[:CHUNK]) == {"received": CHUNK}
+
+
+def test_a_lost_part_file_accepts_offset_zero_straight_away(h):
+    """The part is checked BEFORE the offset: a client restarting at 0 is
+    right, and is not first sent to the stale offset only to be sent back."""
+    data = pdf_bytes()
+    uid = h.create(data)["upload_id"]
+    h.uploads.put(uid, 0, data[:CHUNK])
+    h.data.part_path(uid).unlink()
+    assert h.uploads.put(uid, 0, data[:CHUNK]) == {"received": CHUNK}
+    assert h.data.part_path(uid).read_bytes() == data[:CHUNK]
+
+
+def test_low_disk_is_507_and_writes_nothing(h):
+    data = pdf_bytes()
+    uid = h.create(data)["upload_id"]
+    h.free = 1000 + CHUNK - 1          # this chunk would dip one byte into the reserve
+    with pytest.raises(DiskFull) as e:
+        h.uploads.put(uid, 0, data[:CHUNK])
+    assert e.value.status == 507
+    assert h.repo.get_upload(uid)["received"] == 0
+    assert h.data.part_path(uid).read_bytes() == b""
+    with pytest.raises(DiskFull):
+        h.create(b"y" * 200)
+    # The refused upload left no row behind, and no part file.
+    assert h.repo._conn.execute("SELECT COUNT(*) FROM upload").fetchone()[0] == 1
+    assert [p.name for p in h.data.uploads.iterdir()] == [f"{uid}.part"]
+
+
+def test_low_disk_on_a_resume_keeps_the_upload(h):
+    data = pdf_bytes()
+    uid = h.create(data)["upload_id"]
+    h.uploads.put(uid, 0, data[:CHUNK])
+    h.free = 1000
+    with pytest.raises(DiskFull):
+        h.create(data)
+    assert h.repo.get_upload(uid)["received"] == CHUNK
+    assert h.data.part_path(uid).read_bytes() == data[:CHUNK]
+
+
+@pytest.mark.parametrize("err,status", [(errno.ENOSPC, 507), (errno.EIO, 500)])
+def test_a_write_fault_is_reported_by_kind_and_moves_nothing(h, monkeypatch, err, status):
+    uid = h.create(b"x" * 10)["upload_id"]
+
+    def failing(fd):
+        raise OSError(err, "boom", "/secret/path")
+    monkeypatch.setattr(uploads_mod.os, "fsync", failing)
+    with pytest.raises(BatchError) as e:
+        h.uploads.put(uid, 0, b"x" * 10)
+    assert e.value.status == status and "secret" not in str(e.value)
+    assert h.repo.get_upload(uid)["received"] == 0
+
+
+def test_complete_stages_a_pdf_with_its_hash_pages_and_bytes(h):
+    data = pdf_bytes(pages=1)
+    uid = h.send(data, rel_path="Kunde/Teile")
+    done = h.uploads.complete(uid)
+    (row,) = done["documents"]
+    assert (done["state"], done["ignored"]) == ("complete", [])
+    assert (row["file_name"], row["rel_path"], row["size"], row["pages"]) == (
+        "a.pdf", "Kunde/Teile", len(data), 1)
+    assert row["included"] and not row["unreadable"] and row["oversized"] is False
+    d = h.data.doc_dir(row["id"])
+    assert (d / "input.pdf").read_bytes() == data
+    assert h.repo.get(row["id"])["sha256"] == hashlib.sha256(data).hexdigest()
+    assert not (d / IMPORTING_MARKER).exists()
+    assert not h.data.part_path(uid).exists()
+
+
+def test_complete_is_idempotent(h):
+    uid = h.send(pdf_bytes())
+    first = h.uploads.complete(uid)
+    assert h.uploads.complete(uid) == first
+    assert len(h.doc_dirs()) == 1
+
+
+def test_complete_before_every_byte_is_409_with_the_offset(h):
+    data = pdf_bytes()
+    uid = h.create(data)["upload_id"]
+    h.uploads.put(uid, 0, data[:CHUNK])
+    with pytest.raises(UploadConflict) as e:
+        h.uploads.complete(uid)
+    assert e.value.extra == {"received": CHUNK, "state": "receiving"}
+
+
+def test_complete_trusts_the_file_over_the_index(h):
+    """The index counted bytes the part file no longer holds (cut short
+    outside this process). Only bytes on disk count: resend from there."""
+    data = pdf_bytes()
+    uid = h.send(data)
+    with open(h.data.part_path(uid), "r+b") as f:
+        f.truncate(CHUNK)
+    with pytest.raises(UploadConflict) as e:
+        h.uploads.complete(uid)
+    assert e.value.extra == {"received": CHUNK, "state": "receiving"}
+    for off in range(CHUNK, len(data), CHUNK):
+        h.uploads.put(uid, off, data[off:off + CHUNK])
+    assert h.uploads.complete(uid)["state"] == "complete"
+
+
+def test_complete_with_a_part_longer_than_the_file_starts_again(h):
+    """put never writes past the declared size, so extra bytes were written
+    from outside this process, and nothing on that file can be trusted any
+    more. Resetting to `size` would loop the client on 409 forever; the
+    honest offset is 0."""
+    data = pdf_bytes()
+    uid = h.send(data)
+    with open(h.data.part_path(uid), "ab") as f:
+        f.write(b"junk")
+    with pytest.raises(UploadConflict) as e:
+        h.uploads.complete(uid)
+    assert e.value.extra == {"received": 0, "state": "receiving"}
+    assert h.data.part_path(uid).read_bytes() == b""
+    assert h.doc_dirs() == []
+    for off in range(0, len(data), CHUNK):
+        h.uploads.put(uid, off, data[off:off + CHUNK])
+    (row,) = h.uploads.complete(uid)["documents"]
+    assert (h.data.doc_dir(row["id"]) / "input.pdf").read_bytes() == data
+
+
+def test_a_failed_completion_leaves_no_drawing_and_can_be_retried(h, monkeypatch):
+    """The files are written first, each marked .importing; when the index
+    transaction then fails, the files go, the upload is whole again, and a
+    retry completes it."""
+    data = pdf_bytes()
+    uid = h.send(data)
+    real = h.repo.finish_completion
+    seen = {}
+
+    def failing(upload_id, docs, ignored):
+        seen["marked"] = [(h.data.doc_dir(d["id"]) / IMPORTING_MARKER).exists() for d in docs]
+        raise sqlite3.OperationalError("disk I/O error")
+    monkeypatch.setattr(h.repo, "finish_completion", failing)
+    with pytest.raises(sqlite3.OperationalError):
+        h.uploads.complete(uid)
+    assert seen["marked"] == [True]
+    assert h.doc_dirs() == []
+    up = h.repo.get_upload(uid)
+    assert (up["state"], up["received"]) == ("receiving", len(data))
+    assert h.data.part_path(uid).read_bytes() == data
+    monkeypatch.setattr(h.repo, "finish_completion", real)
+    assert len(h.uploads.complete(uid)["documents"]) == 1
+
+
+def test_a_storage_fault_during_completion_is_reported_by_kind(h, monkeypatch):
+    data = pdf_bytes()
+    uid = h.send(data)
+
+    def failing(*a, **kw):
+        raise OSError(errno.ENOSPC, "boom", "/secret/path")
+    monkeypatch.setattr(uploads_mod, "sha256_file", failing)
+    with pytest.raises(DiskFull) as e:
+        h.uploads.complete(uid)
+    assert "secret" not in str(e.value)
+    assert h.doc_dirs() == []
+    assert h.repo.get_upload(uid)["state"] == "receiving"
+
+
+@pytest.mark.parametrize("data", [b"not a pdf at all", b""], ids=["garbage", "empty"])
+def test_an_unreadable_file_is_staged_but_never_included(h, data):
+    (row,) = h.imported(data)["documents"]
+    assert (row["unreadable"], row["included"], row["pages"]) == (True, False, None)
+
+
+@pytest.mark.parametrize("kw", [{"pages": 2}, {"width": 7000, "height": 5000}],
+                         ids=["multi-page", "oversized"])
+def test_an_out_of_scope_file_is_staged_excluded(h, kw):
+    (row,) = h.imported(pdf_bytes(**kw))["documents"]
+    assert (row["out_of_scope"], row["included"], row["allowed_out_of_scope"]) == (True, False, False)
+
+
+def test_a_second_copy_is_a_duplicate_excluded_by_default(h):
+    data = pdf_bytes()
+    (first,) = h.imported(data, name="a.pdf")["documents"]
+    (second,) = h.imported(data, name="b.pdf")["documents"]
+    assert first["included"] and second["duplicate_of"]["id"] == first["id"]
+    assert second["included"] is False
+
+
+def test_delete_removes_an_unfinished_upload_and_its_part(h):
+    data = pdf_bytes()
+    uid = h.create(data)["upload_id"]
+    h.uploads.delete(uid)
+    assert not h.data.part_path(uid).exists()
+    with pytest.raises(UnknownUpload):
+        h.repo.get_upload(uid)
+    h.uploads.delete(uid)                      # idempotent
+    done = h.imported(data)
+    with pytest.raises(InvalidTransition):
+        h.uploads.delete(done["upload_id"])
+
+
+def test_logs_carry_ids_and_counts_never_a_file_name(h, caplog):
+    caplog.set_level(logging.DEBUG)
+    uid = h.send(pdf_bytes(), name="Geheim-Flansch.pdf", rel_path="Kunde Meier")
+    h.uploads.complete(uid)
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert uid[:8] in text
+    assert "Geheim" not in text and "Meier" not in text and uid not in text
