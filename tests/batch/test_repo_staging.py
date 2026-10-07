@@ -258,3 +258,133 @@ def test_delete_upload_removes_only_an_unfinished_one(repo):
     rows = stage(repo, b, doc(1))
     with pytest.raises(InvalidTransition):
         repo.delete_upload(rows[0]["upload_id"])
+
+
+def test_a_batch_can_be_renamed_and_listed(repo):
+    b = repo.create_batch("Import 2026-10-07 14:30")["id"]
+    assert repo.rename_batch(b, "Lieferung 12")["name"] == "Lieferung 12"
+    stage(repo, b, doc(1))
+    upload(repo, b, name="late.pdf")
+    (listed,) = repo.list_batches()
+    assert (listed["id"], listed["documents"], listed["uploading"], listed["draft"]) == (b, 1, 1, True)
+
+
+def test_including_an_out_of_scope_file_is_the_stored_permission(repo):
+    (row,) = stage(repo, repo.create_batch("b")["id"], doc(1, pages=4))
+    assert (row["included"], row["allowed_out_of_scope"]) == (False, False)
+    row = repo.set_included(row["id"], True)
+    assert (row["included"], row["allowed_out_of_scope"]) == (True, True)
+    row = repo.set_included(row["id"], False)
+    assert (row["included"], row["allowed_out_of_scope"]) == (False, False)
+
+
+def test_an_unreadable_pdf_can_never_be_included(repo):
+    (row,) = stage(repo, repo.create_batch("b")["id"],
+                   doc(1, unreadable=True, pages=None, oversized=None))
+    with pytest.raises(InvalidTransition, match="unreadable"):
+        repo.set_included(row["id"], True)
+    assert repo.staging(row["batch_id"])["documents"][0]["included"] is False
+
+
+def test_include_is_refused_once_the_import_has_started(repo):
+    b = repo.create_batch("b")["id"]
+    (row,) = stage(repo, b, doc(1))
+    repo.start_batch(b)
+    with pytest.raises(InvalidTransition):
+        repo.set_included(row["id"], False)
+
+
+def test_start_queues_the_included_and_drops_the_rest(repo):
+    b = repo.create_batch("b")["id"]
+    rows = stage(repo, b, doc(1), doc(2, pages=3), doc(3), doc(4, pages=2),
+                 doc(5, unreadable=True, pages=None, oversized=None))
+    repo.set_included(rows[3]["id"], True)              # an out-of-scope file, explicitly
+    out = repo.start_batch(b)
+    ids = [r["id"] for r in rows]
+    assert out == {"queued": [ids[0], ids[2], ids[3]], "dropped": [ids[1], ids[4]]}
+    assert len(out["queued"]) + len(out["dropped"]) == len(rows)
+    assert repo.get_batch(b)["draft"] is False
+    view = repo.staging(b)
+    assert [r["state"] for r in view["documents"]] == ["queued"] * 3
+    assert view["uploads"] == []
+    # Every queued out-of-scope drawing carries the permission (decision 26).
+    assert all(r["allowed_out_of_scope"] for r in view["documents"] if r["out_of_scope"])
+    # The worker takes them in staging order.
+    assert [repo.claim_next()["id"] for _ in range(3)] == out["queued"]
+
+
+def test_start_is_refused_while_a_file_is_still_uploading(repo):
+    b = repo.create_batch("b")["id"]
+    stage(repo, b, doc(1))
+    upload(repo, b, name="late.pdf")
+    with pytest.raises(InvalidTransition, match="uploading"):
+        repo.start_batch(b)
+    assert repo.get_batch(b)["draft"] is True
+    assert repo.staging(b)["documents"][0]["state"] == "staged"
+
+
+def test_start_is_refused_with_nothing_included(repo):
+    b = repo.create_batch("b")["id"]
+    stage(repo, b, doc(1, pages=2))
+    with pytest.raises(InvalidTransition, match="nothing"):
+        repo.start_batch(b)
+    assert repo.staging(b)["counts"]["documents"] == 1
+
+
+def test_a_batch_starts_once(repo):
+    b = repo.create_batch("b")["id"]
+    stage(repo, b, doc(1))
+    repo.start_batch(b)
+    with pytest.raises(InvalidTransition):
+        repo.start_batch(b)
+    with pytest.raises(UnknownBatch):
+        repo.start_batch("0" * 32)
+
+
+def test_discarding_a_draft_removes_its_rows(repo):
+    b = repo.create_batch("b")["id"]
+    rows = stage(repo, b, doc(1))
+    late = upload(repo, b, name="late.pdf")
+    out = repo.delete_batch(b)
+    assert out == {"documents": [rows[0]["id"]], "uploads": [rows[0]["upload_id"], late["id"]]}
+    assert repo.delete_batch(b) is None
+    with pytest.raises(UnknownBatch):
+        repo.get_batch(b)
+
+
+def test_a_started_batch_cannot_be_discarded(repo):
+    b = repo.create_batch("b")["id"]
+    stage(repo, b, doc(1))
+    repo.start_batch(b)
+    with pytest.raises(InvalidTransition):
+        repo.delete_batch(b)
+
+
+def test_removing_the_last_staged_drawing_keeps_the_draft(repo):
+    """A draft may still receive files and is continued later (design §2);
+    it goes only when discarded, or when it is empty and a week old."""
+    b = repo.create_batch("b")["id"]
+    (row,) = stage(repo, b, doc(1))
+    assert repo.delete(row["id"]) is True
+    assert repo.get_batch(b)["draft"] is True
+
+
+def test_a_drawing_in_a_draft_is_never_queued_one_by_one(repo):
+    """Start is where the Include rules live. A per-drawing enqueue would let
+    an unreadable or an unconfirmed out-of-scope file past them."""
+    (row,) = stage(repo, repo.create_batch("b")["id"], doc(1))
+    with pytest.raises(InvalidTransition, match="start"):
+        repo.enqueue(row["id"])
+
+@pytest.mark.parametrize("act", ["start_batch", "delete_batch"])
+def test_a_draft_holding_a_drawing_past_staged_changes_nothing(repo, act):
+    """A draft's drawings are all staged: only Start queues them. Should
+    the index ever say otherwise, Start and Discard refuse rather than
+    delete a row that may be in the worker's hands."""
+    b = repo.create_batch("b")["id"]
+    first, second = stage(repo, b, doc(1), doc(2, pages=2))
+    repo._conn.execute("UPDATE document SET state = 'extracting' WHERE id = ?", (second["id"],))
+    with pytest.raises(InvalidTransition, match="staged"):
+        getattr(repo, act)(b)
+    assert [r["state"] for r in repo.staging(b)["documents"]] == ["staged", "extracting"]
+    assert repo.get_batch(b)["draft"] is True

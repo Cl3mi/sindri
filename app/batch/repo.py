@@ -26,7 +26,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Iterable, Optional
 
-from app.batch.staging import batch_view, default_included, staging_counts, staging_row, upload_view
+from app.batch.staging import (batch_view, default_included, out_of_scope, staging_counts,
+                               staging_row, upload_view)
 
 # Crash/restart retries (decision 6). An exception from extract() is NOT
 # retried automatically: decoding is greedy and deterministic, so a second
@@ -193,6 +194,17 @@ class Repo:
     def get_batch(self, batch_id) -> dict:
         with self._lock:
             return batch_view(self._batch(self._conn, batch_id))
+
+    def list_batches(self) -> list:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT b.*,"
+                " (SELECT COUNT(*) FROM document d WHERE d.batch_id = b.id) AS documents,"
+                " (SELECT COUNT(*) FROM upload u WHERE u.batch_id = b.id"
+                "  AND u.state != 'complete') AS uploading"
+                " FROM batch b ORDER BY b.created_at, b.rowid").fetchall()
+        return [{**batch_view(r), "documents": r["documents"], "uploading": r["uploading"]}
+                for r in rows]
 
     def get_upload(self, upload_id) -> dict:
         with self._lock:
@@ -371,6 +383,94 @@ class Repo:
             c.execute("DELETE FROM upload WHERE id = ?", (upload_id,))
             return dict(row)
 
+    def rename_batch(self, batch_id, name: str) -> dict:
+        with self._tx() as c:
+            self._batch(c, batch_id)
+            c.execute("UPDATE batch SET name = ? WHERE id = ?", (name, batch_id))
+            return batch_view(self._batch(c, batch_id))
+
+    def set_included(self, doc_id, included: bool) -> dict:
+        with self._tx() as c:
+            r = c.execute(
+                "SELECT d.state, d.unreadable, d.pages, d.oversized, b.draft"
+                " FROM document d JOIN batch b ON b.id = d.batch_id WHERE d.id = ?",
+                (doc_id,)).fetchone()
+            if r is None:
+                raise UnknownDocument(f"no document {str(doc_id)[:8]}")
+            if r["state"] != "staged" or not r["draft"]:
+                raise InvalidTransition(
+                    "only a drawing in an import that has not started can be included or excluded")
+            if included and r["unreadable"]:
+                raise InvalidTransition("an unreadable PDF can never be included")
+            # Including an out-of-scope file IS the explicit permission
+            # (decision 26); it is stored so the work list and the manifest
+            # can say so. Excluding takes it back.
+            allowed = bool(included) and out_of_scope(r["pages"], r["oversized"])
+            c.execute("UPDATE document SET included = ?, allowed_out_of_scope = ?, updated_at = ?"
+                      " WHERE id = ?", (int(bool(included)), int(allowed), self._clock(), doc_id))
+            return self._staging_rows(c, "d.id = ?", (doc_id,))[0]
+
+    @staticmethod
+    def _draft_rows(c, batch_id) -> list:
+        """A draft's documents, in staging order -- all of them `staged`,
+        because only start_batch queues a draft's drawing. Start and Discard
+        DELETE rows on that assumption, so it is checked, not trusted: a row
+        past `staged` may be in the worker's hands, and removing it under
+        the worker is the one thing neither may ever do."""
+        rows = c.execute("SELECT id, state, included, unreadable FROM document"
+                         " WHERE batch_id = ? ORDER BY rowid", (batch_id,)).fetchall()
+        if any(r["state"] != "staged" for r in rows):
+            raise InvalidTransition("this import holds a drawing that is no longer staged")
+        return rows
+
+    def start_batch(self, batch_id) -> dict:
+        """Queue the included rows, drop the excluded ones, end the draft --
+        one transaction (design §2 "Start batch"). Refused, changing nothing,
+        while a file is still uploading or when nothing is included. Returns
+        the ids queued and dropped; the caller removes the dropped files."""
+        now = self._clock()
+        with self._tx() as c:
+            if not self._batch(c, batch_id)["draft"]:
+                raise InvalidTransition("this import has already started")
+            if c.execute("SELECT 1 FROM upload WHERE batch_id = ? AND state != 'complete' LIMIT 1",
+                         (batch_id,)).fetchone():
+                raise InvalidTransition("files are still uploading; wait for them or remove them")
+            rows = self._draft_rows(c, batch_id)
+            go = [r["id"] for r in rows if r["included"] and not r["unreadable"]]
+            if not go:
+                raise InvalidTransition("nothing is included")
+            keep = set(go)
+            drop = [r["id"] for r in rows if r["id"] not in keep]
+            for doc_id in go:
+                # One queued_at for the whole import; claim_next and
+                # queue_position break the tie by rowid, which is staging order.
+                self._move(c, doc_id, ("staged",), "queued", queued_at=now)
+            c.executemany("DELETE FROM document WHERE id = ? AND state = 'staged'",
+                          [(i,) for i in drop])
+            # Upload rows are the import's bookkeeping; the documents keep
+            # upload_id as history (no foreign key, migration 2).
+            c.execute("DELETE FROM upload WHERE batch_id = ?", (batch_id,))
+            c.execute("UPDATE batch SET draft = 0 WHERE id = ?", (batch_id,))
+        return {"queued": go, "dropped": drop}
+
+    def delete_batch(self, batch_id):
+        """Discard an import that has not started: its staged rows, its
+        uploads and the batch. Returns the ids whose files the caller must
+        remove; None if unknown (idempotent)."""
+        with self._tx() as c:
+            row = c.execute("SELECT draft FROM batch WHERE id = ?", (batch_id,)).fetchone()
+            if row is None:
+                return None
+            if not row["draft"]:
+                raise InvalidTransition("only an import that has not started can be discarded")
+            docs = [r["id"] for r in self._draft_rows(c, batch_id)]
+            ups = [r["id"] for r in c.execute(
+                "SELECT id FROM upload WHERE batch_id = ? ORDER BY rowid", (batch_id,)).fetchall()]
+            c.execute("DELETE FROM document WHERE batch_id = ?", (batch_id,))
+            c.execute("DELETE FROM upload WHERE batch_id = ?", (batch_id,))
+            c.execute("DELETE FROM batch WHERE id = ?", (batch_id,))
+        return {"documents": docs, "uploads": ups}
+
     def create_document(self, doc_id, file_name, pages, sha256, batch_name=None) -> dict:
         """A single upload is a batch of one (decision 17); B2 adds real batches."""
         now = self._clock()
@@ -385,7 +485,16 @@ class Repo:
             return self._row(c, doc_id)
 
     def enqueue(self, doc_id) -> None:
+        """Queue one staged drawing of a batch that is NOT a draft (the
+        worker and lifecycle tests build such fixtures with create_document).
+        A draft's drawings are queued only by start_batch, where the Include
+        rules live -- one by one, an unreadable or an unconfirmed
+        out-of-scope file could be queued past them."""
         with self._tx() as c:
+            r = c.execute("SELECT b.draft FROM document d JOIN batch b ON b.id = d.batch_id"
+                          " WHERE d.id = ?", (doc_id,)).fetchone()
+            if r is not None and r["draft"]:
+                raise InvalidTransition("start the import to queue its drawings")
             self._move(c, doc_id, ("staged",), "queued", queued_at=self._clock())
 
     def claim_next(self) -> Optional[dict]:
@@ -464,7 +573,9 @@ class Repo:
         Only the `extracting` state is refused here. That is NOT enough on
         its own: cancel is cooperative, so the worker's run keeps going
         briefly after the row already says `cancelled`. The API must also
-        refuse to delete the worker's current job until the run returns."""
+        refuse to delete the worker's current job until the run returns.
+
+        Removing the last staged drawing of a draft keeps the draft."""
         with self._tx() as c:
             row = c.execute("SELECT state, batch_id FROM document WHERE id = ?",
                             (doc_id,)).fetchone()
@@ -473,7 +584,12 @@ class Repo:
             if row["state"] == "extracting":
                 raise InvalidTransition("cancel the extraction before removing the drawing")
             c.execute("DELETE FROM document WHERE id = ?", (doc_id,))
-            c.execute("DELETE FROM batch WHERE id = ? AND NOT EXISTS "
+            # A started batch goes with its last drawing. A draft stays: it
+            # may still receive files and is continued later (design §2);
+            # it goes when discarded, or when empty and a week old (uploads.py).
+            # (Its upload rows reference it, so deleting it here would also
+            # fail the upload.batch_id foreign key.)
+            c.execute("DELETE FROM batch WHERE id = ? AND draft = 0 AND NOT EXISTS "
                       "(SELECT 1 FROM document WHERE batch_id = ?)",
                       (row["batch_id"], row["batch_id"]))
         return True
