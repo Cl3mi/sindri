@@ -99,10 +99,17 @@ export const retryDocument = async (id) =>
 export const openDocument = async (id) =>
   jsonOrThrow(await fetch(docUrl(id, '/open'), { method: 'POST' }), 'Could not open the drawing');
 
-// Fire-and-forget removal of a staged drawing the user backed out of.
+// Best-effort removal of a drawing the user backed out of. Never throws;
+// resolves whether it was removed -- the server refuses (409) while a
+// cancelled run is still unwinding, so Stop retries until this says true.
 export async function deleteDocument(id) {
-  if (!id) return;
-  try { await fetch(docUrl(id), { method: 'DELETE' }); } catch { /* best effort */ }
+  if (!id) return false;
+  try {
+    const res = await fetch(docUrl(id), { method: 'DELETE' });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 // The server always sends both forms (app/main.py _content_disposition):

@@ -1,11 +1,14 @@
-// Entry point: wires modules, health check, file upload, exports.
+// Entry point: wires modules, health check, file upload, the queue wait,
+// reopening a drawing from its link, and Finish & Export.
 
-import { state, on, setSession, clearSession, undo, redo, canUndo, canRedo,
-         progress, canFinish } from './state.js';
-import { savePdf, runExtraction, deleteSession, exportFile, health,
-         postEvents, beaconEvents, sealSession } from './api.js';
+import { state, on, restoreSession, clearSession, undo, redo,
+         canUndo, canRedo, progress, canFinish } from './state.js';
+import { savePdf, getDocument, enqueueDocument, cancelDocument, openDocument,
+         deleteDocument, downloadExport, health, postEvents, beaconEvents,
+         sealSession } from './api.js';
 import { createJournal } from './journal.js';
-import { createFinisher } from './finish.js';
+import { createFinisher, createExporter } from './finish.js';
+import { restoreReview, flushBeforeLeaving } from './reopen.js';
 import { initViewer } from './viewer.js';
 import { initTable } from './table.js';
 import {
@@ -14,40 +17,30 @@ import {
 } from './ui.js';
 import { initShortcuts } from './shortcuts.js';
 
-// Pending upload awaiting confirmation, and the controller for the live run.
-let pendingUpload = null;   // { session_id, fileName }
-let extractAbort = null;    // AbortController while extraction is streaming
+// The drawing this tab is waiting on (staged or extracting). Extraction runs
+// on the server; closing the tab no longer stops it (batch design §1).
+let waitingOn = null;     // { id, fileName, pages }
+let pollTimer = null;
+let stopping = false;     // Stop pressed; waiting for the worker to let go
 
 // The review journal: every state operation, numbered and flushed to the
-// server (docs/plans/2026-10-07-hitl-review-grading-design.md §2).
+// server (docs/plans/2026-10-07-hitl-review-grading-design.md §2). It is
+// mandatory (batch design decision 30), so there is no "logging off" mode.
 const journal = createJournal({
   send: (sid, writer, events) => postEvents(sid, writer, events),
-  // The server's own signal that it can no longer record this session
-  // (its store disappeared mid-session: a restart without
-  // SINDRI_REVIEW_DIR, or a dir that went unwritable). Surface it the same
-  // way a session that started with no store does, and stop the backoff
-  // loop -- retrying a flush the server has already said it will never ack
-  // again would just back off to 10s forever for nothing.
-  onLoggingOff: () => {
-    document.getElementById('log-pill').hidden = false;
-    clearTimeout(flushTimer);
-  },
 });
 let flushTimer = null;
 let flushBackoff = 500;
 
 // Flush → seal → export, single-flight, never re-sealing an unchanged
-// journal (finish.js).
+// journal (finish.js) -- including after a reload, via seed() on open.
 const finisher = createFinisher({
   journal,
   canFinish,
   seal: (sid, body) => sealSession(sid, body),
-  exportAll: async (s) => {
-    const payload = { session_id: s.sessionId, rows: s.rows.filter((r) => !r.suggested),
-                      notes: s.notes, marks: s.marks, title_block: s.title_block };
-    await exportFile('/api/export', payload, 'inspection.xlsx');
-    await exportFile('/api/export/pdf', payload, 'ballooned.pdf');
-  },
+  // Remembers which file of a revision already arrived, so a retry after a
+  // failed PDF does not download the spreadsheet a second time.
+  exportAll: createExporter((sid, kind, revision) => downloadExport(sid, kind, revision)),
 });
 
 function init() {
@@ -66,12 +59,56 @@ function init() {
   wireJournal();
   wireUndoRedo();
   pingHealth();
+  resumeFromHash();
+}
+
+// ===== Link / reload =================================================
+// #doc=<id> keeps the drawing addressable, so a reload -- or coming back
+// tomorrow with the same link -- reopens it where the reviewer stopped.
+function setHash(id) { history.replaceState(null, '', id ? `#doc=${id}` : '#'); }
+function hashDoc() { return /^#doc=([0-9a-f]{32})$/.exec(location.hash)?.[1] || null; }
+
+async function resumeFromHash() {
+  const id = hashDoc();
+  if (!id) return;
+  try {
+    const doc = await getDocument(id);
+    routeDocument(doc);
+  } catch {
+    setHash(null);
+  }
+}
+
+function routeDocument(doc) {
+  waitingOn = { id: doc.id, fileName: doc.file_name, pages: doc.pages };
+  if (doc.state === 'staged') showConfirm(doc.file_name, doc.pages);
+  else if (doc.state === 'queued' || doc.state === 'extracting') { showExtracting(doc.file_name); pollUntilReady(); }
+  else if (['ready', 'in_review', 'finished'].includes(doc.state)) loadForReview(doc.id);
+  else {
+    toast({ kind: 'error', title: `Drawing ${doc.state}`,
+            msg: doc.error_type ? `Extraction failed (${doc.error_type}).` : 'Upload it again to retry.' });
+    waitingOn = null;
+    hideExtracting();
+    backToEmptyOrCurrent();
+  }
+}
+
+// After backing out of a drawing: the review still on screen (a drawing
+// dropped while reviewing another), else the empty state.
+function backToEmptyOrCurrent() {
+  setHash(state.sessionId || null);
+  if (state.sessionId) {
+    document.getElementById('plan-confirm').hidden = true;
+    document.getElementById('plan-extracting').hidden = true;
+  } else {
+    backToEmpty();
+  }
 }
 
 // ===== Header / file chip ============================================
 function wireHeader() {
   document.getElementById('file-close').addEventListener('click', () => {
-    if (!confirm('Close the current drawing? Unsaved edits will be lost.')) return;
+    if (!confirm('Close this drawing? Your review is saved and reopens from its link.')) return;
     // clearSession() below wipes sessionId/writer out of the journal's
     // reach (start() on the NEXT drawing resets it anyway) -- so any event
     // still only in `pending` must go out now or it is gone for good. The
@@ -81,6 +118,7 @@ function wireHeader() {
       beaconEvents(journal.sessionId, journal.writer, journal.pending);
     }
     clearSession();
+    setHash(null);
   });
   on('session', () => {
     const chip  = document.getElementById('file-chip');
@@ -97,7 +135,6 @@ function wireHeader() {
       // next drawing opens with the last one's "N flagged rows" state.
       fin.classList.remove('blocked');
       fin.title = 'Seal the review and export Excel + ballooned PDF';
-      document.getElementById('log-pill').hidden = true;
     }
   });
 }
@@ -116,8 +153,11 @@ function wireFileInputs() {
 
 async function handleFile(file) {
   if (!file) return;
-  if (extractAbort) {
-    toast({ kind: 'warn', title: 'Extraction in progress', msg: 'Stop the current run before opening another drawing.' });
+  // One waiting drawing per tab: a second upload would orphan the first,
+  // which only its link could ever reach again (B3 adds a list).
+  if (waitingOn) {
+    toast({ kind: 'warn', title: 'A drawing is already waiting',
+            msg: 'Cancel or stop it before opening another drawing.' });
     return;
   }
   if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
@@ -127,8 +167,9 @@ async function handleFile(file) {
   setBusy(`Opening ${file.name}…`);
   try {
     const meta = await savePdf(file);
-    pendingUpload = { session_id: meta.session_id, fileName: meta.fileName || file.name };
-    showConfirm(pendingUpload.fileName, meta.pages);
+    waitingOn = { id: meta.session_id, fileName: meta.fileName || file.name, pages: meta.pages };
+    setHash(meta.session_id);
+    showConfirm(waitingOn.fileName, meta.pages);
   } catch (err) {
     toast({ kind: 'error', title: 'Could not open PDF', msg: String(err.message || err) });
   } finally {
@@ -136,7 +177,7 @@ async function handleFile(file) {
   }
 }
 
-// ===== Confirm → Start → Stop ======================================
+// ===== Confirm → Queue → Wait → Open ================================
 function wireExtractionControls() {
   document.getElementById('cf-start').addEventListener('click', startExtraction);
   document.getElementById('cf-cancel').addEventListener('click', cancelConfirm);
@@ -159,58 +200,141 @@ function backToEmpty() {
 }
 
 function cancelConfirm() {
-  if (pendingUpload) deleteSession(pendingUpload.session_id);
-  pendingUpload = null;
-  backToEmpty();
+  if (waitingOn) deleteDocument(waitingOn.id);
+  waitingOn = null;
+  backToEmptyOrCurrent();
 }
 
 async function startExtraction() {
-  if (!pendingUpload) return;
-  const { session_id, fileName } = pendingUpload;
+  if (!waitingOn) return;
   document.getElementById('plan-confirm').hidden = true;
-  showExtracting(fileName);
-  setBusy(`Extracting from ${fileName}…`);
-  extractAbort = new AbortController();
+  showExtracting(waitingOn.fileName);
   try {
-    const data = await runExtraction(session_id, onExtractProgress, extractAbort.signal);
-    data.fileName = fileName;
-    extractStepsDone();
-    setSession(data);          // viewer swaps in the page image, hides overlays
-    // Nothing may run between these two lines: setSession clears the
-    // undo/redo stacks, so no op can be applied before the journal starts --
-    // an op applied in between would never be logged, and seal would then
-    // report a replay mismatch for a perfectly healthy session.
-    journal.start(data.session_id, data.writer);
-    document.getElementById('log-pill').hidden = !!data.review_logging;
-    hideExtracting();
-    setIdle();
-    pendingUpload = null;
-    extractAbort = null;
-    const charsN = data.rows.length;
-    toast({
-      kind: 'ok',
-      title: `Loaded ${fileName}`,
-      msg: `${charsN} characteristic${charsN === 1 ? '' : 's'} extracted`,
-    });
+    await enqueueDocument(waitingOn.id);
+    pollUntilReady();
   } catch (err) {
     hideExtracting();
-    setIdle();
-    extractAbort = null;
-    if (err.name === 'AbortError') {   // user pressed Stop — session already cleaned up
-      backToEmpty();
-      return;
-    }
-    deleteSession(session_id);
-    pendingUpload = null;
-    backToEmpty();
-    toast({ kind: 'error', title: 'Could not extract', msg: String(err.message || err) });
+    // Still staged on the server: offer it again rather than strand it.
+    showConfirm(waitingOn.fileName, waitingOn.pages);
+    toast({ kind: 'error', title: 'Could not queue', msg: String(err.message || err) });
   }
 }
 
-function stopExtraction() {
-  if (extractAbort) extractAbort.abort();   // rejects runExtraction with AbortError
-  if (pendingUpload) deleteSession(pendingUpload.session_id);
-  pendingUpload = null;
+// Poll, not stream: the run belongs to the server, and a poll has nothing
+// to reconnect after a sleep or a dropped network (decision 8).
+function pollUntilReady() {
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(async () => {
+    if (!waitingOn || stopping) return;
+    let doc;
+    try {
+      doc = await getDocument(waitingOn.id);
+    } catch {
+      pollUntilReady();
+      return;
+    }
+    if (!waitingOn || stopping) return;   // Stop pressed while the request was out
+    if (doc.state === 'queued') {
+      document.getElementById('ex-detail').textContent =
+        doc.queue_position > 1 ? `Waiting — ${doc.queue_position - 1} drawing(s) ahead` : 'Waiting for the worker…';
+      pollUntilReady();
+    } else if (doc.state === 'extracting') {
+      if (doc.progress) onExtractProgress(doc.progress);
+      pollUntilReady();
+    } else {
+      extractStepsDone();
+      hideExtracting();
+      routeDocument(doc);
+    }
+  }, 1500);
+}
+
+// Cancel is cooperative: the worker stops at its next progress report, and
+// detection reports none while it runs -- so this can take many minutes,
+// and the copy must not promise an immediate stop. The drawing is removed
+// once the worker lets go (DELETE is refused until then); the interim UI
+// has no list to come back to (B3 adds one).
+async function stopExtraction() {
+  if (!waitingOn || stopping) return;
+  stopping = true;
+  clearTimeout(pollTimer);
+  const { id } = waitingOn;
+  document.getElementById('ex-stop').disabled = true;
+  document.getElementById('ex-title').textContent = 'Cancelling…';
+  document.getElementById('ex-detail').textContent =
+    'Stops at the next step — this can take a few minutes.';
+  try { await cancelDocument(id); } catch { /* already finished or gone: remove it anyway */ }
+  removeWhenStopped(id);
+}
+
+function removeWhenStopped(id) {
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(async () => {
+    if (!(await deleteDocument(id))) { removeWhenStopped(id); return; }
+    stopping = false;
+    waitingOn = null;
+    document.getElementById('ex-stop').disabled = false;
+    hideExtracting();
+    backToEmptyOrCurrent();
+    toast({ kind: 'ok', title: 'Stopped', msg: 'The drawing was removed.' });
+  }, 1500);
+}
+
+function confirmLeaveUnsaved() {
+  return confirm('Your latest changes to the open drawing are not saved yet — '
+               + 'the server has not taken them.\n\n'
+               + 'OK: open the other drawing anyway (those changes may be lost).\n'
+               + 'Cancel: stay here; saving keeps retrying.');
+}
+
+async function loadForReview(id) {
+  // journal.resume() discards the open drawing's unflushed events, so they
+  // go to the server first -- or the reviewer decides, never silence.
+  if (journal.active && journal.sessionId !== id) {
+    if (!(await flushBeforeLeaving(journal, confirmLeaveUnsaved))) {
+      waitingOn = null;
+      hideExtracting();
+      backToEmptyOrCurrent();
+      toast({ kind: 'warn', title: 'Stayed on this drawing',
+              msg: 'The other drawing is ready on the server; open its link once this one has saved.' });
+      if (journal.pending.length) scheduleFlush(flushBackoff);
+      return;
+    }
+    // Left anyway: one last best-effort try for whatever is still pending.
+    if (journal.pending.length) beaconEvents(journal.sessionId, journal.writer, journal.pending);
+  }
+  setBusy('Opening drawing…');
+  try {
+    const data = await openDocument(id);
+    // Restore, resume and seed with nothing in between: an op applied
+    // between restoring and resuming would never be journaled. Throws with
+    // the screen untouched or cleared, never half-built (reopen.js).
+    restoreReview(data, { restoreSession, clearSession, journal, finisher });
+    clearTimeout(flushTimer);
+    flushBackoff = 500;
+    waitingOn = null;
+    setHash(id);
+    hideExtracting();
+    const n = data.rows.length;
+    const nEv = data.events.length;
+    toast({ kind: 'ok', title: `Loaded ${data.fileName}`,
+            msg: nEv ? `Review restored (${nEv} change${nEv === 1 ? '' : 's'})`
+                     : `${n} characteristic${n === 1 ? '' : 's'} extracted` });
+  } catch (err) {
+    waitingOn = null;
+    hideExtracting();
+    toast({ kind: 'error', title: 'Could not open the drawing',
+            msg: `${String(err.message || err)} — reload the page to try again.` });
+    if (state.sessionId) {
+      backToEmptyOrCurrent();
+    } else {
+      // Keep the link on the drawing that failed, so a reload retries it.
+      backToEmpty();
+      setHash(id);
+    }
+  } finally {
+    setIdle();
+  }
 }
 
 // ===== Extraction status overlay ====================================
@@ -289,7 +413,8 @@ function wireJournal() {
   on('op', (e) => {
     // A journal fault must never break the reviewer's edit: the state has
     // already changed and 'change' must still fire after this listener.
-    try { journal.record(e); } catch (err) { console.error('review journal', err); }
+    // The error's TYPE only: its message could carry a cell value.
+    try { journal.record(e); } catch (err) { console.error('review journal:', err?.name); }
     scheduleFlush(500);
   });
   // pagehide, not beforeunload: it also fires on mobile tab discards.
@@ -304,7 +429,14 @@ function scheduleFlush(delay) {
     try {
       await journal.flush();
       flushBackoff = 500;
-    } catch {
+    } catch (err) {
+      // Another tab opened this drawing and holds the writer now; every
+      // retry would be refused the same way (B3 replaces this with a
+      // read-only banner).
+      if (/opened elsewhere/.test(err?.message || '')) {
+        toast({ kind: 'warn', title: 'Opened in another tab', msg: 'Reload to continue here.' });
+        return;
+      }
       // Keep everything pending and retry, backing off to 10 s; Finish
       // refuses until the server holds every event, so nothing is lost.
       flushBackoff = Math.min(flushBackoff * 2, 10000);
@@ -348,8 +480,7 @@ async function finish() {
               msg: `${n} flagged row${n === 1 ? '' : 's'} still to resolve — showing them now.` });
       document.querySelector('#filter-pills button[data-filter="review"]')?.click();
     } else if (res.status === 'done') {
-      toast({ kind: 'ok', title: 'Finished',
-              msg: res.revision ? `Review sealed as revision r${res.revision}` : 'Exported (review not recorded)' });
+      toast({ kind: 'ok', title: 'Finished', msg: `Review sealed as revision r${res.revision}` });
     }
   } catch (err) {
     toast({ kind: 'error', title: 'Finish failed', msg: String(err.message || err) });

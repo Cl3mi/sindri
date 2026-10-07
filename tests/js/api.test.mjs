@@ -55,3 +55,21 @@ test('jsonOrThrow falls back to the caller message when the body is not JSON at 
 test('jsonOrThrow resolves the parsed body on a 2xx response', async () => {
   assert.deepEqual(await jsonOrThrow(fakeRes(200, { ok: true }), 'fallback'), { ok: true });
 });
+
+// Stop removes a drawing only once the worker has let go of it: DELETE is
+// refused (409) while a cancelled run is still unwinding, which can take
+// minutes. The caller retries until this reports success.
+test('deleteDocument reports whether the drawing was actually removed', async () => {
+  const { deleteDocument } = await import('../../app/static/js/api.js');
+  const saved = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => ({ ok: false, status: 409 });
+    assert.equal(await deleteDocument('a'.repeat(32)), false);
+    globalThis.fetch = async () => ({ ok: true, status: 200 });
+    assert.equal(await deleteDocument('a'.repeat(32)), true);
+    globalThis.fetch = async () => { throw new TypeError('offline'); };
+    assert.equal(await deleteDocument('a'.repeat(32)), false);
+  } finally {
+    globalThis.fetch = saved;
+  }
+});

@@ -1,0 +1,112 @@
+// Reopening a drawing (batch design §3): the order of restore → resume →
+// seed, what happens when the server's payload cannot be rebuilt, and the
+// flush that must precede leaving a drawing. Pure, with injected fakes, so
+// node can test what main.js only wires.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+const { restoreReview, flushBeforeLeaving } = await import('../../app/static/js/reopen.js');
+const { createJournal } = await import('../../app/static/js/journal.js');
+
+function fakes({ restoreThrows = false } = {}) {
+  const log = [];
+  const session = { id: 'old' };
+  const journal = createJournal({ send: async () => ({ contiguous: 0 }) });
+  journal.start('old', 'w-old');
+  return {
+    log, session, journal,
+    deps: {
+      journal,
+      restoreSession: (data, events) => {
+        log.push(['restore', events.length]);
+        if (restoreThrows) throw new Error('cannot restore a teleport event');
+        session.id = data.session_id;
+        return events.map((e) => [{ op: e.seq }, e.seq]);
+      },
+      clearSession: () => { log.push(['clear']); session.id = null; },
+      finisher: { seed: (s) => log.push(['seed', s]) },
+    },
+  };
+}
+
+const payload = (extra = {}) => ({ session_id: 'new', writer: 'w-new', last_seq: 4,
+  events: [{ seq: 1 }, { seq: 4 }], final_revision: 2, sealed_seq: 4, ...extra });
+
+test('restores, resumes after last_seq, and seeds the finisher with the sealed revision', () => {
+  const f = fakes();
+  restoreReview(payload(), f.deps);
+  assert.equal(f.session.id, 'new');
+  assert.equal(f.journal.sessionId, 'new');
+  assert.equal(f.journal.writer, 'w-new');
+  assert.equal(f.journal.lastSeq, 4);
+  assert.deepEqual(f.log.at(-1), ['seed', { sessionId: 'new', seq: 4, revision: 2 }]);
+});
+
+test('a damaged last_seq is refused before anything is touched', () => {
+  const f = fakes();
+  assert.throws(() => restoreReview(payload({ last_seq: undefined }), f.deps), /review log/);
+  assert.equal(f.session.id, 'old');
+  assert.equal(f.journal.sessionId, 'old');
+  assert.deepEqual(f.log, []);
+});
+
+test('an event that cannot be rebuilt leaves another drawing\'s session and journal intact', () => {
+  const f = fakes({ restoreThrows: true });
+  assert.throws(() => restoreReview(payload(), f.deps), /cannot restore/);
+  assert.equal(f.session.id, 'old');
+  assert.equal(f.journal.sessionId, 'old');
+  assert.ok(f.journal.active);
+});
+
+test('...but on the SAME drawing /open already rotated the writer, so nothing stale survives', () => {
+  const f = fakes({ restoreThrows: true });
+  f.journal.start('new', 'w-stale');
+  assert.throws(() => restoreReview(payload(), f.deps), /cannot restore/);
+  assert.equal(f.session.id, null);
+  assert.equal(f.journal.active, false);
+});
+
+test('if resuming fails after the restore, the half-built screen is cleared', () => {
+  const f = fakes();
+  f.deps.journal = { ...f.journal, resume: () => { throw new Error('boom'); },
+                     start: (sid, w) => f.log.push(['start', sid, w]) };
+  assert.throws(() => restoreReview(payload(), f.deps), /boom/);
+  assert.equal(f.session.id, null);
+  assert.deepEqual(f.log.slice(-2), [['clear'], ['start', null, null]]);
+});
+
+// ---- flushing before leaving a drawing ---------------------------------
+
+function journalWith({ pending = 0, ackTo = null, fail = false } = {}) {
+  return {
+    active: true, lastSeq: 5, pending: Array(pending).fill({}),
+    async flush() { if (fail) throw new Error('offline'); return ackTo ?? 5; },
+  };
+}
+
+test('nothing pending: leaves without asking', async () => {
+  let asked = 0;
+  assert.equal(await flushBeforeLeaving(journalWith(), () => { asked++; return false; }), true);
+  assert.equal(asked, 0);
+});
+
+test('an inactive journal has nothing to save', async () => {
+  assert.equal(await flushBeforeLeaving({ active: false }, () => false), true);
+});
+
+test('pending events are flushed before leaving', async () => {
+  let asked = 0;
+  assert.equal(await flushBeforeLeaving(journalWith({ pending: 2 }), () => { asked++; return false; }), true);
+  assert.equal(asked, 0);
+});
+
+test('a failed flush asks, and staying is honoured', async () => {
+  assert.equal(await flushBeforeLeaving(journalWith({ pending: 2, fail: true }), () => false), false);
+  assert.equal(await flushBeforeLeaving(journalWith({ pending: 2, fail: true }), () => true), true);
+});
+
+test('a flush the server only partly acknowledged also asks', async () => {
+  let asked = 0;
+  await flushBeforeLeaving(journalWith({ pending: 2, ackTo: 4 }), () => { asked++; return true; });
+  assert.equal(asked, 1);
+});

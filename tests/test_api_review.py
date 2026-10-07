@@ -223,3 +223,22 @@ def test_an_event_above_a_gap_is_not_acknowledged_and_state_stays_ready(sample_p
         {"seq": 2, "type": "accept", "ids": []}]})
     assert r.status_code == 200 and r.json() == {"contiguous": 0}
     assert doc_state(sid)["state"] == "ready"
+
+
+def test_open_reports_the_sealed_revision_and_the_seq_it_sealed(sample_pdf, stub_backend):
+    """The finisher's memory of what it sealed lives in one tab; a reload
+    loses it, and store.seal accepts a final_seq equal to the last sealed
+    one -- so a Finish with no new edits after a reopen would mint a
+    redundant revision. /open hands the browser the last sealed revision and
+    the journal seq it covers, so the UI re-exports that revision instead."""
+    result = extract(sample_pdf)
+    assert (result["final_revision"], result["sealed_seq"]) == (None, 0)
+    sid, writer, rows = result["session_id"], result["writer"], result["rows"]
+    client.post(f"/api/session/{sid}/events", json={"writer": writer, "events": [
+        {"seq": 1, "type": "accept", "ids": []}]})
+    r = client.post(f"/api/session/{sid}/seal", json={
+        "writer": writer, "final_seq": 1, "rows": rows, "reviewed_ids": []})
+    assert r.status_code == 200
+    reopened = client.post(f"/api/documents/{sid}/open").json()
+    assert (reopened["final_revision"], reopened["sealed_seq"]) == (1, 1)
+    assert reopened["last_seq"] == 1

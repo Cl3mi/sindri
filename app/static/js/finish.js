@@ -48,5 +48,37 @@ export function createFinisher({ journal, seal, exportAll, canFinish }) {
     }
   }
 
-  return { run };
+  // What the SERVER last sealed, from /open (final_revision at sealed_seq).
+  // `sealed` above is per-tab memory and a reload loses it, while store.seal
+  // accepts a final_seq equal to the last sealed one -- so without this a
+  // Finish with no new edits after a reopen would seal a redundant revision.
+  // A null revision means nothing was ever sealed: nothing to remember.
+  function seed({ sessionId, seq, revision }) {
+    sealed = Number.isInteger(revision) && revision > 0 && Number.isInteger(seq)
+      ? { sessionId, seq, revision }
+      : null;
+  }
+
+  return { run, seed };
+}
+
+// The two downloads of one sealed revision, remembering which already
+// arrived: a retry after the PDF failed should not hand the reviewer a
+// second copy of the spreadsheet. The memory is per (session, revision) and
+// is dropped once both files arrive, so a later Finish downloads both again.
+// `download(sessionId, kind, revision)` is api.downloadExport.
+export function createExporter(download, kinds = ['xlsx', 'pdf']) {
+  let key = null;
+  let done = new Set();
+  return async function exportAll(snapshot, revision) {
+    const k = `${snapshot.sessionId}:${revision}`;
+    if (k !== key) { key = k; done = new Set(); }
+    for (const kind of kinds) {
+      if (done.has(kind)) continue;
+      await download(snapshot.sessionId, kind, revision);
+      done.add(kind);
+    }
+    key = null;
+    done = new Set();
+  };
 }

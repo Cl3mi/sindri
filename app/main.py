@@ -287,6 +287,11 @@ def open_document(doc_id: str):
     return {"session_id": doc_id, "image_url": f"/api/image/{doc_id}",
             "fileName": doc["file_name"], "state": doc["state"],
             "final_revision": doc["final_revision"],
+            # The journal seq final_revision covers. The browser forgets what
+            # it sealed on a reload, and store.seal accepts a final_seq equal
+            # to the last sealed one -- so without this, a Finish with no new
+            # edits after a reopen would seal a redundant revision.
+            "sealed_seq": doc["sealed_seq"],
             "rows": opened["proposal"], **extras,
             "writer": opened["writer"], "events": opened["events"],
             "last_seq": opened["last_seq"]}

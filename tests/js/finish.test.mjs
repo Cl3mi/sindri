@@ -119,3 +119,70 @@ test('a new session forgets the previous session\'s seal', async () => {
   assert.equal(calls.seals.length, 2);
   assert.equal(calls.seals[1].sid, 's2');
 });
+
+// ---- seeded from the server after a reload ------------------------------
+// The `sealed` memory above lives in one tab. After a reload /open says what
+// the server last sealed (final_revision at sealed_seq); store.seal would
+// accept that same seq again, so without the seed a Finish with no new edits
+// would mint a redundant revision.
+
+test('a reopened, already-sealed review re-exports its revision without sealing', async () => {
+  const { finisher, calls } = harness({ journal: fakeJournal({ lastSeq: 3 }) });
+  finisher.seed({ sessionId: 's1', seq: 3, revision: 2 });
+  assert.deepEqual(await finisher.run(snap()), { status: 'done', revision: 2 });
+  assert.equal(calls.seals.length, 0);
+  assert.equal(calls.exportedRevision, 2);
+});
+
+test('an edit after the reopen still seals a new revision', async () => {
+  const { finisher, calls } = harness({ journal: fakeJournal({ lastSeq: 4 }) });
+  finisher.seed({ sessionId: 's1', seq: 3, revision: 2 });
+  await finisher.run(snap());
+  assert.equal(calls.seals.length, 1);
+  assert.equal(calls.seals[0].final_seq, 4);
+});
+
+test('a seed for another session, or with nothing sealed, is ignored', async () => {
+  const { finisher, calls } = harness({ journal: fakeJournal({ lastSeq: 3 }) });
+  finisher.seed({ sessionId: 's2', seq: 3, revision: 2 });
+  await finisher.run(snap('s1'));
+  assert.equal(calls.seals.length, 1);
+  const h2 = harness({ journal: fakeJournal({ lastSeq: 0 }) });
+  h2.finisher.seed({ sessionId: 's1', seq: 0, revision: null });
+  await h2.finisher.run(snap('s1'));
+  assert.equal(h2.calls.seals.length, 1);   // never sealed: revision null is no seal
+});
+
+// ---- per-kind export memory ---------------------------------------------
+
+const { createExporter } = await import('../../app/static/js/finish.js');
+
+function exporterHarness(failOnce = new Set()) {
+  const got = [];
+  const exportAll = createExporter(async (sid, kind, rev) => {
+    if (failOnce.has(kind)) { failOnce.delete(kind); throw new Error(`${kind} failed`); }
+    got.push(`${sid}:${kind}:r${rev}`);
+  });
+  return { exportAll, got };
+}
+
+test('a retried partial export does not download the file that already arrived', async () => {
+  const { exportAll, got } = exporterHarness(new Set(['pdf']));
+  await assert.rejects(exportAll({ sessionId: 's1' }, 1), /pdf failed/);
+  await exportAll({ sessionId: 's1' }, 1);
+  assert.deepEqual(got, ['s1:xlsx:r1', 's1:pdf:r1']);
+});
+
+test('a complete export forgets, so asking again downloads both again', async () => {
+  const { exportAll, got } = exporterHarness();
+  await exportAll({ sessionId: 's1' }, 1);
+  await exportAll({ sessionId: 's1' }, 1);
+  assert.deepEqual(got, ['s1:xlsx:r1', 's1:pdf:r1', 's1:xlsx:r1', 's1:pdf:r1']);
+});
+
+test('a partial export of one revision does not excuse the next revision', async () => {
+  const { exportAll, got } = exporterHarness(new Set(['pdf']));
+  await assert.rejects(exportAll({ sessionId: 's1' }, 1));
+  await exportAll({ sessionId: 's1' }, 2);
+  assert.deepEqual(got, ['s1:xlsx:r1', 's1:xlsx:r2', 's1:pdf:r2']);
+});
