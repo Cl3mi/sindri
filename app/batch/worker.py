@@ -42,13 +42,17 @@ def result_payload(result) -> dict:
 
 class Worker:
     def __init__(self, repo, data, store, extract_fn: Callable, header_fn: Callable,
-                 idle_wait: float = 2.0):
+                 idle_wait: float = 2.0, startup: Optional[Callable] = None):
         self.repo = repo
         self.data = data
         self.store = store
         self.extract_fn = extract_fn     # (pdf_path, work_dir, progress) -> ExtractionResult
         self.header_fn = header_fn       # (pdf_path) -> review header dict
         self.idle_wait = idle_wait
+        # Run inside start()'s locked section, right after the flock is
+        # taken: the one moment this process is known to be the data dir's
+        # only worker. Runtime passes import recovery (uploads.recover).
+        self.startup = startup
         self._progress = {}              # doc_id -> latest report (UI only, never logged)
         self._current = None
         self._wake = threading.Event()
@@ -203,6 +207,14 @@ class Worker:
                 "another process already runs the extraction worker for this data "
                 "dir; run uvicorn as a single worker") from None
         try:
+            if self.startup is not None:
+                # Recovery only deletes leftovers of interrupted imports; a
+                # fault in it must not keep the worker -- and every queued
+                # drawing -- from starting. TYPE only (CLAUDE.md §1).
+                try:
+                    self.startup()
+                except Exception as e:
+                    log.warning("startup recovery failed: %s", type(e).__name__)
             moved = self.repo.requeue_interrupted()
             if moved["requeued"] or moved["failed"]:
                 log.info("startup: requeued %d, failed %d interrupted extraction(s)",

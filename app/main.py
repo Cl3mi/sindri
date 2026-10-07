@@ -286,8 +286,17 @@ def create_batch(req: BatchCreate):
     """A draft import (decision 10). The browser names it after the ZIP or
     folder, or its LOCAL date and time (decision 27). A name-less request
     gets a fallback in the server's clock, labelled UTC because the server
-    cannot know the user's zone. Editable later."""
+    cannot know the user's zone. Editable later.
+
+    Also sheds week-old unfinished uploads, stray part files and empty
+    drafts, so a server that is never restarted still does. Never the
+    docs/ sweep: that runs only at worker start, under the worker lock."""
     rt = runtime()
+    try:
+        rt.uploads.cleanup_stale()
+    except Exception as e:
+        # Housekeeping: a fault in it must not refuse a new import.
+        log.warning("stale upload cleanup failed: %s", type(e).__name__)
     name = (_batch_name(req.name) if req.name is not None
             else datetime.now(timezone.utc).strftime("Import %Y-%m-%d %H:%M UTC"))
     return rt.repo.create_batch(name)

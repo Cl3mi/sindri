@@ -85,6 +85,15 @@ _STAGING_SELECT = """
 """
 
 
+# A draft old enough to go and empty: no drawing, and no UNFINISHED upload
+# (a complete upload row is bookkeeping and goes with it). A draft with
+# staged drawings is kept however old: it may be continued later (design §2).
+_EMPTY_DRAFT = ("draft = 1 AND created_at < ?"
+                " AND NOT EXISTS (SELECT 1 FROM document d WHERE d.batch_id = batch.id)"
+                " AND NOT EXISTS (SELECT 1 FROM upload u WHERE u.batch_id = batch.id"
+                " AND u.state != 'complete')")
+
+
 def _now() -> str:
     # Wall-clock UTC. Queue order compares these as STRINGS, so they are fixed
     # width: string order equals time order by construction. Plain isoformat()
@@ -217,6 +226,34 @@ class Repo:
     def get_upload(self, upload_id) -> dict:
         with self._lock:
             return self._upload(self._conn, upload_id)
+
+    def stale_uploads(self, cutoff: str) -> list:
+        """Unfinished uploads untouched since `cutoff`. A listing only: the
+        delete re-checks the age under the upload's lock."""
+        with self._lock:
+            return [r["id"] for r in self._conn.execute(
+                "SELECT id FROM upload WHERE state != 'complete' AND updated_at < ?"
+                " ORDER BY updated_at, rowid", (cutoff,)).fetchall()]
+
+    def open_upload_ids(self) -> set:
+        """Uploads whose part file is still theirs: receiving or completing."""
+        with self._lock:
+            return {r["id"] for r in self._conn.execute(
+                "SELECT id FROM upload WHERE state != 'complete'").fetchall()}
+
+    def has_document(self, doc_id) -> bool:
+        """A row in ANY state: whatever its state, the row owns its dir."""
+        with self._lock:
+            return self._conn.execute("SELECT 1 FROM document WHERE id = ?",
+                                      (doc_id,)).fetchone() is not None
+
+    def empty_drafts(self, cutoff: str) -> list:
+        """Drafts created before `cutoff` holding no drawing and no
+        unfinished upload. A listing only: delete_empty_draft re-checks."""
+        with self._lock:
+            return [r["id"] for r in self._conn.execute(
+                f"SELECT id FROM batch WHERE {_EMPTY_DRAFT} ORDER BY created_at, rowid",
+                (cutoff,)).fetchall()]
 
     def staging(self, batch_id) -> dict:
         """Everything the staging view shows for one batch."""
@@ -371,6 +408,27 @@ class Repo:
                 return []
             return self._staging_rows(c, f"d.id IN ({', '.join('?' * len(ids))})", ids)
 
+    def reset_completing(self) -> int:
+        """At startup only (under the worker lock): a completion cut off by a
+        crash. Its rows never committed (one transaction), so the upload is
+        whole again and /complete may be retried. While requests run, a
+        `completing` row is a completion in progress, never a leftover."""
+        with self._tx() as c:
+            return c.execute("UPDATE upload SET state = 'receiving', updated_at = ?"
+                             " WHERE state = 'completing'", (self._clock(),)).rowcount
+
+    def delete_empty_draft(self, batch_id, cutoff: str) -> bool:
+        """Remove one empty draft (see _EMPTY_DRAFT) with its complete upload
+        rows, in ONE transaction that re-checks it is still empty: a file
+        that arrived since keeps it. True if it went."""
+        with self._tx() as c:
+            if c.execute(f"SELECT 1 FROM batch WHERE id = ? AND {_EMPTY_DRAFT}",
+                         (batch_id, cutoff)).fetchone() is None:
+                return False
+            c.execute("DELETE FROM upload WHERE batch_id = ?", (batch_id,))
+            c.execute("DELETE FROM batch WHERE id = ?", (batch_id,))
+            return True
+
     def abort_completion(self, upload_id) -> None:
         """A completion that failed before its rows committed: the upload is
         whole again and /complete may be retried."""
@@ -378,13 +436,19 @@ class Repo:
             c.execute("UPDATE upload SET state = 'receiving', updated_at = ?"
                       " WHERE id = ? AND state = 'completing'", (self._clock(), upload_id))
 
-    def delete_upload(self, upload_id):
+    def delete_upload(self, upload_id, older_than=None):
         """An unfinished upload removed by the user or gone stale; returns
         its row, or None if unknown (idempotent). A complete upload is
-        refused: its drawings are removed one by one."""
+        refused: its drawings are removed one by one. With `older_than`
+        (the stale sweep), an upload completed or touched since it was
+        listed is left alone -- the age is re-checked in this transaction,
+        so a resume (which bumps updated_at) always wins."""
         with self._tx() as c:
             row = c.execute("SELECT * FROM upload WHERE id = ?", (upload_id,)).fetchone()
             if row is None:
+                return None
+            if older_than is not None and (row["state"] == "complete"
+                                           or row["updated_at"] >= older_than):
                 return None
             if row["state"] == "complete":
                 raise InvalidTransition("this upload is already imported; remove its drawings instead")

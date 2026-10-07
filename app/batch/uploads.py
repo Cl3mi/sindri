@@ -33,6 +33,7 @@ import unicodedata
 import uuid
 import zipfile
 import zlib
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from app.batch.paths import DOC_ID_RE, has_refused_chars, safe_rel_parts
@@ -57,6 +58,9 @@ FINGERPRINT_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 # only unmarked -- so a lost or replaced index can never make the sweep
 # delete real drawings.
 IMPORTING_MARKER = ".importing"
+# Design §2: unfinished uploads untouched this long are removed. Empty drafts
+# go after the same age.
+STALE_AFTER = timedelta(days=7)
 _COPY_PIECE = MIB
 # What reading a damaged entry can raise: a CRC mismatch, a broken deflate
 # stream, a truncated archive, an unsupported compression method, an
@@ -693,3 +697,147 @@ class Uploads:
             self._remove_import_dir(self.data.doc_dir(doc_id))
         log.info("batch %s discarded: %d staged, %d uploads",
                  batch_id[:8], len(out["documents"]), len(out["uploads"]))
+
+    # ----- recovery and housekeeping ----------------------------------------
+    @staticmethod
+    def _housekeeping(what, step):
+        """Run one recovery step; a fault is logged by TYPE (an OSError's
+        text names a path, CLAUDE.md §1) and answered None, so one failing
+        step never skips the others."""
+        try:
+            return step()
+        except Exception as e:
+            log.warning("%s failed: %s", what, type(e).__name__)
+            return None
+
+    def recover(self) -> dict:
+        """ONLY from Worker.start(), right after this process took the
+        single-worker lock (Runtime wires it as the worker's `startup`
+        hook): the one moment this process is known to be the data dir's
+        only worker, before the app serves a request. Never call it while
+        requests run -- an in-flight completion's dirs and `completing` row
+        look exactly like a crash's leftovers. Counts only; None for a step
+        that failed."""
+        out = {"completions_reset": self._housekeeping(
+                   "resetting interrupted completions", self.repo.reset_completing),
+               "imports_swept": self._housekeeping(
+                   "sweeping unfinished imports", self.sweep_unfinished_imports)}
+        stale = self._housekeeping("stale upload cleanup", self.cleanup_stale)
+        out.update(stale or dict.fromkeys(("stale_uploads", "orphan_parts", "empty_drafts")))
+        if any(out.values()):
+            log.info("startup: %s", ", ".join(f"{k} {v}" for k, v in out.items()))
+        return out
+
+    def sweep_unfinished_imports(self) -> int:
+        """Remove the docs/<id>/ dirs an index transaction never came to own:
+        marker present AND no row (a crash before a completion's commit, or
+        after a Start/Discard commit removed the row). A marked dir that HAS
+        a row -- in any state: a queued or extracting drawing's dir may carry
+        a marker after a crash in Start -- only loses its marker. A dir
+        without a marker is never touched whatever the index says, so a lost
+        or replaced index can never make this delete real drawings; those
+        rowless ones are counted in the log, never named.
+
+        Removal is marker LAST (_remove_import_dir): a sweep that stops
+        halfway leaves the dir marked for the next one. Startup only (see
+        recover). Returns the number of dirs removed."""
+        swept = unmarked = 0
+        for d in self.data.docs.iterdir():
+            # Only a real docs/<32 hex>/ directory is ours to judge: a
+            # symlink's target is not, whatever it holds.
+            if not DOC_ID_RE.fullmatch(d.name) or d.is_symlink() or not d.is_dir():
+                continue
+            owned = self.repo.has_document(d.name)
+            if not (d / IMPORTING_MARKER).exists():
+                unmarked += not owned
+                continue
+            if owned:
+                self._unmark([d])
+                continue
+            self._remove_import_dir(d)
+            if not d.exists():
+                swept += 1
+        if unmarked:
+            log.warning("startup sweep: %d unmarked dir(s) without a row left alone", unmarked)
+        return swept
+
+    def cleanup_stale(self, now=None) -> dict:
+        """Unfinished uploads untouched for STALE_AFTER (row and part), part
+        files no unfinished upload owns, and drafts left empty as long.
+
+        Safe while requests run (POST /api/batches calls it), because every
+        removal takes the lock the protocol's own steps take, in their order
+        (upload lock -> batch lock -> repo lock), and re-checks inside its
+        transaction:
+        - a stale upload is deleted under its upload lock, and only if it is
+          still unfinished and still old -- a chunk or a resume since (both
+          bump updated_at) keeps it;
+        - a part file is only ever UNLINKED, never written or truncated: after
+          a crash between a completion's commit and its unlink the part
+          shares its inode with a staged drawing's input file. It is stray
+          only when no row owns it or its upload is complete; a part of an
+          upload still receiving or completing is never touched. Parts are
+          listed BEFORE the owners are read, and a part is created only
+          after its row commits, so a listed part's owner is always seen;
+        - an empty draft is removed under its batch lock (Start, Discard and
+          a completion's commit hold it), in one transaction that re-checks
+          it is still empty, with its complete upload rows.
+        It never sweeps docs/ -- that is startup-only (recover)."""
+        now = now or datetime.now(timezone.utc)
+        cutoff = (now - STALE_AFTER).isoformat(timespec="microseconds")
+        uploads = 0
+        for uid in self.repo.stale_uploads(cutoff):
+            with self._lock(uid):
+                if self.repo.delete_upload(uid, older_than=cutoff) is None:
+                    continue
+                uploads += 1
+                try:
+                    self.data.part_path(uid).unlink(missing_ok=True)
+                except OSError as e:
+                    # The row is gone; the stray-part pass below (or the
+                    # next cleanup) finishes it.
+                    log.warning("upload %s: part not removed: %s", uid[:8], type(e).__name__)
+        parts = self._remove_stray_parts()
+        drafts = 0
+        for batch_id in self.repo.empty_drafts(cutoff):
+            with self._batch_lock(batch_id):
+                gone = self.repo.delete_empty_draft(batch_id, cutoff)
+            if gone:
+                drafts += 1
+                # Like discard_batch: no lock outlives its batch.
+                with self._locks_guard:
+                    self._batch_locks.pop(batch_id, None)
+        out = {"stale_uploads": uploads, "orphan_parts": parts, "empty_drafts": drafts}
+        if any(out.values()):
+            log.info("stale cleanup: %s", ", ".join(f"{k} {v}" for k, v in out.items()))
+        return out
+
+    def _remove_stray_parts(self) -> int:
+        found = [p for p in self.data.uploads.iterdir()
+                 if p.suffix == ".part" and DOC_ID_RE.fullmatch(p.stem)]
+        live = self.repo.open_upload_ids()
+        removed = 0
+        for p in found:
+            uid = p.stem
+            if uid in live or (p.is_dir() and not p.is_symlink()):
+                continue
+            with self._lock(uid):
+                # Re-read under the upload's lock: whatever `live` said, a
+                # part whose upload is unfinished right now is never touched.
+                # (Neither a complete nor a deleted upload becomes unfinished
+                # again, so this is defence in depth, not a known race.)
+                try:
+                    if self.repo.get_upload(uid)["state"] != "complete":
+                        continue
+                except UnknownUpload:
+                    pass
+                try:
+                    p.unlink()              # the NAME only -- never open, never truncate
+                except FileNotFoundError:
+                    continue                # its own step removed it meanwhile
+                except OSError as e:
+                    log.warning("upload %s: stray part not removed: %s",
+                                uid[:8], type(e).__name__)
+                    continue
+                removed += 1
+        return removed

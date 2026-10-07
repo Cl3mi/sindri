@@ -45,7 +45,12 @@ class Runtime:
             raise
         self.repo = Repo(self.conn)
         self.uploads = Uploads(self.repo, self.data, min_free_bytes=min_free_mb * MIB)
-        self.worker = Worker(self.repo, self.data, self.store, extract_fn, header_fn)
+        # Recovery runs inside Worker.start(), under the single-process lock
+        # (review C1): a second process that fails to get the lock never
+        # sweeps the first one's in-flight imports. A lambda, so the bound
+        # method is looked up at start time.
+        self.worker = Worker(self.repo, self.data, self.store, extract_fn, header_fn,
+                             startup=lambda: self.uploads.recover())
 
     @classmethod
     def from_env(cls, extract_fn, header_fn) -> "Runtime":

@@ -592,3 +592,62 @@ def test_a_failing_wake_does_not_fail_a_committed_start(monkeypatch, caplog):
     r = client.post(f"/api/batches/{batch_id}/start")
     assert (r.status_code, r.json()["queued"]) == (200, 1)
     assert "Geheim" not in "\n".join(rec.getMessage() for rec in caplog.records)
+
+
+class _Crash(Exception):
+    """Stands for the process dying at that point."""
+
+
+def test_a_crash_after_start_commits_leaves_only_sweepable_dirs(monkeypatch):
+    """Start removes rows first, files second. Dying in between leaves the
+    dropped drawing's dir with its marker and no row (swept at the next
+    start) and the queued one's dir marked with its row (only unmarked)."""
+    rt = main.runtime()
+    batch_id = new_batch()["id"]
+    _, keep = import_file(pdf_bytes(), batch_id=batch_id)
+    _, drop = import_file(pdf_bytes(pages=2), name="b.pdf", batch_id=batch_id)
+    keep_dir = rt.data.doc_dir(keep["documents"][0]["id"])
+    drop_dir = rt.data.doc_dir(drop["documents"][0]["id"])
+
+    def crash(*a, **k):
+        raise _Crash()
+    # The first file step after Start's commit is taking the queued rows'
+    # markers off. (A context, not undo(): undo would also take back
+    # conftest's per-test data dir.)
+    with monkeypatch.context() as m, pytest.raises(_Crash):
+        m.setattr(rt.uploads, "_unmark", crash)
+        client.post(f"/api/batches/{batch_id}/start")
+    assert (drop_dir / ".importing").exists() and (keep_dir / ".importing").exists()
+    assert rt.uploads.sweep_unfinished_imports() == 1
+    assert not drop_dir.exists()
+    assert keep_dir.is_dir() and not (keep_dir / ".importing").exists()
+    assert client.get(f"/api/documents/{keep['documents'][0]['id']}").json()["state"] == "queued"
+
+
+def test_a_new_import_sheds_week_old_unfinished_uploads():
+    """A server that is never restarted still sheds them."""
+    old_batch = new_batch()["id"]
+    up = new_upload(old_batch, pdf_bytes())
+    main.runtime().conn.execute("UPDATE upload SET updated_at = '2026-01-01T00:00:00.000000+00:00'")
+    new_batch()
+    assert client.get(f"/api/batches/{old_batch}").json()["uploads"] == []
+    assert not main.runtime().data.part_path(up["upload_id"]).exists()
+
+
+def test_a_new_import_never_sweeps_marked_dirs():
+    """While requests run, an in-flight completion's dirs look exactly like
+    crash leftovers: only the startup hook, under the worker lock, sweeps."""
+    in_flight = main.runtime().data.doc_dir("a" * 32)
+    in_flight.mkdir()
+    (in_flight / ".importing").write_bytes(b"")
+    new_batch()
+    assert (in_flight / ".importing").exists()
+
+
+def test_a_failing_cleanup_does_not_refuse_a_new_import(monkeypatch, caplog):
+    def boom():
+        raise OSError("/data/Kunde")
+    monkeypatch.setattr(main.runtime().uploads, "cleanup_stale", boom)
+    assert new_batch()["draft"] is True
+    text = "\n".join(rec.getMessage() for rec in caplog.records)
+    assert "OSError" in text and "Kunde" not in text

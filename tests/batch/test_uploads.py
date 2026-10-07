@@ -877,3 +877,222 @@ def test_zip_entry_names_are_never_logged(h, caplog):
     h.imported(blob, name="Vertraulich.zip")
     text = "\n".join(r.getMessage() for r in caplog.records)
     assert "Geheim" not in text and "Meier" not in text and "Vertraulich" not in text
+
+
+# ----- recovery and stale cleanup (Task 9) ----------------------------------
+OLD = "2026-01-01T00:00:00.000000+00:00"
+
+
+def test_recover_resets_an_interrupted_completion(h):
+    uid = h.send(b"x" * 10)
+    h.repo.begin_completion(uid)
+    assert h.uploads.recover()["completions_reset"] == 1
+    assert h.repo.get_upload(uid)["state"] == "receiving"
+
+
+def test_the_startup_sweep_removes_only_marked_dirs_without_a_row(h):
+    (row,) = h.imported(pdf_bytes())["documents"]
+    kept = h.data.doc_dir(row["id"])
+    (kept / IMPORTING_MARKER).write_bytes(b"")          # a crash after the commit
+    orphan = h.data.doc_dir("a" * 32)
+    orphan.mkdir()
+    (orphan / IMPORTING_MARKER).write_bytes(b"")        # a crash before it
+    unmarked = h.data.doc_dir("b" * 32)
+    unmarked.mkdir()                                    # no row, no marker: never ours to judge
+    assert h.uploads.sweep_unfinished_imports() == 1
+    assert not orphan.exists()
+    assert kept.is_dir() and not (kept / IMPORTING_MARKER).exists()
+    assert unmarked.is_dir()
+
+
+def test_a_marked_dir_whose_row_moved_on_is_only_unmarked(h):
+    """Start marks the dirs, commits, then unmarks: a crash in between leaves
+    a QUEUED row's dir marked. Any row, in any state, owns its dir."""
+    data = pdf_bytes()
+    (row,) = h.imported(data)["documents"]
+    h.repo.start_batch(h.batch)
+    d = h.data.doc_dir(row["id"])
+    (d / IMPORTING_MARKER).write_bytes(b"")
+    assert h.uploads.sweep_unfinished_imports() == 0
+    assert (d / "input.pdf").read_bytes() == data
+    assert not (d / IMPORTING_MARKER).exists()
+
+
+def test_a_sweep_that_stops_halfway_leaves_the_dir_marked(h, monkeypatch):
+    """Marker last: a removal that fails partway leaves a dir the NEXT sweep
+    still recognises -- never an unmarked dir with no row, which nothing
+    would ever remove."""
+    orphan = h.data.doc_dir("a" * 32)
+    (orphan / "exports").mkdir(parents=True)
+    (orphan / "input.pdf").write_bytes(b"x")
+    (orphan / IMPORTING_MARKER).write_bytes(b"")
+
+    def failing(*a, **k):
+        raise PermissionError(errno.EACCES, "denied")
+    with monkeypatch.context() as m:
+        m.setattr(uploads_mod.shutil, "rmtree", failing)
+        assert h.uploads.sweep_unfinished_imports() == 0
+    assert (orphan / IMPORTING_MARKER).exists()
+    assert h.uploads.sweep_unfinished_imports() == 1
+    assert not orphan.exists()
+
+
+def test_the_sweep_ignores_what_is_not_a_drawing_dir(h):
+    """Only docs/<32 hex>/ directories are judged; a stray file, a foreign
+    name or a symlink is left exactly as it is."""
+    (h.data.docs / "notes.txt").write_bytes(b"x")
+    foreign = h.data.docs / "not-an-id"
+    foreign.mkdir()
+    (foreign / IMPORTING_MARKER).write_bytes(b"")
+    target = h.data.root / "elsewhere"
+    target.mkdir()
+    (target / IMPORTING_MARKER).write_bytes(b"")
+    (h.data.docs / ("c" * 32)).symlink_to(target)
+    assert h.uploads.sweep_unfinished_imports() == 0
+    assert (foreign / IMPORTING_MARKER).exists()
+    assert (target / IMPORTING_MARKER).exists() and (h.data.docs / ("c" * 32)).is_symlink()
+    assert (h.data.docs / "notes.txt").exists()
+
+
+def test_unmarked_dirs_without_a_row_are_counted_not_named(h, caplog):
+    caplog.set_level(logging.DEBUG)
+    h.data.doc_dir("b" * 32).mkdir()
+    assert h.uploads.sweep_unfinished_imports() == 0
+    assert h.data.doc_dir("b" * 32).is_dir()
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "1 unmarked" in text and "bbbbbbbb" not in text
+
+
+def test_week_old_unfinished_uploads_are_removed_and_fresh_ones_kept(h):
+    old = h.create(b"x" * 10)["upload_id"]
+    fresh = h.create(b"y" * 10)["upload_id"]
+    h.repo._conn.execute("UPDATE upload SET updated_at = ? WHERE id = ?", (OLD, old))
+    assert h.uploads.cleanup_stale()["stale_uploads"] == 1
+    assert not h.data.part_path(old).exists() and h.data.part_path(fresh).exists()
+    with pytest.raises(UnknownUpload):
+        h.repo.get_upload(old)
+
+
+def test_an_upload_resumed_after_it_was_found_stale_is_kept(h):
+    """Listed as stale, then resumed before its lock was taken: the delete
+    re-checks the age inside its transaction."""
+    uid = h.create(b"x" * 10)["upload_id"]
+    assert h.repo.delete_upload(uid, older_than=OLD) is None
+    assert h.repo.get_upload(uid)["state"] == "receiving"
+
+
+def test_a_stale_upload_is_removed_only_under_its_lock(h):
+    """A chunk being written holds the upload's lock: the stale sweep waits
+    for it, then re-checks the age the chunk's offset move just bumped."""
+    import threading
+    uid = h.create(b"x" * 10)["upload_id"]
+    h.repo._conn.execute("UPDATE upload SET updated_at = ? WHERE id = ?", (OLD, uid))
+    out = {}
+    with h.uploads._lock(uid):
+        t = threading.Thread(target=lambda: out.update(h.uploads.cleanup_stale()))
+        t.start()
+        t.join(0.3)
+        assert t.is_alive()                              # waiting for the chunk
+        h.repo.upload_received(uid, 0, 1)                # the chunk's offset move
+    t.join(5)
+    assert out["stale_uploads"] == 0
+    assert h.repo.get_upload(uid)["received"] == 1
+
+
+def test_part_files_no_unfinished_upload_owns_are_removed(h):
+    live = h.create(b"x" * 10)["upload_id"]
+    stray = h.data.part_path("c" * 32)
+    stray.write_bytes(b"left over")
+    done = h.imported(b"z" * 10)
+    leftover = h.data.part_path(done["upload_id"])      # a crash after its commit left it
+    leftover.write_bytes(b"z" * 10)
+    assert h.uploads.cleanup_stale()["orphan_parts"] == 2
+    assert h.data.part_path(live).exists() and not stray.exists() and not leftover.exists()
+
+
+def test_the_part_of_an_upload_being_completed_is_kept(h):
+    uid = h.send(b"x" * 10)
+    h.repo.begin_completion(uid)
+    assert h.uploads.cleanup_stale()["orphan_parts"] == 0
+    assert h.data.part_path(uid).read_bytes() == b"x" * 10
+
+
+def test_a_stray_part_linked_to_a_drawing_is_unlinked_never_written(h):
+    """After a crash between the commit and the part's unlink, the part
+    shares its inode with the staged drawing's input file. Removing the
+    NAME is all the sweep may do: a truncate would empty the drawing."""
+    data = pdf_bytes()
+    done = h.imported(data)
+    (row,) = done["documents"]
+    staged = h.data.doc_dir(row["id"]) / "input.pdf"
+    os.link(staged, h.data.part_path(done["upload_id"]))
+    assert h.uploads.cleanup_stale()["orphan_parts"] == 1
+    assert staged.read_bytes() == data and os.stat(staged).st_nlink == 1
+
+
+def test_files_in_the_uploads_dir_that_are_not_parts_are_left_alone(h):
+    other = [h.data.uploads / "notes.txt", h.data.uploads / "x.part",
+             h.data.uploads / ("C" * 32 + ".part")]
+    for p in other:
+        p.write_bytes(b"x")
+    (h.data.uploads / ("d" * 32 + ".part")).mkdir()
+    assert h.uploads.cleanup_stale()["orphan_parts"] == 0
+    assert all(p.exists() for p in other)
+    assert (h.data.uploads / ("d" * 32 + ".part")).is_dir()
+
+
+def test_week_old_empty_drafts_are_removed(h):
+    old_empty = h.repo.create_batch("old")["id"]
+    old_full = h.repo.create_batch("full")["id"]
+    h.imported(pdf_bytes(), batch=old_full)
+    h.repo._conn.execute("UPDATE batch SET created_at = ? WHERE id IN (?, ?)",
+                         (OLD, old_empty, old_full))
+    assert h.uploads.cleanup_stale()["empty_drafts"] == 1
+    assert {b["id"] for b in h.repo.list_batches()} == {h.batch, old_full}
+
+
+def test_a_draft_emptied_by_hand_goes_with_its_finished_upload_rows(h):
+    """Every drawing removed, only the COMPLETE upload row left: that is an
+    empty draft too. An unfinished upload still keeps it."""
+    emptied = h.repo.create_batch("emptied")["id"]
+    (row,) = h.imported(pdf_bytes(), batch=emptied)["documents"]
+    h.repo.delete(row["id"])
+    waiting = h.repo.create_batch("waiting")["id"]
+    h.create(b"x" * 10, batch=waiting)
+    h.repo._conn.execute("UPDATE batch SET created_at = ? WHERE id IN (?, ?)",
+                         (OLD, emptied, waiting))
+    assert h.uploads.cleanup_stale()["empty_drafts"] == 1
+    assert {b["id"] for b in h.repo.list_batches()} == {h.batch, waiting}
+    assert h.repo._conn.execute("SELECT COUNT(*) FROM upload WHERE batch_id = ?",
+                                (emptied,)).fetchone()[0] == 0
+
+
+def test_an_empty_draft_is_removed_only_under_its_batch_lock(h):
+    """Start, Discard and a completion's commit hold the batch's lock; the
+    empty-draft sweep waits for them like any other step on the batch, and
+    forgets the lock once the batch is gone."""
+    import threading
+    old = h.repo.create_batch("old")["id"]
+    h.repo._conn.execute("UPDATE batch SET created_at = ? WHERE id = ?", (OLD, old))
+    out = {}
+    with h.uploads._batch_lock(old):
+        t = threading.Thread(target=lambda: out.update(h.uploads.cleanup_stale()))
+        t.start()
+        t.join(0.3)
+        assert t.is_alive()
+    t.join(5)
+    assert out["empty_drafts"] == 1
+    assert old not in h.uploads._batch_locks
+
+
+def test_one_failing_recovery_step_does_not_skip_the_others(h, monkeypatch):
+    orphan = h.data.doc_dir("a" * 32)
+    orphan.mkdir()
+    (orphan / IMPORTING_MARKER).write_bytes(b"")
+
+    def boom():
+        raise sqlite3.OperationalError("locked")
+    monkeypatch.setattr(h.repo, "reset_completing", boom)
+    out = h.uploads.recover()
+    assert out["completions_reset"] is None and out["imports_swept"] == 1
+    assert not orphan.exists()
