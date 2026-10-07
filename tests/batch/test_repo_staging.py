@@ -4,6 +4,7 @@ becomes. Every step is one guarded transaction, so a retried or racing
 request is told where things stand instead of overwriting them."""
 import itertools
 import sqlite3
+import threading
 import uuid
 
 import pytest
@@ -376,6 +377,7 @@ def test_a_drawing_in_a_draft_is_never_queued_one_by_one(repo):
     with pytest.raises(InvalidTransition, match="start"):
         repo.enqueue(row["id"])
 
+
 @pytest.mark.parametrize("act", ["start_batch", "delete_batch"])
 def test_a_draft_holding_a_drawing_past_staged_changes_nothing(repo, act):
     """A draft's drawings are all staged: only Start queues them. Should
@@ -388,3 +390,87 @@ def test_a_draft_holding_a_drawing_past_staged_changes_nothing(repo, act):
         getattr(repo, act)(b)
     assert [r["state"] for r in repo.staging(b)["documents"]] == ["staged", "extracting"]
     assert repo.get_batch(b)["draft"] is True
+
+
+def test_an_included_out_of_scope_row_without_its_permission_stops_start(repo):
+    """Decision 26: an out-of-scope drawing runs only with the permission
+    set_included stores. Start checks it instead of trusting `included`, so
+    a row that got included any other way is refused, not run."""
+    b = repo.create_batch("b")["id"]
+    ok, odd = stage(repo, b, doc(1), doc(2, pages=3))
+    repo._conn.execute("UPDATE document SET included = 1 WHERE id = ?", (odd["id"],))
+    with pytest.raises(InvalidTransition, match="permission"):
+        repo.start_batch(b)
+    assert [r["state"] for r in repo.staging(b)["documents"]] == ["staged", "staged"]
+    assert repo.get_batch(b)["draft"] is True
+
+
+@pytest.mark.parametrize("act", ["start_batch", "delete_batch"])
+def test_start_and_discard_proceed_on_the_snapshot_they_were_given(repo, act):
+    b = repo.create_batch("b")["id"]
+    rows = stage(repo, b, doc(1), doc(2))
+    ids = [r["id"] for r in rows]
+    assert getattr(repo, act)(b, expected_ids=list(reversed(ids))) is not None
+
+
+@pytest.mark.parametrize("act", ["start_batch", "delete_batch"])
+def test_a_draft_that_changed_since_the_snapshot_changes_nothing(repo, act):
+    """The caller marks each drawing's folder `.importing` from a snapshot
+    taken outside the transaction. A completion landing in between would
+    add a row whose folder carries no marker and would leak after a crash,
+    so a mismatch is refused and the caller reloads."""
+    b = repo.create_batch("b")["id"]
+    (first,) = stage(repo, b, doc(1))
+    snapshot = [first["id"]]
+    stage(repo, b, doc(2))
+    with pytest.raises(InvalidTransition, match="changed"):
+        getattr(repo, act)(b, expected_ids=snapshot)
+    view = repo.staging(b)
+    assert [r["state"] for r in view["documents"]] == ["staged", "staged"]
+    assert len(view["uploads"]) == 2 and view["batch"]["draft"] is True
+
+
+def test_start_takes_its_queue_time_inside_the_transaction(tmp_path):
+    """Queue order must be commit order. With the time read before the
+    lock, a Start that read the clock first but committed second would
+    still jump ahead of the import that committed before it."""
+    conn = db.connect(tmp_path / "s.db")
+    db.migrate(conn)
+    tick = itertools.count()
+    tick_lock = threading.Lock()
+    armed = {}
+    b_done = threading.Event()
+
+    def clock():
+        with tick_lock:
+            t = f"2026-10-07T00:00:{next(tick):09d}"
+        if armed.pop(threading.current_thread().name, False):
+            # A pauses after reading the clock until B has finished -- or,
+            # if A holds the lock (so B cannot finish), for a short while.
+            b_done.wait(0.5)
+        return t
+
+    repo = Repo(conn, clock=clock)
+    a = repo.create_batch("a")["id"]
+    b = repo.create_batch("b")["id"]
+    (ra,) = stage(repo, a, doc(1))
+    (rb,) = stage(repo, b, doc(2))
+    committed = []
+
+    def start(batch_id, name):
+        repo.start_batch(batch_id)
+        committed.append(batch_id)
+        if name == "B":
+            b_done.set()
+
+    ta = threading.Thread(target=start, args=(a, "A"), name="A")
+    armed["A"] = True
+    ta.start()
+    while "A" in armed:            # A has read the clock and is pausing
+        pass
+    tb = threading.Thread(target=start, args=(b, "B"), name="B")
+    tb.start()
+    ta.join()
+    tb.join()
+    first = {a: ra["id"], b: rb["id"]}
+    assert [repo.claim_next()["id"] for _ in range(2)] == [first[x] for x in committed]
