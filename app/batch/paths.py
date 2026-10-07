@@ -34,6 +34,24 @@ def has_refused_chars(s: str) -> bool:
     return any(unicodedata.category(ch) in _REFUSED_CATEGORIES for ch in s)
 
 
+SHOWN_NAME_MAX = 255
+
+
+def shown_name(s: str) -> str:
+    """A client-supplied name as it may be SHOWN when it is not accepted --
+    an ignored ZIP entry, listed so the user sees what was left out and why.
+    NFC; every character has_refused_chars refuses becomes U+FFFD (the user
+    still sees that something was there, but a bidi override cannot make the
+    name lie about its extension, nor a newline forge a line); at most
+    SHOWN_NAME_MAX characters, the cut marked with an ellipsis."""
+    s = unicodedata.normalize("NFC", s)
+    s = "".join("�" if unicodedata.category(ch) in _REFUSED_CATEGORIES else ch
+                for ch in s)
+    if len(s) > SHOWN_NAME_MAX:
+        s = s[:SHOWN_NAME_MAX - 1] + "…"
+    return s
+
+
 def safe_rel_parts(name) -> Optional[List[str]]:
     """The components of a client-supplied relative path -- a ZIP entry
     name, or a folder upload's webkitRelativePath -- or None if it is unsafe:

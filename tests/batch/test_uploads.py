@@ -8,6 +8,8 @@ import logging
 import os
 import sqlite3
 import stat
+import struct
+import warnings
 import zipfile
 
 import pytest
@@ -740,6 +742,114 @@ def test_a_write_fault_while_unpacking_is_a_fault_not_an_ignored_entry(h, monkey
     assert e.value.status == 500 and "secret" not in str(e.value)
     assert h.doc_dirs() == []
     assert h.repo.get_upload(uid)["state"] == "receiving"
+
+
+def test_a_bzip2_bomb_is_listed_and_never_decompressed(h, monkeypatch):
+    """536 bytes of bzip2 hold 64 MiB of zeros, and zipfile would inflate a
+    whole compressed read into memory with no output bound -- before the
+    disk guard sees a byte. The entry is listed, never opened."""
+    pytest.importorskip("bz2")
+    blob = zip_bytes([("bomb.pdf", b"\0" * (64 * uploads_mod.MIB))], zipfile.ZIP_BZIP2)
+    assert len(blob) < 4096
+    uid = h.send(blob, name="z.zip")
+    asked = []
+    monkeypatch.setattr(h.uploads, "guard_disk", lambda need=0: asked.append(need))
+    opened = []
+    real_open = zipfile.ZipFile.open
+    monkeypatch.setattr(zipfile.ZipFile, "open",
+                        lambda self, *a, **kw: (opened.append(a), real_open(self, *a, **kw))[1])
+    done = h.uploads.complete(uid)
+    assert done["documents"] == []
+    assert done["ignored"] == [{"name": "bomb.pdf", "reason": "unsupported_compression"}]
+    assert asked == [] and opened == []
+    assert h.doc_dirs() == []
+
+
+def _entry_read_failing(monkeypatch, exc):
+    def read(self, n=-1):
+        raise exc
+    monkeypatch.setattr(zipfile.ZipExtFile, "read", read)
+
+
+def _decoder_errors():
+    import lzma
+    errors = [OSError("Invalid data stream"), lzma.LZMAError("corrupt")]
+    try:
+        from compression.zstd import ZstdError
+        errors.append(ZstdError("corrupt"))
+    except ImportError:
+        pass
+    return errors
+
+
+@pytest.mark.parametrize("exc", _decoder_errors(), ids=lambda e: type(e).__name__)
+def test_a_decoder_error_ignores_the_entry(h, monkeypatch, exc):
+    """Defence in depth behind classify's codec rule: a decoder's own error
+    (bz2 raises a bare OSError with no errno, LZMA and zstd their own types)
+    is the ENTRY's damage, listed, never a 500 that blocks the upload."""
+    uid = h.send(zip_bytes([("a.pdf", pdf_bytes())]), name="z.zip")
+    _entry_read_failing(monkeypatch, exc)
+    done = h.uploads.complete(uid)
+    assert done["documents"] == [] and h.doc_dirs() == []
+    assert done["ignored"] == [{"name": "a.pdf", "reason": "unreadable_entry"}]
+
+
+def test_a_disk_error_reading_an_entry_is_a_fault_not_the_entry(h, monkeypatch):
+    """An OSError WITH an errno is the disk under the archive failing: the
+    server's fault, reported by kind and rolled back for a retry."""
+    uid = h.send(zip_bytes([("a.pdf", pdf_bytes())]), name="z.zip")
+    _entry_read_failing(monkeypatch, OSError(errno.EIO, "boom", "/secret/path"))
+    with pytest.raises(BatchError) as e:
+        h.uploads.complete(uid)
+    assert e.value.status == 500 and "secret" not in str(e.value)
+    assert h.repo.get_upload(uid)["state"] == "receiving"
+
+
+def _overlapping_zip(name):
+    """Two central-directory records pointing at ONE local header -- the
+    shape of an overlap zip bomb. zipfile warns on one with the entry's
+    NAME in the text (to stderr, the server log) and refuses the other."""
+    buf = io.BytesIO()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+            zf.writestr(name, pdf_bytes())
+            zf.writestr(name, pdf_bytes())
+    b = bytearray(buf.getvalue())
+    pos = b.index(b"PK\x01\x02")
+    pos = b.index(b"PK\x01\x02", pos + 1)
+    struct.pack_into("<I", b, pos + 42, 0)
+    return bytes(b)
+
+
+def test_entries_sharing_a_local_header_are_ignored_unopened(h, capfd):
+    uid = h.send(_overlapping_zip("Kunde-Geheim.pdf"), name="z.zip")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        done = h.uploads.complete(uid)
+    assert done["documents"] == [] and h.doc_dirs() == []
+    assert done["ignored"] == [{"name": "Kunde-Geheim.pdf", "reason": "unreadable_entry"}] * 2
+    assert not any("Geheim" in str(w.message) for w in caught)
+    out, err = capfd.readouterr()
+    assert "Geheim" not in out and "Geheim" not in err
+
+
+def test_more_than_a_thousand_ignored_entries_are_counted_not_all_listed(h):
+    entries = [(f"n{i}.txt", b"") for i in range(1002)] + [("../a.pdf", b"x")]
+    done = h.imported(zip_bytes(entries, zipfile.ZIP_STORED), name="z.zip")
+    assert len(done["ignored"]) == 1000
+    assert done["ignored"][0] == {"name": "n0.txt", "reason": "not_pdf"}
+    assert (done["ignored_total"], done["ignored_by_reason"]) == (
+        1003, {"not_pdf": 1002, "unsafe_path": 1})
+    assert h.uploads.complete(done["upload_id"]) == done
+    (up,) = h.repo.staging(h.batch)["uploads"]
+    assert (up["ignored"], up["ignored_total"], up["ignored_by_reason"]) == (
+        done["ignored"], 1003, done["ignored_by_reason"])
+
+
+def test_a_pdf_upload_reports_nothing_ignored(h):
+    done = h.imported(pdf_bytes())
+    assert (done["ignored"], done["ignored_total"], done["ignored_by_reason"]) == ([], 0, {})
 
 
 def test_zip_entry_names_are_never_logged(h, caplog):

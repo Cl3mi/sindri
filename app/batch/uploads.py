@@ -24,6 +24,7 @@ folder (CLAUDE.md §1)."""
 import errno
 import hashlib
 import logging
+import lzma
 import os
 import re
 import shutil
@@ -37,7 +38,8 @@ from typing import Optional
 from app.batch.paths import DOC_ID_RE, has_refused_chars, safe_rel_parts
 from app.batch.pdf_facts import pdf_facts
 from app.batch.repo import BatchError, UnknownBatch, UnknownUpload, UploadConflict
-from app.batch.unzip import Ignored, classify
+from app.batch.unzip import (Ignored, classify, ignored as ignored_entry,
+                             shared_headers, summarise_ignored)
 
 log = logging.getLogger(__name__)
 
@@ -56,11 +58,17 @@ IMPORTING_MARKER = ".importing"
 _COPY_PIECE = MIB
 # What reading a damaged entry can raise: a CRC mismatch, a broken deflate
 # stream, a truncated archive, an unsupported compression method, an
-# encrypted entry unzip.py did not see flagged. Each makes that ONE entry
-# ignored, never the whole import. OSError is deliberately absent: a disk
-# that fails under the part file is the server's fault, not the entry's.
+# encrypted entry unzip.py did not see flagged, a decoder's own error. Each
+# makes that ONE entry ignored, never the whole import. (unzip.classify lets
+# only stored/deflate through; the LZMA and zstd errors are defence in depth
+# should that rule ever widen.) OSError is handled apart, in _copy_entry.
 _ENTRY_ERRORS = (zipfile.BadZipFile, zlib.error, EOFError, NotImplementedError,
-                 RuntimeError, ValueError)
+                 RuntimeError, ValueError, lzma.LZMAError)
+try:
+    from compression.zstd import ZstdError
+    _ENTRY_ERRORS += (ZstdError,)
+except ImportError:                      # before Python 3.14
+    pass
 # The name is stored and shown, and becomes a file name in the mass-export
 # ZIP (design §4); a separator or control character has no business in it.
 # (has_refused_chars adds format and line-separator characters: a bidi
@@ -94,6 +102,16 @@ class DiskFull(BatchError):
 
 class _EntryUnreadable(Exception):
     pass
+
+
+def _entry_or_disk(e: OSError):
+    """Raise what an OSError while READING an entry means. A real I/O fault
+    carries an errno -- the disk under the archive failed, the server's
+    fault, rolled back and retried. A decoder's complaint does not (bz2
+    raises a bare OSError("Invalid data stream")) -- the entry's damage."""
+    if e.errno is not None:
+        raise e
+    raise _EntryUnreadable() from e
 
 
 class StorageFault(BatchError):
@@ -340,6 +358,7 @@ class Uploads:
                 docs, ignored = self._stage_files(part, up, created)
                 if created:
                     _fsync_dir(self.data.docs)
+                ignored = summarise_ignored(ignored)
                 rows = self.repo.finish_completion(upload_id, docs, ignored)
             except BaseException as e:
                 for d in created:
@@ -358,14 +377,17 @@ class Uploads:
                 (d / IMPORTING_MARKER).unlink(missing_ok=True)
             part.unlink(missing_ok=True)
         log.info("upload %s complete: %d staged, %d ignored",
-                 upload_id[:8], len(rows), len(ignored))
+                 upload_id[:8], len(rows), ignored["total"])
         return {"upload_id": upload_id, "state": "complete", "documents": rows,
-                "ignored": ignored}
+                "ignored": ignored["listed"], "ignored_total": ignored["total"],
+                "ignored_by_reason": ignored["by_reason"]}
 
     def _completed(self, upload_id) -> dict:
         done = self.repo.completed_upload(upload_id)
+        u = done["upload"]
         return {"upload_id": upload_id, "state": "complete", "documents": done["documents"],
-                "ignored": done["upload"]["ignored"]}
+                "ignored": u["ignored"], "ignored_total": u["ignored_total"],
+                "ignored_by_reason": u["ignored_by_reason"]}
 
     def _stage_files(self, part, up, created):
         """(documents to stage, ignored entries) for one completed upload."""
@@ -386,14 +408,21 @@ class Uploads:
         except (zipfile.BadZipFile, EOFError, ValueError, NotImplementedError):
             # Not an archive at all (or one whose directory is unreadable):
             # listed under the upload's own name, nothing staged.
-            return [], [Ignored(up["name"], "unreadable_zip").as_dict()]
+            return [], [ignored_entry(up["name"], "unreadable_zip").as_dict()]
         with zf:
-            for info in zf.infolist():
+            infos = zf.infolist()
+            shared = shared_headers(infos)
+            for info in infos:
                 entry = classify(info)
                 if entry is None:
                     continue
                 if isinstance(entry, Ignored):
                     ignored.append(entry.as_dict())
+                    continue
+                if info.header_offset in shared:
+                    # Never opened: zipfile's own check would WARN with the
+                    # entry's name, and a warning reaches the server log.
+                    ignored.append(ignored_entry(info.filename, "unreadable_entry").as_dict())
                     continue
                 doc_id, d = self._new_doc_dir(created)
                 target = d / "input.pdf"
@@ -405,7 +434,7 @@ class Uploads:
                     # the startup sweep finishes it.
                     created.remove(d)
                     self._remove_import_dir(d)
-                    ignored.append(Ignored(info.filename, "unreadable_entry").as_dict())
+                    ignored.append(ignored_entry(info.filename, "unreadable_entry").as_dict())
                     continue
                 _fsync_dir(d)
                 facts = pdf_facts(target)
@@ -429,12 +458,16 @@ class Uploads:
             src = zf.open(info)
         except _ENTRY_ERRORS as e:
             raise _EntryUnreadable() from e
+        except OSError as e:
+            _entry_or_disk(e)
         with src, open(target, "xb") as out:
             while True:
                 try:
                     piece = src.read(_COPY_PIECE)
                 except _ENTRY_ERRORS as e:
                     raise _EntryUnreadable() from e
+                except OSError as e:
+                    _entry_or_disk(e)
                 if not piece:
                     break
                 self.guard_disk(len(piece))

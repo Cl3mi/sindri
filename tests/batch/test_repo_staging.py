@@ -249,6 +249,9 @@ def test_a_repeated_completion_reports_what_it_staged(repo):
     done = repo.completed_upload(rows[0]["upload_id"])
     assert [r["id"] for r in done["documents"]] == [rows[0]["id"]]
     assert done["upload"]["ignored"] == [{"name": "x.txt", "reason": "not_pdf"}]
+    # A bare list (as stored before the ignored list was capped) is counted.
+    assert (done["upload"]["ignored_total"], done["upload"]["ignored_by_reason"]) == (
+        1, {"not_pdf": 1})
 
 
 def test_delete_upload_removes_only_an_unfinished_one(repo):

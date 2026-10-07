@@ -11,6 +11,7 @@ import json
 import unicodedata
 
 from app.batch.paths import has_refused_chars
+from app.batch.unzip import summarise_ignored
 
 MAX_BATCH_NAME = 200
 
@@ -53,9 +54,15 @@ def batch_view(b) -> dict:
 
 
 def upload_view(u) -> dict:
+    ignored = json.loads(u["ignored"]) if u["ignored"] else []
+    if isinstance(ignored, list):
+        # Stored before the list was capped (and still what a test fixture
+        # passes): every entry is listed, so it counts itself.
+        ignored = summarise_ignored(ignored)
     return {"id": u["id"], "name": u["name"], "rel_path": u["rel_path"],
             "size": u["size"], "received": u["received"], "state": u["state"],
-            "kind": u["kind"], "ignored": json.loads(u["ignored"]) if u["ignored"] else []}
+            "kind": u["kind"], "ignored": ignored["listed"],
+            "ignored_total": ignored["total"], "ignored_by_reason": ignored["by_reason"]}
 
 
 def staging_row(r) -> dict:
