@@ -179,6 +179,27 @@ def test_a_failed_write_rolls_back_whole_and_leaves_the_repo_usable(repo):
     assert repo.get(a)["state"] == "queued"
 
 
+def test_timestamps_sort_as_strings_even_on_a_whole_second(monkeypatch):
+    """Queue order compares queued_at as TEXT. Plain isoformat() drops the
+    fraction when microsecond is 0, and "12:00:05+00:00" then sorts AFTER
+    "12:00:05.000001+00:00" -- a later upload would jump the queue."""
+    from datetime import datetime as real, timezone
+
+    from app.batch import repo as repo_mod
+
+    stamps = iter([real(2026, 10, 7, 12, 0, 5, 0, timezone.utc),
+                   real(2026, 10, 7, 12, 0, 5, 1, timezone.utc)])
+
+    class Fixed(real):
+        @classmethod
+        def now(cls, tz=None):
+            return next(stamps)
+
+    monkeypatch.setattr(repo_mod, "datetime", Fixed)
+    first, second = repo_mod._now(), repo_mod._now()
+    assert first.endswith("05.000000+00:00") and first < second
+
+
 class _FailingCommit:
     """A connection whose next COMMIT fails, as on a full disk or an I/O
     error. sqlite3.Connection's methods cannot be patched, so wrap it."""
@@ -212,23 +233,73 @@ def test_a_failed_commit_does_not_wedge_the_shared_connection(tmp_path):
     assert repo.get(a)["state"] == "staged"
 
 
+class _ActsAfterCommit:
+    """Runs `then` the instant a COMMIT returns, still before the caller
+    gets control back -- as another thread taking Repo's lock right after
+    the transaction released it would."""
+
+    def __init__(self, conn):
+        self._conn, self.then = conn, None
+
+    def execute(self, sql, *args):
+        cur = self._conn.execute(sql, *args)
+        if sql == "COMMIT" and self.then is not None:
+            then, self.then = self.then, None
+            then(self._conn)
+        return cur
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+@pytest.fixture
+def racy(tmp_path):
+    conn = db.connect(tmp_path / "s.db")
+    db.migrate(conn)
+    return Repo(_ActsAfterCommit(conn))
+
+
+def test_a_claim_returns_what_it_claimed_even_if_deleted_right_after(racy):
+    """The claimed row is read inside the claim's transaction. Read back
+    after the commit, an API delete landing in between made a SUCCESSFUL
+    claim raise UnknownDocument, and the worker never learned what it held."""
+    (a,) = ids(1)
+    queued(racy, a)
+    racy._conn.then = lambda c: c.execute("DELETE FROM document WHERE id = ?", (a,))
+    d = racy.claim_next()
+    assert (d["id"], d["state"], d["attempts"]) == (a, "extracting", 1)
+
+
+def test_create_returns_the_row_it_created_even_if_deleted_right_after(racy):
+    (a,) = ids(1)
+    racy._conn.then = lambda c: c.execute("DELETE FROM document WHERE id = ?", (a,))
+    d = staged(racy, a)
+    assert (d["id"], d["state"]) == (a, "staged")
+
+
 def test_concurrent_claims_hand_each_document_to_exactly_one_thread(repo):
     """The API threads and the worker share one connection under Repo's
     lock; a claim's SELECT and UPDATE must not interleave with another's."""
     docs = ids(20)
     for d in docs:
         queued(repo, d)
-    got, start = [], threading.Barrier(8)
+    got, errors, start = [], [], threading.Barrier(8)
 
     def worker():
         start.wait()
-        while (d := repo.claim_next()) is not None:
-            got.append(d["id"])
+        # An exception in a thread is only printed, never raised in the
+        # test; without collecting it, a broken lock passes most trials.
+        try:
+            while (d := repo.claim_next()) is not None:
+                got.append(d["id"])
+        except Exception as e:
+            errors.append(type(e).__name__)
 
     threads = [threading.Thread(target=worker) for _ in range(8)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
+    assert not errors
     assert sorted(got) == docs
     assert {repo.get(d)["attempts"] for d in docs} == {1}

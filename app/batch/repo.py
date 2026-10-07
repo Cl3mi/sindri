@@ -1,13 +1,19 @@
 """Document lifecycle in the index (batch design §1-§2).
 
     staged -> queued -> extracting -> ready -> in_review -> finished
-                                  \\-> failed / cancelled      ^   |
-                                                  reopen: finished -> in_review
+                |            |          |         ^            |
+                |            |          +---------+-- reopen --+
+                |            +-> failed
+                +------------+-> cancelled
+    failed / cancelled -- retry --> queued
 
-Every transition is ONE guarded UPDATE (`WHERE state IN (...)`), so two
+Every guarded transition is ONE UPDATE (`WHERE state IN (...)`), so two
 threads racing -- an API cancel against the worker finishing, say -- cannot
 both win: the loser's rowcount is 0 and it gets InvalidTransition instead of
-silently overwriting the winner."""
+silently overwriting the winner. claim_next, requeue_interrupted and delete
+read and then write; they are safe because both happen inside one locked
+BEGIN IMMEDIATE transaction that no other writer can enter. Rows a method
+returns are read inside that same transaction, never re-read afterwards."""
 import threading
 import uuid
 from contextlib import contextmanager
@@ -33,15 +39,20 @@ class InvalidTransition(BatchError):
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    # Wall-clock UTC. Fixed microsecond precision because queue order compares
+    # these as STRINGS: plain isoformat() drops ".000000" when microsecond is
+    # 0, and "...:05+00:00" sorts after "...:05.123456+00:00".
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 class Repo:
     def __init__(self, conn, clock=_now):
         self._conn = conn
         self._clock = clock
-        # One connection shared by API threads and the worker; sqlite3
-        # objects are not safe to use from two threads at once.
+        # One connection shared by API threads and the worker. A transaction
+        # belongs to the CONNECTION, not the thread: without this lock thread
+        # B's statements would run inside thread A's open transaction (and
+        # commit or roll back with it), and B's BEGIN would fail outright.
         self._lock = threading.Lock()
 
     @contextmanager
@@ -76,6 +87,11 @@ class Repo:
                 raise UnknownDocument(f"no document {str(doc_id)[:8]}")
             raise InvalidTransition(
                 f"document is {row['state']}, not {' or '.join(from_states)}")
+
+    @staticmethod
+    def _row(c, doc_id) -> dict:
+        """The row as seen inside the caller's transaction."""
+        return dict(c.execute("SELECT * FROM document WHERE id = ?", (doc_id,)).fetchone())
 
     # ----- reads ---------------------------------------------------------
     def get(self, doc_id) -> dict:
@@ -126,7 +142,7 @@ class Repo:
                 "INSERT INTO document (id, batch_id, file_name, sha256, pages, state,"
                 " created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'staged', ?, ?)",
                 (doc_id, batch_id, file_name, sha256, pages, now, now))
-        return self.get(doc_id)
+            return self._row(c, doc_id)
 
     def enqueue(self, doc_id) -> None:
         with self._tx() as c:
@@ -145,7 +161,10 @@ class Repo:
             now = self._clock()
             c.execute("UPDATE document SET state = 'extracting', attempts = attempts + 1,"
                       " started_at = ?, updated_at = ? WHERE id = ?", (now, now, row["id"]))
-        return self.get(row["id"])
+            # Read back BEFORE commit: once the lock drops, an API cancel or
+            # delete can land, and a claim that succeeded must still tell the
+            # worker which document it now holds.
+            return self._row(c, row["id"])
 
     def mark_ready(self, doc_id) -> None:
         with self._tx() as c:
@@ -198,6 +217,14 @@ class Repo:
                       "WHERE id = ?", (self._clock(), revision, doc_id))
 
     def delete(self, doc_id) -> bool:
+        """Remove a drawing and, if it was the last, its batch. An unknown id
+        returns False on purpose: removing is idempotent, so a repeated
+        request after a lost response is not an error.
+
+        Only the `extracting` state is refused here. That is NOT enough on
+        its own: cancel is cooperative, so the worker's run keeps going
+        briefly after the row already says `cancelled`. The API must also
+        refuse to delete the worker's current job until the run returns."""
         with self._tx() as c:
             row = c.execute("SELECT state, batch_id FROM document WHERE id = ?",
                             (doc_id,)).fetchone()
