@@ -22,19 +22,23 @@
 * Commit trailer: `Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>` (or the implementing model's accurate name).
 * Full suite before every commit: `python -m pytest -q`. Baseline before B2: **1483 passed, 2 skipped** (node tests run inside pytest as one test, `tests/test_js_state.py`).
 
-**Data-integrity tasks** (the controller uses Opus for implementation AND review): Tasks 1, 3, 4, 5, 6, 7, 8, 9, 10, 11. Tasks 2 and 12 may use a smaller model.
+**Data-integrity tasks** (the controller uses Opus for implementation AND review): Tasks 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12. Tasks 2 and 13 may use a smaller model.
+
+**Revised after an independent review** (accepted by the controller): recovery runs only under the single-worker lock (C1); the chunk PUT is bounded (I1); a pure-JS SHA-256 fallback for the fingerprint (I2); a time-based retry budget and draft memory so a re-selected file resumes (I3); a Start whose reply was lost is recognised (I4); the interim-UI change and the route removal are separate tasks (I5); plus the minor fixes (markers around Start/Discard, resume bumps `updated_at` and matches `last_modified`, empty-draft cleanup, unreadable replies, fixed-sentence 422s, UTC fallback name, rowid ordering for duplicates).
 
 **Decisions made while planning** (the design is silent or B1's code forced a choice; each is justified where it lands):
 1. **Completion is an explicit, idempotent `POST /api/uploads/{id}/complete`**, not implied by the last PUT: a lost completion reply is retried and answered with the stored result.
-2. **Resume key = (batch, fingerprint, name, folder, size)** among unfinished uploads, not the fingerprint alone: two identical files in two folders of one selection, uploading in parallel, would otherwise share one upload and one of them would silently vanish. Resuming after a closed tab therefore means re-selecting the files into the same draft (B3's staging view continues a draft); network and server failures resume within a session regardless.
-3. **`duplicate_of` is computed live** (the earliest other document with the same SHA-256, any batch, any state), but the Include default is decided once, at staging. If the original is removed, the badge goes; the user's Include choice stays theirs.
+2. **Resume key = (batch, fingerprint, name, folder, size, and `last_modified` when sent)** among unfinished uploads, not the fingerprint alone: two identical files in two folders of one selection, uploading in parallel, would otherwise share one upload and one of them would silently vanish. Resuming after a closed tab therefore means re-selecting the files into the same draft: B3's staging view continues a draft, and the interim UI remembers the draft of an interrupted file in `localStorage` (Task 11). A resume bumps `updated_at`, so the 7-day sweep never removes an upload that is being resumed.
+3. **`duplicate_of` is computed live** (the earliest other document with the same SHA-256 by insertion order, i.e. rowid — the same order the staging-time check sees; wall-clock `created_at` can step backwards), but the Include default is decided once, at staging. If the original is removed, the badge goes; the user's Include choice stays theirs.
 4. **Unreadable PDFs are staged rows** (`unreadable = 1`, never includable, dropped by Start) instead of B1's 400: design §2 lists "unreadable PDF" as a staging badge, so the user sees what was refused and why.
 5. **A completed PDF is hard-linked** from its part file into `docs/<id>/input.pdf` (copy fallback): no second copy of a large file, and the part survives intact until the index rows commit, so a failed completion is simply retried.
-6. **Crash safety by marker, not by inference:** every `docs/<id>/` a completion creates carries `.importing` until its rows commit. Startup deletes only dirs that carry the marker AND have no row — a lost or replaced index can never make the sweep delete real drawings.
-7. **`POST /api/upload` and `POST /api/documents/{id}/enqueue` are REMOVED** (Task 11). Kept, they would be a second door into the queue that bypasses Start's Include rules (an unreadable or unconfirmed out-of-scope file queued one by one), and B1's upload created non-draft batches that have no staging semantics at all. `Repo.create_document` and `Repo.enqueue` stay as internal primitives the worker and lifecycle tests build fixtures with; `enqueue` refuses a draft batch's drawing from Task 4 on.
+6. **Crash safety by marker, not by inference:** every `docs/<id>/` whose row is being created (a completion) or removed (Start's dropped rows, Discard) carries `.importing` across the index transaction. Startup deletes only dirs that carry the marker AND have no row, and strips the marker from dirs that do — a lost or replaced index can never make the sweep delete real drawings. **The sweep runs only inside `Worker.start()`, right after the single-process lock is taken**: a second process that fails to get the lock never sweeps, because the first process's in-flight imports look exactly like crash leftovers.
+7. **`POST /api/upload` and `POST /api/documents/{id}/enqueue` are REMOVED** (Task 12, after Task 11 has moved the interim UI off them). Kept, they would be a second door into the queue that bypasses Start's Include rules (an unreadable or unconfirmed out-of-scope file queued one by one), and B1's upload created non-draft batches that have no staging semantics at all. `Repo.create_document` and `Repo.enqueue` stay as internal primitives the worker and lifecycle tests build fixtures with; `enqueue` refuses a draft batch's drawing from Task 4 on.
 8. **Migration 2 turns B1's never-started staged drawings into drafts**, so after `/enqueue` goes they can still be started; their Include follows the B2 default, and `oversized` stays NULL (never measured — 0 would claim it was).
 9. **Start is refused while any upload of the batch is unfinished**, and with nothing included; both leave everything unchanged.
 10. **Stale cleanup** (unfinished uploads untouched for 7 days, stray part files, empty drafts older than 7 days) runs at startup and on every `POST /api/batches`; B4's daily retention sweep can call the same method.
+11. **A chunk PUT is bounded at `MAX_CHUNK` (64 MiB)**: a missing or larger `Content-Length` is 413 before anything is read, and the body is read with the same bound. This bounds one REQUEST's memory, not a file — files of any size still arrive in as many chunks as they need (decision 29 holds). The client sends 8 MiB.
+12. **The import routes answer a malformed request with a fixed sentence (422)**: FastAPI's default 422 body echoes the offending input, which here is a client file or folder name.
 
 ---
 
@@ -49,14 +53,16 @@
 | `app/batch/repo.py` | + batches, upload rows, staging rows, Include, Start, discard, recovery queries; `UnknownBatch`, `UnknownUpload`, `UploadConflict` |
 | `app/batch/uploads.py` (new) | `Uploads`: create / put / complete / delete, disk guard, recovery and stale cleanup; `DiskFull`, `StorageFault` |
 | `app/batch/unzip.py` (new) | `classify()` ZIP entries → `PdfEntry` / `Ignored` / None |
-| `app/batch/runtime.py` | + `Uploads`, `SINDRI_MIN_FREE_MB`, recovery before the worker starts |
-| `app/main.py` | `/api/batches*`, `/api/uploads*`, `/include`, `/start`; `extra` in the error handler; disk in `/api/health`; `/api/upload` + `/enqueue` removed |
-| `app/static/js/upload.js` (new) | chunked resumable upload client, `importFiles` (3 lanes), `batchNameFor`, `relPathOf`, `fingerprint` |
+| `app/batch/worker.py` | + a `startup` hook run right after the single-process lock is taken (recovery) |
+| `app/batch/runtime.py` | + `Uploads`, `SINDRI_MIN_FREE_MB`, recovery handed to the worker's `startup` hook |
+| `app/main.py` | `/api/batches*`, `/api/uploads*` (bounded PUT), `/include`, `/start`; `extra` in the error handler; fixed-sentence 422 on import routes; disk in `/api/health`; `/api/upload` + `/enqueue` removed |
+| `app/static/js/upload.js` (new) | chunked resumable upload client with a time-based retry budget, pure-JS SHA-256 fallback, `importFiles` (3 lanes), `batchNameFor`, `relPathOf`, `fingerprint`, draft memory for resuming |
 | `app/static/js/badges.js` (new) | staging badge texts from a staging row |
 | `app/static/js/api.js`, `main.js`, `index.html`, `styles/components.css` | batch endpoints; interim UI = batch of one through the protocol |
 | `tests/batch/pdfs.py` (new) | PDF bytes built in code for tests |
 | `tests/batch/test_pdf_facts.py`, `test_repo_staging.py`, `test_uploads.py`, `test_unzip.py` (new) | unit tests |
 | `tests/test_api_import.py` (new) | import API tests |
+| `tests/batch/test_runtime.py` | + recovery only under the worker lock |
 | `tests/js/upload.test.mjs`, `tests/js/badges.test.mjs` (new) | node tests |
 | `tests/conftest.py` | + `SINDRI_MIN_FREE_MB=0` per test |
 
@@ -537,6 +543,28 @@ def test_two_identical_files_in_two_folders_never_share_an_upload(repo):
     assert upload(repo, b, rel_path="x")["id"] != upload(repo, b, rel_path="y")["id"]
 
 
+def test_a_file_changed_since_is_a_new_upload_when_the_browser_says_so(repo):
+    """Same name, size and fingerprint but a different modification time:
+    the bytes in between may differ, so it must not continue the old
+    upload. A browser that sends no time matches on the rest."""
+    b = repo.create_batch("b")["id"]
+    kw = dict(batch_id=b, name="a.pdf", rel_path="", size=10, fingerprint="f" * 64, kind="pdf")
+    first, _ = repo.create_upload(last_modified=1, **kw)
+    changed, resumed = repo.create_upload(last_modified=2, **kw)
+    assert changed["id"] != first["id"] and resumed is False
+    unknown, resumed = repo.create_upload(last_modified=None, **kw)
+    assert (unknown["id"], resumed) == (first["id"], True)
+
+
+def test_a_resume_counts_as_activity(repo):
+    """Or the 7-day sweep could remove an upload while it is being resumed."""
+    b = repo.create_batch("b")["id"]
+    first = upload(repo, b)
+    again, _ = repo.create_upload(batch_id=b, name="a.pdf", rel_path="", size=10,
+                                  last_modified=None, fingerprint="f" * 64, kind="pdf")
+    assert again["updated_at"] > first["updated_at"]
+
+
 def test_a_finished_upload_is_never_resumed(repo):
     b = repo.create_batch("b")["id"]
     up = upload(repo, b)
@@ -802,17 +830,19 @@ class UploadConflict(InvalidTransition):
 
 # A document with the facts of its duplicate: the EARLIEST other document
 # with the same bytes, in any batch and any state (decision 19). Computed on
-# every read, so the badge follows the original if it is removed.
+# every read, so the badge follows the original if it is removed. "Earliest"
+# is insertion order (rowid), the order _stage's check saw when it set the
+# Include default -- not created_at, a wall clock that can step backwards.
+# (SQLite hands a new row max(rowid) + 1, so rowid order among existing rows
+# is insertion order even after deletes.)
 _STAGING_SELECT = """
     SELECT d.*, o.id AS dup_id, o.file_name AS dup_file_name, o.state AS dup_state,
            o.batch_id AS dup_batch_id, ob.name AS dup_batch_name
     FROM document d
     LEFT JOIN document o ON o.id = (
         SELECT x.id FROM document x
-        WHERE x.sha256 = d.sha256 AND x.id != d.id
-          AND (x.created_at < d.created_at
-               OR (x.created_at = d.created_at AND x.rowid < d.rowid))
-        ORDER BY x.created_at, x.rowid LIMIT 1)
+        WHERE x.sha256 = d.sha256 AND x.rowid < d.rowid
+        ORDER BY x.rowid LIMIT 1)
     LEFT JOIN batch ob ON ob.id = o.batch_id
 """
 ```
@@ -842,7 +872,7 @@ _STAGING_SELECT = """
     @staticmethod
     def _staging_rows(c, where: str, params) -> list:
         return [staging_row(dict(r)) for r in c.execute(
-            f"{_STAGING_SELECT} WHERE {where} ORDER BY d.created_at, d.rowid", tuple(params))]
+            f"{_STAGING_SELECT} WHERE {where} ORDER BY d.rowid", tuple(params))]
 
     def _stage(self, c, batch_id, docs, upload_id) -> list:
         """Insert staged rows inside the caller's transaction."""
@@ -908,20 +938,26 @@ _STAGING_SELECT = """
 
     def create_upload(self, *, batch_id, name, rel_path, size, last_modified, fingerprint, kind):
         """(row, resumed). An unfinished upload of the same file -- same
-        fingerprint, name, folder and size, in the same batch -- is returned
-        instead of a new one: re-selecting the files after a closed tab
-        resumes it (decision 21). The folder is part of the key, so two
-        identical files in two folders never share an upload."""
+        fingerprint, name, folder and size (and modification time, when the
+        browser sends one), in the same batch -- is returned instead of a new
+        one: re-selecting the files after a closed tab resumes it (decision
+        21). The folder is part of the key, so two identical files in two
+        folders never share an upload. A resume counts as activity: it
+        bumps updated_at, or the 7-day sweep could remove an upload in the
+        middle of being resumed."""
         now = self._clock()
         with self._tx() as c:
             self._draft(c, batch_id)
             row = c.execute(
                 "SELECT * FROM upload WHERE batch_id = ? AND fingerprint = ? AND name = ?"
                 " AND rel_path = ? AND size = ? AND state != 'complete'"
-                " ORDER BY created_at, rowid LIMIT 1",
-                (batch_id, fingerprint, name, rel_path, size)).fetchone()
+                " AND (? IS NULL OR last_modified = ?)"
+                " ORDER BY rowid LIMIT 1",
+                (batch_id, fingerprint, name, rel_path, size,
+                 last_modified, last_modified)).fetchone()
             if row is not None:
-                return dict(row), True
+                c.execute("UPDATE upload SET updated_at = ? WHERE id = ?", (now, row["id"]))
+                return self._upload(c, row["id"]), True
             upload_id = uuid.uuid4().hex
             c.execute(
                 "INSERT INTO upload (id, batch_id, name, rel_path, size, last_modified,"
@@ -1009,7 +1045,7 @@ Expected: all pass.
 
 - [ ] **Step 5: Full suite, then commit**
 
-Run: `python -m pytest -q` → **1531 passed, 2 skipped** (+20).
+Run: `python -m pytest -q` → **1533 passed, 2 skipped** (+22).
 ```bash
 git add app/batch/staging.py app/batch/repo.py tests/batch/test_repo_staging.py
 ```
@@ -1210,7 +1246,7 @@ Expected: FAIL — `AttributeError: 'Repo' object has no attribute 'rename_batch
                          (batch_id,)).fetchone():
                 raise InvalidTransition("files are still uploading; wait for them or remove them")
             rows = c.execute("SELECT id, included, unreadable FROM document WHERE batch_id = ?"
-                             " ORDER BY created_at, rowid", (batch_id,)).fetchall()
+                             " ORDER BY rowid", (batch_id,)).fetchall()
             go = [r["id"] for r in rows if r["included"] and not r["unreadable"]]
             if not go:
                 raise InvalidTransition("nothing is included")
@@ -1236,9 +1272,9 @@ Expected: FAIL — `AttributeError: 'Repo' object has no attribute 'rename_batch
             if not row["draft"]:
                 raise InvalidTransition("only an import that has not started can be discarded")
             docs = [r["id"] for r in c.execute(
-                "SELECT id FROM document WHERE batch_id = ? ORDER BY created_at, rowid", (batch_id,)).fetchall()]
+                "SELECT id FROM document WHERE batch_id = ? ORDER BY rowid", (batch_id,)).fetchall()]
             ups = [r["id"] for r in c.execute(
-                "SELECT id FROM upload WHERE batch_id = ? ORDER BY created_at, rowid", (batch_id,)).fetchall()]
+                "SELECT id FROM upload WHERE batch_id = ? ORDER BY rowid", (batch_id,)).fetchall()]
             c.execute("DELETE FROM document WHERE batch_id = ?", (batch_id,))
             c.execute("DELETE FROM upload WHERE batch_id = ?", (batch_id,))
             c.execute("DELETE FROM batch WHERE id = ?", (batch_id,))
@@ -1277,7 +1313,7 @@ Expected: all pass (B1's worker and lifecycle tests use non-draft batches, so th
 
 - [ ] **Step 5: Full suite, then commit**
 
-Run: `python -m pytest -q` → **1543 passed, 2 skipped** (+12).
+Run: `python -m pytest -q` → **1545 passed, 2 skipped** (+12).
 ```bash
 git add app/batch/repo.py tests/batch/test_repo_staging.py
 ```
@@ -1631,6 +1667,10 @@ from app.batch.repo import BatchError, UnknownBatch, UnknownUpload, UploadConfli
 log = logging.getLogger(__name__)
 
 MIB = 1024 * 1024
+# The most one PUT may carry. It bounds the memory of ONE REQUEST, not the
+# size of a file: a file of any size arrives in as many chunks as it needs
+# (decision 29 -- no upload limits). The browser sends 8 MiB (upload.js).
+MAX_CHUNK = 64 * MIB
 FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
 # Marks a docs/<id>/ written by a completion whose index rows have not
 # committed yet. Only a marked dir with no row is ever swept at startup, so
@@ -1914,7 +1954,7 @@ Expected: all pass.
 
 - [ ] **Step 5: Full suite, then commit**
 
-Run: `python -m pytest -q` → **1573 passed, 2 skipped** (+30).
+Run: `python -m pytest -q` → **1575 passed, 2 skipped** (+30).
 ```bash
 git add app/batch/uploads.py tests/batch/test_uploads.py
 ```
@@ -2065,7 +2105,8 @@ def test_an_upload_into_an_unknown_batch_is_404():
 
 def test_a_batch_gets_a_default_name_and_can_be_renamed():
     b = client.post("/api/batches", json={}).json()
-    assert b["name"].startswith("Import ") and b["draft"] is True
+    # Only a fallback: the browser sends its own local name (upload.js).
+    assert b["name"].startswith("Import ") and b["name"].endswith(" UTC") and b["draft"] is True
     r = client.patch(f"/api/batches/{b['id']}", json={"name": "  Lieferung 12 "})
     assert r.json()["name"] == "Lieferung 12"
     for bad in ["", "   ", "a\x01b"]:
@@ -2093,6 +2134,34 @@ def test_errors_and_logs_never_carry_the_file_name(caplog):
     assert r.status_code == 400 and "Geheim" not in r.text
     import_file(pdf_bytes(), name="Geheim-Flansch.pdf")
     assert "Geheim" not in "\n".join(rec.getMessage() for rec in caplog.records)
+
+
+def test_a_chunk_over_the_bound_is_413_before_anything_is_written(monkeypatch):
+    """MAX_CHUNK bounds one request's memory, not a file's size: lowered
+    here so the test need not send 64 MiB."""
+    import app.batch.uploads as uploads_mod
+    monkeypatch.setattr(uploads_mod, "MAX_CHUNK", 10)
+    up = new_upload(new_batch()["id"], b"x" * 20)
+    r = put(up["upload_id"], 0, b"x" * 11)
+    assert (r.status_code, r.json()["detail"]) == (413, "chunk too large or of unknown length")
+    assert put(up["upload_id"], 0, b"x" * 10).json() == {"received": 10}
+
+
+def test_a_chunk_of_unknown_length_is_413():
+    """A streamed body with no Content-Length could be any size."""
+    up = new_upload(new_batch()["id"], b"x" * 20)
+    r = client.put(f"/api/uploads/{up['upload_id']}?offset=0", content=iter([b"x" * 5]))
+    assert r.status_code == 413
+    assert main.runtime().data.part_path(up["upload_id"]).read_bytes() == b""
+
+
+def test_a_malformed_import_request_never_echoes_its_fields():
+    """FastAPI's default 422 body repeats the input -- here a file name."""
+    r = client.post("/api/uploads", json={"batch_id": new_batch()["id"], "name": ["Geheim.pdf"],
+                                          "size": "Kunde Meier", "fingerprint": "f" * 64})
+    assert r.status_code == 422
+    assert "Geheim" not in r.text and "Meier" not in r.text
+    assert r.json() == {"detail": "request rejected: malformed fields"}
 
 
 def test_blocking_handlers_run_off_the_event_loop():
@@ -2131,7 +2200,7 @@ DEFAULT_MIN_FREE_MB = 2048
 and pass `min_free_mb=min_free` to `cls(...)`.
 
 `app/main.py`:
-1. Imports: change `from fastapi import FastAPI, UploadFile, File, HTTPException` to `from fastapi import FastAPI, UploadFile, File, HTTPException, Request`; add `from datetime import datetime`, `from starlette.concurrency import run_in_threadpool`, `from app.batch.paths import DOC_ID_RE`, `from app.batch.staging import clean_batch_name`.
+1. Imports: change `from fastapi import FastAPI, UploadFile, File, HTTPException` to `from fastapi import FastAPI, UploadFile, File, HTTPException, Request`; add `from datetime import datetime, timezone`, `from fastapi.exceptions import RequestValidationError`, `from fastapi.exception_handlers import request_validation_exception_handler`, `from starlette.concurrency import run_in_threadpool`, `from app.batch import uploads as batch_uploads`, `from app.batch.paths import DOC_ID_RE`, `from app.batch.staging import clean_batch_name`.
 2. Replace `_domain_error` with:
 ```python
 @app.exception_handler(BatchError)
@@ -2142,6 +2211,20 @@ async def _domain_error(request, exc):
     # only (an upload's received offset), so a client can resync from it.
     return JSONResponse({"detail": str(exc), **getattr(exc, "extra", {})},
                         status_code=exc.status)
+
+
+# Routes whose request bodies carry client file and folder names.
+_IMPORT_PATHS = ("/api/uploads", "/api/batches")
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error(request, exc):
+    """FastAPI's default 422 body echoes the offending input; on the import
+    routes that is a client file or folder name (CLAUDE.md §1). A fixed
+    sentence there; the default everywhere else."""
+    if request.url.path.startswith(_IMPORT_PATHS):
+        return JSONResponse({"detail": "request rejected: malformed fields"}, status_code=422)
+    return await request_validation_exception_handler(request, exc)
 ```
 3. After `_doc_dir`, add:
 ```python
@@ -2183,16 +2266,17 @@ class UploadCreate(BaseModel):
     status["disk_free_mb"] = rt.uploads.free_mb()
     status["min_free_mb"] = rt.uploads.min_free_bytes // (1024 * 1024)
 ```
-6. After the `upload` endpoint (it stays until Task 11), add:
+6. After the `upload` endpoint (it stays until Task 12), add:
 ```python
 @app.post("/api/batches")
 def create_batch(req: BatchCreate):
     """A draft import (decision 10). The browser names it after the ZIP or
-    folder, or the date and time (decision 27); without a name the server
-    uses its own date and time. Editable later."""
+    folder, or its LOCAL date and time (decision 27). A name-less request
+    gets a fallback in the server's clock, labelled UTC because the server
+    cannot know the user's zone. Editable later."""
     rt = runtime()
     name = (_batch_name(req.name) if req.name is not None
-            else datetime.now().strftime("Import %Y-%m-%d %H:%M"))
+            else datetime.now(timezone.utc).strftime("Import %Y-%m-%d %H:%M UTC"))
     return rt.repo.create_batch(name)
 
 
@@ -2223,14 +2307,33 @@ def create_upload(req: UploadCreate):
         fingerprint=req.fingerprint)
 
 
+_CHUNK_TOO_LARGE = "chunk too large or of unknown length"
+
+
 @app.put("/api/uploads/{upload_id}")
 async def put_upload_chunk(upload_id: str, offset: int, request: Request):
     """One chunk at `offset`. Async only to read the body; the write and its
     fsync block, so they run in the threadpool. A 409 carries `received`:
-    the client continues from there, never from what it thinks it sent."""
-    body = await request.body()
+    the client continues from there, never from what it thinks it sent.
+
+    Bounded by MAX_CHUNK: a missing or larger Content-Length is refused
+    before a byte is read, and the read itself stops at the bound in case
+    the header lies. That bounds one request's memory; a file of any size
+    still arrives in as many chunks as it needs (decision 29)."""
+    limit = batch_uploads.MAX_CHUNK          # read per call: tests lower it
+    try:
+        declared = int(request.headers["content-length"])
+    except (KeyError, ValueError):
+        raise HTTPException(status_code=413, detail=_CHUNK_TOO_LARGE)
+    if declared < 0 or declared > limit:
+        raise HTTPException(status_code=413, detail=_CHUNK_TOO_LARGE)
+    body = bytearray()
+    async for piece in request.stream():
+        body += piece
+        if len(body) > limit:
+            raise HTTPException(status_code=413, detail=_CHUNK_TOO_LARGE)
     rt = runtime()
-    return await run_in_threadpool(rt.uploads.put, upload_id, offset, body)
+    return await run_in_threadpool(rt.uploads.put, upload_id, offset, bytes(body))
 
 
 @app.post("/api/uploads/{upload_id}/complete")
@@ -2253,12 +2356,12 @@ Expected: all pass.
 
 - [ ] **Step 5: Full suite, then commit**
 
-Run: `python -m pytest -q` → **1592 passed, 2 skipped** (+19).
+Run: `python -m pytest -q` → **1597 passed, 2 skipped** (+22).
 ```bash
 git add app/main.py app/batch/runtime.py tests/conftest.py tests/test_api_import.py
 ```
 ```bash
-git commit -m "api: draft batches and the chunked upload protocol" -m "POST /api/batches, GET/PATCH /api/batches/{id}, and /api/uploads (create or resume, PUT at an offset, complete, delete). A 409 carries the server's offset and state so the client resyncs; a full disk is 507 and /api/health reports the free space. The disk reserve comes from SINDRI_MIN_FREE_MB (default 2048) and is off in tests." -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+git commit -m "api: draft batches and the chunked upload protocol" -m "POST /api/batches, GET/PATCH /api/batches/{id}, and /api/uploads (create or resume, PUT at an offset, complete, delete). A 409 carries the server's offset and state so the client resyncs; a full disk is 507 and /api/health reports the free space. A PUT is bounded at 64 MiB (one request's memory, not a file limit), and a malformed import request gets a fixed-sentence 422 instead of FastAPI's echo of the client's file name. The disk reserve comes from SINDRI_MIN_FREE_MB (default 2048) and is off in tests." -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
 > **Milestone: upload-protocol** - state must be checkpointed here before continuing.
@@ -2578,7 +2681,7 @@ Expected: all pass.
 
 - [ ] **Step 5: Full suite, then commit**
 
-Run: `python -m pytest -q` → **1614 passed, 2 skipped** (+22).
+Run: `python -m pytest -q` → **1619 passed, 2 skipped** (+22).
 ```bash
 git add app/batch/unzip.py app/batch/uploads.py tests/batch/test_unzip.py tests/batch/test_uploads.py
 ```
@@ -2593,7 +2696,7 @@ git commit -m "batch: unpack ZIP imports server-side, PDFs only, path-safe" -m "
 **Data-integrity: yes** (the API door from staged to queued, and file removal).
 
 **Files:**
-- Modify: `app/main.py`, `app/batch/uploads.py`
+- Modify: `app/main.py`, `app/batch/repo.py`, `app/batch/uploads.py`
 - Test: `tests/test_api_import.py`
 
 - [ ] **Step 1: Write the failing tests** — append to `tests/test_api_import.py`:
@@ -2690,6 +2793,23 @@ def test_include_start_and_discard_reject_malformed_ids():
     assert client.post("/api/documents/nope/include", json={"included": True}).status_code == 404
     assert client.post("/api/batches/nope/start").status_code == 404
     assert client.delete("/api/batches/nope").status_code == 404
+
+
+def test_start_and_discard_leave_no_marker_behind_refused_or_not():
+    """Both mark the dirs whose rows they may remove, so a crash after the
+    commit leaves those sweepable (Task 9) -- and must take the markers off
+    again on every path that does not end in removing the dir."""
+    rt = main.runtime()
+    batch_id, done = import_file(pdf_bytes(pages=2))
+    doc_id = done["documents"][0]["id"]
+    d = rt.data.doc_dir(doc_id)
+    assert client.post(f"/api/batches/{batch_id}/start").status_code == 409     # nothing included
+    assert not (d / ".importing").exists()
+    client.post(f"/api/documents/{doc_id}/include", json={"included": True})
+    assert client.post(f"/api/batches/{batch_id}/start").status_code == 200
+    assert d.is_dir() and not (d / ".importing").exists()
+    assert client.delete(f"/api/batches/{batch_id}").status_code == 409         # started
+    assert not (d / ".importing").exists()
 ```
 
 - [ ] **Step 2: Run to verify failure**
@@ -2699,15 +2819,78 @@ Expected: FAIL — `/include`, `/start` and `DELETE /api/batches/{id}` answer 40
 
 - [ ] **Step 3: Implement**
 
-`app/batch/uploads.py` — add to `Uploads`, after `delete`:
+`app/batch/repo.py` — add under `# ----- reads`:
 ```python
-    def discard_parts(self, upload_ids) -> None:
-        """Part files of uploads whose rows are already gone (a discarded
-        import). Under each upload's lock, so a chunk being written finishes
-        first -- and then finds its row gone and removes its part itself."""
-        for uid in upload_ids:
+    def batch_document_ids(self, batch_id) -> list:
+        """[] for an unknown batch: the callers mark files, they do not judge."""
+        with self._lock:
+            return [r["id"] for r in self._conn.execute(
+                "SELECT id FROM document WHERE batch_id = ? ORDER BY rowid", (batch_id,)).fetchall()]
+```
+
+`app/batch/uploads.py` — change the comment above `IMPORTING_MARKER` to:
+```python
+# Marks a docs/<id>/ whose row an index transaction is creating (a
+# completion) or may remove (Start's dropped rows, Discard). Only a marked
+# dir with no row is ever swept at startup, and a marked dir WITH a row is
+# only unmarked -- so a lost or replaced index can never make the sweep
+# delete real drawings.
+```
+and add to `Uploads`, after `delete`:
+```python
+    # ----- start and discard: rows go first, files follow -------------------
+    def _mark(self, doc_ids) -> list:
+        """Mark each drawing dir BEFORE a transaction that may remove its
+        row: a crash after the commit leaves a marked dir with no row, which
+        the startup sweep removes; a crash before it leaves a marked dir
+        with its row, which the sweep only unmarks."""
+        marked = []
+        for doc_id in doc_ids:
+            d = self.data.doc_dir(doc_id)
+            if d.is_dir():
+                (d / IMPORTING_MARKER).write_bytes(b"")
+                marked.append(d)
+        return marked
+
+    @staticmethod
+    def _unmark(dirs) -> None:
+        for d in dirs:
+            (d / IMPORTING_MARKER).unlink(missing_ok=True)
+
+    def start_batch(self, batch_id) -> dict:
+        """Repo.start_batch, with the dropped drawings' files removed after
+        the commit. Returns the repo's {queued, dropped}."""
+        marked = self._mark(self.repo.batch_document_ids(batch_id))
+        try:
+            out = self.repo.start_batch(batch_id)
+        except BaseException:
+            self._unmark(marked)        # refused or failed: every row is still there
+            raise
+        dropped = set(out["dropped"])
+        for doc_id in out["dropped"]:
+            shutil.rmtree(self.data.doc_dir(doc_id), ignore_errors=True)
+        self._unmark(d for d in marked if d.name not in dropped)
+        return out
+
+    def discard_batch(self, batch_id) -> None:
+        """Repo.delete_batch, then the files: staged drawings' dirs and the
+        part files of unfinished uploads. Idempotent for an unknown batch."""
+        marked = self._mark(self.repo.batch_document_ids(batch_id))
+        try:
+            out = self.repo.delete_batch(batch_id)
+        except BaseException:
+            self._unmark(marked)
+            raise
+        if out is None:
+            self._unmark(marked)
+            return
+        for uid in out["uploads"]:
+            # Under the upload's lock: a chunk being written finishes first,
+            # then finds its row gone and removes its part itself.
             with self._lock(uid):
                 self.data.part_path(uid).unlink(missing_ok=True)
+        for doc_id in out["documents"]:
+            shutil.rmtree(self.data.doc_dir(doc_id), ignore_errors=True)
 ```
 
 `app/main.py`:
@@ -2733,11 +2916,7 @@ def start_batch(batch_id: str):
     """Queue the included drawings, drop the excluded ones with their files,
     end the draft (design §2). The only way a staged drawing is queued."""
     rt = runtime()
-    out = rt.repo.start_batch(_batch_id(batch_id))
-    # The rows are gone already; their files follow. Best effort: a file
-    # that survives a crash here is a dir no row lists, harmless.
-    for doc_id in out["dropped"]:
-        shutil.rmtree(rt.data.doc_dir(doc_id), ignore_errors=True)
+    out = rt.uploads.start_batch(_batch_id(batch_id))
     rt.worker.wake()
     log.info("batch %s started: %d queued, %d dropped",
              batch_id[:8], len(out["queued"]), len(out["dropped"]))
@@ -2749,12 +2928,7 @@ def start_batch(batch_id: str):
 def discard_batch(batch_id: str):
     """Discard an import that has not started: its staged drawings, its
     unfinished uploads, their files. Idempotent; a started batch is 409."""
-    rt = runtime()
-    out = rt.repo.delete_batch(_batch_id(batch_id))
-    if out is not None:
-        rt.uploads.discard_parts(out["uploads"])
-        for doc_id in out["documents"]:
-            shutil.rmtree(rt.data.doc_dir(doc_id), ignore_errors=True)
+    runtime().uploads.discard_batch(_batch_id(batch_id))
     return {"ok": True}
 ```
 
@@ -2765,12 +2939,12 @@ Expected: all pass.
 
 - [ ] **Step 5: Full suite, then commit**
 
-Run: `python -m pytest -q` → **1625 passed, 2 skipped** (+11).
+Run: `python -m pytest -q` → **1631 passed, 2 skipped** (+12).
 ```bash
-git add app/main.py app/batch/uploads.py tests/test_api_import.py
+git add app/main.py app/batch/repo.py app/batch/uploads.py tests/test_api_import.py
 ```
 ```bash
-git commit -m "api: include, start and discard an import" -m "Start queues the included drawings and removes the files of the dropped ones; it is the only way a staged drawing is queued, so the Include rules cannot be bypassed. Discarding a draft removes its staged files and unfinished part files. The document view now names its batch." -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+git commit -m "api: include, start and discard an import" -m "Start queues the included drawings and removes the files of the dropped ones; it is the only way a staged drawing is queued, so the Include rules cannot be bypassed. Discarding a draft removes its staged files and unfinished part files. Both mark the dirs whose rows they may remove before the transaction, so a crash after the commit leaves them sweepable, and unmark on every other path. The document view now names its batch." -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -2779,8 +2953,10 @@ git commit -m "api: include, start and discard an import" -m "Start queues the i
 
 **Data-integrity: yes** (deletes files at startup).
 
+Recovery runs only right after the single-process lock is taken (review C1). B1's `Worker.start()` takes the flock, requeues interrupted rows and starts the loop; on a `stop()` that timed out it KEEPS the thread and the lock, and a later `start()` refuses while that loop lives. Recovery therefore goes into the same place, as a `startup` hook called inside `start()`'s locked section: it runs exactly when this process has just become the data dir's only worker, never in a second process that failed to get the lock (whose sweep would see the first process's in-flight imports as crash leftovers), and never while an earlier loop of this process is still finishing a drawing.
+
 **Files:**
-- Modify: `app/batch/repo.py`, `app/batch/uploads.py`, `app/batch/runtime.py`, `app/main.py`
+- Modify: `app/batch/repo.py`, `app/batch/uploads.py`, `app/batch/worker.py`, `app/batch/runtime.py`, `app/main.py`
 - Test: `tests/batch/test_uploads.py`, `tests/batch/test_runtime.py`, `tests/test_api_import.py`
 
 - [ ] **Step 1: Write the failing tests**
@@ -2849,9 +3025,25 @@ def test_week_old_empty_drafts_are_removed(h):
                          (OLD, old_empty, old_full))
     assert h.uploads.cleanup_stale()["empty_drafts"] == 1
     assert {b["id"] for b in h.repo.list_batches()} == {h.batch, old_full}
+
+
+def test_a_draft_emptied_by_hand_goes_with_its_finished_upload_rows(h):
+    """Every drawing removed, only the COMPLETE upload row left: that is an
+    empty draft too. An unfinished upload still keeps it."""
+    emptied = h.repo.create_batch("emptied")["id"]
+    (row,) = h.imported(pdf_bytes(), batch=emptied)["documents"]
+    h.repo.delete(row["id"])
+    waiting = h.repo.create_batch("waiting")["id"]
+    h.create(b"x" * 10, batch=waiting)
+    h.repo._conn.execute("UPDATE batch SET created_at = ? WHERE id IN (?, ?)",
+                         (OLD, emptied, waiting))
+    assert h.uploads.cleanup_stale()["empty_drafts"] == 1
+    assert {b["id"] for b in h.repo.list_batches()} == {h.batch, waiting}
+    assert h.repo._conn.execute("SELECT COUNT(*) FROM upload WHERE batch_id = ?",
+                                (emptied,)).fetchone()[0] == 0
 ```
 
-Append to `tests/batch/test_runtime.py`:
+Append to `tests/batch/test_runtime.py` (add `import fcntl` to its imports):
 ```python
 def test_start_sweeps_unfinished_imports_before_the_worker_runs(tmp_path):
     rt = make(tmp_path)
@@ -2878,10 +3070,59 @@ def test_a_failed_recovery_does_not_keep_the_worker_from_starting(tmp_path, monk
         assert rt.worker.running
     finally:
         rt.close()
+
+
+def test_recovery_runs_only_under_the_single_worker_lock(tmp_path):
+    """A second process that cannot take the lock must not sweep: the first
+    process's in-flight imports are marked exactly like crash leftovers, and
+    sweeping them would lose a user's file mid-import."""
+    rt = make(tmp_path)
+    in_flight = rt.data.doc_dir("a" * 32)
+    in_flight.mkdir()
+    (in_flight / ".importing").write_bytes(b"")
+    holder = open(rt.data.root / "worker.lock", "w")      # the other process
+    fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        with pytest.raises(RuntimeError, match="another process"):
+            rt.start()
+        assert (in_flight / ".importing").exists()
+    finally:
+        holder.close()
+        rt.close()
 ```
 
 Append to `tests/test_api_import.py`:
 ```python
+class _Crash(Exception):
+    """Stands for the process dying at that point."""
+
+
+def test_a_crash_after_start_commits_leaves_only_sweepable_dirs(monkeypatch):
+    """Start removes rows first, files second. Dying in between leaves the
+    dropped drawing's dir with its marker and no row (swept at the next
+    start) and the queued one's dir marked with its row (only unmarked)."""
+    import shutil
+    rt = main.runtime()
+    batch_id = new_batch()["id"]
+    _, keep = import_file(pdf_bytes(), batch_id=batch_id)
+    _, drop = import_file(pdf_bytes(pages=2), name="b.pdf", batch_id=batch_id)
+    keep_dir = rt.data.doc_dir(keep["documents"][0]["id"])
+    drop_dir = rt.data.doc_dir(drop["documents"][0]["id"])
+    real_rmtree = shutil.rmtree
+
+    def crash(*a, **k):
+        raise _Crash()
+    monkeypatch.setattr(shutil, "rmtree", crash)
+    with pytest.raises(_Crash):
+        client.post(f"/api/batches/{batch_id}/start")
+    monkeypatch.setattr(shutil, "rmtree", real_rmtree)
+    assert (drop_dir / ".importing").exists() and (keep_dir / ".importing").exists()
+    assert rt.uploads.sweep_unfinished_imports() == 1
+    assert not drop_dir.exists()
+    assert keep_dir.is_dir() and not (keep_dir / ".importing").exists()
+    assert client.get(f"/api/documents/{keep['documents'][0]['id']}").json()["state"] == "queued"
+
+
 def test_a_new_import_sheds_week_old_unfinished_uploads():
     """A server that is never restarted still sheds them."""
     old_batch = new_batch()["id"]
@@ -2948,15 +3189,21 @@ Expected: FAIL — `AttributeError: 'Uploads' object has no attribute 'recover'`
                              " WHERE state = 'completing'", (self._clock(),)).rowcount
 
     def delete_empty_drafts(self, cutoff: str) -> int:
-        """Drafts created before `cutoff` that hold no drawing and no upload.
-        A draft with staged drawings is kept however old: it may be
+        """Drafts created before `cutoff` that hold no drawing and no
+        UNFINISHED upload -- with their complete upload rows, in the same
+        transaction (a draft whose drawings were all removed still has
+        those). A draft with staged drawings is kept however old: it may be
         continued later (design §2)."""
         with self._tx() as c:
-            return c.execute(
-                "DELETE FROM batch WHERE draft = 1 AND created_at < ?"
+            ids = [r["id"] for r in c.execute(
+                "SELECT id FROM batch WHERE draft = 1 AND created_at < ?"
                 " AND NOT EXISTS (SELECT 1 FROM document d WHERE d.batch_id = batch.id)"
-                " AND NOT EXISTS (SELECT 1 FROM upload u WHERE u.batch_id = batch.id)",
-                (cutoff,)).rowcount
+                " AND NOT EXISTS (SELECT 1 FROM upload u WHERE u.batch_id = batch.id"
+                "                 AND u.state != 'complete')", (cutoff,)).fetchall()]
+            for batch_id in ids:
+                c.execute("DELETE FROM upload WHERE batch_id = ?", (batch_id,))
+                c.execute("DELETE FROM batch WHERE id = ?", (batch_id,))
+        return len(ids)
 ```
 
 `app/batch/uploads.py`:
@@ -2966,11 +3213,14 @@ Expected: FAIL — `AttributeError: 'Uploads' object has no attribute 'recover'`
 # go after the same age.
 STALE_AFTER = timedelta(days=7)
 ```
-2. Add to `Uploads`, after `discard_parts`:
+2. Add to `Uploads`, after `discard_batch`:
 ```python
     # ----- recovery and housekeeping --------------------------------------
     def recover(self) -> dict:
-        """At startup, before any request is served (Runtime.start)."""
+        """Only from Worker.start(), right after this process took the
+        single-worker lock (Runtime wires it as the worker's `startup`
+        hook), and so before any request is served. Never call it while
+        requests run: an in-flight import looks exactly like a leftover."""
         out = {"completions_reset": self.repo.reset_completing(),
                "imports_swept": self.sweep_unfinished_imports()}
         out.update(self.cleanup_stale())
@@ -3024,18 +3274,37 @@ STALE_AFTER = timedelta(days=7)
         return {"stale_uploads": uploads, "orphan_parts": parts, "empty_drafts": drafts}
 ```
 
-`app/batch/runtime.py` — add `import logging` and `log = logging.getLogger(__name__)`, and replace `start` with:
+`app/batch/worker.py`:
+1. Add a keyword to `Worker.__init__` — signature `def __init__(self, repo, data, store, extract_fn: Callable, header_fn: Callable, idle_wait: float = 2.0, startup: Optional[Callable] = None):` — and store it after `self.idle_wait = idle_wait`:
 ```python
-    def start(self) -> None:
-        # Leftovers of interrupted imports go before the worker and before
-        # any request. Recovery only deletes leftovers; a fault in it must
-        # not keep the worker -- and every queued drawing -- from starting.
-        try:
-            self.uploads.recover()
-        except Exception as e:
-            log.warning("startup recovery failed: %s", type(e).__name__)
-        self.worker.start()
+        # Run inside start()'s locked section, right after the flock is
+        # taken: the one moment this process is known to be the data dir's
+        # only worker. Runtime passes import recovery (uploads.recover).
+        self.startup = startup
 ```
+2. In `start()`, the `try:` block that follows the flock begins with `moved = self.repo.requeue_interrupted()`. Insert before that line, inside the same `try:`:
+```python
+            if self.startup is not None:
+                # Recovery only deletes leftovers of interrupted imports; a
+                # fault in it must not keep the worker -- and every queued
+                # drawing -- from starting. TYPE only (CLAUDE.md §1).
+                try:
+                    self.startup()
+                except Exception as e:
+                    log.warning("startup recovery failed: %s", type(e).__name__)
+```
+(The `except BaseException: f.close(); raise` around it stays as it is, so the lock is still released if anything else in that block fails.)
+
+`app/batch/runtime.py` — change the line that builds the worker to:
+```python
+        # Recovery runs inside Worker.start(), under the single-process lock
+        # (review C1): a second process that fails to get the lock never
+        # sweeps the first one's in-flight imports. A lambda, so the bound
+        # method is looked up at start time.
+        self.worker = Worker(self.repo, self.data, self.store, extract_fn, header_fn,
+                             startup=lambda: self.uploads.recover())
+```
+(`self.uploads` is created before this line in Task 6, right after `self.repo`. `Runtime.start()` stays `self.worker.start()`.)
 
 `app/main.py` — in `create_batch`, after `rt = runtime()`:
 ```python
@@ -3054,12 +3323,12 @@ Expected: all pass.
 
 - [ ] **Step 5: Full suite, then commit**
 
-Run: `python -m pytest -q` → **1634 passed, 2 skipped** (+9).
+Run: `python -m pytest -q` → **1643 passed, 2 skipped** (+12).
 ```bash
-git add app/batch/repo.py app/batch/uploads.py app/batch/runtime.py app/main.py tests/batch/test_uploads.py tests/batch/test_runtime.py tests/test_api_import.py
+git add app/batch/repo.py app/batch/uploads.py app/batch/worker.py app/batch/runtime.py app/main.py tests/batch/test_uploads.py tests/batch/test_runtime.py tests/test_api_import.py
 ```
 ```bash
-git commit -m "batch: recover interrupted imports and shed stale uploads" -m "At startup an interrupted completion is reset, and only drawing dirs marked .importing with no row are removed, so a lost index can never make the sweep delete real drawings. Unfinished uploads untouched for 7 days, stray part files and week-old empty drafts are removed at startup and on every new import. A recovery fault never keeps the worker from starting." -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+git commit -m "batch: recover interrupted imports and shed stale uploads" -m "Recovery runs inside Worker.start right after the single-process lock is taken, so a second process never sweeps the first one's in-flight imports. An interrupted completion is reset, and only drawing dirs marked .importing with no row are removed, so a lost index can never make the sweep delete real drawings. Unfinished uploads untouched for 7 days, stray part files and week-old empty drafts are removed at startup and on every new import. A recovery fault never keeps the worker from starting." -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
 > **Milestone: staging-api** - state must be checkpointed here before continuing.
@@ -3086,7 +3355,8 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 
 const {
-  uploadFile, importFiles, fingerprint, relPathOf, batchNameFor, UploadError, RETRIES,
+  uploadFile, importFiles, fingerprint, sha256Hex, relPathOf, batchNameFor, UploadError,
+  RETRY_BUDGET_MS, MAX_WAIT_MS, recallDraft, rememberDraft, forgetDraft,
 } = await import('../../app/static/js/upload.js');
 
 const bytes = (n, seed = 7) => Uint8Array.from({ length: n }, (_, i) => (i * seed + 3) % 251);
@@ -3116,7 +3386,8 @@ function fakeServer({ fault = () => null, onComplete = null } = {}) {
       for (const [id, up] of uploads) {
         if (up.state === 'receiving' && up.batch_id === req.batch_id && up.name === req.name
             && up.fingerprint === req.fingerprint && up.rel_path === req.rel_path
-            && up.size === req.size) {
+            && up.size === req.size
+            && (req.last_modified == null || up.last_modified === req.last_modified)) {
           return json(200, { upload_id: id, received: up.received, state: up.state, resumed: true });
         }
       }
@@ -3216,19 +3487,42 @@ test("a refused request reports the server's sentence and is not retried", async
   assert.equal(server.calls.length, 1);
 });
 
-test('after RETRIES failures in a row it gives up, but not for good', async () => {
+test('it keeps retrying for the time budget, then gives up -- but not for good', async () => {
+  // A fake clock that the waits advance: the budget is time, not a count,
+  // so a server restart taking minutes is ridden out.
+  let clock = 0;
+  const waits = [];
+  const sleep = async (ms) => { waits.push(ms); clock += ms; };
   let down = true;
   const server = fakeServer({ fault: ({ puts: k }) => (down && k >= 2 ? 'drop-before' : null) });
   const file = fileOf(bytes(200));
   await assert.rejects(
-    uploadFile({ file, batchId: 'b', fetch: server.fetch, sleep: noSleep, chunkSize: 64 }),
+    uploadFile({ file, batchId: 'b', fetch: server.fetch, sleep, now: () => clock, chunkSize: 64 }),
     (err) => err instanceof UploadError && !err.fatal);
-  assert.equal(puts(server).length, 1 + RETRIES + 1);
+  assert.ok(clock >= RETRY_BUDGET_MS && clock < RETRY_BUDGET_MS + MAX_WAIT_MS, `${clock}`);
+  assert.equal(Math.max(...waits), MAX_WAIT_MS);
   down = false;
   const before = puts(server).length;
   await uploadFile({ file, batchId: 'b', fetch: server.fetch, sleep: noSleep, chunkSize: 64 });
   assert.equal(puts(server)[before], 64);           // resumed, not restarted
   assert.deepEqual(server.uploads.get('u1').bytes, bytes(200));
+});
+
+test('a reply whose body cannot be read is treated as lost, and resynced', async () => {
+  const data = bytes(200);
+  const server = fakeServer();
+  let mangled = false;
+  const fetch = async (url, init) => {
+    const res = await server.fetch(url, init);
+    if (init.method === 'PUT' && !mangled) {
+      mangled = true;                                  // applied, but the reply is garbage
+      return { ok: true, status: 200, json: async () => { throw new SyntaxError('truncated'); } };
+    }
+    return res;
+  };
+  await uploadFile({ file: fileOf(data), batchId: 'b', fetch, sleep: noSleep, chunkSize: 64 });
+  assert.deepEqual(puts(server), [0, 0, 64, 128, 192]);
+  assert.deepEqual(server.uploads.get('u1').bytes, data);
 });
 
 test('a closed tab resumes: the same file finds its unfinished upload and sends only the rest', async () => {
@@ -3238,7 +3532,8 @@ test('a closed tab resumes: the same file finds its unfinished upload and sends 
   const held = new Uint8Array(300);
   held.set(data.slice(0, 128));
   server.uploads.set('u9', { batch_id: 'b', name: 'a.pdf', size: 300, rel_path: 'Kunde',
-    fingerprint: await fingerprint(file), received: 128, state: 'receiving', bytes: held });
+    last_modified: 1, fingerprint: await fingerprint(file), received: 128, state: 'receiving',
+    bytes: held });
   await uploadFile({ file, batchId: 'b', fetch: server.fetch, sleep: noSleep, chunkSize: 64 });
   assert.deepEqual(puts(server), [128, 192, 256]);
   assert.deepEqual(server.uploads.get('u9').bytes, data);
@@ -3277,6 +3572,40 @@ test('the fingerprint is SHA-256 over the size, the first and the last MiB', asy
   const expected = createHash('sha256').update(Buffer.from(`${data.length}:`))
     .update(data.subarray(0, MiB)).update(data.subarray(2 * MiB)).digest('hex');
   assert.equal(await fingerprint(fileOf(data)), expected);
+});
+
+test('without crypto.subtle (no secure context) the fingerprint is the same, in plain JS', async () => {
+  // Hosting is undecided (decision 23); browsers hide crypto.subtle outside
+  // https and localhost.
+  const enc = new TextEncoder();
+  assert.equal(sha256Hex(enc.encode('abc')),
+    'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+  assert.equal(sha256Hex(new Uint8Array(0)),
+    'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+  for (const n of [55, 56, 64, 1000, 3 * 1024 * 1024]) {
+    const file = fileOf(bytes(n));
+    // null, not undefined: undefined would select the default (subtle) again.
+    assert.equal(await fingerprint(file, null), await fingerprint(file, globalThis.crypto.subtle), `${n}`);
+  }
+});
+
+test('the draft of an interrupted file is remembered per file, and storage faults are harmless', () => {
+  const store = new Map();
+  const storage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v),
+                    removeItem: (k) => store.delete(k) };
+  const a = fileOf(bytes(10), 'a.pdf');
+  const b = fileOf(bytes(11), 'a.pdf');          // same name, different size: another file
+  rememberDraft(storage, a, 'batch-1');
+  assert.equal(recallDraft(storage, a), 'batch-1');
+  assert.equal(recallDraft(storage, b), null);
+  forgetDraft(storage, a);
+  assert.equal(recallDraft(storage, a), null);
+  const broken = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('full'); },
+                   removeItem() { throw new Error('denied'); } };
+  rememberDraft(broken, a, 'batch-1');
+  forgetDraft(broken, a);
+  assert.equal(recallDraft(broken, a), null);
+  assert.equal(recallDraft(undefined, a), null);
 });
 
 test('the fingerprint is a key for resuming, not a content hash', async () => {
@@ -3381,10 +3710,15 @@ Expected: FAIL — `Cannot find module '.../app/static/js/upload.js'`.
 // 409 carries the bytes it really holds, and the client continues from
 // there -- never from what it believes it sent.
 
-export const CHUNK_SIZE = 8 * 1024 * 1024;     // design §2: 8 MiB per PUT
+export const CHUNK_SIZE = 8 * 1024 * 1024;     // design §2: 8 MiB per PUT (server bound: 64 MiB)
 export const FINGERPRINT_SPAN = 1024 * 1024;   // first and last MiB
 export const PARALLEL = 3;                     // design §2: three uploads at once
-export const RETRIES = 5;                      // failures in a row before giving up for now
+// How long one request keeps retrying a dropped connection or a 5xx before
+// giving up FOR NOW (non-fatal: the same file selected again resumes). Time,
+// not a count: a server restart or a Wi-Fi hand-over takes minutes, and a
+// count of quick retries would give up long before either is over.
+export const RETRY_BUDGET_MS = 10 * 60 * 1000;
+export const MAX_WAIT_MS = 20 * 1000;          // the longest single wait between retries
 
 export class UploadError extends Error {
   // `fatal`: retrying cannot help (refused, disk full, cancelled). Not
@@ -3398,11 +3732,57 @@ export class UploadError extends Error {
   }
 }
 
+// SHA-256 in plain JS, for when crypto.subtle does not exist: browsers
+// offer it only in a secure context (https or localhost), and how Sindri is
+// hosted is undecided (decision 23). Only the fingerprint uses it -- at most
+// 2 MiB, a resume key, never a duplicate check -- so speed does not matter.
+const K = new Uint32Array([
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+]);
+
+const rotr = (x, n) => (x >>> n) | (x << (32 - n));
+
+export function sha256Hex(bytes) {
+  const h = new Uint32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+                             0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);
+  const padded = new Uint8Array(((bytes.length + 9 + 63) >> 6) << 6);
+  padded.set(bytes);
+  padded[bytes.length] = 0x80;
+  const view = new DataView(padded.buffer);
+  const bits = bytes.length * 8;
+  view.setUint32(padded.length - 8, Math.floor(bits / 2 ** 32));
+  view.setUint32(padded.length - 4, bits >>> 0);
+  const w = new Uint32Array(64);
+  for (let off = 0; off < padded.length; off += 64) {
+    for (let i = 0; i < 16; i++) w[i] = view.getUint32(off + 4 * i);
+    for (let i = 16; i < 64; i++) {
+      const s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3);
+      const s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+      w[i] = w[i - 16] + s0 + w[i - 7] + s1;            // Uint32Array wraps mod 2^32
+    }
+    let [a, b, c, d, e, f, g, k] = h;
+    for (let i = 0; i < 64; i++) {
+      const t1 = (k + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i]) | 0;
+      const t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;
+      k = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+    }
+    h[0] += a; h[1] += b; h[2] += c; h[3] += d; h[4] += e; h[5] += f; h[6] += g; h[7] += k;
+  }
+  return Array.from(h, (x) => x.toString(16).padStart(8, '0')).join('');
+}
+
 // SHA-256 over the size and the first and last MiB. A browser cannot hash a
 // multi-GB file incrementally, and this is only the KEY that finds an
 // unfinished upload of the same file again; duplicates are found by the
 // server's full-file SHA-256, which never trusts this.
-export async function fingerprint(file, subtle = globalThis.crypto.subtle) {
+export async function fingerprint(file, subtle = globalThis.crypto?.subtle) {
   const head = new Uint8Array(await file.slice(0, Math.min(file.size, FINGERPRINT_SPAN)).arrayBuffer());
   const tail = new Uint8Array(await file.slice(Math.max(0, file.size - FINGERPRINT_SPAN), file.size).arrayBuffer());
   const size = new TextEncoder().encode(`${file.size}:`);
@@ -3410,8 +3790,36 @@ export async function fingerprint(file, subtle = globalThis.crypto.subtle) {
   all.set(size, 0);
   all.set(head, size.length);
   all.set(tail, size.length + head.length);
+  if (!subtle) return sha256Hex(all);
   const digest = new Uint8Array(await subtle.digest('SHA-256', all));
   return Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Remembering which draft an interrupted file was going into, so selecting
+// the same file again -- after a failure, a reload or a closed tab -- resumes
+// it there (decision 21; the server only resumes within the same draft).
+// `storage` is localStorage in the browser, injected so node can test it;
+// every access is guarded, since storage can be full or disabled.
+const draftKey = (file) => `sindri.import:${file.name}:${file.size}:${file.lastModified}`;
+
+export function recallDraft(storage, file) {
+  try { return storage?.getItem(draftKey(file)) || null; } catch { return null; }
+}
+
+export function rememberDraft(storage, file, batchId) {
+  try { storage?.setItem(draftKey(file), batchId); } catch { /* resume is a convenience */ }
+}
+
+export function forgetDraft(storage, file) {
+  try { storage?.removeItem(draftKey(file)); } catch { /* nothing to undo */ }
+}
+
+// A wait that ends early on cancel, so Cancel never sits out a 20 s backoff.
+function abortableSleep(ms, signal) {
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => { clearTimeout(t); resolve(); }, { once: true });
+  });
 }
 
 // The folder a file came from in a folder selection (webkitdirectory), ''
@@ -3433,11 +3841,14 @@ export function batchNameFor(files, now = new Date()) {
     + `${pad(now.getHours())}:${pad(now.getMinutes())}`;
 }
 
-// One request, retried on a dropped connection or a 5xx with growing waits.
-// A 409 that says where the server stands is an ANSWER, not an error: it is
+// One request, retried on a dropped connection, a reply that cannot be
+// read, or a 5xx -- with growing waits, for up to RETRY_BUDGET_MS. A 409
+// that says where the server stands is an ANSWER, not an error: it is
 // returned for the caller to resync from.
-async function request({ send, sleep, retries, signal }, method, url, body, headers) {
-  for (let failures = 0; ;) {
+async function request({ send, sleep, now, budgetMs, signal }, method, url, body, headers) {
+  let failures = 0;
+  let firstFailure = null;
+  for (;;) {
     if (signal?.aborted) throw new UploadError('upload cancelled', { fatal: true });
     let res = null;
     try {
@@ -3446,23 +3857,29 @@ async function request({ send, sleep, retries, signal }, method, url, body, head
       if (signal?.aborted) throw new UploadError('upload cancelled', { fatal: true });
     }
     if (res) {
-      if (res.ok) return res.json();
-      const detail = await res.json().catch(() => null);
-      if (res.status === 409 && detail && Number.isInteger(detail.received)) return detail;
-      if (res.status === 507) {
-        throw new UploadError('not enough free disk space on the server', { status: 507, fatal: true });
-      }
-      if (res.status < 500) {
-        const msg = typeof detail?.detail === 'string' ? detail.detail : `upload refused (${res.status})`;
-        throw new UploadError(msg, { status: res.status, fatal: true });
+      if (res.ok) {
+        // A body cut off mid-reply is a lost reply, not an answer: retry,
+        // and the server's 409 / stored completion says what happened.
+        try { return await res.json(); } catch { res = null; }
+      } else {
+        const detail = await res.json().catch(() => null);
+        if (res.status === 409 && detail && Number.isInteger(detail.received)) return detail;
+        if (res.status === 507) {
+          throw new UploadError('not enough free disk space on the server', { status: 507, fatal: true });
+        }
+        if (res.status < 500) {
+          const msg = typeof detail?.detail === 'string' ? detail.detail : `upload refused (${res.status})`;
+          throw new UploadError(msg, { status: res.status, fatal: true });
+        }
       }
     }
     failures += 1;
-    if (failures > retries) {
+    if (firstFailure === null) firstFailure = now();
+    if (now() - firstFailure >= budgetMs) {
       throw new UploadError(res ? `server error (${res.status})` : 'the server could not be reached',
         { status: res ? res.status : 0 });
     }
-    await sleep(Math.min(8000, 500 * 2 ** (failures - 1)));
+    await sleep(Math.min(MAX_WAIT_MS, 500 * 2 ** (failures - 1)), signal);
   }
 }
 
@@ -3471,11 +3888,11 @@ async function request({ send, sleep, retries, signal }, method, url, body, head
 export async function uploadFile({
   file, batchId, relPath = relPathOf(file),
   fetch: send = (...a) => globalThis.fetch(...a),
-  sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
-  chunkSize = CHUNK_SIZE, retries = RETRIES, onProgress = () => {}, signal,
+  sleep = abortableSleep, now = () => Date.now(), budgetMs = RETRY_BUDGET_MS,
+  chunkSize = CHUNK_SIZE, onProgress = () => {}, signal,
 } = {}) {
   const call = (method, url, body, headers) =>
-    request({ send, sleep, retries, signal }, method, url, body, headers);
+    request({ send, sleep, now, budgetMs, signal }, method, url, body, headers);
   const created = await call('POST', '/api/uploads', JSON.stringify({
     batch_id: batchId, name: file.name, size: file.size,
     last_modified: Number.isFinite(file.lastModified) ? file.lastModified : null,
@@ -3590,123 +4007,34 @@ export async function discardBatch(id) {
 - [ ] **Step 4: Run to verify pass**
 
 Run: `node --test tests/js/upload.test.mjs tests/js/badges.test.mjs`
-Expected: 19 pass.
+Expected: 22 pass (17 upload, 5 badges).
 Run: `python -m pytest tests/test_js_state.py -q`
 Expected: 1 passed (every node test file, including the two new ones).
 
 - [ ] **Step 5: Full suite, then commit**
 
-Run: `python -m pytest -q` → **1634 passed, 2 skipped** (node tests run inside the one `test_ui_state_rules`).
+Run: `python -m pytest -q` → **1643 passed, 2 skipped** (node tests run inside the one `test_ui_state_rules`).
 ```bash
 git add app/static/js/upload.js app/static/js/badges.js app/static/js/api.js tests/js/upload.test.mjs tests/js/badges.test.mjs
 ```
 ```bash
-git commit -m "ui: chunked resumable upload client and staging badges" -m "upload.js speaks the offset protocol through an injected fetch: the server's 409 offset is authoritative, so a lost reply never sends a chunk twice; drops and 5xx are retried with growing waits, a full disk or a refusal stops at once, and the same file selected again resumes. importFiles runs three lanes and one failure stops none of the others. badges.js turns a staging row into the design's warning texts." -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+git commit -m "ui: chunked resumable upload client and staging badges" -m "upload.js speaks the offset protocol through an injected fetch: the server's 409 offset is authoritative, so a lost or unreadable reply never sends a chunk twice; drops and 5xx are retried with growing waits for a ten-minute budget, a full disk or a refusal stops at once, and the same file selected again resumes (its draft is remembered per file). Without crypto.subtle (no secure context) the fingerprint falls back to a plain-JS SHA-256. importFiles runs three lanes and one failure stops none of the others. badges.js turns a staging row into the design's warning texts." -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 11: Interim UI through the protocol; the single-shot routes go
+### Task 11: Interim UI through the protocol (old routes still there)
 
-**Data-integrity: yes** (removes two endpoints and moves every API test helper onto the protocol).
+**Data-integrity: yes** (the client flow that decides when a draft is kept for resuming and when it is discarded).
+
+The interim screen moves onto the protocol in this task, and the old routes stay until Task 12, so the suite and the UI are green at each step. There is no new pytest here: the decisions this flow relies on are node-tested in Task 10 (`uploadFile`, the retry budget, `recallDraft` / `rememberDraft` / `forgetDraft`, `badgesFor`), and the drive in Task 13 checks the wiring.
 
 **Files:**
-- Modify: `app/static/js/main.js`, `app/static/js/api.js`, `app/static/index.html`, `app/static/styles/components.css`, `app/main.py`, `tests/test_api.py`, `tests/test_api_review.py`, `tests/test_api_import.py`
+- Modify: `app/static/js/main.js`, `app/static/js/api.js`, `app/static/index.html`, `app/static/styles/components.css`
 
-Why remove rather than keep `/api/upload` and `/enqueue`: kept, they are a second door into the queue that skips Start's Include rules, and B1's upload creates non-draft batches with no staging semantics. Nothing else calls them once the interim UI moves (the B1 state file lists every caller: `main.js` and the test helpers).
+- [ ] **Step 1: Implement**
 
-- [ ] **Step 1: Move the tests onto the protocol (they now fail)**
-
-`tests/test_api.py`:
-1. Add `import hashlib` and `from pathlib import Path` to the imports.
-2. Replace `save_pdf` and the line in `upload_pdf` that posts `/enqueue`, so the top of the module reads:
-```python
-def save_pdf(test_client, path, filename="sample.pdf"):
-    """Import a PDF the way the UI does -- a draft batch of one, the chunked
-    upload protocol, completion -- and return its metadata. Nothing is
-    queued."""
-    data = Path(path).read_bytes()
-    batch = test_client.post("/api/batches", json={"name": filename}).json()
-    r = test_client.post("/api/uploads", json={
-        "batch_id": batch["id"], "name": filename, "size": len(data),
-        "fingerprint": hashlib.sha256(data).hexdigest()})
-    assert r.status_code == 200, r.text
-    uid = r.json()["upload_id"]
-    if data:
-        assert test_client.put(f"/api/uploads/{uid}?offset=0", content=data).status_code == 200
-    r = test_client.post(f"/api/uploads/{uid}/complete")
-    assert r.status_code == 200, r.text
-    (row,) = r.json()["documents"]
-    return {"session_id": row["id"], "fileName": row["file_name"],
-            "pages": row["pages"], "batch_id": batch["id"]}
-
-
-def start_pdf(test_client, sid):
-    """What the interim UI's Start does for its batch of one: include the
-    drawing (Start on a confirm screen that showed any warning is the
-    permission), then start the import."""
-    batch_id = test_client.get(f"/api/documents/{sid}").json()["batch_id"]
-    r = test_client.post(f"/api/documents/{sid}/include", json={"included": True})
-    assert r.status_code == 200, r.text
-    r = test_client.post(f"/api/batches/{batch_id}/start")
-    assert r.status_code == 200, r.text
-
-
-def upload_pdf(test_client, path, filename="sample.pdf"):
-    """Import, queue and extract a PDF through the background worker -- run
-    inline, so the test is deterministic -- then open it for review. Returns
-    the /open payload (session_id, image_url, rows, notes, marks,
-    title_block, writer, events, last_seq)."""
-    import app.main as main
-    meta = save_pdf(test_client, path, filename)
-    sid = meta["session_id"]
-    start_pdf(test_client, sid)
-    assert main.runtime().worker.run_once() == sid
-    doc = test_client.get(f"/api/documents/{sid}").json()
-    assert doc["state"] == "ready", doc
-    r = test_client.post(f"/api/documents/{sid}/open")
-    assert r.status_code == 200, r.text
-    return r.json()
-```
-3. Replace `test_queued_drawings_report_their_queue_position` with:
-```python
-def test_queued_drawings_report_their_queue_position(sample_pdf, stub_backend):
-    a = save_pdf(client, sample_pdf)["session_id"]
-    b = save_pdf(client, sample_pdf)["session_id"]     # a duplicate: start_pdf includes it
-    start_pdf(client, a)
-    start_pdf(client, b)
-    view = client.get(f"/api/documents/{b}").json()
-    assert (view["state"], view["queue_position"]) == ("queued", 2)
-    assert client.get(f"/api/documents/{a}").json()["queue_position"] == 1
-```
-4. Every remaining line `client.post(f"/api/documents/{sid}/enqueue")` (in `test_extraction_without_detection_backend_fails_the_document`, `test_cancel_and_retry_a_queued_drawing`, `test_delete_refuses_the_drawing_the_worker_is_still_running`, `test_retry_refuses_the_drawing_the_worker_is_still_running`, `test_a_running_drawing_reports_its_progress`) becomes `start_pdf(client, sid)`. Check none is left: search the file for `/enqueue` with the Grep tool — the only hit must be the new test below.
-5. In the parametrize of `test_document_routes_reject_a_malformed_id`, delete `("post", "enqueue"), `.
-6. Delete `test_an_upload_that_cannot_be_stored_is_not_called_a_bad_pdf`, `test_an_unparseable_upload_is_a_400_and_leaves_nothing` and `test_upload_runs_off_the_event_loop`. Their behaviour now lives in the protocol and is tested there: a write fault is 507/500 with a fixed sentence (`tests/batch/test_uploads.py::test_a_write_fault_is_reported_by_kind_and_moves_nothing`), an unparseable PDF is staged as unreadable instead of a 400 (decision 4 of this plan; `test_an_unreadable_file_is_staged_but_never_included`), and the blocking handlers are sync (`tests/test_api_import.py::test_blocking_handlers_run_off_the_event_loop`).
-7. Add:
-```python
-@pytest.mark.parametrize("path", ["/api/upload", f"/api/documents/{'0' * 32}/enqueue"])
-def test_the_single_shot_upload_and_per_drawing_enqueue_are_gone(path):
-    """Since B2 a drawing arrives through /api/uploads into a draft and is
-    queued only by starting the draft, where the Include rules live."""
-    assert client.post(path).status_code in (404, 405)
-```
-
-`tests/test_api_review.py`: change the import to `from tests.test_api import save_pdf, start_pdf, upload_pdf`, and its line `client.post(f"/api/documents/{sid}/enqueue")` to `start_pdf(client, sid)`.
-
-`tests/test_api_import.py`: delete `test_a_drawing_in_a_draft_cannot_be_queued_one_by_one` (the route is gone; the guard itself stays covered by `tests/batch/test_repo_staging.py::test_a_drawing_in_a_draft_is_never_queued_one_by_one`).
-
-- [ ] **Step 2: Run to verify failure**
-
-Run: `python -m pytest tests/test_api.py -q`
-Expected: FAIL — `test_the_single_shot_upload_and_per_drawing_enqueue_are_gone` (both routes still answer). Everything else passes already, because the helpers moved onto routes that exist.
-
-- [ ] **Step 3: Implement**
-
-`app/main.py`:
-1. Delete the `upload` endpoint (`@app.post("/api/upload")` and its function) and the `enqueue_document` endpoint (`@app.post("/api/documents/{doc_id}/enqueue")` and its function).
-2. Imports: change the FastAPI line to `from fastapi import FastAPI, HTTPException, Request`. Remove `import errno` and `import hashlib` if the Grep tool finds no other use of `errno.` / `hashlib.` in the file (only the deleted upload used them).
-
-`app/static/js/api.js`: delete `savePdf` (and its comment) and `enqueueDocument`.
+`app/static/js/api.js`: delete `savePdf` (and its comment) and `enqueueDocument`. Nothing calls them after this task (the B1 state file lists `main.js` as their only caller); the server routes go in Task 12.
 
 `app/static/index.html` — after `<div class="hint" id="cf-pages">—</div>` add:
 ```html
@@ -3716,7 +4044,8 @@ Expected: FAIL — `test_the_single_shot_upload_and_per_drawing_enqueue_are_gone
 `app/static/styles/components.css` — after the `#plan-confirm .hint { … }` rule add:
 ```css
 /* Staging warnings on the interim confirm screen (badges.js): multi-page,
-   oversized, duplicate. Pressing Start with them showing is the permission. */
+   oversized, duplicate. Pressing "Include and start" with them showing is
+   the permission. */
 #plan-confirm .cf-warn {
   color: var(--warn);
   margin-top: 8px;
@@ -3729,7 +4058,8 @@ Expected: FAIL — `test_the_single_shot_upload_and_per_drawing_enqueue_are_gone
 import { getDocument, cancelDocument, openDocument, deleteDocument, downloadExport,
          health, postEvents, beaconEvents, sealSession, createBatch, getBatch,
          startBatch, discardBatch, setIncluded } from './api.js';
-import { uploadFile, batchNameFor } from './upload.js';
+import { uploadFile, batchNameFor, UploadError, recallDraft, rememberDraft,
+         forgetDraft } from './upload.js';
 import { badgesFor } from './badges.js';
 ```
 2. Change `let waitingOn = null;     // { id, fileName, pages }` to
@@ -3774,17 +4104,35 @@ and replace everything from `setBusy(\`Opening ${file.name}…\`);` to the end o
 ```js
   uploading = true;
   setBusy(`Uploading ${file.name}…`);
-  let batchId = null;
+  const storage = (() => { try { return window.localStorage; } catch { return null; } })();
+  const onProgress = (sent, total) =>
+    setBusy(`Uploading ${file.name}… ${total ? Math.floor((100 * sent) / total) : 100}%`);
+  // One drawing = a batch of one (decision 17), through the same chunked,
+  // resumable protocol a folder or a ZIP uses (batch design §2). The draft
+  // is remembered for this file BEFORE the first byte, so selecting the
+  // same file again -- after a failure, a reload or a closed tab -- resumes
+  // into the same draft at the last chunk (decision 21). localStorage, not
+  // sessionStorage: a closed tab is one of the cases decision 21 names.
+  const remembered = recallDraft(storage, file);
+  let batchId = remembered;
   try {
-    // One drawing = a batch of one (decision 17), through the same chunked,
-    // resumable protocol a folder or a ZIP uses (batch design §2): a dropped
-    // connection or a server hiccup resumes at the last chunk.
-    batchId = (await createBatch(batchNameFor([file]))).id;
-    const done = await uploadFile({
-      file, batchId,
-      onProgress: (sent, total) =>
-        setBusy(`Uploading ${file.name}… ${total ? Math.floor((100 * sent) / total) : 100}%`),
-    });
+    let done;
+    try {
+      if (!batchId) batchId = (await createBatch(batchNameFor([file]))).id;
+      rememberDraft(storage, file, batchId);
+      done = await uploadFile({ file, batchId, onProgress });
+    } catch (err) {
+      // A remembered draft that is gone (discarded, or swept after a week)
+      // or already started is refused: start over in a fresh draft, once.
+      const stale = remembered && batchId === remembered && err instanceof UploadError
+        && err.fatal && (err.status === 404 || err.status === 409);
+      if (!stale) throw err;
+      forgetDraft(storage, file);
+      batchId = (await createBatch(batchNameFor([file]))).id;
+      rememberDraft(storage, file, batchId);
+      done = await uploadFile({ file, batchId, onProgress });
+    }
+    forgetDraft(storage, file);
     const row = done.documents[0];
     if (!row || row.unreadable) {
       discardBatch(batchId);
@@ -3796,8 +4144,18 @@ and replace everything from `setBusy(\`Opening ${file.name}…\`);` to the end o
     setHash(row.id);
     showConfirm(row);
   } catch (err) {
-    if (batchId) discardBatch(batchId);
-    toast({ kind: 'error', title: 'Could not upload the PDF', msg: String(err.message || err) });
+    if (batchId && err instanceof UploadError && !err.fatal) {
+      // The server or the network is away for now (the client already
+      // retried for minutes). Keep the draft and what arrived of the file.
+      toast({ kind: 'warn', title: 'Upload interrupted',
+              msg: 'Select the same file again to continue where it stopped.' });
+    } else {
+      // Refused, disk full, cancelled, or a fault before any upload began:
+      // nothing worth resuming.
+      forgetDraft(storage, file);
+      if (batchId) discardBatch(batchId);
+      toast({ kind: 'error', title: 'Could not upload the PDF', msg: String(err.message || err) });
+    }
   } finally {
     uploading = false;
     setIdle();
@@ -3811,19 +4169,29 @@ function showConfirm(row) {
   document.getElementById('cf-file').textContent = row.file_name;
   document.getElementById('cf-pages').textContent =
     `${row.pages} page${row.pages === 1 ? '' : 's'} · ready to extract`;
-  // The staging warnings (multi-page, oversized, duplicate). Pressing Start
-  // with them on screen is the explicit permission decision 26 asks for.
+  // The staging warnings (multi-page, oversized, duplicate). A file they
+  // excluded by default is started with "Include and start", which says
+  // what the press does: it is the explicit permission decision 26 asks for.
   const warn = document.getElementById('cf-warn');
   const badges = badgesFor(row);
   warn.textContent = badges.map((b) => b.text).join(' · ');
   warn.hidden = badges.length === 0;
+  setStartLabel(row.included ? 'Start extraction' : 'Include and start');
   document.getElementById('plan-confirm').hidden = false;
+}
+
+// The button's last text node is its label (index.html: icon, then text).
+function setStartLabel(text) {
+  const btn = document.getElementById('cf-start');
+  const node = [...btn.childNodes].reverse().find((n) => n.nodeType === Node.TEXT_NODE && n.textContent.trim());
+  if (node) node.textContent = ` ${text} `;
 }
 ```
 6. Replace `cancelConfirm` with:
 ```js
 function cancelConfirm() {
   // The whole batch of one goes: its staged file and the draft itself.
+  // (Interim only -- B3's staging view removes single rows of a larger draft.)
   if (waitingOn) discardBatch(waitingOn.batchId);
   waitingOn = null;
   backToEmptyOrCurrent();
@@ -3837,13 +4205,22 @@ async function startExtraction() {
   document.getElementById('plan-confirm').hidden = true;
   showExtracting(w.fileName);
   try {
-    // Excluded by default (out of scope or a duplicate): Start, pressed on
-    // a confirm screen that said why, is the user including it.
+    // Excluded by default (out of scope or a duplicate): the press of
+    // "Include and start" is the user including it.
     if (w.row && !w.row.included) w.row = await setIncluded(w.id, true);
     await startBatch(w.batchId);
     if (waitingOn !== w || stopping) return;   // Stop pressed meanwhile: Stop owns it now
     pollUntilReady();
   } catch (err) {
+    if (waitingOn !== w || stopping) return;
+    // The reply may have been lost after the server started the import.
+    // Ask before offering Start again: a drawing that is no longer staged
+    // is on its way, so wait for it like any other.
+    try {
+      const doc = await getDocument(w.id);
+      if (waitingOn !== w || stopping) return;
+      if (doc.state !== 'staged') { pollUntilReady(); return; }
+    } catch { /* unknown: offer Start again; a second Start is refused harmlessly */ }
     if (waitingOn !== w || stopping) return;
     hideExtracting();
     // Still staged on the server: offer it again rather than strand it.
@@ -3853,69 +4230,202 @@ async function startExtraction() {
 }
 ```
 
-- [ ] **Step 4: Run to verify pass**
+- [ ] **Step 2: Check and run**
 
-Run: `python -m pytest tests/test_api.py tests/test_api_review.py tests/test_api_import.py -q`
-Expected: all pass.
 Run: `node --check app/static/js/main.js`
 Expected: no output.
+Run: `python -m pytest -q` → **1643 passed, 2 skipped** (unchanged: nothing server-side moved).
 
-- [ ] **Step 5: Full suite, then commit**
-
-Run: `python -m pytest -q` → **1631 passed, 2 skipped** (−3 removed upload tests, −1 parametrize case, −1 draft-enqueue API test, +2 route-gone cases).
+- [ ] **Step 3: Commit**
 ```bash
-git add app/main.py app/static/js/main.js app/static/js/api.js app/static/index.html app/static/styles/components.css tests/test_api.py tests/test_api_review.py tests/test_api_import.py
+git add app/static/js/main.js app/static/js/api.js app/static/index.html app/static/styles/components.css
 ```
 ```bash
-git commit -m "ui: import a single drawing as a batch of one through the chunked protocol" -m "The interim screen uploads through upload.js into a draft, shows the staging warnings on the confirm screen, and Start includes the drawing and starts its import; Cancel discards the draft. The single-shot upload and the per-drawing enqueue routes are removed: kept, they would be a second door into the queue that skips the Include rules. The API test helpers now import through the same protocol." -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+git commit -m "ui: import a single drawing as a batch of one through the chunked protocol" -m "The interim screen uploads through upload.js into a draft remembered per file, so selecting the same file again after a failure, a reload or a closed tab resumes it; only a fatal failure discards the draft. The confirm screen shows the staging warnings and says Include and start when the file was excluded by default. A Start whose reply was lost is recognised by asking for the drawing's state. Cancel discards the draft." -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 12: Docs and a real-browser check
+### Task 12: The single-shot routes go; API tests import through the protocol
+
+**Data-integrity: yes** (removes two endpoints and moves every API test helper onto the protocol).
+
+Why remove rather than keep `/api/upload` and `/enqueue`: kept, they are a second door into the queue that skips Start's Include rules, and B1's upload creates non-draft batches with no staging semantics. Since Task 11 nothing in the UI calls them.
+
+**Files:**
+- Modify: `app/main.py`, `tests/test_api.py`, `tests/test_api_review.py`, `tests/test_api_import.py`
+
+- [ ] **Step 1: Write the failing test** — add to `tests/test_api.py`:
+```python
+def test_the_single_shot_upload_and_per_drawing_enqueue_are_gone():
+    """Since B2 a drawing arrives through /api/uploads into a draft and is
+    queued only by starting the draft, where the Include rules live. Asked
+    of the route table: a request to an unknown id at /enqueue would 404
+    whether the route existed or not."""
+    routes = {(m, r.path) for r in app.routes for m in (getattr(r, "methods", None) or ())}
+    assert ("POST", "/api/upload") not in routes
+    assert ("POST", "/api/documents/{doc_id}/enqueue") not in routes
+    assert ("POST", "/api/batches/{batch_id}/start") in routes
+```
+
+- [ ] **Step 2: Run to verify failure**
+
+Run: `python -m pytest tests/test_api.py -q -k single_shot`
+Expected: FAIL — `assert ('POST', '/api/upload') not in {...}`.
+
+- [ ] **Step 3: Move the tests onto the protocol**
+
+`tests/test_api.py`:
+1. Add `import hashlib` and `from pathlib import Path` to the imports.
+2. Replace `save_pdf` and `upload_pdf` with:
+```python
+def save_pdf(test_client, path, filename="sample.pdf"):
+    """Import a PDF the way the UI does -- a draft batch of one, the chunked
+    upload protocol, completion -- and return its metadata. Nothing is
+    queued."""
+    data = Path(path).read_bytes()
+    batch = test_client.post("/api/batches", json={"name": filename}).json()
+    r = test_client.post("/api/uploads", json={
+        "batch_id": batch["id"], "name": filename, "size": len(data),
+        "fingerprint": hashlib.sha256(data).hexdigest()})
+    assert r.status_code == 200, r.text
+    uid = r.json()["upload_id"]
+    if data:
+        assert test_client.put(f"/api/uploads/{uid}?offset=0", content=data).status_code == 200
+    r = test_client.post(f"/api/uploads/{uid}/complete")
+    assert r.status_code == 200, r.text
+    (row,) = r.json()["documents"]
+    return {"session_id": row["id"], "fileName": row["file_name"],
+            "pages": row["pages"], "batch_id": batch["id"]}
+
+
+def start_pdf(test_client, sid):
+    """What the interim UI's "Include and start" does for its batch of one:
+    include the drawing, then start the import."""
+    batch_id = test_client.get(f"/api/documents/{sid}").json()["batch_id"]
+    r = test_client.post(f"/api/documents/{sid}/include", json={"included": True})
+    assert r.status_code == 200, r.text
+    r = test_client.post(f"/api/batches/{batch_id}/start")
+    assert r.status_code == 200, r.text
+
+
+def upload_pdf(test_client, path, filename="sample.pdf"):
+    """Import, queue and extract a PDF through the background worker -- run
+    inline, so the test is deterministic -- then open it for review. Returns
+    the /open payload (session_id, image_url, rows, notes, marks,
+    title_block, writer, events, last_seq)."""
+    import app.main as main
+    meta = save_pdf(test_client, path, filename)
+    sid = meta["session_id"]
+    start_pdf(test_client, sid)
+    assert main.runtime().worker.run_once() == sid
+    doc = test_client.get(f"/api/documents/{sid}").json()
+    assert doc["state"] == "ready", doc
+    r = test_client.post(f"/api/documents/{sid}/open")
+    assert r.status_code == 200, r.text
+    return r.json()
+```
+3. Replace `test_queued_drawings_report_their_queue_position` with:
+```python
+def test_queued_drawings_report_their_queue_position(sample_pdf, stub_backend):
+    a = save_pdf(client, sample_pdf)["session_id"]
+    b = save_pdf(client, sample_pdf)["session_id"]     # a duplicate: start_pdf includes it
+    start_pdf(client, a)
+    start_pdf(client, b)
+    view = client.get(f"/api/documents/{b}").json()
+    assert (view["state"], view["queue_position"]) == ("queued", 2)
+    assert client.get(f"/api/documents/{a}").json()["queue_position"] == 1
+```
+4. Every remaining line `client.post(f"/api/documents/{sid}/enqueue")` (in `test_extraction_without_detection_backend_fails_the_document`, `test_cancel_and_retry_a_queued_drawing`, `test_delete_refuses_the_drawing_the_worker_is_still_running`, `test_retry_refuses_the_drawing_the_worker_is_still_running`, `test_a_running_drawing_reports_its_progress`) becomes `start_pdf(client, sid)`. Then search the file for `/enqueue` with the Grep tool: the only hits must be inside `test_the_single_shot_upload_and_per_drawing_enqueue_are_gone`.
+5. In the parametrize of `test_document_routes_reject_a_malformed_id`, delete `("post", "enqueue"), `.
+6. Delete `test_an_upload_that_cannot_be_stored_is_not_called_a_bad_pdf` (parametrized: 2 cases), `test_an_unparseable_upload_is_a_400_and_leaves_nothing` and `test_upload_runs_off_the_event_loop`. Their behaviour now lives in the protocol and is tested there: a write fault is 507/500 with a fixed sentence (`tests/batch/test_uploads.py::test_a_write_fault_is_reported_by_kind_and_moves_nothing`), an unparseable PDF is staged as unreadable instead of a 400 (decision 4; `test_an_unreadable_file_is_staged_but_never_included`), and the blocking handlers are sync (`tests/test_api_import.py::test_blocking_handlers_run_off_the_event_loop`).
+
+`tests/test_api_review.py`: change the import to `from tests.test_api import save_pdf, start_pdf, upload_pdf`, and its line `client.post(f"/api/documents/{sid}/enqueue")` to `start_pdf(client, sid)`.
+
+`tests/test_api_import.py`: delete `test_a_drawing_in_a_draft_cannot_be_queued_one_by_one` (the route is gone; the guard itself stays covered by `tests/batch/test_repo_staging.py::test_a_drawing_in_a_draft_is_never_queued_one_by_one`).
+
+Run: `python -m pytest tests/test_api.py tests/test_api_review.py -q`
+Expected: only `test_the_single_shot_upload_and_per_drawing_enqueue_are_gone` fails — the helpers already run on routes that exist.
+
+- [ ] **Step 4: Implement** — `app/main.py`:
+1. Delete the `upload` endpoint (`@app.post("/api/upload")` and its function) and the `enqueue_document` endpoint (`@app.post("/api/documents/{doc_id}/enqueue")` and its function).
+2. Imports: change the FastAPI line to `from fastapi import FastAPI, HTTPException, Request`. Remove `import errno` and `import hashlib` if the Grep tool finds no other use of `errno.` / `hashlib.` in the file (only the deleted upload used them).
+
+- [ ] **Step 5: Run to verify pass**
+
+Run: `python -m pytest tests/test_api.py tests/test_api_review.py tests/test_api_import.py -q`
+Expected: all pass.
+
+- [ ] **Step 6: Full suite, then commit**
+
+Run: `python -m pytest -q` → **1638 passed, 2 skipped** (−6 test items: the 2-case store-fault test, the unparseable test, the event-loop test, the `enqueue` parametrize case and the draft-enqueue API test; +1 route-table test).
+```bash
+git add app/main.py tests/test_api.py tests/test_api_review.py tests/test_api_import.py
+```
+```bash
+git commit -m "api: remove the single-shot upload and the per-drawing enqueue" -m "Kept, they would be a second door into the queue that skips Start's Include rules, and the single-shot upload made non-draft batches with no staging semantics. The API test helpers now import through the chunked protocol and start a batch of one, as the interim UI does." -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+### Task 13: Docs and a real-browser check
 
 **Data-integrity: no.**
 
 **Files:**
 - Modify: `CLAUDE.md`
 
-- [ ] **Step 1: `CLAUDE.md` §2.** In the BATCH B1 paragraph, replace "Upload stages a drawing, `/api/documents/{id}/enqueue` queues it, the browser polls," with "A drawing is imported into a draft batch and queued by starting it (B2, below); the browser polls,". After that paragraph add:
+- [ ] **Step 1: `CLAUDE.md` §2.** In the BATCH B1 paragraph the phrase spans a line break. Replace exactly these two lines:
+```
+`Runtime` that `app.main.runtime()` builds lazily. Upload stages a drawing,
+`/api/documents/{id}/enqueue` queues it, the browser polls, and
+```
+with:
+```
+`Runtime` that `app.main.runtime()` builds lazily. A drawing is imported into
+a draft batch and queued by starting it (B2, below); the browser polls, and
+```
+After that paragraph (it ends "…each with its own plan.") add:
 ```markdown
 **BATCH B2: IMPORT** (`docs/plans/2026-10-07-batch-b2-import-plan.md`).
 Files arrive through a chunked, resumable protocol — `POST /api/uploads`
 (an unfinished upload of the same file in the same draft is resumed),
-`PUT /api/uploads/{id}?offset=N` (accepted only at the server's offset,
-fsynced before the index moves; a mismatch is 409 with the true offset),
-`POST …/complete` (idempotent) — into a DRAFT batch (`/api/batches`).
-Completion hashes the whole file and stages one document per PDF; a ZIP is
-unpacked server-side (PDFs only; unsafe paths, symlinks and non-PDFs listed
-as ignored, never written by name). Staging rows carry `pages`, `oversized`
-(`render.effective_dpi` at `pdf_facts.EXTRACT_DPI`, the probe's rule),
-`unreadable` and a live `duplicate_of` (same SHA-256 in any batch). Include
-starts off for out-of-scope files and duplicates and can never be ticked for
-an unreadable PDF; including an out-of-scope file stores
+`PUT /api/uploads/{id}?offset=N` (≤ 64 MiB per request; accepted only at the
+server's offset, fsynced before the index moves; a mismatch is 409 with the
+true offset), `POST …/complete` (idempotent) — into a DRAFT batch
+(`/api/batches`). Completion hashes the whole file and stages one document
+per PDF; a ZIP is unpacked server-side (PDFs only; unsafe paths, symlinks
+and non-PDFs listed as ignored, never written by name). Staging rows carry
+`pages`, `oversized` (`render.effective_dpi` at `pdf_facts.EXTRACT_DPI`,
+the probe's rule), `unreadable` and a live `duplicate_of` (same SHA-256 in
+any batch). Include starts off for out-of-scope files and duplicates and can
+never be ticked for an unreadable PDF; including an out-of-scope file stores
 `allowed_out_of_scope`. **`POST /api/batches/{id}/start` is the only way a
 staged drawing is queued** — `/api/upload` and `/enqueue` are gone.
 `SINDRI_MIN_FREE_MB` (default 2048, `0` in tests) answers 507 below the
-reserve. Startup removes only drawing dirs marked `.importing` that have no
-row, plus week-old unfinished uploads and empty drafts. The interim UI
-uploads one PDF as a batch of one through `app/static/js/upload.js`; B3 adds
+reserve. **Recovery runs inside `Worker.start()`, under the single-process
+lock**, and removes only drawing dirs marked `.importing` that have no row
+(plus week-old unfinished uploads and empty drafts). The interim UI uploads
+one PDF as a batch of one through `app/static/js/upload.js` and remembers
+the draft per file, so re-selecting an interrupted file resumes it; B3 adds
 the staging view, folders and ZIPs in the UI.
 ```
-Update the suite count in §2 (`Suite: **… passed, 2 skipped**`) and in §6 to the total Step 2 prints.
+Update the suite count in §2 (`Suite: **1483 passed, 2 skipped**`) and in §6 (`# 1483 passed, 2 skipped`) to the total Step 2 prints.
 
 - [ ] **Step 2: Full verification**
 
-Run: `python -m pytest -q` → note the count (expected **1631 passed, 2 skipped**).
+Run: `python -m pytest -q` → note the count (expected **1638 passed, 2 skipped**).
 Run: `bash ~/.claude/hooks/test-sindri-guard.sh` → `32 passed, 0 failed`.
 
 - [ ] **Step 3: Real-browser drive** (throwaway, in the scratchpad — never committed). Start the app on the stub backend with temp dirs (the B1 launcher from `docs/plans/2026-10-07-batch-b1-core-plan.md` Task 11 Step 4, plus `os.environ["SINDRI_MIN_FREE_MB"] = "0"`) and drive it with Playwright (node `playwright-core` + the cached chromium, as B1 did). The script refers to `tests/fixtures/` files from inside its own code, never on a command line. It must check:
 1. Upload the sample drawing → the status pill counts up "Uploading …%" → the confirm screen → Start → the drawing loads with rows. `GET /api/batches/<batch>` shows it `ready`, `draft: false`.
 2. Abort the first `PUT /api/uploads/*` once (Playwright `page.route`: `route.abort()` the first time, `route.continue()` after) while uploading the sample (≈ 210 KB, one chunk) → the client retries after its 500 ms wait and the upload completes; the staged row's `size` equals the file's size. (Multi-chunk resync after a lost reply is covered by the node tests with an injected fetch; a browser drive would need an 8 MiB+ file for the same path.)
-3. Upload the same sample again → the confirm screen shows `duplicate of "…"`; Start → it is queued (`included` true).
-4. Upload a 3-page PDF built in the script → the confirm screen shows the multi-page warning; Start → `GET /api/batches/<batch>` shows `allowed_out_of_scope: true`.
-5. Upload a file with a PDF name and garbage content → "Could not read the PDF"; its batch is gone (`GET` 404).
-6. Upload, then Cancel on the confirm screen → its batch is gone (`GET` 404) and its drawing dir no longer exists.
+3. Abort EVERY `PUT /api/uploads/*` and, after a few seconds, reload the page (the budget is ten minutes; do not wait it out) → `localStorage` holds a `sindri.import:` key for the file. Stop aborting, select the same file again → no new batch is created (`GET /api/batches` count unchanged), the upload completes into the remembered draft, and the key is gone.
+4. Upload the same sample again → the confirm screen shows `duplicate of "…"` and the button reads "Include and start"; press it → it is queued (`included` true).
+5. Upload a 3-page PDF built in the script → the confirm screen shows the multi-page warning; "Include and start" → `GET /api/batches/<batch>` shows `allowed_out_of_scope: true`.
+6. Upload a file with a PDF name and garbage content → "Could not read the PDF"; its batch is gone (`GET` 404).
+7. Upload, then Cancel on the confirm screen → its batch is gone (`GET` 404) and its drawing dir no longer exists.
+8. Serve the app on a non-localhost address over plain http (e.g. the machine's LAN IP), so `crypto.subtle` is undefined → an upload still completes (the plain-JS fingerprint).
 
 Record the results for the controller (the state file is the controller's). Fix anything that fails in a separate commit with its own regression test, then re-run.
 
@@ -3924,7 +4434,7 @@ Record the results for the controller (the state file is the controller's). Fix 
 git add CLAUDE.md
 ```
 ```bash
-git commit -m "docs: note batch B2 import in CLAUDE.md" -m "The chunked protocol, staging rules, Start as the only door into the queue, the disk reserve and startup recovery, so the next session starts from the code as it is." -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+git commit -m "docs: note batch B2 import in CLAUDE.md" -m "The chunked protocol, staging rules, Start as the only door into the queue, the disk reserve and recovery under the worker lock, so the next session starts from the code as it is." -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
 > **Milestone: ui** - state must be checkpointed here before continuing.
@@ -3933,5 +4443,8 @@ git commit -m "docs: note batch B2 import in CLAUDE.md" -m "The chunked protocol
 
 ## After B2
 
-B3 (UI) builds on this: the hash router (`#/`, `#/staging/<batch>`, `#/doc/<id>`); the **staging view** over `GET /api/batches/{id}` — rows with `badgesFor()`, the Include checkbox (`POST /api/documents/{id}/include`), per-file progress from `importFiles`' `onFile`, ignored ZIP entries, rename (`PATCH`), Discard (`DELETE`) and Start; **+ Import** accepting several files, a folder (`webkitdirectory`, `relPathOf`) or a ZIP into one draft named by `batchNameFor`; continuing a draft later from `GET /api/batches` (re-selecting the same files into it resumes their unfinished uploads); the work list, review bar, resume and two-tab read-only banner. B3's migration 3 adds the flag counts and ETA columns. Things B2 leaves on purpose: a single long `complete` request for a large ZIP (B3 shows "unpacking…"; B4 checks proxy timeouts when hosting is decided), B1's empty draft left behind when Stop wins a race against Start (removed by the week-old sweep), and the per-upload lock dict growing by one entry per upload (like the export locks). B4 (mass export, retention, access token) can call `Uploads.cleanup_stale()` from its daily sweep.
+B3 (UI) builds on this: the hash router (`#/`, `#/staging/<batch>`, `#/doc/<id>`); the **staging view** over `GET /api/batches/{id}` — rows with `badgesFor()`, the Include checkbox (`POST /api/documents/{id}/include`), per-file progress from `importFiles`' `onFile`, ignored ZIP entries, rename (`PATCH`), Discard (`DELETE`) and Start; **+ Import** accepting several files, a folder (`webkitdirectory`, `relPathOf`) or a ZIP into one draft named by `batchNameFor`; continuing a draft later from `GET /api/batches` (re-selecting the same files into it resumes their unfinished uploads; `recallDraft` / `rememberDraft` extend naturally from one file to a selection); the work list, review bar, resume and two-tab read-only banner. B3's migration 3 adds the flag counts and ETA columns.
 
+**The interim Cancel discards the WHOLE draft** (`DELETE /api/batches/{id}`), which is right only for a batch of one. B3's staging view must remove a single row with `DELETE /api/documents/{id}` (which keeps the draft) whenever the draft holds more than one, and keep Discard for the whole import.
+
+Things B2 leaves on purpose: a single long `complete` request for a large ZIP (B3 shows "unpacking…"; B4 checks proxy timeouts once hosting is decided, together with `MAX_CHUNK`); an empty draft left behind when Stop wins a race against Start (removed by the week-old sweep); a draft whose rows are discarded concurrently with a completion committing into it can leave that completion's dirs unmarked after a crash in that window (vanishingly narrow; the dirs are rowless and inert); and the per-upload lock dict growing by one entry per upload (like the export locks). B4 (mass export, retention, access token) can call `Uploads.cleanup_stale()` from its daily sweep — never `recover()`, which belongs to the worker's lock.
