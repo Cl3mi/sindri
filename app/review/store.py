@@ -271,6 +271,16 @@ class ReviewStore:
                 bad = mismatches(replay(proposal, net), rows, reviewed_ids)
             except JournalError as exc:
                 raise JournalInvalid(str(exc)) from exc
+            except (KeyError, TypeError) as exc:
+                # Every EVENT on the journal is validated on the way in and
+                # out (append-time validate_event, read-time _events). But
+                # proposal.json is not re-validated on every seal, so a
+                # corrupted or wrong-shape record there (or a shape replay()
+                # assumes that an older/newer version of this code wrote
+                # differently) must still come back as a clean 422 -- a
+                # KeyError/TypeError escaping here is a 500 for the rest of
+                # the session, every seal attempt, forever.
+                raise JournalInvalid(f"corrupt review record: {exc}") from exc
             rev = self._revisions(d) + 1
             (d / "sealed").mkdir(exist_ok=True)
             _write_json(d / "sealed" / f"r{rev}.json", {

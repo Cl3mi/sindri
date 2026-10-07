@@ -54,12 +54,24 @@ def _review_store_from_env():
     """The durable review store, or None when SINDRI_REVIEW_DIR is unset or
     unwritable. None is not an error: the app still reviews and exports, it
     just records nothing -- and a session recorded nowhere is never graded,
-    rather than graded wrong (design §6)."""
+    rather than graded wrong (design §6).
+
+    ReviewStore.__init__ only does `root.mkdir(parents=True, exist_ok=True)`,
+    which succeeds silently on a directory that already exists but is
+    read-only -- so a pre-existing unwritable mount would pass construction
+    and /api/health would then claim `review_logging: true` for a store that
+    can never actually write a session. Probe with a real file write (the
+    cheapest operation that actually exercises the permission bit) before
+    trusting the directory."""
     root = os.environ.get("SINDRI_REVIEW_DIR")
     if not root:
         return None
     try:
-        return ReviewStore(Path(root))
+        store = ReviewStore(Path(root))
+        probe = store.root / f".write-probe-{os.getpid()}"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink()
+        return store
     except OSError:
         return None
 

@@ -1,5 +1,6 @@
 """Review capture through the API (design §2, §6)."""
 import json
+import os
 
 import pytest
 from fastapi.testclient import TestClient
@@ -141,3 +142,21 @@ def test_seal_without_a_store_reports_logging_off(sample_pdf, stub_backend, monk
         "writer": "", "final_seq": 0, "rows": result["rows"], "reviewed_ids": []})
     assert r.status_code == 200
     assert r.json() == {"revision": None, "review_logging": False}
+
+
+def test_review_store_from_env_refuses_an_unwritable_dir(tmp_path, monkeypatch):
+    """/api/health's `review_logging` flag must never claim logging is on for
+    a directory the process cannot actually write to -- a read-only mount or
+    a permissions slip would otherwise silently drop every review record
+    while the UI's log-pill stays hidden, saying nothing is wrong."""
+    if os.geteuid() == 0:
+        pytest.skip("root bypasses permission bits; cannot exercise this as root")
+    from app.main import _review_store_from_env
+    d = tmp_path / "reviews"
+    d.mkdir()
+    os.chmod(d, 0o500)   # read + execute, no write
+    try:
+        monkeypatch.setenv("SINDRI_REVIEW_DIR", str(d))
+        assert _review_store_from_env() is None
+    finally:
+        os.chmod(d, 0o700)   # tmp_path cleanup needs write access back

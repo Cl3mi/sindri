@@ -5,9 +5,13 @@ to an op there must change its branch here, or seal starts reporting replay
 mismatches on healthy sessions."""
 from typing import Dict, Iterable, List
 
-from app.review.journal import JournalError
+# VALUE_FIELDS lives in journal.py: validate_event is the append-time gate
+# that must refuse a field edit_cell was never meant to touch, so the list
+# has to exist there first; re-exported here so existing callers of
+# replay.VALUE_FIELDS keep working unchanged.
+from app.review.journal import JournalError, VALUE_FIELDS
 
-VALUE_FIELDS = ("char_type", "nominal", "upper_tol", "lower_tol")
+__all__ = ["replay", "mismatches", "VALUE_FIELDS"]
 
 
 def replay(proposal_rows: Iterable[dict], events: Iterable[dict]) -> Dict[str, dict]:

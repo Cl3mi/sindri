@@ -12,9 +12,26 @@ EVENT_TYPES = frozenset({
     "accept", "unaccept", "confirm_suggestions", "retract",
 })
 
+# The cells an edit_cell may touch. Defined here (not in replay.py) because
+# validate_event is the gate that must refuse a forbidden field BEFORE it
+# reaches disk -- replay.py imports this name so the two stay one list.
+# A field like "reviewed"/"suggested"/"id" must never appear here: a cell
+# edit is a VALUE change, and letting it also rewrite review state would let
+# a replayed edit silently flip what the reviewer did or did not confirm.
+VALUE_FIELDS = ("char_type", "nominal", "upper_tol", "lower_tol")
+
 
 class JournalError(ValueError):
     """A journal that cannot be trusted for grading."""
+
+
+def _is_str(v) -> bool:
+    return isinstance(v, str)
+
+
+def _is_number(v) -> bool:
+    # bool is an int subclass; a coordinate must never silently accept one.
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
 def validate_event(e) -> None:
@@ -28,14 +45,41 @@ def validate_event(e) -> None:
     if type_ not in EVENT_TYPES:
         raise JournalError(f"unknown event type {type_!r}")
     # validate_event is the gate the store runs on every incoming batch, so a
-    # structurally broken retract must be refused at append time -- where it
+    # structurally broken event must be refused at append time -- where it
     # can be traced to one request -- not discovered at seal time against the
-    # whole journal.
+    # whole journal (a KeyError/TypeError out of replay(), or worse, a silent
+    # rewrite of review state through a field edit_cell was never meant to
+    # touch).
     if type_ == "retract":
         target = e.get("target")
         if (not isinstance(target, int) or isinstance(target, bool)
                 or not (1 <= target < seq)):
             raise JournalError("retract needs a target seq below its own")
+    elif type_ == "edit_cell":
+        if not _is_str(e.get("id")):
+            raise JournalError("edit_cell needs a string id")
+        if e.get("field") not in VALUE_FIELDS:
+            raise JournalError(f"edit_cell cannot touch field {e.get('field')!r}")
+        if not _is_str(e.get("old")) or not _is_str(e.get("new")):
+            raise JournalError("edit_cell needs string old/new")
+    elif type_ == "move_row":
+        if not _is_str(e.get("id")):
+            raise JournalError("move_row needs a string id")
+        xy = e.get("xy")
+        if (not isinstance(xy, list) or len(xy) != 2
+                or not all(_is_number(v) for v in xy)):
+            raise JournalError("move_row needs xy as a 2-element number list")
+    elif type_ == "delete_row":
+        if not _is_str(e.get("id")):
+            raise JournalError("delete_row needs a string id")
+    elif type_ == "add_row":
+        row = e.get("row")
+        if not isinstance(row, dict) or not _is_str(row.get("id")):
+            raise JournalError("add_row needs a row object with a string id")
+    elif type_ in ("accept", "unaccept", "confirm_suggestions"):
+        ids = e.get("ids")
+        if not isinstance(ids, list) or not all(_is_str(i) for i in ids):
+            raise JournalError(f"{type_} needs ids as a list of strings")
 
 
 def contiguous_seq(seqs: Set[int], start: int = 0) -> int:

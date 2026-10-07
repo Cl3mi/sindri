@@ -45,6 +45,46 @@ def test_validate_event_accepts_a_wellformed_retract():
     validate_event(ev(2, "retract", target=1))
 
 
+@pytest.mark.parametrize("bad", [
+    {"seq": 1, "type": "edit_cell", "id": "r1", "new": "2"},                  # missing field
+    {"seq": 1, "type": "edit_cell", "field": "nominal", "old": "1", "new": "2"},  # missing id
+    {"seq": 1, "type": "edit_cell", "id": 5, "field": "nominal", "old": "1", "new": "2"},  # id not str
+    # a cell edit must never rewrite review state through a forbidden field
+    {"seq": 1, "type": "edit_cell", "id": "r1", "field": "reviewed", "old": "", "new": "yes"},
+    {"seq": 1, "type": "edit_cell", "id": "r1", "field": "suggested", "old": "", "new": "yes"},
+    {"seq": 1, "type": "edit_cell", "id": "r1", "field": "id", "old": "r1", "new": "r2"},
+    {"seq": 1, "type": "edit_cell", "id": "r1", "field": "nominal", "old": 1, "new": "2"},  # old not str
+    {"seq": 1, "type": "edit_cell", "id": "r1", "field": "nominal", "old": "1", "new": None},  # new not str
+    {"seq": 1, "type": "accept", "ids": 5},                        # ids not a list
+    {"seq": 1, "type": "unaccept", "ids": ["a", 5]},                # element not str
+    {"seq": 1, "type": "confirm_suggestions", "ids": "a"},          # ids not a list
+    {"seq": 1, "type": "add_row"},                                  # no row
+    {"seq": 1, "type": "add_row", "row": "not a dict"},             # row not a dict
+    {"seq": 1, "type": "add_row", "row": {}},                       # row missing id
+    {"seq": 1, "type": "add_row", "row": {"id": 5}},                # row id not str
+    {"seq": 1, "type": "move_row", "xy": [1, 2]},                   # missing id
+    {"seq": 1, "type": "move_row", "id": "r1", "xy": None},         # xy missing/None
+    {"seq": 1, "type": "move_row", "id": "r1", "xy": [1, 2, 3]},    # xy wrong length
+    {"seq": 1, "type": "move_row", "id": "r1", "xy": [1, "2"]},     # xy element not a number
+    {"seq": 1, "type": "move_row", "id": "r1", "xy": [1, True]},    # bool is not a number
+    {"seq": 1, "type": "delete_row"},                               # no id
+    {"seq": 1, "type": "delete_row", "id": 5},                      # id not str
+])
+def test_validate_event_rejects_malformed_fields_per_type(bad):
+    with pytest.raises(JournalError):
+        validate_event(bad)
+
+
+def test_validate_event_accepts_wellformed_events_of_every_type():
+    validate_event(ev(1, "edit_cell", id="r1", field="nominal", old="1", new="2"))
+    validate_event(ev(1, "move_row", id="r1", xy=[1, 2.5]))
+    validate_event(ev(1, "delete_row", id="r1"))
+    validate_event(ev(1, "add_row", row={"id": "r1"}))
+    validate_event(ev(1, "accept", ids=["a", "b"]))
+    validate_event(ev(1, "unaccept", ids=[]))
+    validate_event(ev(1, "confirm_suggestions", ids=["a"]))
+
+
 def test_contiguous_seq_stops_at_the_first_gap():
     assert contiguous_seq({1, 2, 3, 5}) == 3
     assert contiguous_seq(set()) == 0

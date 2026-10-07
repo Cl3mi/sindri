@@ -198,7 +198,7 @@ def test_append_survives_a_line_separator_character_in_a_value(store, writer):
     # valid JSON line holding one must not be sliced into fragments that
     # then fail to parse as a corrupt middle or last line.
     store.append(SID, writer, [
-        ev(1, "edit_cell", id="a", field="nominal", new="1\u20280"),
+        ev(1, "edit_cell", id="a", field="nominal", old="x", new="1\u20280"),
         ev(2, "accept", ids=["a"]),
     ])
     assert store.append(SID, writer, [ev(3, "accept", ids=["b"])]) == 3
@@ -210,7 +210,7 @@ def test_a_trailing_special_whitespace_char_does_not_look_torn(store, writer):
     # Same bug from the other end: a torn-tail check built on splitlines()
     # can see a value ending in one of these characters as a fragment and
     # silently delete an already-acknowledged event.
-    store.append(SID, writer, [ev(1, "edit_cell", id="a", field="nominal", new="x\x85y")])
+    store.append(SID, writer, [ev(1, "edit_cell", id="a", field="nominal", old="x", new="x\x85y")])
     assert store.append(SID, writer, [ev(2, "accept", ids=["a"])]) == 2
     lines = [l for l in
              (store.root / SID / "events.jsonl").read_text(encoding="utf-8").split("\n")
@@ -290,11 +290,23 @@ def test_events_reads_a_raw_line_separator_char_written_with_ensure_ascii_false(
     # as one whole event -- _events splits only on "\n".
     d = store.root / SID
     line = json.dumps(
-        ev(1, "edit_cell", id="a", field="nominal", new="1 0"), ensure_ascii=False)
+        ev(1, "edit_cell", id="a", field="nominal", old="x", new="1 0"), ensure_ascii=False)
     (d / "events.jsonl").write_text(line + "\n", encoding="utf-8")
     events = store._events(d)
     assert len(events) == 1
     assert events[0]["new"] == "1 0"
+
+
+def test_seal_refuses_a_corrupted_proposal_cleanly(store, writer):
+    # A pre-existing bad record on disk (corruption, or a proposal.json
+    # written by a different format/version) must come back as a clean 422,
+    # never an unhandled KeyError -- seal() is reachable from the API and an
+    # unhandled exception there is a 500 for the rest of the session.
+    d = store.root / SID
+    (d / "proposal.json").write_text(json.dumps({"rows": [{"not_id": "a"}]}), encoding="utf-8")
+    store.append(SID, writer, [ev(1, "accept", ids=["a"])])
+    with pytest.raises(JournalInvalid):
+        store.seal(SID, writer, 1, [row("a")], ["a"])
 
 
 def test_create_is_not_blocked_by_an_empty_sealed_directory(store, writer):
