@@ -7,7 +7,8 @@
 // Pure apart from the injected `send`, so node can test it.
 
 export function createJournal({ send, now = () => Date.now(),
-                                wallNow = () => new Date().toISOString() }) {
+                                wallNow = () => new Date().toISOString(),
+                                onLoggingOff = () => {} }) {
   let sessionId = null;
   let writer = null;
   let seq = 0;
@@ -88,8 +89,21 @@ export function createJournal({ send, now = () => Date.now(),
     const g = gen;
     inflightTop = batch[batch.length - 1].seq;
     inflight = callSend(sid, w, batch)
-      .then(({ contiguous }) => {
+      .then(({ contiguous, review_logging }) => {
         if (g !== gen) return acked;   // start() already replaced this session; ignore the stale reply
+        if (review_logging === false) {
+          // The server's own answer when its store is gone mid-session (a
+          // restart without SINDRI_REVIEW_DIR, or a dir that went
+          // unwritable): {contiguous: null, review_logging: false}. That is
+          // not malformed, it is the server telling us to stop -- switch
+          // logging off for the rest of this session instead of rejecting,
+          // or every later flush (and so Finish) would keep failing for a
+          // session that was never going to be recorded again anyway.
+          writer = null;
+          pending = [];
+          onLoggingOff();
+          return acked;
+        }
         if (!Number.isInteger(contiguous)) {
           throw new Error('bad ack from server');   // never let a NaN/undefined ack poison acked
         }

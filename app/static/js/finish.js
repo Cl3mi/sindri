@@ -29,18 +29,28 @@ export function createFinisher({ journal, seal, exportAll, canFinish }) {
         // refuses that seal rather than recording a replay mismatch.
         const seq = journal.lastSeq;
         const acked = await journal.flush();
-        if (acked < seq) throw new Error('The review log is still saving — try again in a moment.');
-        if (sealed && sealed.seq === seq) {
-          revision = sealed.revision;
-        } else {
-          const res = await seal(sessionId, {
-            writer: journal.writer,
-            final_seq: seq,
-            rows,
-            reviewed_ids: reviewedIds,
-          });
-          revision = res.revision;
-          sealed = { sessionId, seq, revision };
+        // flush() itself can be what turns logging off: the server answers
+        // {contiguous: null, review_logging: false} mid-flush (its store
+        // disappeared since this session started), and journal.js reacts by
+        // clearing its own writer. Re-check AFTER the await, not only the
+        // `journal.active` this branch was entered on -- that read is now
+        // stale, and sealing with a writer the server just discarded would
+        // 409 for no reason, when exporting unrecorded is exactly what an
+        // already-off session does everywhere else.
+        if (journal.active) {
+          if (acked < seq) throw new Error('The review log is still saving — try again in a moment.');
+          if (sealed && sealed.seq === seq) {
+            revision = sealed.revision;
+          } else {
+            const res = await seal(sessionId, {
+              writer: journal.writer,
+              final_seq: seq,
+              rows,
+              reviewed_ids: reviewedIds,
+            });
+            revision = res.revision;
+            sealed = { sessionId, seq, revision };
+          }
         }
       }
       await exportAll(snapshot);

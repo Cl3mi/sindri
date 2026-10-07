@@ -221,6 +221,46 @@ test('a malformed ack (non-integer contiguous) rejects instead of corrupting pen
   assert.equal(j.acked, 0);
 });
 
+test('a null ack with review_logging:false switches logging off instead of throwing', async () => {
+  // The server's answer when its own store disappeared mid-session (restart
+  // without SINDRI_REVIEW_DIR, or a dir that went unwritable): {contiguous:
+  // null, review_logging: false}. Before this, that null failed the same
+  // Number.isInteger check as a truly malformed ack and rejected forever,
+  // so every later flush (and therefore Finish) kept failing for a session
+  // the server was never going to log again.
+  let offCalls = 0;
+  const j = createJournal({
+    send: async () => ({ contiguous: null, review_logging: false }),
+    now: () => 0,
+    onLoggingOff: () => { offCalls++; },
+  });
+  j.start('s', 'w');
+  j.record({ kind: 'do', op: fakeOp({ type: 'accept', ids: ['a'] }) });
+  assert.equal(await j.flush(), 0);
+  assert.equal(j.active, false);
+  assert.equal(j.pending.length, 0);
+  assert.equal(offCalls, 1);
+  // Later record() calls are then a no-op, same as logging never having started.
+  j.record({ kind: 'do', op: fakeOp({ type: 'accept', ids: ['b'] }) });
+  assert.equal(j.pending.length, 0);
+});
+
+test('onLoggingOff defaults to a no-op when the caller does not pass one', async () => {
+  const j = createJournal({ send: async () => ({ contiguous: null, review_logging: false }), now: () => 0 });
+  j.start('s', 'w');
+  j.record({ kind: 'do', op: fakeOp({ type: 'accept', ids: ['a'] }) });
+  await assert.doesNotReject(j.flush());
+  assert.equal(j.active, false);
+});
+
+test('a plain malformed ack (no review_logging:false) still rejects', async () => {
+  const j = createJournal({ send: async () => ({ contiguous: null }), now: () => 0 });
+  j.start('s', 'w');
+  j.record({ kind: 'do', op: fakeOp({ type: 'accept', ids: ['a'] }) });
+  await assert.rejects(j.flush(), /bad ack/);
+  assert.equal(j.active, true);
+});
+
 test('a synchronous throw from send is wrapped into a rejection, not thrown from flush()', async () => {
   const j = createJournal({ send: () => { throw new Error('sync'); }, now: () => 0 });
   j.start('s', 'w');

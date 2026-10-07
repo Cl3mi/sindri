@@ -22,6 +22,16 @@ let extractAbort = null;    // AbortController while extraction is streaming
 // server (docs/plans/2026-10-07-hitl-review-grading-design.md §2).
 const journal = createJournal({
   send: (sid, writer, events) => postEvents(sid, writer, events),
+  // The server's own signal that it can no longer record this session
+  // (its store disappeared mid-session: a restart without
+  // SINDRI_REVIEW_DIR, or a dir that went unwritable). Surface it the same
+  // way a session that started with no store does, and stop the backoff
+  // loop -- retrying a flush the server has already said it will never ack
+  // again would just back off to 10s forever for nothing.
+  onLoggingOff: () => {
+    document.getElementById('log-pill').hidden = false;
+    clearTimeout(flushTimer);
+  },
 });
 let flushTimer = null;
 let flushBackoff = 500;
@@ -62,6 +72,14 @@ function init() {
 function wireHeader() {
   document.getElementById('file-close').addEventListener('click', () => {
     if (!confirm('Close the current drawing? Unsaved edits will be lost.')) return;
+    // clearSession() below wipes sessionId/writer out of the journal's
+    // reach (start() on the NEXT drawing resets it anyway) -- so any event
+    // still only in `pending` must go out now or it is gone for good. The
+    // events are idempotent server-side (append is by seq), so a close that
+    // races an in-flight flush double-sends at worst, never drops.
+    if (journal.active && journal.pending.length) {
+      beaconEvents(journal.sessionId, journal.writer, journal.pending);
+    }
     clearSession();
   });
   on('session', () => {
