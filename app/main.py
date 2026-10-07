@@ -126,8 +126,11 @@ async def _domain_error(request, exc):
                         status_code=exc.status)
 
 
-# Routes whose request bodies carry client file and folder names.
+# Routes whose request bodies carry client file and folder names -- and the
+# Include toggle, part of the same staging surface, so the import UI meets
+# one 422 shape.
 _IMPORT_PATHS = ("/api/uploads", "/api/batches")
+_INCLUDE_PATH = re.compile(r"\A/api/documents/[^/]+/include\Z")
 
 
 @app.exception_handler(RequestValidationError)
@@ -135,7 +138,8 @@ async def _validation_error(request, exc):
     """FastAPI's default 422 body echoes the offending input; on the import
     routes that is a client file or folder name (CLAUDE.md §1). A fixed
     sentence there; the default everywhere else."""
-    if request.url.path.startswith(_IMPORT_PATHS):
+    path = request.url.path
+    if path.startswith(_IMPORT_PATHS) or _INCLUDE_PATH.fullmatch(path):
         return JSONResponse({"detail": "request rejected: malformed fields"}, status_code=422)
     return await request_validation_exception_handler(request, exc)
 
@@ -387,7 +391,12 @@ def start_batch(batch_id: str):
     again -- never a silent retry."""
     rt = runtime()
     out = rt.uploads.start_batch(_batch_id(batch_id))
-    rt.worker.wake()
+    try:
+        rt.worker.wake()
+    except Exception as e:
+        # Start has COMMITTED: a 500 now would say it failed and invite a
+        # retry that is refused. The worker's own poll finds the queue.
+        log.warning("batch %s: worker not woken: %s", batch_id[:8], type(e).__name__)
     log.info("batch %s started: %d queued, %d dropped",
              batch_id[:8], len(out["queued"]), len(out["dropped"]))
     return {"queued": len(out["queued"]), "dropped": len(out["dropped"]),

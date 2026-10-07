@@ -594,9 +594,17 @@ class Uploads:
         try:
             for doc_id in doc_ids:
                 d = self.data.doc_dir(doc_id)
-                if d.is_dir():
+                if not d.is_dir():
+                    continue
+                try:
                     (d / IMPORTING_MARKER).write_bytes(b"")
-                    marked.append(d)
+                except FileNotFoundError:
+                    # Removed since is_dir() (DELETE /api/documents takes the
+                    # row, then the dir): the import changed, the disk did
+                    # not fail. Skipped; the repo's snapshot check refuses
+                    # the step with a 409, not a 500.
+                    continue
+                marked.append(d)
         except OSError as e:
             self._unmark(marked)
             log.warning("batch %s: dirs not marked: %s", batch_id[:8], type(e).__name__)
@@ -623,8 +631,20 @@ class Uploads:
         after the commit would leak. A refusal is not retried here -- the
         user reloads and decides again. On any refusal or failure every
         marker comes off and nothing has changed. Returns (repo result,
-        dirs marked)."""
+        dirs marked).
+
+        An unknown or started batch is handed to the repo with nothing
+        marked: its refusal (or a Discard's idempotent None) is certain, and
+        a started batch's dirs are the worker's -- no marker belongs there.
+        Read under the batch's lock, so no Start can slip in between; a
+        started batch never becomes a draft again."""
         with self._batch_lock(batch_id):
+            try:
+                draft = self.repo.get_batch(batch_id)["draft"]
+            except UnknownBatch:
+                draft = False
+            if not draft:
+                return step(batch_id, expected_ids=[]), []
             snapshot = self.repo.batch_document_ids(batch_id)
             marked = self._mark(batch_id, snapshot)
             try:
@@ -650,6 +670,13 @@ class Uploads:
         the part files of unfinished uploads. Idempotent for an unknown
         batch; a started one is refused (409) with its markers taken off."""
         out, _ = self._guarded(batch_id, self.repo.delete_batch)
+        # The batch is gone (or never was): forget its lock, or one would
+        # outlive every discarded batch for the life of the process. Safe
+        # even if another thread still holds or awaits the old lock object:
+        # any step on a vanished batch finds it unknown and marks nothing,
+        # and a completion into it finds its upload row gone.
+        with self._locks_guard:
+            self._batch_locks.pop(batch_id, None)
         if out is None:
             return
         for uid in out["uploads"]:

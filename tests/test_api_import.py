@@ -511,3 +511,84 @@ def test_a_completion_cannot_slip_between_the_snapshot_and_the_commit(monkeypatc
     # The discard ran once the completion was done, saw its row, removed it.
     assert not rt.data.doc_dir(done["documents"][0]["id"]).exists()
     assert client.get(f"/api/batches/{batch_id}").status_code == 404
+
+
+def test_a_drawing_removed_while_marking_is_a_clean_409_not_a_500(monkeypatch):
+    """DELETE /api/documents/{id} removes the row, then the dir. Landing
+    between _mark's is_dir() and its marker write, the write finds no dir:
+    that is the import changing, not the disk failing -- the dir is skipped
+    and the snapshot check refuses (409), never a StorageFault (500)."""
+    from pathlib import Path
+    rt = main.runtime()
+    batch_id = new_batch()["id"]
+    _, a = import_file(pdf_bytes(), batch_id=batch_id)
+    _, b = import_file(pdf_bytes(), name="b.pdf", batch_id=batch_id)
+    keep, victim = a["documents"][0]["id"], b["documents"][0]["id"]
+    real_doc_dir = rt.data.doc_dir
+
+    class Racy(type(Path())):
+        def is_dir(self, *args, **kw):
+            ok = super().is_dir(*args, **kw)
+            if self.name == victim:
+                client.delete(f"/api/documents/{victim}")   # the user removes it now
+            return ok
+    monkeypatch.setattr(rt.data, "doc_dir", lambda i: Racy(real_doc_dir(i)))
+    r = client.post(f"/api/batches/{batch_id}/start")
+    monkeypatch.setattr(rt.data, "doc_dir", real_doc_dir)
+    assert (r.status_code, r.json()) == (409, {"detail": "the import changed — reload it"})
+    assert not (rt.data.doc_dir(keep) / ".importing").exists()
+    assert client.get(f"/api/batches/{batch_id}").json()["batch"]["draft"] is True
+
+
+@pytest.mark.parametrize("step,detail", [
+    ("start", "this import has already started"),
+    ("discard", "only an import that has not started can be discarded")])
+def test_a_started_import_is_refused_without_marking_the_workers_dirs(monkeypatch, step, detail):
+    """A started batch's drawings are the worker's. Marking them would put
+    a crash-sweep marker on a dir mid-extraction for nothing: the refusal
+    is certain, so it comes first and no marker is ever written."""
+    rt = main.runtime()
+    batch_id, done = import_file(pdf_bytes())
+    assert client.post(f"/api/batches/{batch_id}/start").status_code == 200
+    calls = []
+    real_mark = rt.uploads._mark
+    monkeypatch.setattr(rt.uploads, "_mark", lambda *a: calls.append(a) or real_mark(*a))
+    r = _start_or_discard(step, batch_id)
+    assert (r.status_code, r.json()) == (409, {"detail": detail})
+    assert calls == []
+    assert not (rt.data.doc_dir(done["documents"][0]["id"]) / ".importing").exists()
+
+
+def test_a_malformed_include_request_gets_the_fixed_sentence():
+    _, done = import_file(pdf_bytes())
+    r = client.post(f"/api/documents/{done['documents'][0]['id']}/include",
+                    json={"included": "Kunde Meier"})
+    assert (r.status_code, r.json()) == (422, {"detail": "request rejected: malformed fields"})
+
+
+def test_discarding_forgets_the_batch_lock():
+    """One lock per batch would otherwise outlive every discarded (or
+    never-existing) batch for the life of the process."""
+    rt = main.runtime()
+    batch_id, _ = import_file(pdf_bytes())
+    assert client.delete(f"/api/batches/{batch_id}").status_code == 200
+    assert batch_id not in rt.uploads._batch_locks
+    unknown = "0" * 32
+    assert client.delete(f"/api/batches/{unknown}").status_code == 200
+    assert unknown not in rt.uploads._batch_locks
+
+
+def test_a_failing_wake_does_not_fail_a_committed_start(monkeypatch, caplog):
+    """Start has committed when the worker is woken; a 500 then would tell
+    the user it failed and invite a retry that is refused. The worker's
+    own poll picks the queue up anyway."""
+    caplog.set_level(logging.DEBUG)
+    rt = main.runtime()
+
+    def boom():
+        raise RuntimeError("Geheim")
+    monkeypatch.setattr(rt.worker, "wake", boom)
+    batch_id, _ = import_file(pdf_bytes())
+    r = client.post(f"/api/batches/{batch_id}/start")
+    assert (r.status_code, r.json()["queued"]) == (200, 1)
+    assert "Geheim" not in "\n".join(rec.getMessage() for rec in caplog.records)
