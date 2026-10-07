@@ -36,11 +36,22 @@ export function createJournal({ send, now = () => Date.now(),
     sessionId = sid; writer = w || null;
     seq = 0; acked = 0; pending = []; inflight = null; inflightTop = 0;
     seqOf = new WeakMap();
-    // Numbering restarts at 1 because a writer token is issued only for a
-    // fresh session; a future reopen path must resume from the server's
-    // contiguous seq instead of zero.
+    // A fresh session numbers from 1; a reopened one goes through resume().
     gen++;
     t0 = now();
+  }
+
+  // Continue a reopened session (batch design §3): number after the
+  // server's last seq, treat everything up to it as acknowledged, and map
+  // each restored op to its server seq so undoing it retracts the right
+  // event. `lastSeq` is /open's `last_seq`, NOT the highest net event: net
+  // events have holes where undone ops were retracted, and the store keeps
+  // the first write of a seq, so reusing one would be dropped yet acked.
+  function resume(sid, w, lastSeq, opSeqs = []) {
+    start(sid, w);
+    seq = lastSeq;
+    acked = lastSeq;
+    for (const [op, s] of opSeqs) seqOf.set(op, s);
   }
 
   function record({ kind, op }) {
@@ -117,6 +128,7 @@ export function createJournal({ send, now = () => Date.now(),
 
   return {
     start,
+    resume,
     get active() { return writer !== null; },
     get sessionId() { return sessionId; },
     get writer() { return writer; },

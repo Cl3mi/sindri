@@ -315,3 +315,71 @@ test('start() resets seq, acked and pending for the new session', async () => {
   assert.equal(j.acked, 0);
   assert.equal(j.pending.length, 0);
 });
+
+// ===== Resume (batch design §3) =======================================
+test('restoreSession replays server events silently and keeps undo working', () => {
+  load([row('a'), row('b')]);
+  const emitted = [];
+  const off = S.on('op', (e) => emitted.push(e));
+  const pairs = S.restoreSession(
+    { session_id: 's', image_url: '', rows: [row('a'), row('b')], notes: null },
+    [{ seq: 1, type: 'edit_cell', id: 'a', field: 'nominal', old: '1', new: '9' },
+     { seq: 4, type: 'accept', ids: ['a'] }]);
+  off();
+  assert.equal(emitted.length, 0);                 // already journaled: never re-sent
+  assert.deepEqual(pairs.map(([, s]) => s), [1, 4]);
+  assert.equal(S.state.rows.find((r) => r.id === 'a').nominal, '9');
+  assert.equal(S.state.rows.find((r) => r.id === 'a').reviewed, true);
+  assert.equal(S.canUndo(), true);
+  assert.equal(S.canRedo(), false);                // redo history is not restored
+  S.undo();
+  assert.equal(S.state.rows.find((r) => r.id === 'a').reviewed, false);
+  S.undo();
+  assert.equal(S.state.rows.find((r) => r.id === 'a').nominal, '1');
+});
+
+test('resume continues numbering and retracts a restored op by its server seq', () => {
+  load([row('a')]);
+  const pairs = S.restoreSession(
+    { session_id: 's', image_url: '', rows: [row('a')], notes: null },
+    [{ seq: 3, type: 'accept', ids: ['a'] }]);
+  const j = createJournal({ send: async () => ({ contiguous: 0 }), now: () => 0 });
+  j.resume('s', 'w', 5, pairs);
+  const off = S.on('op', (e) => j.record(e));
+  S.undo();
+  S.apply(S.opBulkReview(['a'], true));
+  off();
+  assert.deepEqual(j.pending.map((e) => [e.seq, e.type, e.target]),
+                   [[6, 'retract', 3], [7, 'accept', undefined]]);
+  assert.equal(j.acked, 5);
+});
+
+test('a post-seal reopen numbers past last_seq, never past the highest net event', async () => {
+  // /open returned net events [1, 4] with last_seq 6 (seqs 2, 3, 5, 6 were
+  // undone and retracted before the seal). The server keeps the FIRST write
+  // of a seq, so numbering from max(events.seq) + 1 = 5 would hand it seqs
+  // it already holds: dropped, yet acknowledged.
+  const srv = fakeServer();
+  await srv.send('s', 'w', [1, 2, 3, 4, 5, 6].map((seq) => ({ seq })));
+  load([row('a'), row('b')]);
+  const pairs = S.restoreSession(
+    { session_id: 's', image_url: '', rows: [row('a'), row('b')], notes: null },
+    [{ seq: 1, type: 'edit_cell', id: 'a', field: 'nominal', old: '1', new: '9' },
+     { seq: 4, type: 'accept', ids: ['b'] }]);
+  const j = createJournal({ send: srv.send.bind(srv), now: () => 0 });
+  j.resume('s', 'w2', 6, pairs);
+  const off = S.on('op', (e) => j.record(e));
+  S.apply(S.opEditCell('b', 'nominal', '3'));
+  S.undo();
+  S.undo();                                        // reaches back into a restored op
+  off();
+  assert.deepEqual(j.pending.map((e) => [e.seq, e.type, e.target]),
+                   [[7, 'edit_cell', undefined], [8, 'retract', 7], [9, 'retract', 4]]);
+  assert.equal(await j.flush(), 9);
+  assert.deepEqual(srv.calls.at(-1), [7, 8, 9]);
+  assert.equal(j.pending.length, 0);
+});
+
+test('a restored op that cannot be rebuilt refuses instead of guessing', () => {
+  assert.throws(() => S.opFromEvent({ seq: 2, type: 'retract', target: 1 }), /retract/);
+});

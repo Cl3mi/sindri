@@ -251,6 +251,44 @@ export function opBulkReview(ids, target /* true|false */) {
   };
 }
 
+// ===== Rebuilding a review from the server (batch design §3) ==========
+// An op from its journal event: the same constructors the reviewer's own
+// actions use, so a restored op undoes and redoes exactly like a live one.
+// A retract never reaches here -- the server sends NET events -- so any type
+// not listed is a contract break, refused rather than silently skipped (a
+// skipped op would rebuild a table the server's replay disagrees with).
+export function opFromEvent(e) {
+  switch (e.type) {
+    case 'add_row': return opAddRow(JSON.parse(JSON.stringify(e.row)));
+    case 'delete_row': return opDeleteRow(e.id);
+    case 'move_row': return opMoveRow(e.id, e.xy);
+    case 'edit_cell': return opEditCell(e.id, e.field, e.new);
+    case 'accept': return opBulkReview(e.ids, true);
+    case 'unaccept': return opBulkReview(e.ids, false);
+    case 'confirm_suggestions': return opConfirmSuggestions(e.ids);
+    default: throw new Error(`cannot restore a ${e.type} event`);
+  }
+}
+
+// Load the proposal, then replay the server's NET events. Silently: they
+// are already in the journal, so nothing goes out on the 'op' bus. Each op
+// lands on the undo stack, so undo reaches back across a reload; redo
+// history is not restored. Returns [op, seq] pairs for journal.resume(), so
+// undoing a restored op retracts the seq the server holds it under.
+export function restoreSession(payload, events) {
+  setSession(payload);
+  const pairs = [];
+  for (const e of events) {
+    const op = opFromEvent(e);
+    op.do();
+    undoStack.push(op);
+    pairs.push([op, e.seq]);
+  }
+  emit('change');
+  emit('history');
+  return pairs;
+}
+
 // ===== Filtering / counts ============================================
 export function isVisibleRow(r) {
   if (state.filter === 'suggested') { if (!r.suggested) return false; }
