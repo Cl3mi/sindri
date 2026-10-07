@@ -2,7 +2,7 @@
 
 Plan: `docs/plans/2026-10-07-batch-b2-import-plan.md` (written `fb0d5fb`,
 revised after an Opus plan review `725f957`)
-Milestone: upload-protocol (task 6 of 13) — next is milestone staging-api (Tasks 7-9)
+Milestone: staging-api (task 9 of 13) — next is milestone ui (Tasks 10-13)
 
 ## Completed task IDs
 - Task 1 — migration 2, upload paths, path safety (`0d977f2`, `6bb924f`)
@@ -11,22 +11,25 @@ Milestone: upload-protocol (task 6 of 13) — next is milestone staging-api (Tas
 - Task 4 — staging decisions: Include, Start, discard (`e5e5de7`, `3ee3070`)
 - Task 5 — file side of the upload protocol (`fee8816`, `f7bb361`)
 - Task 6 — import API over HTTP (`4c13d87`, `e2c2e8e`)
+- Task 7 — ZIP imports (`5fd6263`, `e3fadf0`, `bf6c5a6`, `7f8b8c2`)
+- Task 8 — staging API: include, start, discard (`2882dc7`, `67b987c`)
+- Task 9 — recovery and stale cleanup (`008518d`, `8225080`, `918a2d7`)
 
 ## What's done
-The server can take a draft batch, accept resumable chunked uploads (offset
-guarded in the index, part fsynced before the index moves, bytes on disk
-trusted over the index and over the client), complete them idempotently into
-staged documents (hard link + `.importing` marker), and decide Include /
-Start / Discard on a draft. Every task passed a spec + quality review on Opus
-(Task 2 on Sonnet, not data-integrity); every reviewer-reproduced bug is fixed
-with a regression test. Verified: suite **1683 passed, 2 skipped**.
-The interim UI still uploads through B1's `/api/upload` + `/enqueue`
-(removed in Task 12).
+The whole server side of B2: draft batches, resumable chunked uploads,
+idempotent completion of PDFs and ZIPs into staged documents (hard link +
+`.importing` marker), Include / Start / Discard over HTTP with marker-guarded
+snapshots, and startup recovery + stale cleanup that can only delete
+marked-and-rowless dirs. Every task passed a spec + quality review on Opus
+(Task 2 on Sonnet); every reviewer-reproduced bug is fixed with a regression
+test. Verified: suite **1798 passed, 2 skipped**. The interim UI still uploads
+through B1's `/api/upload` + `/enqueue` (moved onto the protocol in Task 11,
+removed in Task 12).
 
 ## What's next
-Task 7 (ZIP import), Task 8 (staging API: include / start / discard routes,
-`Uploads.start_batch`/`discard_batch` with `.importing` markers), Task 9
-(recovery + stale cleanup), then the staging-api checkpoint.
+Task 10 (upload.js client + badges, node tests), Task 11 (interim UI on the
+protocol), Task 12 (remove the old routes, migrate test helpers), Task 13
+(CLAUDE.md + real-browser drive), then the ui checkpoint.
 
 ## Decisions / deviations since the plan was written
 - **Plan review (before execution):** C1 recovery runs only while holding the
@@ -74,9 +77,43 @@ Task 7 (ZIP import), Task 8 (staging API: include / start / discard routes,
   go through `clean_batch_name` on create and rename. A negative
   `SINDRI_MIN_FREE_MB` fails the boot; `/api/health` reports disk numbers and
   survives a `disk_usage` fault.
-- **For Task 9:** the stray-part sweep must only unlink a part, never truncate
-  it (after a crash between commit and part unlink it shares its inode with a
-  staged drawing).
+- **ZIP (Task 7):** only ZIP_STORED / ZIP_DEFLATED entries are opened —
+  bzip2/LZMA/zstd are memory bombs zipfile decompresses without an output
+  limit (a 536-byte bzip2 entry → +1 GiB RSS) and are listed as
+  `unsupported_compression`. Entries are streamed in 1 MiB pieces, hashed and
+  disk-guarded on real bytes. A damaged entry (zlib/LZMA/zstd error, errno-less
+  OSError) is ignored as `unreadable_entry`; an OSError with an errno is a disk
+  fault and rolls the whole completion back. Entries sharing a local header
+  (Python 3.14 warns with the entry NAME on stderr) and entries whose
+  header_offset points outside the file are never opened. Ignored names pass
+  through `paths.shown_name` (NFC, U+FFFD for refused chars, 255 cap); the
+  ignored list keeps 1000 entries plus `ignored_total` / `ignored_by_reason`
+  (in `/complete` and staging views — **B3 must show them**). Backslash
+  "folders" only when size 0. Test strings spell invisible chars as `\u`
+  escapes.
+- **Start/Discard (Task 8):** `Uploads._guarded` reads the batch first (a
+  non-draft never gets markers), snapshots the ids, marks their dirs (a dir
+  deleted concurrently is skipped), calls the repo with `expected_ids`,
+  unmarks on any refusal (409, no retry) and removes dropped/discarded dirs
+  marker-last on success. A per-batch lock (held by `complete()` around its
+  commit + unmark) closes a marker race; lock order is upload → batch → repo,
+  never reversed. Include takes a `StrictBool`; `/include` gets the fixed 422.
+  A worker-wake failure after a committed Start still answers 200.
+- **Recovery (Task 9):** runs from a `startup` hook inside `Worker.start()`
+  under the flock, once per worker instance, before `requeue_interrupted`;
+  each step is guarded separately. The sweep deletes a `docs/<id>` dir only if
+  marked, rowless (any state) and its marker predates the process; a marked
+  dir with a row only loses its marker; an unmarked rowless dir is only
+  `rmdir`ed if empty and older than the process. Stray parts are only
+  unlinked, under their upload lock, never one of a receiving/completing
+  upload. Only `receiving` uploads go stale (7 days, age re-checked under the
+  lock). Empty drafts are judged on idleness via `batch.updated_at`
+  (**migration 3**; every draft write bumps it) and deleted under the batch
+  lock. `POST /api/batches` runs the stale cleanup only, never the docs sweep.
+  One clock: `Repo.now()`.
+- **Migrations are append-only even before they ship** — a review caught that
+  editing migration 2 in place would break any data dir already at version 2;
+  the batch column is migration 3.
 - **For Task 11:** the draft memory should retry `/complete` with the
   remembered upload id rather than re-create the upload.
 - **Deferred / known:** a part with `st_nlink > 1` while still receiving (two
@@ -84,4 +121,10 @@ Task 7 (ZIP import), Task 8 (staging API: include / start / discard routes,
   relies on a non-constant clock; resume key is asymmetric on
   `last_modified` (NULL then a value → a new upload); B4's export must still
   sanitise batch/folder names for Windows (names ending in ".", NTFS reserved
-  names, `/`, `\`).
+  names, `/`, `\`, NFKC look-alike separators like U+2215 or fullwidth dots)
+  and de-duplicate identical drawing names; duplicate order and the queue
+  tiebreak depend on rowid (VACUUM/rebuilds must preserve it). For B3: a
+  many-entry ZIP is one long `/complete` request (progress UI); an empty
+  archive should say so; a zip bomb answers 507 on every retry, so offer
+  delete; interim Cancel discards the whole draft — B3 must remove single
+  rows from multi-row drafts.
