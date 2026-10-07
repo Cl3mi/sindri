@@ -441,3 +441,167 @@ def test_exports_drop_unconfirmed_suggestions_server_side(
     assert any(row["suggested"] for row in up["rows"])
     assert len(seen["rows"]) == len(confirmed)
     assert all(not row.suggested for row in seen["rows"])
+
+
+# --- the queue API: failure paths, lifespan (batch design §1, §3) ---
+
+@pytest.mark.parametrize("damage", ["missing", "empty_object", "not_json"])
+def test_open_without_its_result_file_is_a_clean_409(damage, sample_pdf, stub_backend):
+    """A ready drawing whose result.json is gone or damaged must not become a
+    500 whose traceback logs the document's full path; the body says nothing
+    about the file either."""
+    import app.main as main
+    sid = upload_pdf(client, sample_pdf)["session_id"]
+    result = main.runtime().data.doc_dir(sid) / "result.json"
+    if damage == "missing":
+        result.unlink()
+    elif damage == "empty_object":
+        result.write_text("{}")
+    else:
+        result.write_text("{not json")
+    r = TestClient(main.app, raise_server_exceptions=False).post(f"/api/documents/{sid}/open")
+    assert r.status_code == 409
+    assert r.json() == {"detail": "drawing files unavailable"}
+
+
+def test_a_failed_open_does_not_rotate_the_writer(sample_pdf, stub_backend):
+    """Opening rotates the writer token, which locks out the tab that held it.
+    An open refused for missing files must not do that for nothing."""
+    import app.main as main
+    up = upload_pdf(client, sample_pdf)
+    sid, writer = up["session_id"], up["writer"]
+    (main.runtime().data.doc_dir(sid) / "result.json").unlink()
+    assert client.post(f"/api/documents/{sid}/open").status_code == 409
+    r = client.post(f"/api/session/{sid}/events", json={"writer": writer, "events": [
+        {"seq": 1, "type": "accept", "ids": []}]})
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.parametrize("err,status", [(28, 507), (5, 500)])   # ENOSPC, EIO
+def test_an_upload_that_cannot_be_stored_is_not_called_a_bad_pdf(
+        err, status, sample_pdf, monkeypatch):
+    """A full disk is the server's problem, not the user's file: only a PDF
+    that will not parse is a 400. Nothing half-written is left behind, and
+    the reply is a fixed sentence (an OSError's text names the path)."""
+    import app.main as main
+
+    def failing_open(*a, **k):
+        raise OSError(err, "no", "/some/path")
+    docs = main.runtime().data.docs
+    monkeypatch.setattr(main, "open", failing_open, raising=False)
+    with open(sample_pdf, "rb") as f:
+        r = client.post("/api/upload", files={"file": ("x.pdf", f, "application/pdf")})
+    assert r.status_code == status
+    assert "path" not in r.json()["detail"] and "PDF" not in r.json()["detail"]
+    assert list(docs.iterdir()) == []
+
+
+def test_an_unparseable_upload_is_a_400_and_leaves_nothing(tmp_path):
+    import app.main as main
+    bad = tmp_path / "bad.bin"
+    bad.write_bytes(b"not a pdf at all")
+    with open(bad, "rb") as f:
+        r = client.post("/api/upload", files={"file": ("x.pdf", f, "application/pdf")})
+    assert (r.status_code, r.json()["detail"]) == (400, "could not read the PDF")
+    assert list(main.runtime().data.docs.iterdir()) == []
+
+
+def test_upload_runs_off_the_event_loop():
+    """File, PyMuPDF and SQLite work all block; a sync handler runs in the
+    threadpool instead of stalling every other request."""
+    import inspect
+    import app.main as main
+    assert not inspect.iscoroutinefunction(main.upload)
+
+
+def test_retry_refuses_the_drawing_the_worker_is_still_running(
+        sample_pdf, stub_backend, monkeypatch):
+    """A cancelled row can still be the worker's current run (cancel is
+    cooperative). Retrying it then would requeue it while the old run is
+    still unwinding -- and that run's settle would silently undo the retry or
+    the cancel. Refused until the run has returned."""
+    import app.main as main
+    seen = {}
+
+    def extract_that_is_cancelled_midway(*a, **k):
+        sid = seen["sid"]
+        client.post(f"/api/documents/{sid}/cancel")
+        r = client.post(f"/api/documents/{sid}/retry")
+        seen["status"], seen["body"] = r.status_code, r.json()
+        raise RuntimeError("never reached a result")
+    monkeypatch.setattr(main, "extract", extract_that_is_cancelled_midway)
+    sid = seen["sid"] = save_pdf(client, sample_pdf)["session_id"]
+    client.post(f"/api/documents/{sid}/enqueue")
+    assert main.runtime().worker.run_once() == sid
+    assert seen["status"] == 409, seen["body"]
+    assert client.get(f"/api/documents/{sid}").json()["state"] == "cancelled"
+    assert client.post(f"/api/documents/{sid}/retry").json()["state"] == "queued"
+
+
+def test_a_running_drawing_reports_its_progress(sample_pdf, monkeypatch):
+    import app.main as main
+    seen = {}
+
+    def extract_reporting(pdf_path, work_dir, dpi, backend, progress):
+        progress("detect", "tile", 1, 3)
+        seen["doc"] = client.get(f"/api/documents/{seen['sid']}").json()
+        raise RuntimeError("stop here")
+    monkeypatch.setattr(main, "extract", extract_reporting)
+    sid = seen["sid"] = save_pdf(client, sample_pdf)["session_id"]
+    client.post(f"/api/documents/{sid}/enqueue")
+    main.runtime().worker.run_once()
+    assert seen["doc"]["state"] == "extracting"
+    assert seen["doc"]["progress"] == {"step": "detect", "detail": "tile",
+                                       "current": 1, "total": 3}
+    assert client.get(f"/api/documents/{sid}").json()["progress"] is None
+
+
+def test_the_lifespan_starts_and_stops_the_worker():
+    import app.main as main
+    with TestClient(main.app) as c:
+        assert c.get("/api/health").json()["worker_running"] is True
+    assert main._RUNTIME is None
+
+
+def test_after_shutdown_requests_are_refused_not_served_by_a_dead_worker():
+    """A runtime built after shutdown would accept and queue drawings that no
+    worker ever extracts. Refuse instead; the next lifespan start clears it."""
+    import app.main as main
+    with TestClient(main.app):
+        pass
+    r = TestClient(main.app, raise_server_exceptions=False).get("/api/documents/" + "0" * 32)
+    assert r.status_code == 503
+    assert main._RUNTIME is None
+    with TestClient(main.app) as c:
+        assert c.get("/api/health").json()["worker_running"] is True
+
+
+def test_an_unwritable_review_dir_fails_the_boot(tmp_path, monkeypatch):
+    import os
+    import app.main as main
+    if os.geteuid() == 0:
+        pytest.skip("root bypasses permission bits")
+    d = tmp_path / "ro-reviews"
+    d.mkdir()
+    os.chmod(d, 0o500)
+    monkeypatch.setenv("SINDRI_REVIEW_DIR", str(d))
+    try:
+        with pytest.raises(OSError):
+            with TestClient(main.app):
+                pass
+    finally:
+        os.chmod(d, 0o700)
+    assert main._RUNTIME is None
+
+
+def test_a_failed_worker_start_leaves_no_runtime_behind(monkeypatch):
+    import app.main as main
+    from app.batch.worker import Worker
+
+    def refuse(self):
+        raise RuntimeError("another process holds the worker")
+    monkeypatch.setattr(Worker, "start", refuse)
+    with pytest.raises(RuntimeError):
+        with TestClient(main.app):
+            pass
+    assert main._RUNTIME is None

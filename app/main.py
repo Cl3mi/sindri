@@ -1,7 +1,10 @@
+import errno
 import hashlib
 import json
+import logging
 import os
 import shutil
+import threading
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -28,6 +31,8 @@ from app.batch.repo import BatchError, InvalidTransition
 from app.batch.runtime import Runtime
 from PIL import Image
 
+log = logging.getLogger(__name__)
+
 # Load the OCR backend ONCE at startup (the VLM model is multi-GB — never
 # reload it per request) and reuse it for every upload.
 _BACKEND = get_backend()
@@ -49,6 +54,13 @@ def _header(pdf_path):
 
 
 _RUNTIME: Optional[Runtime] = None
+# Set when the lifespan shuts down, cleared when the next one starts. A
+# request arriving in between must not lazily build a fresh Runtime: its
+# worker would never start, so drawings queued there would never extract.
+_SHUT_DOWN = False
+# Two first requests racing on a cold start would otherwise each build a
+# Runtime -- two connections, two workers' worth of state, one leaked.
+_RUNTIME_LOCK = threading.Lock()
 
 
 def runtime() -> Runtime:
@@ -56,21 +68,36 @@ def runtime() -> Runtime:
     importing this module (every API test does) never touches a real data
     dir; tests/conftest.py points both at a per-test tmp dir."""
     global _RUNTIME
-    if _RUNTIME is None:
-        _RUNTIME = Runtime.from_env(_extract, _header)
-    return _RUNTIME
+    with _RUNTIME_LOCK:
+        if _SHUT_DOWN:
+            raise HTTPException(status_code=503, detail="the server is shutting down")
+        if _RUNTIME is None:
+            _RUNTIME = Runtime.from_env(_extract, _header)
+        return _RUNTIME
 
 
 @asynccontextmanager
 async def lifespan(app):
-    global _RUNTIME
+    global _RUNTIME, _SHUT_DOWN
+    with _RUNTIME_LOCK:
+        _SHUT_DOWN = False
     rt = runtime()   # a bad data/review dir fails the boot, not the first drawing
-    rt.start()
+    try:
+        rt.start()
+    except BaseException:
+        # Otherwise the half-booted runtime (open index, no worker) would be
+        # what every later request -- or the next boot attempt -- gets.
+        with _RUNTIME_LOCK:
+            _RUNTIME = None
+        rt.close()
+        raise
     try:
         yield
     finally:
+        with _RUNTIME_LOCK:
+            _SHUT_DOWN = True
+            _RUNTIME = None
         rt.close()
-        _RUNTIME = None
 
 
 app = FastAPI(title="Sindri", lifespan=lifespan)
@@ -136,21 +163,34 @@ def health():
 
 
 @app.post("/api/upload")
-async def upload(file: UploadFile = File(...)):
+def upload(file: UploadFile = File(...)):
     """Store a PDF as a staged drawing -- a batch of one until B2 brings real
     batches. Extraction is queued separately and runs in the background
-    worker, so no browser has to stay open (batch design §1)."""
+    worker, so no browser has to stay open (batch design §1).
+
+    A sync handler on purpose: file, PyMuPDF and SQLite work all block, and
+    FastAPI runs a plain `def` in its threadpool instead of on the event loop."""
     rt = runtime()
     doc_id = uuid.uuid4().hex
     work = rt.data.doc_dir(doc_id)
-    work.mkdir(parents=True)
     pdf_path = work / "input.pdf"
     digest = hashlib.sha256()
     try:
+        work.mkdir(parents=True)
         with open(pdf_path, "wb") as out:
-            while chunk := await file.read(1 << 20):
+            while chunk := file.file.read(1 << 20):
                 digest.update(chunk)
                 out.write(chunk)
+    except OSError as e:
+        # The server could not store it -- not the user's file at fault. A
+        # fixed sentence: an OSError's own text names the path. TYPE only in
+        # the log, like everywhere else (CLAUDE.md §1).
+        shutil.rmtree(work, ignore_errors=True)
+        log.warning("upload %s not stored: %s", doc_id[:8], type(e).__name__)
+        if e.errno == errno.ENOSPC:
+            raise HTTPException(status_code=507, detail="not enough disk space to store the drawing")
+        raise HTTPException(status_code=500, detail="could not store the drawing")
+    try:
         with fitz.open(pdf_path) as doc:
             pages = doc.page_count
     except Exception:
@@ -193,8 +233,14 @@ def cancel_document(doc_id: str):
 
 @app.post("/api/documents/{doc_id}/retry")
 def retry_document(doc_id: str):
+    """Refused while the worker is still unwinding this drawing's cancelled
+    run: requeued now, it would be claimed beside that run, and the old run's
+    settle would quietly overwrite the new state."""
     _doc_dir(doc_id)
     rt = runtime()
+    if rt.worker.current == doc_id:
+        raise InvalidTransition(
+            "the extraction is still stopping; retry once it has")
     rt.repo.retry(doc_id)
     rt.worker.wake()
     return _doc_view(doc_id)
@@ -231,13 +277,22 @@ def open_document(doc_id: str):
     if doc["state"] not in ("ready", "in_review", "finished"):
         raise HTTPException(status_code=409,
                             detail=f"drawing is {doc['state']}, not ready for review")
-    result = json.loads((work / "result.json").read_text(encoding="utf-8"))
+    # Read BEFORE store.open(): opening rotates the writer, which locks out
+    # whichever tab held it, and an open refused here must not do that.
+    try:
+        result = json.loads((work / "result.json").read_text(encoding="utf-8"))
+        extras = {"notes": result["notes"], "marks": result["marks"],
+                  "title_block": result["title_block"]}
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        # Handled, not a 500: the traceback would log the full path, and
+        # with it the whole document id. TYPE and id[:8] only.
+        log.warning("open %s: result unavailable: %s", doc_id[:8], type(e).__name__)
+        raise HTTPException(status_code=409, detail="drawing files unavailable")
     opened = rt.store.open(doc_id)
     return {"session_id": doc_id, "image_url": f"/api/image/{doc_id}",
             "fileName": doc["file_name"], "state": doc["state"],
             "final_revision": doc["final_revision"],
-            "rows": opened["proposal"], "notes": result["notes"],
-            "marks": result["marks"], "title_block": result["title_block"],
+            "rows": opened["proposal"], **extras,
             "writer": opened["writer"], "events": opened["events"],
             "last_seq": opened["last_seq"]}
 

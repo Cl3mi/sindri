@@ -19,9 +19,17 @@ def _isolated_runtime(tmp_path, monkeypatch):
     mod = sys.modules.get("app.main")
     if mod is not None:
         monkeypatch.setattr(mod, "_RUNTIME", None)
+        # A lifespan test leaves the app shut down; the next test must not
+        # inherit that.
+        monkeypatch.setattr(mod, "_SHUT_DOWN", False)
     yield
+    # Looked up again: a test that imported app.main for the first time
+    # built its runtime after the lookup above, and it must be closed too.
+    mod = sys.modules.get("app.main")
     if mod is not None and mod._RUNTIME is not None:
         mod._RUNTIME.close()
+        mod._RUNTIME = None
+        mod._SHUT_DOWN = False
 
 @pytest.fixture(scope="session", autouse=True)
 def ensure_sample_pdf():
