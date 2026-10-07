@@ -1,18 +1,14 @@
-import asyncio
+import hashlib
 import json
-import logging
 import os
-import queue
-import re
 import shutil
-import tempfile
-import threading
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Optional
 import fitz  # PyMuPDF
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.types import Scope
 from starlette.responses import Response
@@ -27,60 +23,83 @@ from app.pipeline.review import review_flags
 from app.pipeline.place import place_balloons
 from app.pipeline.ballooned_pdf import render_ballooned_pdf
 from app.review.header import build_header
-from app.review.store import ReviewError, ReviewStore
+from app.review.store import ReviewError
+from app.batch.repo import BatchError, InvalidTransition
+from app.batch.runtime import Runtime
 from PIL import Image
-
-app = FastAPI(title="Sindri")
-
-_SESSIONS = Path(tempfile.gettempdir()) / "sindri_sessions"
-_SESSIONS.mkdir(exist_ok=True)
-
-# session ids are uuid4().hex — reject anything else so it can't be used to
-# escape the sessions directory when building file paths.
-_SESSION_RE = re.compile(r"^[0-9a-f]{32}$")
-
-
-def _session_dir(session_id: str) -> Path:
-    if not _SESSION_RE.match(session_id):
-        raise HTTPException(status_code=404, detail="unknown session")
-    return _SESSIONS / session_id
 
 # Load the OCR backend ONCE at startup (the VLM model is multi-GB — never
 # reload it per request) and reuse it for every upload.
 _BACKEND = get_backend()
 
 
-def _review_store_from_env():
-    """The durable review store, or None when SINDRI_REVIEW_DIR is unset or
-    unwritable. None is not an error: the app still reviews and exports, it
-    just records nothing -- and a session recorded nowhere is never graded,
-    rather than graded wrong (design §6).
-
-    ReviewStore.__init__ only does `root.mkdir(parents=True, exist_ok=True)`,
-    which succeeds silently on a directory that already exists but is
-    read-only -- so a pre-existing unwritable mount would pass construction
-    and /api/health would then claim `review_logging: true` for a store that
-    can never actually write a session. Probe with a real file write (the
-    cheapest operation that actually exercises the permission bit) before
-    trusting the directory."""
-    root = os.environ.get("SINDRI_REVIEW_DIR")
-    if not root:
-        return None
-    try:
-        store = ReviewStore(Path(root))
-        probe = store.root / f".write-probe-{os.getpid()}"
-        probe.write_text("", encoding="utf-8")
-        probe.unlink()
-        return store
-    except OSError:
-        return None
-
-
-_REVIEW_STORE = _review_store_from_env()
-
-
 def _review_consent() -> bool:
     return os.environ.get("SINDRI_REVIEW_CONSENT", "").lower() in ("1", "true", "yes")
+
+
+def _extract(pdf_path, work_dir, progress):
+    # Late-bound on purpose: tests monkeypatch `extract` and `_BACKEND` on
+    # this module, and the worker must see those patches.
+    return extract(pdf_path, work_dir=work_dir, dpi=300, backend=_BACKEND,
+                   progress=progress)
+
+
+def _header(pdf_path):
+    return build_header(pdf_path, _review_consent())
+
+
+_RUNTIME: Optional[Runtime] = None
+
+
+def runtime() -> Runtime:
+    """Built on first use from SINDRI_DATA_DIR / SINDRI_REVIEW_DIR. Lazy, so
+    importing this module (every API test does) never touches a real data
+    dir; tests/conftest.py points both at a per-test tmp dir."""
+    global _RUNTIME
+    if _RUNTIME is None:
+        _RUNTIME = Runtime.from_env(_extract, _header)
+    return _RUNTIME
+
+
+@asynccontextmanager
+async def lifespan(app):
+    global _RUNTIME
+    rt = runtime()   # a bad data/review dir fails the boot, not the first drawing
+    rt.start()
+    try:
+        yield
+    finally:
+        rt.close()
+        _RUNTIME = None
+
+
+app = FastAPI(title="Sindri", lifespan=lifespan)
+
+
+@app.exception_handler(BatchError)
+@app.exception_handler(ReviewError)
+async def _domain_error(request, exc):
+    # Safe to echo: these messages carry ids[:8], state names and fixed
+    # sentences, never client text.
+    return JSONResponse({"detail": str(exc)}, status_code=exc.status)
+
+
+def _doc_dir(doc_id: str) -> Path:
+    try:
+        return runtime().data.doc_dir(doc_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="unknown document")
+
+
+def _doc_view(doc_id: str) -> dict:
+    rt = runtime()
+    doc = rt.repo.get(doc_id)
+    return {"id": doc["id"], "file_name": doc["file_name"], "pages": doc["pages"],
+            "state": doc["state"], "error_type": doc["error_type"],
+            "final_revision": doc["final_revision"],
+            "exported_revision": doc["exported_revision"],
+            "queue_position": rt.repo.queue_position(doc_id),
+            "progress": rt.worker.progress_of(doc_id)}
 
 
 class ExportRequest(BaseModel):
@@ -112,168 +131,138 @@ class SealRequest(BaseModel):
 def health():
     status = backend_status()
     status["ocr_backend_active"] = type(_BACKEND).__name__
-    status["review_logging"] = _REVIEW_STORE is not None
+    status["worker_running"] = runtime().worker.running
     return status
 
 
 @app.post("/api/upload")
 async def upload(file: UploadFile = File(...)):
-    """Save the PDF to a fresh session and return its metadata. Extraction is
-    a separate, explicitly-started step (`POST /api/extract/{session_id}`)."""
-    session_id = uuid.uuid4().hex
-    work = _SESSIONS / session_id
-    work.mkdir(parents=True, exist_ok=True)
+    """Store a PDF as a staged drawing -- a batch of one until B2 brings real
+    batches. Extraction is queued separately and runs in the background
+    worker, so no browser has to stay open (batch design §1)."""
+    rt = runtime()
+    doc_id = uuid.uuid4().hex
+    work = rt.data.doc_dir(doc_id)
+    work.mkdir(parents=True)
     pdf_path = work / "input.pdf"
-    pdf_path.write_bytes(await file.read())
+    digest = hashlib.sha256()
     try:
+        with open(pdf_path, "wb") as out:
+            while chunk := await file.read(1 << 20):
+                digest.update(chunk)
+                out.write(chunk)
         with fitz.open(pdf_path) as doc:
             pages = doc.page_count
     except Exception:
         shutil.rmtree(work, ignore_errors=True)
         raise HTTPException(status_code=400, detail="could not read the PDF")
-    return {"session_id": session_id, "fileName": file.filename, "pages": pages}
+    name = file.filename or "drawing.pdf"
+    try:
+        rt.repo.create_document(doc_id, name, pages, digest.hexdigest())
+    except BaseException:
+        # No row, so nothing would ever list or remove these files.
+        shutil.rmtree(work, ignore_errors=True)
+        raise
+    return {"session_id": doc_id, "fileName": name, "pages": pages}
 
 
-class _Cancelled(Exception):
-    """Raised inside the extraction worker when the client disconnects, to
-    unwind the pipeline cooperatively at the next progress emit."""
+@app.get("/api/documents/{doc_id}")
+def get_document(doc_id: str):
+    _doc_dir(doc_id)
+    return _doc_view(doc_id)
 
 
-@app.post("/api/extract/{session_id}")
-async def extract_endpoint(session_id: str, request: Request):
-    """Run extraction for an already-uploaded session and stream pipeline
-    progress as Server-Sent Events. The final result is a terminal `result`
-    (or `error`) event."""
-    work = _session_dir(session_id)
-    pdf_path = work / "input.pdf"
-    if not pdf_path.is_file():
-        raise HTTPException(status_code=404, detail="unknown session")
-
-    events: "queue.Queue" = queue.Queue()
-    _DONE = object()
-    cancel = threading.Event()
-
-    def worker():
-        def progress(step, detail="", current=None, total=None):
-            if cancel.is_set():
-                raise _Cancelled()
-            events.put(("progress", {
-                "step": step, "detail": detail,
-                "current": current, "total": total,
-            }))
-        try:
-            result = extract(pdf_path, work_dir=work, dpi=300,
-                             backend=_BACKEND, progress=progress)
-            # Dumped once in json mode so the proposal written to the review
-            # store is byte-identical to the rows the UI receives below.
-            rows = [r.model_dump(mode="json") for r in
-                    [*result.characteristics, *result.suggestions]]
-            writer = None
-            if _REVIEW_STORE is not None:
-                try:
-                    writer = _REVIEW_STORE.create(
-                        session_id, build_header(pdf_path, _review_consent()),
-                        {"rows": rows})
-                except Exception as e:
-                    # Logging is best-effort by design (§6): a session
-                    # recorded nowhere is never graded, but an extraction
-                    # lost to a capture fault costs the reviewer the whole
-                    # drawing, which is strictly worse -- so this catches
-                    # everything, not just ReviewError/OSError (build_header
-                    # itself can raise, e.g. a PyMuPDF RuntimeError, and that
-                    # must not turn a finished extraction into an SSE error).
-                    # Exception TYPE only, never str(e): a PyMuPDF or journal
-                    # message can carry client text (CLAUDE.md §1).
-                    logging.getLogger(__name__).warning(
-                        "review capture skipped for session %s: %s",
-                        session_id[:8], type(e).__name__)
-                    writer = None
-            events.put(("result", {
-                "session_id": session_id,
-                "image_url": f"/api/image/{session_id}",
-                # Suggestions ride in the same list, flagged, so the reviewer
-                # edits them with the existing table; the client keeps them out
-                # of exports and so does _exportable below.
-                "rows": rows,
-                "notes": result.notes.model_dump() if result.notes is not None else None,
-                "marks": result.marks.model_dump() if result.marks is not None else None,
-                "title_block": [t.model_dump() for t in result.title_block],
-                "writer": writer,
-                "review_logging": writer is not None,
-            }))
-        except _Cancelled:
-            # client went away — drop the session and stop quietly
-            shutil.rmtree(work, ignore_errors=True)
-        except RuntimeError as e:
-            events.put(("error", {"detail": str(e)}))
-        except Exception:
-            events.put(("error", {"detail": "could not read the PDF"}))
-        finally:
-            events.put((_DONE, None))
-
-    async def stream():
-        threading.Thread(target=worker, daemon=True).start()
-        loop = asyncio.get_event_loop()
-        while True:
-            try:
-                kind, payload = await loop.run_in_executor(
-                    None, lambda: events.get(timeout=0.25))
-            except queue.Empty:
-                if await request.is_disconnected():
-                    cancel.set()
-                    break
-                continue
-            if kind is _DONE:
-                break
-            yield f"event: {kind}\ndata: {json.dumps(payload)}\n\n"
-
-    return StreamingResponse(stream(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache",
-                                      "X-Accel-Buffering": "no"})
+@app.post("/api/documents/{doc_id}/enqueue")
+def enqueue_document(doc_id: str):
+    _doc_dir(doc_id)
+    rt = runtime()
+    rt.repo.enqueue(doc_id)
+    rt.worker.wake()
+    return _doc_view(doc_id)
 
 
-@app.delete("/api/session/{session_id}")
-def delete_session(session_id: str):
-    """Discard an uploaded session (cancelled confirm, or stopped extraction).
-    Idempotent: a missing directory is not an error; a malformed id is 404
-    via `_session_dir`."""
-    work = _session_dir(session_id)
+@app.post("/api/documents/{doc_id}/cancel")
+def cancel_document(doc_id: str):
+    """Queued: never runs. Extracting: the worker unwinds at its next
+    progress report (it reads this state, not a flag) -- which can be many
+    minutes away, since detection reports nothing while it runs."""
+    _doc_dir(doc_id)
+    runtime().repo.mark_cancelled(doc_id)
+    return _doc_view(doc_id)
+
+
+@app.post("/api/documents/{doc_id}/retry")
+def retry_document(doc_id: str):
+    _doc_dir(doc_id)
+    rt = runtime()
+    rt.repo.retry(doc_id)
+    rt.worker.wake()
+    return _doc_view(doc_id)
+
+
+@app.delete("/api/documents/{doc_id}")
+def delete_document(doc_id: str):
+    """Remove a drawing that is not being extracted. Its review record stays
+    (review records are never removed with the files). Idempotent.
+
+    The repo refuses only an `extracting` row. Cancel is cooperative, so a
+    cancelled row can still be the worker's current job for a while; removing
+    its files under the running extraction is refused here too. (The worker
+    also copes with a row that vanishes mid-run, but only this check keeps
+    the files from being pulled out from under it.)"""
+    work = _doc_dir(doc_id)
+    rt = runtime()
+    if rt.worker.current == doc_id:
+        raise InvalidTransition(
+            "the extraction is still stopping; remove the drawing once it has")
+    rt.repo.delete(doc_id)
     shutil.rmtree(work, ignore_errors=True)
     return {"ok": True}
+
+
+@app.post("/api/documents/{doc_id}/open")
+def open_document(doc_id: str):
+    """Everything the browser needs to rebuild the review exactly where it
+    stopped, plus a fresh writer token: whichever tab held the old one is
+    refused from now on (batch design §3)."""
+    work = _doc_dir(doc_id)
+    rt = runtime()
+    doc = rt.repo.get(doc_id)
+    if doc["state"] not in ("ready", "in_review", "finished"):
+        raise HTTPException(status_code=409,
+                            detail=f"drawing is {doc['state']}, not ready for review")
+    result = json.loads((work / "result.json").read_text(encoding="utf-8"))
+    opened = rt.store.open(doc_id)
+    return {"session_id": doc_id, "image_url": f"/api/image/{doc_id}",
+            "fileName": doc["file_name"], "state": doc["state"],
+            "final_revision": doc["final_revision"],
+            "rows": opened["proposal"], "notes": result["notes"],
+            "marks": result["marks"], "title_block": result["title_block"],
+            "writer": opened["writer"], "events": opened["events"],
+            "last_seq": opened["last_seq"]}
 
 
 @app.post("/api/session/{session_id}/events")
 def post_events(session_id: str, req: EventsRequest):
     """Append reviewer operations. Idempotent by seq, so the UI simply resends
     everything the reply says is not yet held contiguously."""
-    _session_dir(session_id)         # rejects a malformed id before any path is built
-    if _REVIEW_STORE is None:
-        return {"contiguous": None, "review_logging": False}
-    try:
-        return {"contiguous": _REVIEW_STORE.append(session_id, req.writer, req.events)}
-    except ReviewError as e:
-        raise HTTPException(status_code=e.status, detail=str(e))
+    _doc_dir(session_id)             # rejects a malformed id before any path is built
+    return {"contiguous": runtime().store.append(session_id, req.writer, req.events)}
 
 
 @app.post("/api/session/{session_id}/seal")
 def seal_session(session_id: str, req: SealRequest):
     """Seal a review revision at the client's final seq. Refuses on a gap: an
     incomplete log must never be graded (design §2)."""
-    _session_dir(session_id)
-    if _REVIEW_STORE is None:
-        return {"revision": None, "review_logging": False}
-    try:
-        out = _REVIEW_STORE.seal(
-            session_id, req.writer, req.final_seq,
-            [r.model_dump(mode="json") for r in req.rows], req.reviewed_ids)
-    except ReviewError as e:
-        raise HTTPException(status_code=e.status, detail=str(e))
-    return {**out, "review_logging": True}
+    _doc_dir(session_id)
+    return runtime().store.seal(
+        session_id, req.writer, req.final_seq,
+        [r.model_dump(mode="json") for r in req.rows], req.reviewed_ids)
 
 
 @app.get("/api/image/{session_id}")
 def image(session_id: str):
-    png = _session_dir(session_id) / "page.png"
+    png = _doc_dir(session_id) / "page.png"
     if not png.is_file():
         raise HTTPException(status_code=404, detail="image not found")
     return FileResponse(png, media_type="image/png")
@@ -289,7 +278,7 @@ def _exportable(rows):
 
 @app.post("/api/export")
 def export(req: ExportRequest):
-    work = _session_dir(req.session_id)
+    work = _doc_dir(req.session_id)
     work.mkdir(parents=True, exist_ok=True)
     out = work / "inspection.xlsx"
     write_workbook(_exportable(req.rows), out, notes=req.notes, marks=req.marks,
@@ -303,7 +292,7 @@ def export(req: ExportRequest):
 
 @app.post("/api/read_region")
 def read_region(req: ReadRegionRequest):
-    work = _session_dir(req.session_id)
+    work = _doc_dir(req.session_id)
     png = work / "page.png"
     if not png.is_file():
         raise HTTPException(status_code=404, detail="unknown session")
@@ -341,7 +330,7 @@ def read_region(req: ReadRegionRequest):
 
 @app.post("/api/export/pdf")
 def export_pdf(req: ExportRequest):
-    work = _session_dir(req.session_id)
+    work = _doc_dir(req.session_id)
     src = work / "input.pdf"
     if not src.is_file():
         raise HTTPException(status_code=404, detail="unknown session")

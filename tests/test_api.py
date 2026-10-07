@@ -1,4 +1,3 @@
-import json
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
@@ -6,30 +5,6 @@ from app.pipeline.detect import Detection
 from tests.conftest import StubVLMBackend
 
 client = TestClient(app)
-
-
-def parse_sse(resp):
-    """Split an SSE extract response into (progress_events, result, error)."""
-    progress, result, error = [], None, None
-    for block in resp.text.split("\n\n"):
-        if not block.strip():
-            continue
-        event = data = None
-        for line in block.split("\n"):
-            if line.startswith("event:"):
-                event = line[len("event:"):].strip()
-            elif line.startswith("data:"):
-                data = line[len("data:"):].strip()
-        if data is None:
-            continue
-        payload = json.loads(data)
-        if event == "progress":
-            progress.append(payload)
-        elif event == "result":
-            result = payload
-        elif event == "error":
-            error = payload
-    return progress, result, error
 
 
 def save_pdf(test_client, path, filename="sample.pdf"):
@@ -42,14 +17,20 @@ def save_pdf(test_client, path, filename="sample.pdf"):
 
 
 def upload_pdf(test_client, path, filename="sample.pdf"):
-    """Save a PDF then run extraction; return the final extraction result."""
+    """Upload, queue and extract a PDF through the background worker -- run
+    inline, so the test is deterministic -- then open it for review. Returns
+    the /open payload (session_id, image_url, rows, notes, marks,
+    title_block, writer, events, last_seq)."""
+    import app.main as main
     meta = save_pdf(test_client, path, filename)
-    r = test_client.post(f"/api/extract/{meta['session_id']}")
+    sid = meta["session_id"]
+    assert test_client.post(f"/api/documents/{sid}/enqueue").status_code == 200
+    assert main.runtime().worker.run_once() == sid
+    doc = test_client.get(f"/api/documents/{sid}").json()
+    assert doc["state"] == "ready", doc
+    r = test_client.post(f"/api/documents/{sid}/open")
     assert r.status_code == 200, r.text
-    _progress, result, error = parse_sse(r)
-    assert error is None, error
-    assert result is not None
-    return result
+    return r.json()
 
 
 @pytest.fixture
@@ -62,16 +43,11 @@ def stub_backend(monkeypatch):
     return backend
 
 
-def test_an_ambient_review_dir_is_never_written_by_an_ordinary_test(
-        sample_pdf, stub_backend, monkeypatch, tmp_path):
-    """A developer with SINDRI_REVIEW_DIR exported in their shell must not
-    have every ordinary extraction test here write synthetic records into
-    that real (possibly client-data) directory. conftest's autouse fixture
-    neutralizes app.main._REVIEW_STORE regardless of the env var."""
-    review_dir = tmp_path / "reviews"
-    monkeypatch.setenv("SINDRI_REVIEW_DIR", str(review_dir))
-    upload_pdf(client, sample_pdf)
-    assert not review_dir.exists()
+def test_every_test_gets_its_own_data_and_review_dir(tmp_path):
+    import app.main as main
+    rt = main.runtime()
+    assert rt.data.root == tmp_path / "data"
+    assert rt.store.root == tmp_path / "data" / "reviews"
 
 
 def test_upload_returns_rows_and_image(sample_pdf, stub_backend):
@@ -83,36 +59,34 @@ def test_upload_returns_rows_and_image(sample_pdf, stub_backend):
     assert data["image_url"].startswith("/api/image/")
 
 
-def test_extract_streams_progress_events(sample_pdf, stub_backend):
-    meta = save_pdf(client, sample_pdf)
-    r = client.post(f"/api/extract/{meta['session_id']}")
-    assert r.status_code == 200
-    assert r.headers["content-type"].startswith("text/event-stream")
-    progress, result, error = parse_sse(r)
-    assert error is None
-    assert result is not None
-    steps = [p["step"] for p in progress]
-    assert steps[0] == "render"
-    assert "detect" in steps and "ocr" in steps and "place" in steps
+def test_queued_drawings_report_their_queue_position(sample_pdf, stub_backend):
+    a = save_pdf(client, sample_pdf)["session_id"]
+    b = save_pdf(client, sample_pdf)["session_id"]
+    client.post(f"/api/documents/{a}/enqueue")
+    view = client.post(f"/api/documents/{b}/enqueue").json()
+    assert (view["state"], view["queue_position"]) == ("queued", 2)
+    assert client.get(f"/api/documents/{a}").json()["queue_position"] == 1
 
 
-def test_extract_without_detection_backend_streams_error(sample_pdf, monkeypatch):
+def test_extraction_without_detection_backend_fails_the_document(sample_pdf, monkeypatch):
+    import app.main as main
+
     class ReadOnly:
         def read_region(self, image):
             from app.pipeline.ocr.base import OcrResult
             return OcrResult(text="", confidence=0.0)
     monkeypatch.setattr("app.main._BACKEND", ReadOnly())
-    meta = save_pdf(client, sample_pdf)
-    r = client.post(f"/api/extract/{meta['session_id']}")
-    assert r.status_code == 200
-    _progress, result, error = parse_sse(r)
-    assert result is None
-    assert error is not None and "VLM" in error["detail"]
+    sid = save_pdf(client, sample_pdf)["session_id"]
+    client.post(f"/api/documents/{sid}/enqueue")
+    main.runtime().worker.run_once()
+    doc = client.get(f"/api/documents/{sid}").json()
+    assert (doc["state"], doc["error_type"]) == ("failed", "RuntimeError")
+    assert client.post(f"/api/documents/{sid}/open").status_code == 409
 
 
 def test_extraction_cancels_when_event_set(sample_pdf, stub_backend, tmp_path):
     import threading
-    import app.main as main
+    from app.batch.worker import Cancelled
     from app.pipeline.extract import extract
 
     cancel = threading.Event()
@@ -122,9 +96,9 @@ def test_extraction_cancels_when_event_set(sample_pdf, stub_backend, tmp_path):
     def progress(step, detail="", current=None, total=None):
         seen.append(step)
         if cancel.is_set():
-            raise main._Cancelled()
+            raise Cancelled()
 
-    with pytest.raises(main._Cancelled):
+    with pytest.raises(Cancelled):
         extract(sample_pdf, work_dir=tmp_path, dpi=300,
                 backend=stub_backend, progress=progress)
     # it unwound at the very first emit ("render"), never reaching "place"
@@ -135,23 +109,31 @@ def test_extraction_cancels_when_event_set(sample_pdf, stub_backend, tmp_path):
 def test_upload_returns_metadata_without_extracting(sample_pdf, stub_backend):
     import app.main as main
     meta = save_pdf(client, sample_pdf)
-    assert main._SESSION_RE.match(meta["session_id"])
-    assert meta["fileName"] == "sample.pdf"
-    assert meta["pages"] >= 1
-    # save-only: the input pdf is stored but no extraction artifacts exist yet
-    work = main._SESSIONS / meta["session_id"]
+    assert meta["fileName"] == "sample.pdf" and meta["pages"] >= 1
+    work = main.runtime().data.doc_dir(meta["session_id"])
     assert (work / "input.pdf").is_file()
     assert not (work / "page.png").exists()
+    assert client.get(f"/api/documents/{meta['session_id']}").json()["state"] == "staged"
 
 
-def test_extract_rejects_bad_session_id():
-    # malformed id is rejected by _session_dir before any work
-    assert client.post("/api/extract/not-a-valid-uuid").status_code == 404
+@pytest.mark.parametrize("method,route", [
+    ("post", "enqueue"), ("post", "open"), ("post", "cancel"), ("post", "retry")])
+def test_document_routes_reject_a_malformed_id(method, route):
+    assert getattr(client, method)(f"/api/documents/not-a-valid-uuid/{route}").status_code == 404
 
 
-def test_extract_unknown_session_returns_404():
-    # well-formed id but no saved input.pdf
-    assert client.post("/api/extract/" + "0" * 32).status_code == 404
+def test_an_unknown_document_is_404():
+    assert client.get("/api/documents/" + "0" * 32).status_code == 404
+
+
+def test_cancel_and_retry_a_queued_drawing(sample_pdf, stub_backend):
+    import app.main as main
+    sid = save_pdf(client, sample_pdf)["session_id"]
+    client.post(f"/api/documents/{sid}/enqueue")
+    assert client.post(f"/api/documents/{sid}/cancel").json()["state"] == "cancelled"
+    assert main.runtime().worker.run_once() is None
+    assert client.post(f"/api/documents/{sid}/retry").json()["state"] == "queued"
+    assert main.runtime().worker.run_once() == sid
 
 
 def test_read_region_returns_parsed_characteristic(sample_pdf, stub_backend):
@@ -207,9 +189,9 @@ def test_read_region_sets_needs_review_on_empty_read(monkeypatch):
     monkeypatch.setattr("app.main._BACKEND", StubVLMBackend(text=""))
 
     # a session with a page image present (read_region requires work/page.png)
-    # session id must be 32 lowercase hex chars to pass _session_dir validation
+    # session id must be 32 lowercase hex chars to pass _doc_dir validation
     session = "5e5537e7ae00000000000000000000ae"
-    work = main._session_dir(session)
+    work = main._doc_dir(session)
     work.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", (200, 200), "white").save(work / "page.png")
 
@@ -237,7 +219,7 @@ def test_read_region_applies_active_flag_rules_like_the_pipeline(monkeypatch):
     monkeypatch.setattr("app.main._BACKEND", StubVLMBackend(text="Ø20"))
 
     session = "5e5537e7ae00000000000000000000af"
-    work = main._session_dir(session)
+    work = main._doc_dir(session)
     work.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", (200, 200), "white").save(work / "page.png")
 
@@ -282,19 +264,51 @@ def test_upload_returns_null_notes_when_extract_returns_none(monkeypatch, sample
     assert data["notes"] is None
 
 
-def test_delete_session_removes_dir(sample_pdf):
-    meta = save_pdf(client, sample_pdf)
+def test_delete_document_removes_its_files_and_row(sample_pdf):
     import app.main as main
-    work = main._SESSIONS / meta["session_id"]
+    sid = save_pdf(client, sample_pdf)["session_id"]
+    work = main.runtime().data.doc_dir(sid)
     assert work.is_dir()
-    r = client.delete(f"/api/session/{meta['session_id']}")
-    assert r.status_code == 200
+    assert client.delete(f"/api/documents/{sid}").status_code == 200
     assert not work.exists()
+    assert client.get(f"/api/documents/{sid}").status_code == 404
 
 
-def test_delete_missing_session_is_idempotent():
-    r = client.delete("/api/session/" + "0" * 32)
-    assert r.status_code == 200
+def test_delete_refuses_the_drawing_the_worker_is_still_running(
+        sample_pdf, stub_backend, monkeypatch):
+    """Cancel is cooperative: the row says `cancelled` at once, but the run
+    goes on until its next progress report. The repo allows deleting a
+    cancelled row, so the API must refuse the worker's CURRENT job itself --
+    otherwise the files would be removed under a run that is still writing.
+    The fake extract cancels and tries to delete from inside the run, which
+    is exactly that window, with no threads or timing involved."""
+    import app.main as main
+    seen = {}
+
+    def extract_that_is_cancelled_midway(*a, **k):
+        sid = seen["sid"]
+        assert client.post(f"/api/documents/{sid}/cancel").json()["state"] == "cancelled"
+        r = client.delete(f"/api/documents/{sid}")
+        seen["status"], seen["body"] = r.status_code, r.json()
+        seen["dir_kept"] = main.runtime().data.doc_dir(sid).is_dir()
+        raise RuntimeError("never reached a result")
+    monkeypatch.setattr(main, "extract", extract_that_is_cancelled_midway)
+    sid = seen["sid"] = save_pdf(client, sample_pdf)["session_id"]
+    client.post(f"/api/documents/{sid}/enqueue")
+    assert main.runtime().worker.run_once() == sid
+    assert (seen["status"], seen["dir_kept"]) == (409, True), seen["body"]
+    assert sid not in seen["body"]["detail"]
+    # Once the run has returned, the cancelled drawing can be removed.
+    assert client.get(f"/api/documents/{sid}").json()["state"] == "cancelled"
+    assert client.delete(f"/api/documents/{sid}").status_code == 200
+
+
+def test_delete_missing_document_is_idempotent():
+    assert client.delete("/api/documents/" + "0" * 32).status_code == 200
+
+
+def test_delete_rejects_bad_document_id():
+    assert client.delete("/api/documents/not-a-valid-uuid").status_code == 404
 
 
 @pytest.mark.parametrize("path", ["/", "/js/main.js", "/js/api.js"])
@@ -307,11 +321,6 @@ def test_static_assets_force_revalidation(path):
     assert "no-cache" in r.headers.get("cache-control", "")
 
 
-def test_delete_rejects_bad_session_id():
-    r = client.delete("/api/session/not-a-valid-uuid")
-    assert r.status_code == 404
-
-
 def test_export_includes_title_block_sheet(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
     import app.main as main
@@ -320,7 +329,7 @@ def test_export_includes_title_block_sheet(tmp_path, monkeypatch):
 
     client = TestClient(main.app)
     session_id = uuid.uuid4().hex
-    (main._SESSIONS / session_id).mkdir(parents=True, exist_ok=True)
+    main.runtime().data.doc_dir(session_id).mkdir(parents=True, exist_ok=True)
 
     payload = {
         "session_id": session_id,

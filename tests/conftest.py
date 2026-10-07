@@ -7,19 +7,21 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 @pytest.fixture(autouse=True)
-def _no_ambient_review_store(monkeypatch):
-    """`app.main._REVIEW_STORE` is built once at import time from whatever
-    SINDRI_REVIEW_DIR happens to be set in the shell. Without this, a
-    developer who has that variable exported (e.g. for the real app) would
-    have every ordinary extraction test here write synthetic records into a
-    real -- possibly client-data -- review directory. Looked up via
-    sys.modules rather than `import app.main`, so a test module that never
-    touches app.main doesn't pay to load the OCR backend. Autouse fixtures
-    run before explicitly-requested ones of the same scope, so a test's own
-    `store` fixture (tests/test_api_review.py) still overrides this."""
+def _isolated_runtime(tmp_path, monkeypatch):
+    """Every test gets its own data and review dir. app.main builds its
+    Runtime lazily from SINDRI_DATA_DIR / SINDRI_REVIEW_DIR, so without this a
+    developer with those exported (e.g. for the real app) would have ordinary
+    tests write synthetic drawings and review records into a real -- possibly
+    client-data -- directory. Looked up via sys.modules so a module that never
+    touches app.main doesn't pay to load the OCR backend."""
+    monkeypatch.setenv("SINDRI_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SINDRI_REVIEW_DIR", str(tmp_path / "data" / "reviews"))
     mod = sys.modules.get("app.main")
     if mod is not None:
-        monkeypatch.setattr(mod, "_REVIEW_STORE", None)
+        monkeypatch.setattr(mod, "_RUNTIME", None)
+    yield
+    if mod is not None and mod._RUNTIME is not None:
+        mod._RUNTIME.close()
 
 @pytest.fixture(scope="session", autouse=True)
 def ensure_sample_pdf():
