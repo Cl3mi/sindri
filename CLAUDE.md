@@ -191,7 +191,7 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **1362 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **1388 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). **`tesseract` is a device
 prerequisite** — without the binary six tests fail as `TesseractNotFoundError`
 and read as broken code. `SCHEMA_VERSION` = 1 — do not bump it. Split frozen
@@ -931,7 +931,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 1362 passed, 2 skipped
+python -m pytest -q                          # 1388 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```
