@@ -656,3 +656,41 @@ test('a stopped import says why: the first give-up reason, not a guess', async (
   assert.deepEqual(results.slice(3).map((r) => r.error.message),
     Array(2).fill('not attempted: server error (503)'));
 });
+
+test('one flaky file does not stop a healthy import', async () => {
+  // A file moved during the import, or one the server always fails, runs
+  // out its own budget while the other lanes keep landing bytes. That is
+  // the file's fault, not the server's: the files after it still start.
+  let clock = 0;
+  const timers = [];
+  let ticking = false;
+  const tick = () => {
+    if (ticking) return;
+    ticking = true;
+    setImmediate(() => {
+      ticking = false;
+      if (!timers.length) return;
+      timers.sort((a, b) => a.at - b.at);
+      const t = timers.shift();
+      clock = Math.max(clock, t.at);
+      t.wake();
+      tick();
+    });
+  };
+  const sleep = (ms) => new Promise((wake) => { timers.push({ at: clock + ms, wake }); tick(); });
+  const server = fakeServer();
+  const flaky = fileOf(bytes(50), 'f0.pdf');
+  const fetch = async (url, init) => {
+    const m = /^\/api\/uploads\/(\w+)\?/.exec(url);
+    if (init.method === 'PUT' && m) {
+      if (server.uploads.get(m[1]).name === flaky.name) throw new TypeError('network down');
+      await sleep(400 * 1000);                     // a slow but healthy link
+    }
+    return server.fetch(url, init);
+  };
+  const files = [flaky, ...[1, 2, 3].map((i) => fileOf(bytes(50), `f${i}.pdf`))];
+  const results = await importFiles(files, { batchId: 'b', fetch, sleep, now: () => clock, parallel: 2 });
+  assert.deepEqual(results.map((r) => r.ok), [false, true, true, true]);
+  assert.equal(results[0].error.fatal, false);
+  assert.equal(results[0].error.message, 'the server could not be reached');
+});

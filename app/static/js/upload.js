@@ -338,11 +338,21 @@ export async function uploadFile({
 // answering 503 is not one that "could not be reached". Files already
 // running finish their own budget. A cancel marks every file not yet
 // started as cancelled, without reading it.
+//
+// A give-up stops the import only if NO lane has made progress for a whole
+// budget. One flaky file (changed or moved during the import, or one the
+// server always fails) exhausts its own budget while the other lanes keep
+// landing bytes; stopping then would halt a healthy import and blame the
+// server for one file's fault. That file's error is recorded, and the
+// queue goes on.
 
 export async function importFiles(files, { parallel = PARALLEL, onFile = () => {}, ...opts } = {}) {
   const results = new Array(files.length);
   let next = 0;
   let stopped = null;                          // the first give-up's reason
+  const now = opts.now ?? (() => Date.now());
+  const budgetMs = opts.budgetMs ?? RETRY_BUDGET_MS;
+  let lastProgress = now();                    // any lane's last server answer that moved a file
   async function lane() {
     while (next < files.length) {
       const i = next++;
@@ -359,12 +369,16 @@ export async function importFiles(files, { parallel = PARALLEL, onFile = () => {
       try {
         const done = await uploadFile({
           ...opts, file: files[i],
-          onProgress: (sent, total) => onFile(i, { sent, total }),
+          onProgress: (sent, total) => { lastProgress = now(); onFile(i, { sent, total }); },
         });
+        lastProgress = now();
         results[i] = { ok: true, ...done };
       } catch (error) {
         results[i] = { ok: false, error };
-        if (error instanceof UploadError && !error.fatal && stopped === null) stopped = error.message;
+        if (error instanceof UploadError && !error.fatal && stopped === null
+            && now() - lastProgress >= budgetMs) {
+          stopped = error.message;
+        }
       }
       onFile(i, { done: true, result: results[i] });
     }
