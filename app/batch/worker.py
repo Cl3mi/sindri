@@ -49,9 +49,12 @@ class Worker:
         self.extract_fn = extract_fn     # (pdf_path, work_dir, progress) -> ExtractionResult
         self.header_fn = header_fn       # (pdf_path) -> review header dict
         self.idle_wait = idle_wait
-        self.progress = {}               # doc_id -> latest progress report (UI only, never logged)
+        self._progress = {}              # doc_id -> latest report (UI only, never logged)
         self._current = None
         self._wake = threading.Event()
+        # Replaced per loop by start(): each loop watches its OWN event, so a
+        # later start() can never clear the stop request of a loop that is
+        # still finishing a drawing and revive it next to the new one.
         self._stop = threading.Event()
         self._thread = None
         self._lockfile = None
@@ -67,6 +70,12 @@ class Worker:
         the run is still going (module docstring)."""
         return self._current
 
+    def progress_of(self, doc_id) -> Optional[dict]:
+        """A COPY of the latest progress report, None when not running: API
+        threads read it while the worker thread replaces it."""
+        p = self._progress.get(doc_id)
+        return dict(p) if p is not None else None
+
     def wake(self) -> None:
         self._wake.set()
 
@@ -81,33 +90,37 @@ class Worker:
             self._current = None
         return doc["id"]
 
-    def _still_wanted(self, doc_id: str) -> None:
-        """Raise Cancelled if the user cancelled -- or removed -- the drawing."""
+    def _state(self, doc_id: str) -> str:
+        """The row's state; a removed drawing raises Cancelled."""
         try:
-            state = self.repo.get(doc_id)["state"]
+            return self.repo.get(doc_id)["state"]
         except UnknownDocument:
             raise Cancelled() from None
-        if state == "cancelled":
-            raise Cancelled()
 
     def _run(self, doc_id: str) -> None:
         d = self.data.doc_dir(doc_id)
         result_path = d / "result.json"
 
         def progress(step, detail="", current=None, total=None):
-            self._still_wanted(doc_id)
-            self.progress[doc_id] = {"step": step, "detail": detail,
-                                     "current": current, "total": total}
+            if self._state(doc_id) == "cancelled":
+                raise Cancelled()
+            self._progress[doc_id] = {"step": step, "detail": detail,
+                                      "current": current, "total": total}
 
         try:
             if not result_path.is_file():
                 result = self.extract_fn(d / "input.pdf", d, progress)
-                # A cancel or remove after the last progress report still
-                # wins: nothing is written for a drawing the user let go of.
-                self._still_wanted(doc_id)
-                # FIRST, and atomically: a later review-store fault is then
+                # Removed after the last progress report: nothing of it is
+                # written back (_state raises Cancelled).
+                self._state(doc_id)
+                # FIRST, and atomically: a later review-store fault -- or a
+                # cancel that came too late to save GPU time -- is then
                 # retried from this file without re-running the GPU.
                 write_json_atomic(result_path, result_payload(result))
+            # Cancelled after the last report: the user's decision stands, so
+            # no review record, but result.json stays for a cheap Retry.
+            if self._state(doc_id) == "cancelled":
+                raise Cancelled()
         except Cancelled:
             self._settle(doc_id, self.repo.mark_cancelled)
             return
@@ -117,9 +130,18 @@ class Worker:
             self._settle(doc_id, self.repo.mark_failed, type(e).__name__)
             return
         finally:
-            self.progress.pop(doc_id, None)
+            self._progress.pop(doc_id, None)
         try:
             rows = json.loads(result_path.read_text(encoding="utf-8"))["rows"]
+        except (ValueError, KeyError, TypeError) as e:
+            # An unreadable result.json would fail every Retry forever, since
+            # the retry path trusts the file instead of the GPU. Discard it,
+            # so the next Retry extracts afresh.
+            log.warning("result unreadable for %s: %s", doc_id[:8], type(e).__name__)
+            result_path.unlink(missing_ok=True)
+            self._settle(doc_id, self.repo.mark_failed, f"review_store:{type(e).__name__}")
+            return
+        try:
             self.store.create(doc_id, self.header_fn(d / "input.pdf"), {"rows": rows})
         except Exception as e:
             # The journal is mandatory (decision 30): a drawing that cannot be
@@ -142,11 +164,25 @@ class Worker:
             log.info("document %s removed while extracting", doc_id[:8])
             shutil.rmtree(self.data.doc_dir(doc_id), ignore_errors=True)
             shutil.rmtree(self.store.root / doc_id, ignore_errors=True)
+        except Exception as e:
+            # A database fault (locked, disk full). The row stays `extracting`
+            # until the next start() requeues it; logged here by TYPE rather
+            # than escaping into the loop as an unexplained traceback.
+            log.error("could not settle document %s: %s", doc_id[:8], type(e).__name__)
 
     # ----- background loop ----------------------------------------------
     def start(self) -> None:
         if self._thread is not None:
-            return
+            if self._thread.is_alive():
+                if not self._stop.is_set():
+                    return                       # already running
+                # A stop() timed out mid-drawing; a second loop now would run
+                # beside it. We still hold the lock for it.
+                raise RuntimeError(
+                    "the previous extraction loop is still finishing its drawing")
+            # That loop has since returned: let go of its lock and start clean.
+            self._thread = None
+            self._release_lock()
         # Cross-process guard: a second uvicorn worker would run a second
         # extraction loop on the same GPU and the same queue.
         f = open(self.data.root / "worker.lock", "w")
@@ -157,17 +193,26 @@ class Worker:
             raise RuntimeError(
                 "another process already runs the extraction worker for this data "
                 "dir; run uvicorn as a single worker") from None
+        try:
+            moved = self.repo.requeue_interrupted()
+            if moved["requeued"] or moved["failed"]:
+                log.info("startup: requeued %d, failed %d interrupted extraction(s)",
+                         moved["requeued"], moved["failed"])
+            stop = threading.Event()
+            thread = threading.Thread(target=self._loop, args=(stop,),
+                                      name="sindri-worker", daemon=True)
+            thread.start()
+        except BaseException:
+            # Otherwise the fd and its lock leak, and a retry is refused as if
+            # another process held the worker.
+            f.close()
+            raise
         self._lockfile = f
-        moved = self.repo.requeue_interrupted()
-        if moved["requeued"] or moved["failed"]:
-            log.info("startup: requeued %d, failed %d interrupted extraction(s)",
-                     moved["requeued"], moved["failed"])
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, name="sindri-worker", daemon=True)
-        self._thread.start()
+        self._stop = stop
+        self._thread = thread
 
-    def _loop(self) -> None:
-        while not self._stop.is_set():
+    def _loop(self, stop: threading.Event) -> None:
+        while not stop.is_set():
             try:
                 ran = self.run_once()
             except Exception as e:
@@ -180,11 +225,22 @@ class Worker:
     def stop(self, timeout: float = 5.0) -> None:
         self._stop.set()
         self._wake.set()
-        if self._thread is not None:
-            # A drawing mid-extraction is NOT waited for: it stays
-            # `extracting` and the next start() requeues it.
-            self._thread.join(timeout)
-            self._thread = None
+        if self._thread is None:
+            return
+        # A drawing mid-extraction (~15 GPU minutes) is not waited for. Its
+        # loop keeps running until the drawing settles, so this worker keeps
+        # the thread AND the lock: releasing the lock now would let a second
+        # worker requeue the in-flight row and extract it twice. Only if the
+        # process exits does the row stay `extracting` for the next process's
+        # start() to requeue.
+        self._thread.join(timeout)
+        if self._thread.is_alive():
+            log.warning("worker stop: loop still extracting; lock kept until it returns")
+            return
+        self._thread = None
+        self._release_lock()
+
+    def _release_lock(self) -> None:
         if self._lockfile is not None:
             self._lockfile.close()
             self._lockfile = None

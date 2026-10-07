@@ -2,7 +2,11 @@
 run_once() so every test is deterministic; start()/stop() are tested only for
 the single-worker lock and the startup requeue."""
 import json
+import logging
 import shutil
+import sqlite3
+import threading
+import time
 
 import pytest
 
@@ -20,9 +24,9 @@ B = "b" * 32
 class Harness:
     def __init__(self, tmp_path):
         self.data = DataDir(tmp_path / "data")
-        conn = db.connect(self.data.db_path)
-        db.migrate(conn)
-        self.repo = Repo(conn)
+        self.conn = db.connect(self.data.db_path)
+        db.migrate(self.conn)
+        self.repo = Repo(self.conn)
         self.store = ReviewStore(tmp_path / "reviews")
         self.extract_calls = 0
         self.on_extract = lambda progress: None
@@ -54,7 +58,20 @@ class Harness:
 
 @pytest.fixture
 def h(tmp_path):
-    return Harness(tmp_path)
+    harness = Harness(tmp_path)
+    yield harness
+    harness.worker.stop()
+    harness.conn.close()
+
+
+def wait_for(predicate, timeout=5.0):
+    """Bounded poll for the background-thread tests: fails, never hangs."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
 
 
 def test_a_queued_drawing_is_extracted_and_becomes_reviewable(h):
@@ -73,11 +90,26 @@ def test_an_empty_queue_runs_nothing(h):
 
 def test_progress_is_visible_while_running_and_cleared_after(h):
     seen = {}
-    h.on_extract = lambda progress: seen.update(h.worker.progress.get(A) or {})
+    h.on_extract = lambda progress: seen.update(h.worker.progress_of(A) or {})
     h.queue()
     h.worker.run_once()
     assert seen["step"] == "render"
-    assert A not in h.worker.progress
+    assert h.worker.progress_of(A) is None
+
+
+def test_progress_of_hands_out_a_copy(h):
+    """API threads read progress while the worker writes it; a caller that
+    mutates what it got must not change the worker's state."""
+    seen = []
+
+    def grab(progress):
+        p = h.worker.progress_of(A)
+        p["step"] = "tampered"
+        seen.append(h.worker.progress_of(A)["step"])
+    h.on_extract = grab
+    h.queue()
+    h.worker.run_once()
+    assert seen == ["render"]
 
 
 def test_the_current_job_is_exposed_while_it_runs_and_cleared_after(h):
@@ -125,8 +157,14 @@ def test_a_cancel_that_arrives_after_the_last_report_still_wins(h):
     h.worker.run_once()
     assert h.repo.get(A)["state"] == "cancelled"
     # The user's cancel stands, so no review record is created for a drawing
-    # the list shows as cancelled.
+    # the list shows as cancelled -- but the finished extraction is kept, so
+    # a change of mind costs a Retry, not ~15 GPU minutes.
     assert not (h.store.root / A).exists()
+    assert (h.data.doc_dir(A) / "result.json").is_file()
+    h.repo.retry(A)
+    h.worker.run_once()
+    assert h.repo.get(A)["state"] == "ready"
+    assert h.extract_calls == 1
 
 
 def test_a_drawing_removed_mid_run_stops_it_and_leaves_nothing_behind(h):
@@ -141,7 +179,7 @@ def test_a_drawing_removed_mid_run_stops_it_and_leaves_nothing_behind(h):
     assert h.worker.run_once() == A
     assert not h.data.doc_dir(A).exists()
     assert not (h.store.root / A).exists()
-    assert h.worker.current is None and A not in h.worker.progress
+    assert h.worker.current is None and h.worker.progress_of(A) is None
     # The worker carries on with the next drawing.
     h.on_extract = lambda progress: None
     h.queue(B)
@@ -162,6 +200,60 @@ def test_a_drawing_removed_after_the_last_report_is_not_written_back(h):
     assert not h.data.doc_dir(A).exists()
     assert not (h.store.root / A).exists()
     assert h.worker.current is None
+
+
+def test_a_drawing_removed_while_its_review_record_is_written_is_purged(h):
+    """The last window: the row vanishes after result.json and the review
+    record were written, so only mark_ready learns of it. Both are client
+    data for a drawing that no longer exists and must go."""
+    def remove_during_header(pdf):
+        h.remove(A)
+        return {"h": 1}
+    h.header = remove_during_header
+    h.queue()
+    assert h.worker.run_once() == A
+    assert not (h.store.root / A).exists()
+    assert not h.data.doc_dir(A).exists()
+
+
+def test_an_extraction_exception_message_never_reaches_the_log(h, caplog):
+    def boom(progress):
+        raise RuntimeError("client text that must never be logged")
+    h.on_extract = boom
+    h.queue()
+    with caplog.at_level(logging.DEBUG):
+        h.worker.run_once()
+    assert "RuntimeError" in caplog.text
+    assert "client text" not in caplog.text
+
+
+def test_an_unreadable_result_is_discarded_so_the_next_retry_re_extracts(h):
+    """A result.json that cannot be parsed would otherwise fail every Retry
+    forever, since the retry path trusts the file instead of the GPU."""
+    h.queue()
+    (h.data.doc_dir(A) / "result.json").write_text("{not json")
+    h.worker.run_once()
+    d = h.repo.get(A)
+    assert (d["state"], d["error_type"]) == ("failed", "review_store:JSONDecodeError")
+    assert not (h.data.doc_dir(A) / "result.json").exists()
+    assert h.extract_calls == 0
+    h.repo.retry(A)
+    h.worker.run_once()
+    assert h.repo.get(A)["state"] == "ready"
+    assert h.extract_calls == 1
+
+
+def test_a_failing_transition_is_logged_not_raised(h, caplog):
+    """A database fault while settling must not escape into the loop as a
+    stray traceback; the row stays `extracting` and start() requeues it."""
+    def locked(doc_id):
+        raise sqlite3.OperationalError("database is locked")
+    h.repo.mark_ready = locked
+    h.queue()
+    with caplog.at_level(logging.DEBUG):
+        assert h.worker.run_once() == A
+    assert "OperationalError" in caplog.text
+    assert h.repo.get(A)["state"] == "extracting"
 
 
 def test_a_review_store_fault_keeps_the_extraction_and_retry_skips_the_gpu(h):
@@ -201,6 +293,88 @@ def test_start_requeues_a_run_cut_off_by_a_restart(h):
         assert h.repo.get(A)["state"] == "queued"
     finally:
         h.worker.stop()
+
+
+def test_start_stop_start_releases_and_retakes_the_lock(h):
+    h.worker.idle_wait = 0.01
+    h.worker.start()
+    h.worker.stop()
+    assert not h.worker.running
+    other = Worker(h.repo, h.data, h.store, h._extract, lambda pdf: {})
+    other.start()                # the lock was released
+    other.stop()
+    h.worker.start()             # and the same instance can start again
+    assert h.worker.running
+
+
+def test_a_stop_that_times_out_mid_extraction_never_runs_the_drawing_twice(h):
+    """stop() does not wait out a ~15-minute run. Releasing the lock then
+    would let a second worker requeue the in-flight row and extract it again,
+    and a restart of the same instance would revive the old loop next to a
+    new one."""
+    gate = threading.Event()
+    started = threading.Event()
+
+    def slow(progress):
+        started.set()
+        gate.wait(5)
+    h.on_extract = slow
+    h.worker.idle_wait = 0.01
+    h.queue()
+    h.worker.start()
+    assert started.wait(5)
+    old = h.worker._thread
+    h.worker.stop(timeout=0.05)
+    assert old.is_alive()
+    other = Worker(h.repo, h.data, h.store, h._extract, lambda pdf: {})
+    with pytest.raises(RuntimeError, match="single worker"):
+        other.start()
+    with pytest.raises(RuntimeError, match="still finishing"):
+        h.worker.start()
+    gate.set()
+    old.join(5)
+    assert not old.is_alive()
+    assert h.repo.get(A)["state"] == "ready"
+    assert h.extract_calls == 1
+    h.worker.stop()              # the loop has returned: now the lock goes
+    other.start()
+    other.stop()
+
+
+def test_a_start_that_fails_after_taking_the_lock_releases_it(h):
+    """Otherwise the fd leaks and a retry is refused as if 'another process'
+    held the worker."""
+    orig = h.repo.requeue_interrupted
+    calls = {"n": 0}
+
+    def fail_once(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise sqlite3.OperationalError("db")
+        return orig(*a, **k)
+    h.repo.requeue_interrupted = fail_once
+    with pytest.raises(sqlite3.OperationalError):
+        h.worker.start()
+    assert not h.worker.running
+    h.worker.start()
+    assert h.worker.running
+
+
+def test_the_background_loop_survives_an_exception(h):
+    orig = h.repo.claim_next
+    calls = {"n": 0}
+
+    def fail_once():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise sqlite3.OperationalError("db")
+        return orig()
+    h.repo.claim_next = fail_once
+    h.worker.idle_wait = 0.01
+    h.queue()
+    h.worker.start()
+    assert wait_for(lambda: h.repo.get(A)["state"] == "ready")
+    assert calls["n"] >= 2
 
 
 def test_cancelled_is_an_exception_the_pipeline_can_raise_through():
