@@ -74,3 +74,12 @@ test('deleteDocument reports whether the drawing was removed, and why not', asyn
     globalThis.fetch = saved;
   }
 });
+
+// A #doc link is dropped only when the drawing is really gone (404), not
+// when the server hiccups, so the error carries the status.
+test('jsonOrThrow errors carry the HTTP status', async () => {
+  await assert.rejects(jsonOrThrow(fakeRes(404, { detail: 'unknown document' }), 'x'),
+    (err) => err.status === 404);
+  const res = { ok: false, status: 503, json: async () => { throw new Error('not json'); } };
+  await assert.rejects(jsonOrThrow(res, 'x'), (err) => err.status === 503);
+});

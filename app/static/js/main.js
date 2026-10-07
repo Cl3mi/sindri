@@ -21,9 +21,13 @@ import { initShortcuts } from './shortcuts.js';
 // The drawing this tab is waiting on (staged or extracting). Extraction runs
 // on the server; closing the tab no longer stops it (batch design §1).
 let waitingOn = null;     // { id, fileName, pages }
-let pollTimer = null;
+let pollTimer = null;     // the wait-for-ready poll only
+let stopTimer = null;     // Stop's cancel/remove loop -- its own timer, so a late poll can never kill it
 let stopping = false;     // Stop pressed; waiting for the worker to let go
 let stopGaveUp = false;   // removal kept failing; the Stop button now closes the overlay
+let resuming = false;     // the #doc link is still being opened at page load
+let finishing = false;    // a Finish is running: never switch drawings under it
+let staleShown = false;   // "opened in another tab" already said for this drawing
 // A ready drawing the reviewer chose NOT to switch to yet, because the open
 // one's changes had not saved. It opens by itself once they have
 // (afterFlush); until then it is the one drawing this tab is waiting on.
@@ -78,19 +82,30 @@ function hashDoc() { return /^#doc=([0-9a-f]{32})$/.exec(location.hash)?.[1] || 
 async function resumeFromHash() {
   const id = hashDoc();
   if (!id) return;
+  resuming = true;   // set before the first await: an upload now would race the link
   try {
     const doc = await getDocument(id);
-    routeDocument(doc);
-  } catch {
-    setHash(null);
+    await routeDocument(doc);
+  } catch (err) {
+    // Only a drawing that is really gone loses its link; a hiccup keeps it
+    // so a reload tries again.
+    if (err?.status === 404) {
+      setHash(null);
+      toast({ kind: 'warn', title: 'Drawing not found', msg: 'The drawing in this link was removed.' });
+    } else {
+      toast({ kind: 'error', title: 'Could not reach the drawing',
+              msg: `${String(err?.message || err)} — reload the page to try again.` });
+    }
+  } finally {
+    resuming = false;
   }
 }
 
-function routeDocument(doc) {
+async function routeDocument(doc) {
   waitingOn = { id: doc.id, fileName: doc.file_name, pages: doc.pages };
   if (doc.state === 'staged') showConfirm(doc.file_name, doc.pages);
   else if (doc.state === 'queued' || doc.state === 'extracting') { showExtracting(doc.file_name); pollUntilReady(); }
-  else if (['ready', 'in_review', 'finished'].includes(doc.state)) loadForReview(doc.id);
+  else if (['ready', 'in_review', 'finished'].includes(doc.state)) await loadForReview(doc.id);
   else {
     toast({ kind: 'error', title: `Drawing ${doc.state}`,
             msg: doc.error_type ? `Extraction failed (${doc.error_type}).` : 'Upload it again to retry.' });
@@ -126,6 +141,10 @@ function wireHeader() {
     }
     clearSession();
     setHash(null);
+    // A drawing was waiting for this one's changes to save. Closing is the
+    // reviewer leaving anyway (the beacon above was the last try), so open
+    // it now rather than leave it waiting on a drawing nobody is reviewing.
+    if (pendingOpen) loadForReview(pendingOpen, { skipFlush: true });
   });
   on('session', () => {
     const chip  = document.getElementById('file-chip');
@@ -161,10 +180,22 @@ function wireFileInputs() {
 async function handleFile(file) {
   if (!file) return;
   // One waiting drawing per tab: a second upload would orphan the first,
-  // which only its link could ever reach again (B3 adds a list).
-  if (waitingOn || pendingOpen) {
+  // which only its link could ever reach again (B3 adds a list). Each
+  // refusal names a control the reviewer actually has on screen.
+  if (resuming) {
+    toast({ kind: 'warn', title: 'Still opening the linked drawing', msg: 'Try again in a moment.' });
+    return;
+  }
+  if (pendingOpen) {
+    toast({ kind: 'warn', title: 'A drawing is waiting to open',
+            msg: 'It opens once this drawing\'s changes are saved — or close this drawing (×) to open it now.' });
+    return;
+  }
+  if (waitingOn) {
     toast({ kind: 'warn', title: 'A drawing is already waiting',
-            msg: 'Cancel or stop it before opening another drawing.' });
+            msg: stopGaveUp ? 'Close the stopped drawing first.'
+               : stopping ? 'It is still stopping — try again once it has.'
+               : 'Cancel or stop it before opening another drawing.' });
     return;
   }
   if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
@@ -218,8 +249,10 @@ async function startExtraction() {
   showExtracting(waitingOn.fileName);
   try {
     await enqueueDocument(waitingOn.id);
+    if (!waitingOn || stopping) return;   // Stop pressed while queueing: Stop owns it now
     pollUntilReady();
   } catch (err) {
+    if (!waitingOn || stopping) return;
     hideExtracting();
     // Still staged on the server: offer it again rather than strand it.
     showConfirm(waitingOn.fileName, waitingOn.pages);
@@ -230,6 +263,7 @@ async function startExtraction() {
 // Poll, not stream: the run belongs to the server, and a poll has nothing
 // to reconnect after a sleep or a dropped network (decision 8).
 function pollUntilReady() {
+  if (!waitingOn || stopping) return;
   clearTimeout(pollTimer);
   pollTimer = setTimeout(async () => {
     if (!waitingOn || stopping) return;
@@ -237,6 +271,7 @@ function pollUntilReady() {
     try {
       doc = await getDocument(waitingOn.id);
     } catch {
+      if (!waitingOn || stopping) return;
       pollUntilReady();
       return;
     }
@@ -271,29 +306,40 @@ async function stopExtraction() {
   document.getElementById('ex-title').textContent = 'Cancelling…';
   document.getElementById('ex-detail').textContent =
     'Stops at the next step — this can take a few minutes.';
-  try { await cancelDocument(id); } catch { /* already finished or gone: remove it anyway */ }
-  removeWhenStopped(id);
+  removeWhenStopped(id, 0, await tryCancel(id));
+}
+
+// Whether the server accepted the cancel. It refuses one for a drawing that
+// is not queued/extracting (it finished first, or is still staged) -- DELETE
+// then simply succeeds -- and a network failure leaves it unknown, so the
+// loop below keeps trying until it is accepted or the drawing is gone.
+async function tryCancel(id) {
+  try { await cancelDocument(id); return true; } catch { return false; }
 }
 
 // A 409 (still stopping) is waited out for as long as it takes; other
 // failures in a row give up visibly after a few (stop.js), leaving a way out.
-function removeWhenStopped(id, failures = 0) {
-  clearTimeout(pollTimer);
-  pollTimer = setTimeout(async () => {
+function removeWhenStopped(id, failures = 0, cancelled = false) {
+  clearTimeout(stopTimer);
+  stopTimer = setTimeout(async () => {
+    if (!cancelled) cancelled = await tryCancel(id);
     const next = nextStopStep(await deleteDocument(id), failures);
     if (next.step === 'wait' || next.step === 'retry') {
       if (next.step === 'retry') {
-        document.getElementById('ex-detail').textContent =
-          'Cancelled — the server has not removed it yet; still trying…';
+        document.getElementById('ex-detail').textContent = cancelled
+          ? 'Cancelled — the server has not removed it yet; still trying…'
+          : 'The server has not confirmed the cancel yet; still trying…';
       }
-      removeWhenStopped(id, next.failures);
+      removeWhenStopped(id, next.failures, cancelled);
       return;
     }
     if (next.step === 'give_up') {
       stopGaveUp = true;
       document.getElementById('ex-title').textContent = 'Could not remove the drawing';
-      document.getElementById('ex-detail').textContent =
-        'It is cancelled and will not be extracted, but the server did not remove it. Close this and carry on.';
+      document.getElementById('ex-detail').textContent = cancelled
+        ? 'It is cancelled and will not be extracted, but the server did not remove it. Close this and carry on.'
+        : 'The server confirmed neither the cancel nor the removal, so it may still be extracted. '
+          + `Close this; its link is ${location.origin}${location.pathname}#doc=${id}`;
       setStopLabel('Close');
       document.getElementById('ex-stop').disabled = false;
       return;
@@ -304,6 +350,7 @@ function removeWhenStopped(id, failures = 0) {
 }
 
 function closeStopOverlay() {
+  clearTimeout(stopTimer);
   clearTimeout(pollTimer);
   stopping = false;
   stopGaveUp = false;
@@ -329,10 +376,19 @@ function confirmLeaveUnsaved() {
                + 'Cancel: stay here; saving keeps retrying.');
 }
 
-async function loadForReview(id) {
+// `skipFlush`: the reviewer already left the open drawing (closed it), or
+// its writer was taken by another tab -- asking again would be pointless.
+async function loadForReview(id, { skipFlush = false } = {}) {
+  // Taken synchronously, before any await, so a second flush tick cannot
+  // start a second open of the same waiting drawing. "Stay" re-sets it.
+  if (pendingOpen === id) {
+    pendingOpen = null;
+    closePendingToast?.();
+    closePendingToast = null;
+  }
   // journal.resume() discards the open drawing's unflushed events, so they
   // go to the server first -- or the reviewer decides, never silence.
-  if (journal.active && journal.sessionId !== id) {
+  if (!skipFlush && journal.active && journal.sessionId !== id) {
     if (!(await flushBeforeLeaving(journal, confirmLeaveUnsaved))) {
       // Stay -- but keep the other drawing: it opens by itself once this
       // one's changes are saved (scheduleFlush → afterFlush), and its link
@@ -348,13 +404,9 @@ async function loadForReview(id) {
       scheduleFlush(flushBackoff);
       return;
     }
-    // Left anyway: one last best-effort try for whatever is still pending.
-    if (journal.pending.length) beaconEvents(journal.sessionId, journal.writer, journal.pending);
-  }
-  if (pendingOpen === id) {
-    pendingOpen = null;
-    closePendingToast?.();
-    closePendingToast = null;
+    // Left anyway: restoreReview sends whatever is still pending with this
+    // drawing's writer just before the journal moves on -- including edits
+    // made while /open is in flight.
   }
   setBusy('Opening drawing…');
   try {
@@ -362,9 +414,10 @@ async function loadForReview(id) {
     // Restore, resume and seed with nothing in between: an op applied
     // between restoring and resuming would never be journaled. Throws with
     // the screen untouched or cleared, never half-built (reopen.js).
-    restoreReview(data, { restoreSession, clearSession, journal, finisher });
+    restoreReview(data, { restoreSession, clearSession, journal, finisher, beacon: beaconEvents });
     clearTimeout(flushTimer);
     flushBackoff = 500;
+    staleShown = false;
     waitingOn = null;
     setHash(id);
     hideExtracting();
@@ -377,7 +430,9 @@ async function loadForReview(id) {
     waitingOn = null;
     hideExtracting();
     toast({ kind: 'error', title: 'Could not open the drawing',
-            msg: `${String(err.message || err)} — reload the page to try again.` });
+            msg: state.sessionId && state.sessionId !== id
+              ? `${String(err.message || err)} — its link: ${location.origin}${location.pathname}#doc=${id}`
+              : `${String(err.message || err)} — reload the page to try again.` });
     if (state.sessionId) {
       backToEmptyOrCurrent();
     } else {
@@ -483,7 +538,6 @@ function scheduleFlush(delay) {
     let stale = false;
     try {
       await journal.flush();
-      flushBackoff = 500;
     } catch (err) {
       ok = false;
       // Another tab opened this drawing and holds the writer now; every
@@ -491,11 +545,25 @@ function scheduleFlush(delay) {
       // read-only banner).
       stale = /opened elsewhere/.test(err?.message || '');
     }
-    switch (afterFlush({ ok, stale, pending: journal.pending.length, pendingOpen })) {
-      case 'open':  loadForReview(pendingOpen); break;
-      case 'flush': scheduleFlush(500); break;
+    switch (afterFlush({ ok, stale, pending: journal.pending.length, pendingOpen, finishing })) {
+      case 'open':  flushBackoff = 500; loadForReview(pendingOpen); break;
+      case 'open_stale':
+        toast({ kind: 'warn', title: 'Opened in another tab',
+                msg: 'This tab can no longer save its last changes to this drawing. Opening the waiting drawing.' });
+        loadForReview(pendingOpen, { skipFlush: true });
+        break;
+      case 'flush':
+        // Edits keep landing while a drawing waits: back off, or this would
+        // post every 500 ms for as long as the reviewer keeps working.
+        flushBackoff = Math.min(flushBackoff * 2, 10000);
+        scheduleFlush(flushBackoff);
+        break;
       case 'stale':
-        toast({ kind: 'warn', title: 'Opened in another tab', msg: 'Reload to continue here.' });
+        // Said once per drawing, not again on every edit's flush.
+        if (!staleShown) {
+          staleShown = true;
+          toast({ kind: 'warn', title: 'Opened in another tab', msg: 'Reload to continue here.' });
+        }
         break;
       case 'retry':
         // Keep everything pending and retry, backing off to 10 s; Finish
@@ -503,7 +571,9 @@ function scheduleFlush(delay) {
         flushBackoff = Math.min(flushBackoff * 2, 10000);
         scheduleFlush(flushBackoff);
         break;
-      default: break;   // idle: the next edit schedules the next flush
+      default:   // idle: the next edit schedules the next flush
+        if (ok) flushBackoff = 500;
+        break;
     }
   }, delay);
 }
@@ -535,6 +605,7 @@ async function finish() {
   clearTimeout(flushTimer);   // the run flushes itself
   btn.disabled = true;        // no second click while sealing/exporting
   setBusy('Finishing…');
+  finishing = true;
   try {
     const res = await finisher.run(snapshot);
     if (res.status === 'blocked') {
@@ -548,6 +619,7 @@ async function finish() {
   } catch (err) {
     toast({ kind: 'error', title: 'Finish failed', msg: String(err.message || err) });
   } finally {
+    finishing = false;
     setIdle();
     btn.disabled = !state.sessionId;
     // The flush timer was cleared above; if events are still pending (a

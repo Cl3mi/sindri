@@ -24,6 +24,7 @@ function fakes({ restoreThrows = false } = {}) {
         return events.map((e) => [{ op: e.seq }, e.seq]);
       },
       clearSession: () => { log.push(['clear']); session.id = null; },
+      beacon: (sid, w, events) => log.push(['beacon', sid, w, events.map((e) => e.seq)]),
       finisher: { seed: (s) => log.push(['seed', s]) },
     },
   };
@@ -136,5 +137,39 @@ test('a failed flush backs off and retries, waiting drawing or not', () => {
 });
 
 test('a writer taken by another tab stops retrying -- nothing more can save here', () => {
-  assert.equal(afterFlush({ ok: false, stale: true, pending: 2, pendingOpen: 'b' }), 'stale');
+  assert.equal(afterFlush({ ok: false, stale: true, pending: 2, pendingOpen: null }), 'stale');
+});
+
+test('...and with a drawing waiting, opens it: the stale events can never save from this tab', () => {
+  // Waiting for a drain that can never come would strand the waiting
+  // drawing and block every upload with nothing on screen to undo it.
+  assert.equal(afterFlush({ ok: false, stale: true, pending: 2, pendingOpen: 'b' }), 'open_stale');
+});
+
+test('never switches drawings in the middle of a Finish', () => {
+  assert.equal(afterFlush({ ok: true, pending: 0, pendingOpen: 'b', finishing: true }), 'idle');
+  assert.equal(afterFlush({ ok: false, stale: true, pending: 2, pendingOpen: 'b', finishing: true }), 'idle');
+});
+
+// ---- edits on A while /open(B) was in flight ------------------------------
+
+test('events the old drawing still holds go out with ITS writer before resuming on the new one', () => {
+  const f = fakes();
+  f.journal.record({ kind: 'do', op: { event: () => ({ type: 'accept', ids: [] }) } });
+  restoreReview(payload(), f.deps);
+  const beacon = f.log.find((e) => e[0] === 'beacon');
+  assert.deepEqual(beacon, ['beacon', 'old', 'w-old', [1]]);
+  assert.ok(f.log.indexOf(beacon) < f.log.findIndex((e) => e[0] === 'seed'));
+  assert.equal(f.journal.sessionId, 'new');
+});
+
+test('nothing pending, or the same drawing, sends no beacon', () => {
+  const f = fakes();
+  restoreReview(payload(), f.deps);
+  assert.equal(f.log.filter((e) => e[0] === 'beacon').length, 0);
+  const g = fakes();
+  g.journal.start('new', 'w-stale');
+  g.journal.record({ kind: 'do', op: { event: () => ({ type: 'accept', ids: [] }) } });
+  restoreReview(payload(), g.deps);   // /open rotated that writer: a beacon would only be refused
+  assert.equal(g.log.filter((e) => e[0] === 'beacon').length, 0);
 });

@@ -26,3 +26,7 @@ test('enough consecutive non-409 failures give up visibly', () => {
   assert.deepEqual(nextStopStep({ ok: false, status: 500 }, STOP_GIVE_UP_AFTER - 1),
                    { step: 'give_up', failures: STOP_GIVE_UP_AFTER });
 });
+
+test('404 means it is already gone: done', () => {
+  assert.deepEqual(nextStopStep({ ok: false, status: 404 }, 2), { step: 'done', failures: 0 });
+});

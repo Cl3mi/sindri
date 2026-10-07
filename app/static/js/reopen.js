@@ -6,7 +6,7 @@
 // finisher what the server last sealed. Throws -- with the screen either
 // untouched or cleared, never half-built -- when the payload cannot be
 // rebuilt; the caller shows the error.
-export function restoreReview(data, { restoreSession, clearSession, journal, finisher }) {
+export function restoreReview(data, { restoreSession, clearSession, journal, finisher, beacon }) {
   // Checked before anything is touched. journal.resume() would refuse it
   // too, but only AFTER restoreSession had already swapped the screen.
   if (!Number.isInteger(data.last_seq) || data.last_seq < 0) {
@@ -26,6 +26,13 @@ export function restoreReview(data, { restoreSession, clearSession, journal, fin
       journal.start(null, null);
     }
     throw err;
+  }
+  // resume() discards pending events. Edits made on ANOTHER drawing while
+  // this /open was in flight are still unsent; that drawing's writer is
+  // still valid, so send them now (idempotent by seq server-side). On the
+  // same drawing /open rotated the writer, and a send would only be refused.
+  if (journal.active && journal.sessionId !== data.session_id && journal.pending.length) {
+    beacon(journal.sessionId, journal.writer, journal.pending);
   }
   try {
     journal.resume(data.session_id, data.writer, data.last_seq, pairs);
@@ -63,8 +70,13 @@ export async function flushBeforeLeaving(journal, confirmLeave) {
 //   'idle'  -- nothing waiting; the next edit schedules the next flush
 //   'retry' -- back off and try again
 //   'stale' -- another tab holds the writer; no retry can ever succeed here
-export function afterFlush({ ok, stale = false, pending, pendingOpen }) {
-  if (stale) return 'stale';
+//   'open_stale' -- stale, with a drawing waiting: open it, since the drain
+//              it waits for can never come and would strand it
+// Never switches while a Finish runs (`finishing`): Finish reschedules the
+// flush loop when it ends, and the switch happens then.
+export function afterFlush({ ok, stale = false, pending, pendingOpen, finishing = false }) {
+  if (pendingOpen && finishing) return 'idle';
+  if (stale) return pendingOpen ? 'open_stale' : 'stale';
   if (!ok) return 'retry';
   if (!pendingOpen) return 'idle';
   return pending ? 'flush' : 'open';

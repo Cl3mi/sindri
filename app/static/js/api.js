@@ -76,13 +76,19 @@ export async function sealSession(sessionId, body) {
 // falls back, and a body that parsed but holds a non-string detail says so
 // with the status code rather than silently reusing the caller's fallback
 // (which is usually written for a 404, not a validation error).
+//
+// The thrown error carries `status`, so a caller can tell "gone" (404) from
+// a hiccup -- a #doc link is dropped only for the former.
 export async function jsonOrThrow(res, fallback) {
   if (!res.ok) {
     let body = null;
     try { body = await res.json(); } catch { /* no JSON body at all */ }
-    if (body && typeof body.detail === 'string') throw new Error(body.detail);
-    if (body && body.detail !== undefined) throw new Error(`request rejected (${res.status})`);
-    throw new Error(fallback);
+    let msg = fallback;
+    if (body && typeof body.detail === 'string') msg = body.detail;
+    else if (body && body.detail !== undefined) msg = `request rejected (${res.status})`;
+    const err = new Error(msg);
+    err.status = res.status;
+    throw err;
   }
   return res.json();
 }
