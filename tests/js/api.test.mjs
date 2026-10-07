@@ -83,3 +83,50 @@ test('jsonOrThrow errors carry the HTTP status', async () => {
   const res = { ok: false, status: 503, json: async () => { throw new Error('not json'); } };
   await assert.rejects(jsonOrThrow(res, 'x'), (err) => err.status === 503);
 });
+
+// The import wrappers (batch design §2) speak the routes app/main.py has:
+// the URL, method and body each sends, and a refusal carries its status.
+test('the import wrappers send what the import routes expect', async () => {
+  const api = await import('../../app/static/js/api.js');
+  const saved = globalThis.fetch;
+  const sent = [];
+  try {
+    globalThis.fetch = async (url, init = {}) => {
+      sent.push([url, init.method || 'GET', init.body ? JSON.parse(init.body) : null]);
+      return fakeRes(200, { ok: true });
+    };
+    await api.createBatch('Lieferung 12');
+    await api.getBatch('b1');
+    await api.startBatch('b1');
+    await api.setIncluded('d1', false);
+    assert.deepEqual(sent, [
+      ['/api/batches', 'POST', { name: 'Lieferung 12' }],
+      ['/api/batches/b1', 'GET', null],
+      ['/api/batches/b1/start', 'POST', null],
+      ['/api/documents/d1/include', 'POST', { included: false }],
+    ]);
+    globalThis.fetch = async () => fakeRes(409, { detail: 'the import changed' });
+    await assert.rejects(api.startBatch('b1'),
+      (err) => err.status === 409 && err.message === 'the import changed');
+  } finally {
+    globalThis.fetch = saved;
+  }
+});
+
+test('discardBatch is best effort: it reports, never throws', async () => {
+  const { discardBatch } = await import('../../app/static/js/api.js');
+  const saved = globalThis.fetch;
+  try {
+    const urls = [];
+    globalThis.fetch = async (url, init) => { urls.push([url, init.method]); return { ok: true, status: 200 }; };
+    assert.deepEqual(await discardBatch('b1'), { ok: true, status: 200 });
+    assert.deepEqual(urls, [['/api/batches/b1', 'DELETE']]);
+    globalThis.fetch = async () => ({ ok: false, status: 409 });
+    assert.deepEqual(await discardBatch('b1'), { ok: false, status: 409 });
+    globalThis.fetch = async () => { throw new TypeError('offline'); };
+    assert.deepEqual(await discardBatch('b1'), { ok: false, status: 0 });
+    assert.deepEqual(await discardBatch(''), { ok: false, status: 0 });
+  } finally {
+    globalThis.fetch = saved;
+  }
+});

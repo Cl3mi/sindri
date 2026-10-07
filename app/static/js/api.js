@@ -105,6 +105,33 @@ export const retryDocument = async (id) =>
 export const openDocument = async (id) =>
   jsonOrThrow(await fetch(docUrl(id, '/open'), { method: 'POST' }), 'Could not open the drawing');
 
+// ----- Imports (batch design §2). The chunked upload itself is upload.js.
+// The server cleans a batch name and may refuse it (400, a fixed sentence);
+// errors carry `status` via jsonOrThrow.
+const JSON_HEADERS = { 'Content-Type': 'application/json' };
+
+export const createBatch = async (name) =>
+  jsonOrThrow(await fetch('/api/batches', { method: 'POST', headers: JSON_HEADERS,
+                                            body: JSON.stringify({ name }) }), 'Could not start an import');
+export const getBatch = async (id) => jsonOrThrow(await fetch(`/api/batches/${id}`), 'Import not found');
+export const startBatch = async (id) =>
+  jsonOrThrow(await fetch(`/api/batches/${id}/start`, { method: 'POST' }), 'Could not start the import');
+export const setIncluded = async (id, included) =>
+  jsonOrThrow(await fetch(docUrl(id, '/include'), { method: 'POST', headers: JSON_HEADERS,
+                                                    body: JSON.stringify({ included }) }),
+              'Could not change the selection');
+
+// Best effort, like deleteDocument: never throws; resolves { ok, status }.
+export async function discardBatch(id) {
+  if (!id) return { ok: false, status: 0 };
+  try {
+    const res = await fetch(`/api/batches/${id}`, { method: 'DELETE' });
+    return { ok: res.ok, status: res.status };
+  } catch {
+    return { ok: false, status: 0 };
+  }
+}
+
 // Best-effort removal of a drawing the user backed out of. Never throws;
 // resolves { ok, status } (status 0 = no response). The server refuses
 // (409) while a cancelled run is still unwinding, which Stop waits out; any
