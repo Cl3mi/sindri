@@ -883,6 +883,25 @@ def test_zip_entry_names_are_never_logged(h, caplog):
 OLD = "2026-01-01T00:00:00.000000+00:00"
 
 
+def before_this_process(path):
+    """Date `path` before this process started, as a crash's leftover is: the
+    sweep never judges anything this process itself may have written."""
+    past = uploads_mod.PROCESS_STARTED - 3600
+    os.utime(path, (past, past))
+
+
+def leftover_marker(d):
+    m = d / IMPORTING_MARKER
+    m.write_bytes(b"")
+    before_this_process(m)
+
+
+def idle_since(h, when, *batch_ids):
+    h.repo._conn.execute(
+        f"UPDATE batch SET created_at = ?, updated_at = ? WHERE id IN ({', '.join('?' * len(batch_ids))})",
+        (when, when, *batch_ids))
+
+
 def test_recover_resets_an_interrupted_completion(h):
     uid = h.send(b"x" * 10)
     h.repo.begin_completion(uid)
@@ -893,16 +912,32 @@ def test_recover_resets_an_interrupted_completion(h):
 def test_the_startup_sweep_removes_only_marked_dirs_without_a_row(h):
     (row,) = h.imported(pdf_bytes())["documents"]
     kept = h.data.doc_dir(row["id"])
-    (kept / IMPORTING_MARKER).write_bytes(b"")          # a crash after the commit
+    leftover_marker(kept)                               # a crash after the commit
     orphan = h.data.doc_dir("a" * 32)
     orphan.mkdir()
-    (orphan / IMPORTING_MARKER).write_bytes(b"")        # a crash before it
+    leftover_marker(orphan)                             # a crash before it
     unmarked = h.data.doc_dir("b" * 32)
     unmarked.mkdir()                                    # no row, no marker: never ours to judge
+    (unmarked / "input.pdf").write_bytes(b"x")
     assert h.uploads.sweep_unfinished_imports() == 1
     assert not orphan.exists()
     assert kept.is_dir() and not (kept / IMPORTING_MARKER).exists()
-    assert unmarked.is_dir()
+    assert (unmarked / "input.pdf").read_bytes() == b"x"
+
+
+def test_a_marker_written_since_this_process_started_is_never_judged(h):
+    """Second layer behind run-once: a real crash leftover predates the
+    process. A marker this process wrote belongs to work in flight -- an
+    import before its commit, a Start before its unmark -- whatever the
+    index says right now. (A clock stepping backwards only makes it skip.)"""
+    (row,) = h.imported(pdf_bytes())["documents"]
+    kept = h.data.doc_dir(row["id"])
+    (kept / IMPORTING_MARKER).write_bytes(b"")
+    in_flight = h.data.doc_dir("a" * 32)
+    in_flight.mkdir()
+    (in_flight / IMPORTING_MARKER).write_bytes(b"")
+    assert h.uploads.sweep_unfinished_imports() == 0
+    assert (in_flight / IMPORTING_MARKER).exists() and (kept / IMPORTING_MARKER).exists()
 
 
 def test_a_marked_dir_whose_row_moved_on_is_only_unmarked(h):
@@ -912,7 +947,7 @@ def test_a_marked_dir_whose_row_moved_on_is_only_unmarked(h):
     (row,) = h.imported(data)["documents"]
     h.repo.start_batch(h.batch)
     d = h.data.doc_dir(row["id"])
-    (d / IMPORTING_MARKER).write_bytes(b"")
+    leftover_marker(d)
     assert h.uploads.sweep_unfinished_imports() == 0
     assert (d / "input.pdf").read_bytes() == data
     assert not (d / IMPORTING_MARKER).exists()
@@ -925,7 +960,7 @@ def test_a_sweep_that_stops_halfway_leaves_the_dir_marked(h, monkeypatch):
     orphan = h.data.doc_dir("a" * 32)
     (orphan / "exports").mkdir(parents=True)
     (orphan / "input.pdf").write_bytes(b"x")
-    (orphan / IMPORTING_MARKER).write_bytes(b"")
+    leftover_marker(orphan)
 
     def failing(*a, **k):
         raise PermissionError(errno.EACCES, "denied")
@@ -943,10 +978,10 @@ def test_the_sweep_ignores_what_is_not_a_drawing_dir(h):
     (h.data.docs / "notes.txt").write_bytes(b"x")
     foreign = h.data.docs / "not-an-id"
     foreign.mkdir()
-    (foreign / IMPORTING_MARKER).write_bytes(b"")
+    leftover_marker(foreign)
     target = h.data.root / "elsewhere"
     target.mkdir()
-    (target / IMPORTING_MARKER).write_bytes(b"")
+    leftover_marker(target)
     (h.data.docs / ("c" * 32)).symlink_to(target)
     assert h.uploads.sweep_unfinished_imports() == 0
     assert (foreign / IMPORTING_MARKER).exists()
@@ -956,11 +991,39 @@ def test_the_sweep_ignores_what_is_not_a_drawing_dir(h):
 
 def test_unmarked_dirs_without_a_row_are_counted_not_named(h, caplog):
     caplog.set_level(logging.DEBUG)
-    h.data.doc_dir("b" * 32).mkdir()
+    d = h.data.doc_dir("b" * 32)
+    d.mkdir()
+    (d / "input.pdf").write_bytes(b"x")
+    before_this_process(d)
     assert h.uploads.sweep_unfinished_imports() == 0
-    assert h.data.doc_dir("b" * 32).is_dir()
+    assert (d / "input.pdf").exists()
     text = "\n".join(r.getMessage() for r in caplog.records)
     assert "1 unmarked" in text and "bbbbbbbb" not in text
+
+
+def test_an_empty_unmarked_dir_without_a_row_is_removed_a_full_one_kept(h, caplog):
+    """rmdir removes only an EMPTY dir: nothing that holds a byte is ever
+    deleted on the index's word alone. Only the survivors are counted."""
+    caplog.set_level(logging.DEBUG)
+    empty = h.data.doc_dir("a" * 32)
+    empty.mkdir()
+    before_this_process(empty)
+    full = h.data.doc_dir("b" * 32)
+    full.mkdir()
+    (full / "result.json").write_bytes(b"{}")
+    before_this_process(full)
+    assert h.uploads.sweep_unfinished_imports() == 0
+    assert not empty.exists()
+    assert (full / "result.json").read_bytes() == b"{}"
+    assert "1 unmarked" in "\n".join(r.getMessage() for r in caplog.records)
+
+
+def test_an_empty_dir_made_since_this_process_started_is_kept(h):
+    """An import between its mkdir and its marker looks exactly like this."""
+    fresh = h.data.doc_dir("a" * 32)
+    fresh.mkdir()
+    assert h.uploads.sweep_unfinished_imports() == 0
+    assert fresh.is_dir()
 
 
 def test_week_old_unfinished_uploads_are_removed_and_fresh_ones_kept(h):
@@ -979,6 +1042,40 @@ def test_an_upload_resumed_after_it_was_found_stale_is_kept(h):
     uid = h.create(b"x" * 10)["upload_id"]
     assert h.repo.delete_upload(uid, older_than=OLD) is None
     assert h.repo.get_upload(uid)["state"] == "receiving"
+
+
+def test_an_old_completing_upload_is_never_stale(h):
+    """`completing` is live work (a completion holds its lock) or, at
+    startup, reset first. Only a `receiving` row is ever stale."""
+    uid = h.send(b"x" * 10)
+    h.repo.begin_completion(uid)
+    h.repo._conn.execute("UPDATE upload SET updated_at = ? WHERE id = ?", (OLD, uid))
+    assert h.repo.stale_uploads("9999") == []
+    assert h.repo.delete_upload(uid, older_than="9999") is None
+    assert h.uploads.cleanup_stale()["stale_uploads"] == 0
+    assert h.repo.get_upload(uid)["state"] == "completing"
+    assert h.data.part_path(uid).read_bytes() == b"x" * 10
+
+
+def test_the_stale_cutoff_comes_from_the_repo_clock(h):
+    """One time source: the clock that stamps updated_at also decides age."""
+    uid = h.create(b"x" * 10)["upload_id"]
+    h.repo._clock = lambda: "2099-01-01T00:00:00.000000+00:00"
+    assert h.uploads.cleanup_stale()["stale_uploads"] == 1
+    with pytest.raises(UnknownUpload):
+        h.repo.get_upload(uid)
+
+
+def test_a_passed_now_in_another_zone_is_compared_in_utc(h):
+    """updated_at is UTC text; a +02:00 `now` compared as text would make an
+    upload 6.9 days old look 7 days old."""
+    from datetime import datetime, timedelta, timezone
+    uid = h.create(b"x" * 10)["upload_id"]
+    h.repo._conn.execute("UPDATE upload SET updated_at = ? WHERE id = ?", (OLD, uid))
+    plus2 = timezone(timedelta(hours=2))
+    now = datetime(2026, 1, 8, 1, 30, tzinfo=plus2)        # 2026-01-07 23:30 UTC
+    assert h.uploads.cleanup_stale(now=now)["stale_uploads"] == 0
+    assert h.uploads.cleanup_stale(now=now + timedelta(hours=1))["stale_uploads"] == 1
 
 
 def test_a_stale_upload_is_removed_only_under_its_lock(h):
@@ -1045,8 +1142,7 @@ def test_week_old_empty_drafts_are_removed(h):
     old_empty = h.repo.create_batch("old")["id"]
     old_full = h.repo.create_batch("full")["id"]
     h.imported(pdf_bytes(), batch=old_full)
-    h.repo._conn.execute("UPDATE batch SET created_at = ? WHERE id IN (?, ?)",
-                         (OLD, old_empty, old_full))
+    idle_since(h, OLD, old_empty, old_full)
     assert h.uploads.cleanup_stale()["empty_drafts"] == 1
     assert {b["id"] for b in h.repo.list_batches()} == {h.batch, old_full}
 
@@ -1059,12 +1155,56 @@ def test_a_draft_emptied_by_hand_goes_with_its_finished_upload_rows(h):
     h.repo.delete(row["id"])
     waiting = h.repo.create_batch("waiting")["id"]
     h.create(b"x" * 10, batch=waiting)
-    h.repo._conn.execute("UPDATE batch SET created_at = ? WHERE id IN (?, ?)",
-                         (OLD, emptied, waiting))
+    idle_since(h, OLD, emptied, waiting)
     assert h.uploads.cleanup_stale()["empty_drafts"] == 1
     assert {b["id"] for b in h.repo.list_batches()} == {h.batch, waiting}
     assert h.repo._conn.execute("SELECT COUNT(*) FROM upload WHERE batch_id = ?",
                                 (emptied,)).fetchone()[0] == 0
+
+
+def test_empty_for_a_week_means_idle_for_a_week(h):
+    """A three-week-old draft whose last drawing was removed TODAY is not
+    abandoned; one nobody has touched for eight days is."""
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    weeks_ago = (now - timedelta(weeks=3)).isoformat(timespec="microseconds")
+    days_ago = (now - timedelta(days=8)).isoformat(timespec="microseconds")
+    today = h.repo.create_batch("today")["id"]
+    (row,) = h.imported(pdf_bytes(), batch=today)["documents"]
+    h.repo._conn.execute("UPDATE batch SET created_at = ?, updated_at = ? WHERE id = ?",
+                         (weeks_ago, weeks_ago, today))
+    h.repo.delete(row["id"])                             # emptied today
+    idle = h.repo.create_batch("idle")["id"]
+    h.repo._conn.execute("UPDATE batch SET created_at = ?, updated_at = ? WHERE id = ?",
+                         (weeks_ago, days_ago, idle))
+    assert h.uploads.cleanup_stale()["empty_drafts"] == 1
+    assert {b["id"] for b in h.repo.list_batches()} == {h.batch, today}
+
+
+def test_every_change_to_a_draft_counts_as_activity(h):
+    """create, rename, a new upload, a resume, a staged drawing, Include,
+    removing a drawing and removing an upload each bump the draft's
+    updated_at."""
+    def touched(step):
+        h.repo._conn.execute("UPDATE batch SET updated_at = ? WHERE id = ?", (OLD, h.batch))
+        step()
+        return h.repo._conn.execute("SELECT updated_at FROM batch WHERE id = ?",
+                                    (h.batch,)).fetchone()[0] > OLD
+    assert h.repo._conn.execute("SELECT updated_at FROM batch WHERE id = ?",
+                                (h.batch,)).fetchone()[0] is not None
+    data = pdf_bytes()
+    assert touched(lambda: h.repo.rename_batch(h.batch, "n"))
+    assert touched(lambda: h.create(data))
+    assert touched(lambda: h.create(data))                              # a resume
+    uid = h.send(data)
+    h.repo.begin_completion(uid)
+    h.repo.abort_completion(uid)
+    rows = []
+    assert touched(lambda: rows.extend(h.uploads.complete(uid)["documents"]))
+    assert touched(lambda: h.repo.set_included(rows[0]["id"], False))
+    assert touched(lambda: h.repo.delete(rows[0]["id"]))
+    other = h.create(b"q" * 10)["upload_id"]
+    assert touched(lambda: h.uploads.delete(other))
 
 
 def test_an_empty_draft_is_removed_only_under_its_batch_lock(h):
@@ -1073,7 +1213,7 @@ def test_an_empty_draft_is_removed_only_under_its_batch_lock(h):
     forgets the lock once the batch is gone."""
     import threading
     old = h.repo.create_batch("old")["id"]
-    h.repo._conn.execute("UPDATE batch SET created_at = ? WHERE id = ?", (OLD, old))
+    idle_since(h, OLD, old)
     out = {}
     with h.uploads._batch_lock(old):
         t = threading.Thread(target=lambda: out.update(h.uploads.cleanup_stale()))
@@ -1088,7 +1228,7 @@ def test_an_empty_draft_is_removed_only_under_its_batch_lock(h):
 def test_one_failing_recovery_step_does_not_skip_the_others(h, monkeypatch):
     orphan = h.data.doc_dir("a" * 32)
     orphan.mkdir()
-    (orphan / IMPORTING_MARKER).write_bytes(b"")
+    leftover_marker(orphan)
 
     def boom():
         raise sqlite3.OperationalError("locked")

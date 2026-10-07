@@ -85,10 +85,11 @@ _STAGING_SELECT = """
 """
 
 
-# A draft old enough to go and empty: no drawing, and no UNFINISHED upload
+# A draft IDLE long enough to go (its last change, not its creation: a draft
+# emptied today is not abandoned) and empty: no drawing, and no UNFINISHED upload
 # (a complete upload row is bookkeeping and goes with it). A draft with
 # staged drawings is kept however old: it may be continued later (design §2).
-_EMPTY_DRAFT = ("draft = 1 AND created_at < ?"
+_EMPTY_DRAFT = ("draft = 1 AND COALESCE(updated_at, created_at) < ?"
                 " AND NOT EXISTS (SELECT 1 FROM document d WHERE d.batch_id = batch.id)"
                 " AND NOT EXISTS (SELECT 1 FROM upload u WHERE u.batch_id = batch.id"
                 " AND u.state != 'complete')")
@@ -145,6 +146,16 @@ class Repo:
             raise InvalidTransition(
                 f"document is {row['state']}, not {' or '.join(from_states)}")
 
+    def _touch(self, c, batch_id) -> None:
+        """A change to a batch's content or name: the empty-draft sweep ages
+        a draft from its LAST change (_EMPTY_DRAFT)."""
+        c.execute("UPDATE batch SET updated_at = ? WHERE id = ?", (self._clock(), batch_id))
+
+    def now(self) -> datetime:
+        """This repo's clock as an aware datetime: the stale sweep's cutoff
+        comes from the same clock that stamps updated_at."""
+        return datetime.fromisoformat(self._clock())
+
     @staticmethod
     def _row(c, doc_id) -> dict:
         """The row as seen inside the caller's transaction."""
@@ -179,6 +190,7 @@ class Repo:
     def _stage(self, c, batch_id, docs, upload_id) -> list:
         """Insert staged rows inside the caller's transaction."""
         self._draft(c, batch_id)
+        self._touch(c, batch_id)
         ids = []
         for d in docs:
             # Asked BEFORE this row's insert, so of two identical files the
@@ -228,11 +240,13 @@ class Repo:
             return self._upload(self._conn, upload_id)
 
     def stale_uploads(self, cutoff: str) -> list:
-        """Unfinished uploads untouched since `cutoff`. A listing only: the
-        delete re-checks the age under the upload's lock."""
+        """Uploads still `receiving` and untouched since `cutoff`. Never a
+        `completing` one: that is a completion in progress (it holds the
+        upload's lock), and at startup recover() has reset it first. A
+        listing only: the delete re-checks under the upload's lock."""
         with self._lock:
             return [r["id"] for r in self._conn.execute(
-                "SELECT id FROM upload WHERE state != 'complete' AND updated_at < ?"
+                "SELECT id FROM upload WHERE state = 'receiving' AND updated_at < ?"
                 " ORDER BY updated_at, rowid", (cutoff,)).fetchall()]
 
     def open_upload_ids(self) -> set:
@@ -315,8 +329,8 @@ class Repo:
         now = self._clock()
         with self._tx() as c:
             batch_id = uuid.uuid4().hex
-            c.execute("INSERT INTO batch (id, name, draft, created_at) VALUES (?, ?, 1, ?)",
-                      (batch_id, name, now))
+            c.execute("INSERT INTO batch (id, name, draft, created_at, updated_at)"
+                      " VALUES (?, ?, 1, ?, ?)", (batch_id, name, now, now))
             return batch_view(self._batch(c, batch_id))
 
     def create_upload(self, *, batch_id, name, rel_path, size, last_modified, fingerprint, kind):
@@ -331,6 +345,8 @@ class Repo:
         now = self._clock()
         with self._tx() as c:
             self._draft(c, batch_id)
+            # A new upload or a resume is activity in the draft too.
+            self._touch(c, batch_id)
             row = c.execute(
                 "SELECT * FROM upload WHERE batch_id = ? AND fingerprint = ? AND name = ?"
                 " AND rel_path = ? AND size = ? AND state != 'complete'"
@@ -447,12 +463,18 @@ class Repo:
             row = c.execute("SELECT * FROM upload WHERE id = ?", (upload_id,)).fetchone()
             if row is None:
                 return None
-            if older_than is not None and (row["state"] == "complete"
+            if older_than is not None and (row["state"] != "receiving"
                                            or row["updated_at"] >= older_than):
+                # Only a `receiving` row is ever stale: `completing` is a
+                # completion in progress, `complete` is imported.
                 return None
             if row["state"] == "complete":
                 raise InvalidTransition("this upload is already imported; remove its drawings instead")
             c.execute("DELETE FROM upload WHERE id = ?", (upload_id,))
+            if older_than is None:
+                # The user acted on the draft. (A stale removal is not
+                # activity: it would postpone the empty-draft sweep.)
+                self._touch(c, row["batch_id"])
             return dict(row)
 
     def delete_untouched_upload(self, upload_id) -> bool:
@@ -470,12 +492,13 @@ class Repo:
         with self._tx() as c:
             self._batch(c, batch_id)
             c.execute("UPDATE batch SET name = ? WHERE id = ?", (name, batch_id))
+            self._touch(c, batch_id)
             return batch_view(self._batch(c, batch_id))
 
     def set_included(self, doc_id, included: bool) -> dict:
         with self._tx() as c:
             r = c.execute(
-                "SELECT d.state, d.unreadable, d.pages, d.oversized, b.draft"
+                "SELECT d.state, d.batch_id, d.unreadable, d.pages, d.oversized, b.draft"
                 " FROM document d JOIN batch b ON b.id = d.batch_id WHERE d.id = ?",
                 (doc_id,)).fetchone()
             if r is None:
@@ -491,6 +514,7 @@ class Repo:
             allowed = bool(included) and out_of_scope(r["pages"], r["oversized"])
             c.execute("UPDATE document SET included = ?, allowed_out_of_scope = ?, updated_at = ?"
                       " WHERE id = ?", (int(bool(included)), int(allowed), self._clock(), doc_id))
+            self._touch(c, r["batch_id"])
             return self._staging_rows(c, "d.id = ?", (doc_id,))[0]
 
     @staticmethod
@@ -582,8 +606,8 @@ class Repo:
         now = self._clock()
         with self._tx() as c:
             batch_id = uuid.uuid4().hex
-            c.execute("INSERT INTO batch (id, name, draft, created_at) VALUES (?, ?, 0, ?)",
-                      (batch_id, batch_name or file_name, now))
+            c.execute("INSERT INTO batch (id, name, draft, created_at, updated_at)"
+                      " VALUES (?, ?, 0, ?, ?)", (batch_id, batch_name or file_name, now, now))
             c.execute(
                 "INSERT INTO document (id, batch_id, file_name, sha256, pages, state,"
                 " created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'staged', ?, ?)",
@@ -698,4 +722,6 @@ class Repo:
             c.execute("DELETE FROM batch WHERE id = ? AND draft = 0 AND NOT EXISTS "
                       "(SELECT 1 FROM document WHERE batch_id = ?)",
                       (row["batch_id"], row["batch_id"]))
+            # A draft emptied today starts its idle week today.
+            self._touch(c, row["batch_id"])
         return True

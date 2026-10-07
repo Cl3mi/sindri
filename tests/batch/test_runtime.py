@@ -4,6 +4,7 @@ import os
 
 import pytest
 
+from app.batch import uploads as uploads_mod
 from app.batch.runtime import Runtime
 
 
@@ -70,14 +71,37 @@ def test_a_negative_reserve_is_refused_on_direct_construction_too(tmp_path):
     assert not (tmp_path / "data").exists()
 
 
+def leftover(d):
+    """A marked dir as a crash before this process left it."""
+    d.mkdir()
+    m = d / ".importing"
+    m.write_bytes(b"")
+    past = uploads_mod.PROCESS_STARTED - 3600
+    os.utime(m, (past, past))
+
+
 def test_start_sweeps_unfinished_imports_before_the_worker_runs(tmp_path):
     rt = make(tmp_path)
     orphan = rt.data.doc_dir("a" * 32)
-    orphan.mkdir()
-    (orphan / ".importing").write_bytes(b"")
+    leftover(orphan)
     try:
         rt.start()
         assert not orphan.exists()
+    finally:
+        rt.close()
+
+
+def test_recovery_runs_once_per_worker_however_often_it_restarts(tmp_path, monkeypatch):
+    """A restart after stop() happens while requests are served: whatever is
+    marked then is live work, not a crash's leftover."""
+    rt = make(tmp_path)
+    calls = []
+    monkeypatch.setattr(rt.uploads, "recover", lambda: calls.append(1))
+    try:
+        rt.start()
+        rt.worker.stop()
+        rt.start()
+        assert calls == [1] and rt.worker.running
     finally:
         rt.close()
 
@@ -105,8 +129,9 @@ def test_recovery_runs_only_under_the_single_worker_lock(tmp_path):
     sweeping them would lose a user's file mid-import."""
     rt = make(tmp_path)
     in_flight = rt.data.doc_dir("a" * 32)
-    in_flight.mkdir()
-    (in_flight / ".importing").write_bytes(b"")
+    # Dated like a crash leftover: the other process may have started before
+    # this one, so only the lock -- not the marker's age -- can protect it.
+    leftover(in_flight)
     holder = open(rt.data.root / "worker.lock", "w")      # the other process
     fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
     try:

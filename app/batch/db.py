@@ -75,6 +75,12 @@ MIGRATIONS = [
         updated_at TEXT NOT NULL
     );
     CREATE INDEX upload_resume ON upload(batch_id, fingerprint);
+    -- A draft's last change: the empty-draft sweep removes a draft IDLE for
+    -- a week, not one merely created a week ago and emptied today. A batch
+    -- from before this column was last changed, as far as anyone knows,
+    -- when it was created.
+    ALTER TABLE batch ADD COLUMN updated_at TEXT;
+    UPDATE batch SET updated_at = created_at;
     -- No REFERENCES upload(id): Start deletes a batch's upload rows while
     -- the documents they produced live on, so the link is history, not a
     -- constraint.

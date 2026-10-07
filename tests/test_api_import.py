@@ -618,6 +618,10 @@ def test_a_crash_after_start_commits_leaves_only_sweepable_dirs(monkeypatch):
         m.setattr(rt.uploads, "_unmark", crash)
         client.post(f"/api/batches/{batch_id}/start")
     assert (drop_dir / ".importing").exists() and (keep_dir / ".importing").exists()
+    # The next process starts after the crash: the markers predate it.
+    import time
+    from app.batch import uploads as uploads_mod
+    monkeypatch.setattr(uploads_mod, "PROCESS_STARTED", time.time() + 1)
     assert rt.uploads.sweep_unfinished_imports() == 1
     assert not drop_dir.exists()
     assert keep_dir.is_dir() and not (keep_dir / ".importing").exists()

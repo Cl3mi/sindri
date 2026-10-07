@@ -52,7 +52,10 @@ class Worker:
         # Run inside start()'s locked section, right after the flock is
         # taken: the one moment this process is known to be the data dir's
         # only worker. Runtime passes import recovery (uploads.recover).
+        # ONCE per worker: a later start() (after a stop) happens while
+        # requests are served, when every marked dir is live work.
         self.startup = startup
+        self._recovered = False
         self._progress = {}              # doc_id -> latest report (UI only, never logged)
         self._current = None
         self._wake = threading.Event()
@@ -207,10 +210,13 @@ class Worker:
                 "another process already runs the extraction worker for this data "
                 "dir; run uvicorn as a single worker") from None
         try:
-            if self.startup is not None:
+            if self.startup is not None and not self._recovered:
                 # Recovery only deletes leftovers of interrupted imports; a
                 # fault in it must not keep the worker -- and every queued
-                # drawing -- from starting. TYPE only (CLAUDE.md §1).
+                # drawing -- from starting. TYPE only (CLAUDE.md §1). Marked
+                # as run even if it failed: retrying it on a restart would
+                # run it while requests are served.
+                self._recovered = True
                 try:
                     self.startup()
                 except Exception as e:

@@ -99,6 +99,21 @@ def test_migration_2_turns_a_b1_staged_drawing_into_a_draft_import(tmp_path, mon
     assert {r["oversized"] for r in rows.values()} == {None}
 
 
+def test_migration_2_gives_every_batch_an_updated_at_from_its_creation(tmp_path, monkeypatch):
+    """The empty-draft sweep ages a draft by its last change; a batch from
+    before the column existed was last changed, as far as anyone knows,
+    when it was created."""
+    full = db.MIGRATIONS
+    conn = db.connect(tmp_path / "s.db")
+    monkeypatch.setattr(db, "MIGRATIONS", full[:1])
+    db.migrate(conn)
+    t = "2026-10-07T00:00:00.000000+00:00"
+    conn.execute("INSERT INTO batch (id, name, draft, created_at) VALUES ('b', 'x', 0, ?)", (t,))
+    monkeypatch.setattr(db, "MIGRATIONS", full)
+    db.migrate(conn)
+    assert conn.execute("SELECT updated_at FROM batch WHERE id = 'b'").fetchone()[0] == t
+
+
 def test_part_path_refuses_anything_but_a_hex_id(tmp_path):
     data = DataDir(tmp_path)
     assert data.part_path("a" * 32) == tmp_path / "uploads" / ("a" * 32 + ".part")

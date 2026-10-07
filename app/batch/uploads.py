@@ -29,11 +29,12 @@ import os
 import re
 import shutil
 import threading
+import time
 import unicodedata
 import uuid
 import zipfile
 import zlib
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta, timezone
 from typing import Optional
 
 from app.batch.paths import DOC_ID_RE, has_refused_chars, safe_rel_parts
@@ -61,6 +62,11 @@ IMPORTING_MARKER = ".importing"
 # Design §2: unfinished uploads untouched this long are removed. Empty drafts
 # go after the same age.
 STALE_AFTER = timedelta(days=7)
+# When this process started (wall clock, as file mtimes are). A real crash
+# leftover predates it; anything written since may be this process's own
+# work in flight, so the docs/ sweep never judges it. A clock stepping
+# backwards can only make the sweep skip more, never delete more.
+PROCESS_STARTED = time.time()
 _COPY_PIECE = MIB
 # What reading a damaged entry can raise: a CRC mismatch, a broken deflate
 # stream, a truncated archive, an unsupported compression method, an
@@ -734,22 +740,46 @@ class Uploads:
         after a Start/Discard commit removed the row). A marked dir that HAS
         a row -- in any state: a queued or extracting drawing's dir may carry
         a marker after a crash in Start -- only loses its marker. A dir
-        without a marker is never touched whatever the index says, so a lost
-        or replaced index can never make this delete real drawings; those
-        rowless ones are counted in the log, never named.
+        without a marker and without a row is at most rmdir'ed if EMPTY; its
+        content is never touched whatever the index says, so a lost or
+        replaced index can never make this delete real drawings. The ones
+        that hold something are counted in the log, never named.
 
-        Removal is marker LAST (_remove_import_dir): a sweep that stops
-        halfway leaves the dir marked for the next one. Startup only (see
-        recover). Returns the number of dirs removed."""
+        Nothing written since PROCESS_STARTED is judged at all: a real
+        leftover predates the process, and this is the second layer behind
+        Worker's run-once. Removal is marker LAST (_remove_import_dir): a
+        sweep that stops halfway leaves the dir marked for the next one.
+        Startup only (see recover). Returns the number of dirs removed."""
         swept = unmarked = 0
         for d in self.data.docs.iterdir():
             # Only a real docs/<32 hex>/ directory is ours to judge: a
             # symlink's target is not, whatever it holds.
             if not DOC_ID_RE.fullmatch(d.name) or d.is_symlink() or not d.is_dir():
                 continue
+            try:
+                marked_at = (d / IMPORTING_MARKER).stat().st_mtime
+            except FileNotFoundError:
+                marked_at = None
+            except OSError as e:
+                log.warning("import dir %s not judged: %s", d.name[:8], type(e).__name__)
+                continue
             owned = self.repo.has_document(d.name)
-            if not (d / IMPORTING_MARKER).exists():
-                unmarked += not owned
+            if marked_at is None:
+                if owned:
+                    continue
+                # No marker, no row. rmdir removes an EMPTY dir only (an
+                # import that died between its mkdir and its marker), never a
+                # byte of content -- and only one older than this process.
+                try:
+                    if d.stat().st_mtime < PROCESS_STARTED:
+                        d.rmdir()
+                        continue
+                except OSError:
+                    pass
+                unmarked += 1
+                continue
+            if marked_at >= PROCESS_STARTED:
+                # Written by this process: work in flight, never a leftover.
                 continue
             if owned:
                 self._unmark([d])
@@ -770,8 +800,8 @@ class Uploads:
         (upload lock -> batch lock -> repo lock), and re-checks inside its
         transaction:
         - a stale upload is deleted under its upload lock, and only if it is
-          still unfinished and still old -- a chunk or a resume since (both
-          bump updated_at) keeps it;
+          still `receiving` and still old -- a chunk or a resume since (both
+          bump updated_at) keeps it, and a `completing` one is never stale;
         - a part file is only ever UNLINKED, never written or truncated: after
           a crash between a completion's commit and its unlink the part
           shares its inode with a staged drawing's input file. It is stray
@@ -779,12 +809,21 @@ class Uploads:
           upload still receiving or completing is never touched. Parts are
           listed BEFORE the owners are read, and a part is created only
           after its row commits, so a listed part's owner is always seen;
-        - an empty draft is removed under its batch lock (Start, Discard and
-          a completion's commit hold it), in one transaction that re-checks
-          it is still empty, with its complete upload rows.
-        It never sweeps docs/ -- that is startup-only (recover)."""
-        now = now or datetime.now(timezone.utc)
-        cutoff = (now - STALE_AFTER).isoformat(timespec="microseconds")
+        - an empty draft idle for STALE_AFTER (its updated_at, bumped by
+          every change to it) is removed under its batch lock (Start,
+          Discard and a completion's commit hold it), in one transaction
+          that re-checks it is still empty and idle, with its complete
+          upload rows.
+        It never sweeps docs/ -- that is startup-only (recover).
+
+        The cutoff comes from the repo's clock, the one that stamps
+        updated_at; a `now` passed in is normalised to UTC first, because
+        the comparison is on text."""
+        if now is None:
+            now = self.repo.now()
+        if now.tzinfo is None:
+            raise ValueError("`now` must carry a time zone")
+        cutoff = (now.astimezone(timezone.utc) - STALE_AFTER).isoformat(timespec="microseconds")
         uploads = 0
         for uid in self.repo.stale_uploads(cutoff):
             with self._lock(uid):
