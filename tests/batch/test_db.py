@@ -51,7 +51,7 @@ def test_a_newer_schema_than_the_code_is_refused(tmp_path):
 def test_doc_dir_refuses_anything_but_a_hex_id(tmp_path):
     data = DataDir(tmp_path)
     assert data.doc_dir("a" * 32) == tmp_path / "docs" / ("a" * 32)
-    for bad in ["../x", "A" * 32, "a" * 31, "", None]:
+    for bad in ["../x", "A" * 32, "a" * 31, "a" * 32 + "\n", "", None]:
         with pytest.raises(ValueError):
             data.doc_dir(bad)
 
@@ -102,7 +102,7 @@ def test_migration_2_turns_a_b1_staged_drawing_into_a_draft_import(tmp_path, mon
 def test_part_path_refuses_anything_but_a_hex_id(tmp_path):
     data = DataDir(tmp_path)
     assert data.part_path("a" * 32) == tmp_path / "uploads" / ("a" * 32 + ".part")
-    for bad in ["../x", "A" * 32, "", None]:
+    for bad in ["../x", "A" * 32, "a" * 32 + "\n", "", None]:
         with pytest.raises(ValueError):
             data.part_path(bad)
 
@@ -126,3 +126,60 @@ def test_safe_rel_parts_refuses_a_path_that_could_escape(name):
     """Absolute, drive-relative, climbing, or carrying control characters
     (a NUL truncates a name in C code; a newline forges a manifest line)."""
     assert safe_rel_parts(name) is None
+
+
+def test_migration_2_include_default_is_the_staging_default(tmp_path, monkeypatch):
+    """Migration 2 sets Include by exactly the rule a B2 staging applies
+    (staging.default_included): off for multi-page and for a duplicate --
+    a staged row whose bytes an EARLIER row (by rowid, any state) already
+    holds -- and on otherwise. A page count of 0 or NULL is not multi-page,
+    so it is not out of scope (`(pages or 0) > 1`)."""
+    full = db.MIGRATIONS
+    conn = db.connect(tmp_path / "s.db")
+    monkeypatch.setattr(db, "MIGRATIONS", full[:1])
+    db.migrate(conn)
+    t = "2026-10-07T00:00:00.000000+00:00"
+    rows = [("orig", "queued", 1, "S"), ("copy", "staged", 1, "S"),
+            ("first", "staged", 1, "T"), ("second", "staged", 1, "T"),
+            ("p0", "staged", 0, "U"), ("pnull", "staged", None, "V"),
+            ("nohash", "staged", 1, None), ("nohash2", "staged", 1, None)]
+    for did, state, pages, sha in rows:
+        conn.execute("INSERT INTO batch (id, name, draft, created_at) VALUES (?, 'x', 0, ?)",
+                     ("b" + did, t))
+        conn.execute("INSERT INTO document (id, batch_id, file_name, sha256, pages, state,"
+                     " created_at, updated_at) VALUES (?, ?, 'x', ?, ?, ?, ?, ?)",
+                     (did, "b" + did, sha, pages, state, t, t))
+    monkeypatch.setattr(db, "MIGRATIONS", full)
+    db.migrate(conn)
+    got = {r["id"]: r["included"] for r in conn.execute("SELECT id, included FROM document")}
+    assert got == {"orig": None, "copy": 0, "first": 1, "second": 0,
+                   "p0": 1, "pnull": 1, "nohash": 1, "nohash2": 1}
+
+
+@pytest.mark.parametrize("name", [
+    ".. /x.pdf", " ../x.pdf", ".../x.pdf", "a/.../x.pdf", "a/. /x.pdf",
+    " a/x.pdf", "a /x.pdf", "a/x.pdf ",
+])
+def test_safe_rel_parts_refuses_what_windows_turns_into_a_climb(name):
+    """Windows strips trailing dots and spaces from a path component, so
+    `.. ` and `...` become `..` there. A component that is nothing but dots
+    and spaces, or that starts or ends with a space, is refused."""
+    assert safe_rel_parts(name) is None
+
+
+@pytest.mark.parametrize("name", ["a\x85b.pdf", "a b.pdf", "a b.pdf",
+                                  "a‮b.pdf", "a​b.pdf", "a\x7fb.pdf"])
+def test_safe_rel_parts_refuses_unicode_line_breaks_and_format_characters(name):
+    """NEL and the Unicode line/paragraph separators break a line as surely
+    as a newline does; a bidi override (U+202E) makes a shown name lie about
+    its extension. Any character of category Cc, Cf, Zl or Zp is refused."""
+    assert safe_rel_parts(name) is None
+
+
+def test_safe_rel_parts_normalises_to_nfc():
+    """macOS hands out NFD names; the same folder typed elsewhere is NFC.
+    Both must name the same folder in the staging view and the export."""
+    nfd = "Teile/Wëlle/w1.pdf"
+    nfc = "Teile/Wëlle/w1.pdf"
+    assert nfd != nfc
+    assert safe_rel_parts(nfd) == safe_rel_parts(nfc) == ["Teile", "Wëlle", "w1.pdf"]

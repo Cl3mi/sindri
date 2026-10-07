@@ -67,15 +67,33 @@ MIGRATIONS = [
         updated_at TEXT NOT NULL
     );
     CREATE INDEX upload_resume ON upload(batch_id, fingerprint);
+    -- No REFERENCES upload(id): Start deletes a batch's upload rows while
+    -- the documents they produced live on, so the link is history, not a
+    -- constraint.
     ALTER TABLE document ADD COLUMN upload_id TEXT;
     ALTER TABLE document ADD COLUMN size INTEGER;
+    -- DEFAULT 0 is TRUE for every B1 row, not a placeholder: B1 answered an
+    -- unparseable PDF with a 400 and never stored it. `oversized` is left
+    -- NULL on B1 rows -- B1 never measured it, and 0 would claim it had.
     ALTER TABLE document ADD COLUMN unreadable INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE document ADD COLUMN included INTEGER;
     CREATE INDEX document_sha256 ON document(sha256);
     CREATE INDEX document_batch ON document(batch_id);
+    -- From B2 on only Start queues a staged drawing, so a B1 drawing staged
+    -- and never queued must sit in a draft or nothing could ever start it.
     UPDATE batch SET draft = 1
         WHERE id IN (SELECT batch_id FROM document WHERE state = 'staged');
-    UPDATE document SET included = CASE WHEN pages = 1 THEN 1 ELSE 0 END
+    -- Include by the same rule staging.default_included applies at B2
+    -- staging: off when out of scope ((pages or 0) > 1, or oversized) or a
+    -- duplicate (an EARLIER row by rowid, in any state, holds the same
+    -- bytes -- the order a staging-time check would have seen); unreadable
+    -- is 0 on every B1 row (above).
+    UPDATE document SET included = CASE
+            WHEN COALESCE(pages, 0) > 1 OR COALESCE(oversized, 0) THEN 0
+            WHEN sha256 IS NOT NULL AND EXISTS (
+                SELECT 1 FROM document x
+                WHERE x.sha256 = document.sha256 AND x.rowid < document.rowid) THEN 0
+            ELSE 1 END
         WHERE state = 'staged';
     """,
 ]
