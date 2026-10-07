@@ -167,8 +167,8 @@ def test_safe_rel_parts_refuses_what_windows_turns_into_a_climb(name):
     assert safe_rel_parts(name) is None
 
 
-@pytest.mark.parametrize("name", ["a\x85b.pdf", "a b.pdf", "a b.pdf",
-                                  "a‮b.pdf", "a​b.pdf", "a\x7fb.pdf"])
+@pytest.mark.parametrize("name", ["a\x85b.pdf", "a\u2028b.pdf", "a\u2029b.pdf",
+                                  "a\u202eb.pdf", "a\u200bb.pdf", "a\x7fb.pdf"])
 def test_safe_rel_parts_refuses_unicode_line_breaks_and_format_characters(name):
     """NEL and the Unicode line/paragraph separators break a line as surely
     as a newline does; a bidi override (U+202E) makes a shown name lie about
@@ -179,7 +179,7 @@ def test_safe_rel_parts_refuses_unicode_line_breaks_and_format_characters(name):
 def test_safe_rel_parts_normalises_to_nfc():
     """macOS hands out NFD names; the same folder typed elsewhere is NFC.
     Both must name the same folder in the staging view and the export."""
-    nfd = "Teile/Wëlle/w1.pdf"
+    nfd = "Teile/We\u0308lle/w1.pdf"
     nfc = "Teile/Wëlle/w1.pdf"
     assert nfd != nfc
     assert safe_rel_parts(nfd) == safe_rel_parts(nfc) == ["Teile", "Wëlle", "w1.pdf"]

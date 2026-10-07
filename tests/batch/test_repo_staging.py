@@ -146,7 +146,7 @@ def test_a_reset_only_moves_the_offset_down(repo):
     assert repo.get_upload(up["id"])["received"] == 1
 
 
-@pytest.mark.parametrize("bad", ["a\x85b", "a b", "a‮b", "a​b", "a\x00b", "", "  ", "x" * 201])
+@pytest.mark.parametrize("bad", ["a\x85b", "a\u2028b", "a\u202eb", "a\u200bb", "a\x00b", "", "  ", "x" * 201])
 def test_a_batch_name_refuses_what_a_folder_name_refuses(bad):
     """It becomes a folder in the mass-export ZIP (design §4): a NEL or line
     separator forges a line, a bidi override makes the shown name lie."""
@@ -154,7 +154,7 @@ def test_a_batch_name_refuses_what_a_folder_name_refuses(bad):
 
 
 def test_a_batch_name_is_nfc_and_stripped():
-    assert clean_batch_name("  Lieferung München ") == "Lieferung München"
+    assert clean_batch_name("  Lieferung Mu\u0308nchen ") == "Lieferung München"
 
 
 def test_completion_needs_every_byte(repo):

@@ -181,7 +181,7 @@ def test_a_part_file_that_appears_under_the_exclusive_create_is_kept(h, monkeypa
 
 @pytest.mark.parametrize("kw", [
     {"name": "a.exe"}, {"name": "a/b.pdf"}, {"name": "a\x01.pdf"}, {"name": "  "},
-    {"name": "exe.‮fdp.pdf"},
+    {"name": "exe.\u202efdp.pdf"},
     {"fingerprint": "xyz"}, {"fingerprint": "f" * 64 + "\n"}, {"size": -1},
     {"size": True}, {"size": 2 ** 63}, {"rel_path": "../out"},
     {"last_modified": "yesterday"}, {"last_modified": True}, {"last_modified": 1.5},
