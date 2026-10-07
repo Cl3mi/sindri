@@ -1,5 +1,7 @@
 import asyncio
 import json
+import logging
+import os
 import queue
 import re
 import shutil
@@ -24,6 +26,8 @@ from app.pipeline import policy_rules as pr
 from app.pipeline.review import review_flags
 from app.pipeline.place import place_balloons
 from app.pipeline.ballooned_pdf import render_ballooned_pdf
+from app.review.header import build_header
+from app.review.store import ReviewError, ReviewStore
 from PIL import Image
 
 app = FastAPI(title="Sindri")
@@ -46,6 +50,39 @@ def _session_dir(session_id: str) -> Path:
 _BACKEND = get_backend()
 
 
+def _review_store_from_env():
+    """The durable review store, or None when SINDRI_REVIEW_DIR is unset or
+    unwritable. None is not an error: the app still reviews and exports, it
+    just records nothing -- and a session recorded nowhere is never graded,
+    rather than graded wrong (design §6).
+
+    ReviewStore.__init__ only does `root.mkdir(parents=True, exist_ok=True)`,
+    which succeeds silently on a directory that already exists but is
+    read-only -- so a pre-existing unwritable mount would pass construction
+    and /api/health would then claim `review_logging: true` for a store that
+    can never actually write a session. Probe with a real file write (the
+    cheapest operation that actually exercises the permission bit) before
+    trusting the directory."""
+    root = os.environ.get("SINDRI_REVIEW_DIR")
+    if not root:
+        return None
+    try:
+        store = ReviewStore(Path(root))
+        probe = store.root / f".write-probe-{os.getpid()}"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink()
+        return store
+    except OSError:
+        return None
+
+
+_REVIEW_STORE = _review_store_from_env()
+
+
+def _review_consent() -> bool:
+    return os.environ.get("SINDRI_REVIEW_CONSENT", "").lower() in ("1", "true", "yes")
+
+
 class ExportRequest(BaseModel):
     session_id: str
     rows: List[Characteristic]
@@ -59,10 +96,23 @@ class ReadRegionRequest(BaseModel):
     box: List[float]        # [x0, y0, x1, y1] image-space pixels
 
 
+class EventsRequest(BaseModel):
+    writer: str
+    events: List[dict]
+
+
+class SealRequest(BaseModel):
+    writer: str
+    final_seq: int
+    rows: List[Characteristic]       # every row incl. suggestions; extras like `reviewed` are ignored
+    reviewed_ids: List[str] = []
+
+
 @app.get("/api/health")
 def health():
     status = backend_status()
     status["ocr_backend_active"] = type(_BACKEND).__name__
+    status["review_logging"] = _REVIEW_STORE is not None
     return status
 
 
@@ -114,17 +164,42 @@ async def extract_endpoint(session_id: str, request: Request):
         try:
             result = extract(pdf_path, work_dir=work, dpi=300,
                              backend=_BACKEND, progress=progress)
+            # Dumped once in json mode so the proposal written to the review
+            # store is byte-identical to the rows the UI receives below.
+            rows = [r.model_dump(mode="json") for r in
+                    [*result.characteristics, *result.suggestions]]
+            writer = None
+            if _REVIEW_STORE is not None:
+                try:
+                    writer = _REVIEW_STORE.create(
+                        session_id, build_header(pdf_path, _review_consent()),
+                        {"rows": rows})
+                except Exception as e:
+                    # Logging is best-effort by design (§6): a session
+                    # recorded nowhere is never graded, but an extraction
+                    # lost to a capture fault costs the reviewer the whole
+                    # drawing, which is strictly worse -- so this catches
+                    # everything, not just ReviewError/OSError (build_header
+                    # itself can raise, e.g. a PyMuPDF RuntimeError, and that
+                    # must not turn a finished extraction into an SSE error).
+                    # Exception TYPE only, never str(e): a PyMuPDF or journal
+                    # message can carry client text (CLAUDE.md §1).
+                    logging.getLogger(__name__).warning(
+                        "review capture skipped for session %s: %s",
+                        session_id[:8], type(e).__name__)
+                    writer = None
             events.put(("result", {
                 "session_id": session_id,
                 "image_url": f"/api/image/{session_id}",
                 # Suggestions ride in the same list, flagged, so the reviewer
                 # edits them with the existing table; the client keeps them out
                 # of exports and so does _exportable below.
-                "rows": [r.model_dump() for r in
-                         [*result.characteristics, *result.suggestions]],
+                "rows": rows,
                 "notes": result.notes.model_dump() if result.notes is not None else None,
                 "marks": result.marks.model_dump() if result.marks is not None else None,
                 "title_block": [t.model_dump() for t in result.title_block],
+                "writer": writer,
+                "review_logging": writer is not None,
             }))
         except _Cancelled:
             # client went away — drop the session and stop quietly
@@ -165,6 +240,35 @@ def delete_session(session_id: str):
     work = _session_dir(session_id)
     shutil.rmtree(work, ignore_errors=True)
     return {"ok": True}
+
+
+@app.post("/api/session/{session_id}/events")
+def post_events(session_id: str, req: EventsRequest):
+    """Append reviewer operations. Idempotent by seq, so the UI simply resends
+    everything the reply says is not yet held contiguously."""
+    _session_dir(session_id)         # rejects a malformed id before any path is built
+    if _REVIEW_STORE is None:
+        return {"contiguous": None, "review_logging": False}
+    try:
+        return {"contiguous": _REVIEW_STORE.append(session_id, req.writer, req.events)}
+    except ReviewError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
+
+
+@app.post("/api/session/{session_id}/seal")
+def seal_session(session_id: str, req: SealRequest):
+    """Seal a review revision at the client's final seq. Refuses on a gap: an
+    incomplete log must never be graded (design §2)."""
+    _session_dir(session_id)
+    if _REVIEW_STORE is None:
+        return {"revision": None, "review_logging": False}
+    try:
+        out = _REVIEW_STORE.seal(
+            session_id, req.writer, req.final_seq,
+            [r.model_dump(mode="json") for r in req.rows], req.reviewed_ids)
+    except ReviewError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
+    return {**out, "review_logging": True}
 
 
 @app.get("/api/image/{session_id}")

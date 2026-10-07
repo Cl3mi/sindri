@@ -3,7 +3,7 @@
 
 import {
   state, on, emit,
-  apply, opEditCell, opBulkReview, opConfirmSuggestions, isVisibleRow, counts,
+  apply, opEditCell, opBulkReview, opConfirmSuggestions, isVisibleRow, counts, progress,
 } from './state.js';
 import { flashAndCenter } from './viewer.js';
 
@@ -320,16 +320,18 @@ function renderCounts() {
   document.getElementById('cnt-ok').textContent     = c.ok;
   document.getElementById('cnt-suggested').textContent = c.suggested;
 
-  // Balloons only: a suggestion is not a balloon until confirmed, so it is
-  // neither "reviewed" nor outstanding work in this bar.
+  // Resolved flagged rows only; unflagged rows are shown apart as unchecked,
+  // never as reviewed (design §1).
+  const p = progress();
   const balloons = state.rows.filter((r) => !r.suggested);
-  const reviewedN = balloons.filter((r) => r.reviewed || !r.needs_review).length;
   const totalN = balloons.length;
   const prog = document.getElementById('review-progress');
   if (totalN > 0) {
     prog.hidden = false;
-    document.getElementById('review-text').textContent = `${reviewedN}/${totalN} reviewed`;
-    document.getElementById('review-bar').style.width = (totalN ? (reviewedN / totalN * 100) : 0) + '%';
+    document.getElementById('review-text').textContent =
+      `${p.resolved}/${p.total} resolved · ${p.unchecked} unchecked`;
+    document.getElementById('review-bar').style.width =
+      (p.total ? (p.resolved / p.total * 100) : 100) + '%';
   } else {
     prog.hidden = true;
   }

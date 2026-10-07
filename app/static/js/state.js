@@ -67,10 +67,15 @@ export function clearSession() {
 const undoStack = [];
 const redoStack = [];
 
+// Every op carries event(): the review journal's self-description of it
+// (journal.js). Python mirrors these semantics in app/review/replay.py --
+// if that file falls out of step with this one, seal reports mismatches on
+// healthy sessions.
 export function apply(op) {
   op.do();
   undoStack.push(op);
   redoStack.length = 0;
+  emit('op', { kind: 'do', op });
   emit('change');
   emit('history');
 }
@@ -79,6 +84,7 @@ export function undo() {
   if (!op) return;
   op.undo();
   redoStack.push(op);
+  emit('op', { kind: 'undo', op });
   emit('change');
   emit('history');
 }
@@ -87,6 +93,7 @@ export function redo() {
   if (!op) return;
   op.do();
   undoStack.push(op);
+  emit('op', { kind: 'do', op });
   emit('change');
   emit('history');
 }
@@ -126,6 +133,8 @@ export function opAddRow(row) {
       renumber();
       if (state.selectedId === row.id) state.selectedId = null;
     },
+    // JSON clone, so a later edit of the row cannot rewrite the logged event
+    event: () => ({ type: 'add_row', row: JSON.parse(JSON.stringify(row)) }),
   };
 }
 
@@ -145,6 +154,7 @@ export function opDeleteRow(id) {
         renumber();
       }
     },
+    event: () => ({ type: 'delete_row', id }),
   };
 }
 
@@ -162,6 +172,7 @@ export function opMoveRow(id, newXY) {
       const r = state.rows.find((x) => x.id === id);
       if (r) r.balloon_xy = oldXY;
     },
+    event: () => ({ type: 'move_row', id, xy: [...newXY] }),
   };
 }
 
@@ -179,12 +190,15 @@ export function opEditCell(id, field, newValue) {
       const r = state.rows.find((x) => x.id === id);
       if (r) r[field] = oldValue;
     },
+    // evaluated after do(), so oldValue is the captured one
+    event: () => ({ type: 'edit_cell', id, field, old: oldValue ?? '', new: newValue }),
   };
 }
 
 // Confirm low-confidence suggestions: each becomes a normal, numbered,
 // reviewed balloon. Undo restores the suggestion exactly.
 export function opConfirmSuggestions(ids) {
+  ids = [...new Set(ids)];   // a dup made replay diverge from export; see opBulkReview
   const confirmed = [];
   return {
     label: 'confirm suggestions',
@@ -207,10 +221,17 @@ export function opConfirmSuggestions(ids) {
       }
       renumber();
     },
+    event: () => ({ type: 'confirm_suggestions', ids: [...ids] }),
   };
 }
 
 export function opBulkReview(ids, target /* true|false */) {
+  // A duplicate id made this op's own prev-map overwrite the original value
+  // with the value just applied (do() visits it twice), so undo "restored"
+  // the applied value instead of the original -- unrestorable, and the
+  // divergence this caused between replay and export was the fuzzer's
+  // biggest finding (124 mismatches with dup ids, 0 without).
+  ids = [...new Set(ids)];
   const prev = new Map();
   return {
     label: target ? 'accept rows' : 'unaccept rows',
@@ -226,6 +247,7 @@ export function opBulkReview(ids, target /* true|false */) {
         if (r) r.reviewed = prev.get(id);
       }
     },
+    event: () => ({ type: target ? 'accept' : 'unaccept', ids: [...ids] }),
   };
 }
 
@@ -249,3 +271,16 @@ export function counts() {
   }
   return { all: state.rows.length, review, ok, suggested };
 }
+
+// The review queue (Phase 1: flagged balloons). Unflagged balloons are counted
+// apart as `unchecked`: the system accepted them and nobody was asked to look,
+// so an explicit accept on one is not evidence it was checked either.
+// Suggestions are not balloons and are neither.
+export function progress() {
+  const balloons = state.rows.filter((r) => !r.suggested);
+  const queue = balloons.filter((r) => r.needs_review);
+  const resolved = queue.filter((r) => r.reviewed).length;
+  return { resolved, total: queue.length, outstanding: queue.length - resolved,
+           unchecked: balloons.length - queue.length };
+}
+export const canFinish = () => progress().outstanding === 0;

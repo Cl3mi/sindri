@@ -60,3 +60,20 @@ test('confirm ignores rows that are not suggestions', () => {
   S.apply(S.opConfirmSuggestions(['a']));
   assert.equal(S.state.rows[0].reviewed, false);
 });
+
+test('opBulkReview de-duplicates ids so undo restores the original value, not the applied one', () => {
+  // A duplicate id made the op's own prev-map overwrite the captured original
+  // with the value JUST applied, so undo "restored" the new value -- making
+  // the op unrestorable and a healthy session's replay diverge from export.
+  load([row('a', 0, 0, { needs_review: true })]);
+  S.apply(S.opBulkReview(['a', 'a'], true));
+  S.undo();
+  assert.equal(S.state.rows.find((r) => r.id === 'a').reviewed, false);
+});
+
+test('opConfirmSuggestions de-duplicates ids in its own logged event', () => {
+  load([row('s', 0, 0, { suggested: true })]);
+  const op = S.opConfirmSuggestions(['s', 's']);
+  S.apply(op);
+  assert.deepEqual(op.event().ids, ['s']);
+});

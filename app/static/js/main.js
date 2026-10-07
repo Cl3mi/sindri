@@ -1,7 +1,11 @@
 // Entry point: wires modules, health check, file upload, exports.
 
-import { state, on, setSession, clearSession, undo, redo, canUndo, canRedo } from './state.js';
-import { savePdf, runExtraction, deleteSession, exportFile, health } from './api.js';
+import { state, on, setSession, clearSession, undo, redo, canUndo, canRedo,
+         progress, canFinish } from './state.js';
+import { savePdf, runExtraction, deleteSession, exportFile, health,
+         postEvents, beaconEvents, sealSession } from './api.js';
+import { createJournal } from './journal.js';
+import { createFinisher } from './finish.js';
 import { initViewer } from './viewer.js';
 import { initTable } from './table.js';
 import {
@@ -13,6 +17,38 @@ import { initShortcuts } from './shortcuts.js';
 // Pending upload awaiting confirmation, and the controller for the live run.
 let pendingUpload = null;   // { session_id, fileName }
 let extractAbort = null;    // AbortController while extraction is streaming
+
+// The review journal: every state operation, numbered and flushed to the
+// server (docs/plans/2026-10-07-hitl-review-grading-design.md §2).
+const journal = createJournal({
+  send: (sid, writer, events) => postEvents(sid, writer, events),
+  // The server's own signal that it can no longer record this session
+  // (its store disappeared mid-session: a restart without
+  // SINDRI_REVIEW_DIR, or a dir that went unwritable). Surface it the same
+  // way a session that started with no store does, and stop the backoff
+  // loop -- retrying a flush the server has already said it will never ack
+  // again would just back off to 10s forever for nothing.
+  onLoggingOff: () => {
+    document.getElementById('log-pill').hidden = false;
+    clearTimeout(flushTimer);
+  },
+});
+let flushTimer = null;
+let flushBackoff = 500;
+
+// Flush → seal → export, single-flight, never re-sealing an unchanged
+// journal (finish.js).
+const finisher = createFinisher({
+  journal,
+  canFinish,
+  seal: (sid, body) => sealSession(sid, body),
+  exportAll: async (s) => {
+    const payload = { session_id: s.sessionId, rows: s.rows.filter((r) => !r.suggested),
+                      notes: s.notes, marks: s.marks, title_block: s.title_block };
+    await exportFile('/api/export', payload, 'inspection.xlsx');
+    await exportFile('/api/export/pdf', payload, 'ballooned.pdf');
+  },
+});
 
 function init() {
   initThemeAndDensity();
@@ -26,7 +62,8 @@ function init() {
   wireFooter();
   wireFileInputs();
   wireExtractionControls();
-  wireExports();
+  wireFinish();
+  wireJournal();
   wireUndoRedo();
   pingHealth();
 }
@@ -35,6 +72,14 @@ function init() {
 function wireHeader() {
   document.getElementById('file-close').addEventListener('click', () => {
     if (!confirm('Close the current drawing? Unsaved edits will be lost.')) return;
+    // clearSession() below wipes sessionId/writer out of the journal's
+    // reach (start() on the NEXT drawing resets it anyway) -- so any event
+    // still only in `pending` must go out now or it is gone for good. The
+    // events are idempotent server-side (append is by seq), so a close that
+    // races an in-flight flush double-sends at worst, never drops.
+    if (journal.active && journal.pending.length) {
+      beaconEvents(journal.sessionId, journal.writer, journal.pending);
+    }
     clearSession();
   });
   on('session', () => {
@@ -43,12 +88,16 @@ function wireHeader() {
     if (state.sessionId) {
       chip.hidden = false;
       name.textContent = state.fileName || 'drawing.pdf';
-      document.getElementById('export-xlsx').disabled = false;
-      document.getElementById('export-pdf').disabled = false;
+      document.getElementById('finish-btn').disabled = false;
     } else {
       chip.hidden = true;
-      document.getElementById('export-xlsx').disabled = true;
-      document.getElementById('export-pdf').disabled = true;
+      const fin = document.getElementById('finish-btn');
+      fin.disabled = true;
+      // The 'change' handler skips a cleared session, so reset here or the
+      // next drawing opens with the last one's "N flagged rows" state.
+      fin.classList.remove('blocked');
+      fin.title = 'Seal the review and export Excel + ballooned PDF';
+      document.getElementById('log-pill').hidden = true;
     }
   });
 }
@@ -127,6 +176,12 @@ async function startExtraction() {
     data.fileName = fileName;
     extractStepsDone();
     setSession(data);          // viewer swaps in the page image, hides overlays
+    // Nothing may run between these two lines: setSession clears the
+    // undo/redo stacks, so no op can be applied before the journal starts --
+    // an op applied in between would never be logged, and seal would then
+    // report a replay mismatch for a perfectly healthy session.
+    journal.start(data.session_id, data.writer);
+    document.getElementById('log-pill').hidden = !!data.review_logging;
     hideExtracting();
     setIdle();
     pendingUpload = null;
@@ -229,33 +284,83 @@ function setIdle() {
   pill.className = 'status-pill';
 }
 
-// ===== Exports ======================================================
-function wireExports() {
-  document.getElementById('export-xlsx').addEventListener('click', async () => {
-    try {
-      await exportFile('/api/export',
-        { session_id: state.sessionId, rows: state.rows.filter((r) => !r.suggested), notes: state.notes,
-          marks: state.marks, title_block: state.title_block },
-        'inspection.xlsx');
-      toast({ kind: 'ok', title: 'Excel exported' });
-    } catch (err) {
-      toast({ kind: 'error', title: 'Export failed', msg: String(err.message || err) });
-    }
+// ===== Journal =======================================================
+function wireJournal() {
+  on('op', (e) => {
+    // A journal fault must never break the reviewer's edit: the state has
+    // already changed and 'change' must still fire after this listener.
+    try { journal.record(e); } catch (err) { console.error('review journal', err); }
+    scheduleFlush(500);
   });
-  document.getElementById('export-pdf').addEventListener('click', async () => {
-    setBusy('Rendering ballooned PDF…');
-    try {
-      await exportFile('/api/export/pdf',
-        { session_id: state.sessionId, rows: state.rows.filter((r) => !r.suggested), notes: state.notes,
-          marks: state.marks, title_block: state.title_block },
-        'ballooned.pdf');
-      setIdle();
-      toast({ kind: 'ok', title: 'PDF exported' });
-    } catch (err) {
-      setIdle();
-      toast({ kind: 'error', title: 'Export failed', msg: String(err.message || err) });
-    }
+  // pagehide, not beforeunload: it also fires on mobile tab discards.
+  window.addEventListener('pagehide', () => {
+    if (journal.active) beaconEvents(journal.sessionId, journal.writer, journal.pending);
   });
+}
+
+function scheduleFlush(delay) {
+  clearTimeout(flushTimer);
+  flushTimer = setTimeout(async () => {
+    try {
+      await journal.flush();
+      flushBackoff = 500;
+    } catch {
+      // Keep everything pending and retry, backing off to 10 s; Finish
+      // refuses until the server holds every event, so nothing is lost.
+      flushBackoff = Math.min(flushBackoff * 2, 10000);
+      scheduleFlush(flushBackoff);
+    }
+  }, delay);
+}
+
+// ===== Finish & Export ==============================================
+function wireFinish() {
+  const btn = document.getElementById('finish-btn');
+  on('change', () => {
+    if (!state.sessionId) return;
+    const p = progress();
+    btn.classList.toggle('blocked', !canFinish());
+    btn.title = canFinish()
+      ? 'Seal the review and export Excel + ballooned PDF'
+      : `${p.outstanding} flagged row${p.outstanding === 1 ? '' : 's'} still to resolve`;
+  });
+  btn.addEventListener('click', finish);
+}
+
+async function finish() {
+  const btn = document.getElementById('finish-btn');
+  // A copy, so the sealed rows and the exported files describe one moment
+  // even if an op lands while the run is awaiting the server.
+  const snapshot = {
+    sessionId: state.sessionId,
+    rows: structuredClone(state.rows),
+    reviewedIds: state.rows.filter((r) => r.reviewed).map((r) => r.id),
+    notes: state.notes, marks: state.marks, title_block: state.title_block,
+  };
+  clearTimeout(flushTimer);   // the run flushes itself
+  btn.disabled = true;        // no second click while sealing/exporting
+  setBusy('Finishing…');
+  try {
+    const res = await finisher.run(snapshot);
+    if (res.status === 'blocked') {
+      const n = progress().outstanding;
+      toast({ kind: 'warn', title: 'Not finished yet',
+              msg: `${n} flagged row${n === 1 ? '' : 's'} still to resolve — showing them now.` });
+      document.querySelector('#filter-pills button[data-filter="review"]')?.click();
+    } else if (res.status === 'done') {
+      toast({ kind: 'ok', title: 'Finished',
+              msg: res.revision ? `Review sealed as revision r${res.revision}` : 'Exported (review not recorded)' });
+    }
+  } catch (err) {
+    toast({ kind: 'error', title: 'Finish failed', msg: String(err.message || err) });
+  } finally {
+    setIdle();
+    btn.disabled = !state.sessionId;
+    // The flush timer was cleared above; if events are still pending (a
+    // failed flush while offline, or a blocked run), restart the backoff loop
+    // so they don't wait for the next edit.
+    if (journal.active && journal.pending.length) scheduleFlush(flushBackoff);
+  }
 }
 
 // ===== Undo / Redo ==================================================

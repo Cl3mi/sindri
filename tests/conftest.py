@@ -1,8 +1,25 @@
 from pathlib import Path
 import shutil
+import sys
 import pytest
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_review_store(monkeypatch):
+    """`app.main._REVIEW_STORE` is built once at import time from whatever
+    SINDRI_REVIEW_DIR happens to be set in the shell. Without this, a
+    developer who has that variable exported (e.g. for the real app) would
+    have every ordinary extraction test here write synthetic records into a
+    real -- possibly client-data -- review directory. Looked up via
+    sys.modules rather than `import app.main`, so a test module that never
+    touches app.main doesn't pay to load the OCR backend. Autouse fixtures
+    run before explicitly-requested ones of the same scope, so a test's own
+    `store` fixture (tests/test_api_review.py) still overrides this."""
+    mod = sys.modules.get("app.main")
+    if mod is not None:
+        monkeypatch.setattr(mod, "_REVIEW_STORE", None)
 
 @pytest.fixture(scope="session", autouse=True)
 def ensure_sample_pdf():

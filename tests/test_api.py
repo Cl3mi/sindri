@@ -62,6 +62,18 @@ def stub_backend(monkeypatch):
     return backend
 
 
+def test_an_ambient_review_dir_is_never_written_by_an_ordinary_test(
+        sample_pdf, stub_backend, monkeypatch, tmp_path):
+    """A developer with SINDRI_REVIEW_DIR exported in their shell must not
+    have every ordinary extraction test here write synthetic records into
+    that real (possibly client-data) directory. conftest's autouse fixture
+    neutralizes app.main._REVIEW_STORE regardless of the env var."""
+    review_dir = tmp_path / "reviews"
+    monkeypatch.setenv("SINDRI_REVIEW_DIR", str(review_dir))
+    upload_pdf(client, sample_pdf)
+    assert not review_dir.exists()
+
+
 def test_upload_returns_rows_and_image(sample_pdf, stub_backend):
     data = upload_pdf(client, sample_pdf)
     assert "session_id" in data

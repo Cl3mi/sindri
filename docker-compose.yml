@@ -7,3 +7,7 @@ services:
       - ./data:/data
     environment:
       - OCR_BACKEND=tesseract
+      # Durable review records (docs/plans/2026-10-07-hitl-review-grading-design.md).
+      # Client data: never inside the image, never in /tmp.
+      - SINDRI_REVIEW_DIR=/data/reviews
+      - SINDRI_REVIEW_CONSENT=0
