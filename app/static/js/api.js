@@ -109,13 +109,16 @@ export const openDocument = async (id) =>
 // The server cleans a batch name and may refuse it (400, a fixed sentence);
 // errors carry `status` via jsonOrThrow.
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
+// An id is a path SEGMENT: encoded, so a stray '/' or '?' (a remembered
+// draft id from storage is not trusted) can never address another route.
+const batchUrl = (id, tail = '') => `/api/batches/${encodeURIComponent(id)}${tail}`;
 
 export const createBatch = async (name) =>
   jsonOrThrow(await fetch('/api/batches', { method: 'POST', headers: JSON_HEADERS,
                                             body: JSON.stringify({ name }) }), 'Could not start an import');
-export const getBatch = async (id) => jsonOrThrow(await fetch(`/api/batches/${id}`), 'Import not found');
+export const getBatch = async (id) => jsonOrThrow(await fetch(batchUrl(id)), 'Import not found');
 export const startBatch = async (id) =>
-  jsonOrThrow(await fetch(`/api/batches/${id}/start`, { method: 'POST' }), 'Could not start the import');
+  jsonOrThrow(await fetch(batchUrl(id, '/start'), { method: 'POST' }), 'Could not start the import');
 export const setIncluded = async (id, included) =>
   jsonOrThrow(await fetch(docUrl(id, '/include'), { method: 'POST', headers: JSON_HEADERS,
                                                     body: JSON.stringify({ included }) }),
@@ -125,7 +128,7 @@ export const setIncluded = async (id, included) =>
 export async function discardBatch(id) {
   if (!id) return { ok: false, status: 0 };
   try {
-    const res = await fetch(`/api/batches/${id}`, { method: 'DELETE' });
+    const res = await fetch(batchUrl(id), { method: 'DELETE' });
     return { ok: res.ok, status: res.status };
   } catch {
     return { ok: false, status: 0 };

@@ -26,9 +26,11 @@ export const MAX_WAIT_MS = 20 * 1000;          // the longest single wait betwee
 export const ACCEPT = '.pdf,.zip,application/pdf,application/zip';
 
 export function isImportable(name) {
-  // Leading dots are not an extension separator (os.path.splitext), so
-  // ".pdf" alone is a name with no extension, as the server reads it.
-  return /\.(pdf|zip)$/i.test(String(name || '').replace(/^\.+/, ''));
+  // As the server reads a name: NFC, surrounding whitespace stripped
+  // (Uploads.create), and leading dots are not an extension separator
+  // (os.path.splitext), so ".pdf" alone is a name with no extension.
+  const clean = String(name || '').normalize('NFC').trim().replace(/^\.+/, '');
+  return /\.(pdf|zip)$/i.test(clean);
 }
 
 export class UploadError extends Error {
@@ -60,12 +62,15 @@ const K = new Uint32Array([
 
 const rotr = (x, n) => (x >>> n) | (x << (32 - n));
 
+// The message, the 0x80 marker, zeros, and the 64-bit bit length, padded to
+// whole 64-byte blocks. Plain arithmetic, not `>> 6 << 6`: JS shifts are
+// 32-bit, so from 2 GiB on a shift wraps to a negative length.
+export const paddedLength = (n) => Math.ceil((n + 9) / 64) * 64;
+
 export function sha256Hex(bytes) {
   const h = new Uint32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
                              0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);
-  // Message, the 0x80 marker, zeros, and the 64-bit bit length, padded to
-  // whole 64-byte blocks.
-  const padded = new Uint8Array(((bytes.length + 9 + 63) >> 6) << 6);
+  const padded = new Uint8Array(paddedLength(bytes.length));
   padded.set(bytes);
   padded[bytes.length] = 0x80;
   const view = new DataView(padded.buffer);
@@ -97,8 +102,19 @@ export function sha256Hex(bytes) {
 // server's full-file SHA-256, which never trusts this. `subtle` is read at
 // call time, so a page without a secure context takes the plain-JS path.
 export async function fingerprint(file, subtle = globalThis.crypto?.subtle) {
-  const head = new Uint8Array(await file.slice(0, Math.min(file.size, FINGERPRINT_SPAN)).arrayBuffer());
-  const tail = new Uint8Array(await file.slice(Math.max(0, file.size - FINGERPRINT_SPAN), file.size).arrayBuffer());
+  let head;
+  let tail;
+  try {
+    head = new Uint8Array(await file.slice(0, Math.min(file.size, FINGERPRINT_SPAN)).arrayBuffer());
+    tail = new Uint8Array(await file.slice(Math.max(0, file.size - FINGERPRINT_SPAN), file.size).arrayBuffer());
+  } catch {
+    // NotReadableError and kin: the file was moved, deleted or changed
+    // since it was selected. Retrying cannot help; selecting it again can.
+    // (A read failure DURING the upload surfaces inside fetch instead, as
+    // a rejected request -- indistinguishable there from a network drop,
+    // so it is retried until the budget runs out, then reported non-fatal.)
+    throw new UploadError('the file could not be read', { fatal: true });
+  }
   const size = new TextEncoder().encode(`${file.size}:`);
   const all = new Uint8Array(size.length + head.length + tail.length);
   all.set(size, 0);
@@ -165,6 +181,24 @@ export function batchNameFor(files, now = new Date()) {
 const isCount = (x) => Number.isInteger(x) && x >= 0;
 const cancelled = () => new UploadError('upload cancelled', { fatal: true });
 
+// One attempt may not hang forever: a connection that died without a reset
+// (a sleeping laptop, a NAT that forgot the flow) never rejects on its own,
+// and the retry budget only runs between attempts. A timed-out attempt is a
+// dropped request. The completion gets far longer: a ZIP with many entries
+// is one long request, and timing it out would only queue a retry behind
+// the same server lock.
+export const ATTEMPT_TIMEOUT_MS = 2 * 60 * 1000;
+export const COMPLETE_TIMEOUT_MS = 30 * 60 * 1000;
+const defaultTimeout = (ms) => (typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(ms) : null);
+
+// The user's cancel and this attempt's timer, as one signal. Without
+// AbortSignal.any (older browsers) only the user's cancel applies.
+function attemptSignal(signal, timer) {
+  const parts = [signal, timer].filter(Boolean);
+  if (parts.length < 2) return parts[0];
+  return typeof AbortSignal.any === 'function' ? AbortSignal.any(parts) : signal;
+}
+
 // Statuses that say "not now" rather than "no": a timeout and a throttle
 // are retried like a 5xx. 507 (disk full) is a 5xx that retrying cannot fix.
 const TRANSIENT_4XX = new Set([408, 429]);
@@ -174,22 +208,30 @@ const TRANSIENT_4XX = new Set([408, 429]);
 // RETRY_BUDGET_MS. A 409 that says where the server stands is an ANSWER,
 // not an error: it is returned for the caller to resync from. Any other
 // 4xx (400, 404 -- the upload is gone --, 413, 422) and 507 are fatal.
-async function request({ send, sleep, now, budgetMs, signal }, method, url, body, headers,
-                       valid = () => true) {
+async function request({ send, sleep, now, budgetMs, signal, timeout }, method, url, body, headers,
+                       valid = () => true, timeoutMs = ATTEMPT_TIMEOUT_MS) {
   let failures = 0;
   let firstFailure = null;
   for (;;) {
     if (signal?.aborted) throw cancelled();
     let res = null;
+    let stillFinishing = false;
+    // A fresh timer per attempt; its firing aborts only this attempt. Only
+    // the USER's signal means cancel -- a timeout is a dropped request.
+    const attempt = attemptSignal(signal, timeout(timeoutMs));
     try {
-      res = await send(url, { method, body, headers, signal });
+      res = await send(url, { method, body, headers, signal: attempt });
     } catch {
       if (signal?.aborted) throw cancelled();
     }
     if (res) {
       let data = null;
       let readable = true;
-      try { data = await res.json(); } catch { readable = false; }
+      try { data = await res.json(); } catch {
+        // Includes a timer firing mid-body; a cancel is still a cancel.
+        if (signal?.aborted) throw cancelled();
+        readable = false;
+      }
       if (res.ok) {
         // A body cut off mid-reply, or one without the fields the protocol
         // promises, is a lost reply, not an answer: retry, and the
@@ -201,6 +243,7 @@ async function request({ send, sleep, now, budgetMs, signal }, method, url, body
         // is what the retry gets.
         if (readable && data && isCount(data.received)) {
           if (data.state !== 'completing') return data;
+          stillFinishing = true;
         } else if (readable) {
           throw new UploadError(typeof data?.detail === 'string' ? data.detail : 'upload refused (409)',
             { status: 409, fatal: true });
@@ -215,6 +258,9 @@ async function request({ send, sleep, now, budgetMs, signal }, method, url, body
     failures += 1;
     if (firstFailure === null) firstFailure = now();
     if (now() - firstFailure >= budgetMs) {
+      if (stillFinishing) {
+        throw new UploadError('the server is still finishing this file', { status: 409 });
+      }
       throw new UploadError(res ? `server error (${res.status})` : 'the server could not be reached',
         { status: res ? res.status : 0 });
     }
@@ -230,14 +276,18 @@ export async function uploadFile({
   file, batchId, relPath = relPathOf(file),
   fetch: send = (...a) => globalThis.fetch(...a),
   sleep = abortableSleep, now = () => Date.now(), budgetMs = RETRY_BUDGET_MS,
-  chunkSize = CHUNK_SIZE, onProgress = () => {}, signal,
+  chunkSize = CHUNK_SIZE, onProgress = () => {}, signal, timeout = defaultTimeout,
 } = {}) {
-  const call = (method, url, body, headers, valid) =>
-    request({ send, sleep, now, budgetMs, signal }, method, url, body, headers, valid);
+  const call = (method, url, body, headers, valid, timeoutMs) =>
+    request({ send, sleep, now, budgetMs, signal, timeout }, method, url, body, headers, valid, timeoutMs);
+  // Before the fingerprint: a cancelled import must not read 2 MiB of
+  // every file still queued behind it.
+  if (signal?.aborted) throw cancelled();
+  const key = await fingerprint(file);
   const created = await call('POST', '/api/uploads', JSON.stringify({
     batch_id: batchId, name: file.name, size: file.size,
     last_modified: Number.isFinite(file.lastModified) ? file.lastModified : null,
-    rel_path: relPath, fingerprint: await fingerprint(file),
+    rel_path: relPath, fingerprint: key,
   }), { 'Content-Type': 'application/json' },
   (r) => typeof r.upload_id === 'string' && isCount(r.received) && r.received <= file.size);
   const id = encodeURIComponent(created.upload_id);
@@ -260,7 +310,7 @@ export async function uploadFile({
       onProgress(received, file.size);
     }
     const done = await call('POST', `/api/uploads/${id}/complete`, undefined, undefined,
-      (x) => x.state === 'complete');
+      (x) => x.state === 'complete', COMPLETE_TIMEOUT_MS);
     if (done.state === 'complete') return done;
     received = Math.min(done.received, file.size);
     onProgress(received, file.size);
@@ -268,14 +318,36 @@ export async function uploadFile({
   throw new UploadError('the server keeps losing this upload', { fatal: true });
 }
 
-// Upload many files, PARALLEL at a time. One file failing never stops the
-// others; each result is { ok: true, ...completion } or { ok: false, error }.
+// Upload many files, PARALLEL at a time. A file the server REFUSED never
+// stops the others; each result is { ok: true, ...completion } or
+// { ok: false, error }.
+//
+// But once one file has given up on an unreachable server (a non-fatal
+// error: its retry budget ran out), files not yet started are not
+// attempted: the budget is per file, so 300 queued files would otherwise
+// each sit out ten minutes -- hours before the import ends. Their error is
+// non-fatal too, so selecting them again resumes. Files already running
+// finish their own budget. A cancel marks every file not yet started as
+// cancelled, without reading it.
+export const NOT_ATTEMPTED = 'not attempted: the server could not be reached';
+
 export async function importFiles(files, { parallel = PARALLEL, onFile = () => {}, ...opts } = {}) {
   const results = new Array(files.length);
   let next = 0;
+  let unreachable = false;
   async function lane() {
     while (next < files.length) {
       const i = next++;
+      if (opts.signal?.aborted) {
+        results[i] = { ok: false, error: cancelled() };
+        onFile(i, { done: true, result: results[i] });
+        continue;
+      }
+      if (unreachable) {
+        results[i] = { ok: false, error: new UploadError(NOT_ATTEMPTED) };
+        onFile(i, { done: true, result: results[i] });
+        continue;
+      }
       try {
         const done = await uploadFile({
           ...opts, file: files[i],
@@ -284,6 +356,7 @@ export async function importFiles(files, { parallel = PARALLEL, onFile = () => {
         results[i] = { ok: true, ...done };
       } catch (error) {
         results[i] = { ok: false, error };
+        if (error instanceof UploadError && !error.fatal) unreachable = true;
       }
       onFile(i, { done: true, result: results[i] });
     }

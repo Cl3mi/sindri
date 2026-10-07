@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 const {
   uploadFile, importFiles, fingerprint, sha256Hex, relPathOf, batchNameFor, UploadError,
   RETRY_BUDGET_MS, MAX_WAIT_MS, recallDraft, rememberDraft, forgetDraft,
-  isImportable, ACCEPT,
+  isImportable, ACCEPT, paddedLength,
 } = await import('../../app/static/js/upload.js');
 
 const bytes = (n, seed = 7) => Uint8Array.from({ length: n }, (_, i) => (i * seed + 3) % 251);
@@ -450,4 +450,146 @@ test('importFiles runs at most three uploads at once and one failure stops none 
   assert.deepEqual(results.map((r) => r.ok), [true, true, false, true, true, true]);
   assert.equal(results[2].error.status, 400);
   assert.ok(peak >= 2 && peak <= 3, `peak ${peak}`);
+});
+
+test('an unreachable server ends an import in one budget, not one budget per file', async () => {
+  // 300 queued files x 10 minutes each would be hours. Once one file has
+  // given up on the server, files not yet started are not attempted -- and
+  // that is not fatal: selecting them again resumes.
+  // The lanes wait CONCURRENTLY, so the fake clock is a timer queue: each
+  // wait wakes at its own deadline, earliest first. A clock every wait
+  // simply added to would count three lanes' waits three times over.
+  let clock = 0;
+  const timers = [];
+  let ticking = false;
+  const tick = () => {
+    if (ticking) return;
+    ticking = true;
+    setImmediate(() => {                       // after every lane has reached its wait
+      ticking = false;
+      if (!timers.length) return;
+      timers.sort((a, b) => a.at - b.at);
+      const t = timers.shift();
+      clock = Math.max(clock, t.at);
+      t.wake();
+      tick();
+    });
+  };
+  const sleep = (ms) => new Promise((wake) => { timers.push({ at: clock + ms, wake }); tick(); });
+  const started = [];
+  const fetch = async (url, init) => {
+    if (init.method === 'POST' && url === '/api/uploads') started.push(JSON.parse(init.body).name);
+    throw new TypeError('network down');
+  };
+  const files = [0, 1, 2, 3, 4, 5].map((i) => fileOf(bytes(50), `f${i}.pdf`));
+  const results = await importFiles(files, { batchId: 'b', fetch, sleep, now: () => clock });
+  // One budget plus the last wait that overshoots it, plus a second of slack.
+  assert.ok(clock < RETRY_BUDGET_MS + MAX_WAIT_MS + 1000, `${clock}`);
+  assert.deepEqual([...new Set(started)].sort(), ['f0.pdf', 'f1.pdf', 'f2.pdf']);
+  assert.ok(results.every((r) => !r.ok && r.error instanceof UploadError && !r.error.fatal));
+  assert.deepEqual(results.slice(3).map((r) => r.error.message),
+    Array(3).fill('not attempted: the server could not be reached'));
+});
+
+test('a refusal of one file does not stop the files after it from starting', async () => {
+  const server = fakeServer();
+  const files = [fileOf(bytes(10), 'bad.exe'), fileOf(bytes(10), 'b.pdf'), fileOf(bytes(10), 'c.pdf')];
+  const results = await importFiles(files, { batchId: 'b', fetch: server.fetch, sleep: noSleep, parallel: 1 });
+  assert.deepEqual(results.map((r) => r.ok), [false, true, true]);
+});
+
+// A File whose reads are counted, or fail.
+function spyFile(data, name, { fail = false } = {}) {
+  const real = fileOf(data, name);
+  const spy = { reads: 0, name, size: real.size, lastModified: 1, webkitRelativePath: '' };
+  spy.slice = (...a) => {
+    spy.reads += 1;
+    if (fail) {
+      return { arrayBuffer: async () => { const e = new Error('gone'); e.name = 'NotReadableError'; throw e; } };
+    }
+    return real.slice(...a);
+  };
+  return spy;
+}
+
+test('cancel leaves the files not yet started unread', async () => {
+  const ctl = new AbortController();
+  const server = fakeServer();
+  const files = [0, 1, 2].map((i) => spyFile(bytes(100), `f${i}.pdf`));
+  const results = await importFiles(files, { batchId: 'b', fetch: server.fetch, sleep: noSleep,
+    parallel: 1, signal: ctl.signal, onFile: (i, ev) => { if (ev.done) ctl.abort(); } });
+  assert.equal(results[0].ok, true);
+  for (const r of results.slice(1)) assert.equal(r.error.message, 'upload cancelled');
+  assert.deepEqual(files.map((f) => f.reads > 0), [true, false, false]);
+});
+
+test('an already cancelled upload does not even fingerprint the file', async () => {
+  const ctl = new AbortController();
+  ctl.abort();
+  const file = spyFile(bytes(100), 'a.pdf');
+  await assert.rejects(uploadFile({ file, batchId: 'b', fetch: fakeServer().fetch, signal: ctl.signal }),
+    (err) => err.fatal && err.message === 'upload cancelled');
+  assert.equal(file.reads, 0);
+});
+
+test('a file that cannot be read is a fatal error of its own, not a network fault', async () => {
+  const server = fakeServer();
+  await assert.rejects(
+    uploadFile({ file: spyFile(bytes(100), 'a.pdf', { fail: true }), batchId: 'b', fetch: server.fetch,
+      sleep: noSleep }),
+    (err) => err instanceof UploadError && err.fatal && err.message === 'the file could not be read');
+  assert.equal(server.calls.length, 0);
+});
+
+test('an attempt that hangs is timed out and counted as a dropped request', async () => {
+  // The injected timer stands in for AbortSignal.timeout. A timeout is not
+  // the user's cancel: the request is sent again at the same offset.
+  const server = fakeServer();
+  const timers = [];
+  const timeout = () => { const c = new AbortController(); timers.push(c); return c.signal; };
+  let hung = false;
+  const fetch = (url, init) => {
+    if (init.method === 'PUT' && !hung) {
+      hung = true;
+      return new Promise((_, reject) => init.signal.addEventListener('abort',
+        () => reject(new DOMException('timed out', 'TimeoutError'))));
+    }
+    return server.fetch(url, init);
+  };
+  const run = uploadFile({ file: fileOf(bytes(100)), batchId: 'b', fetch, sleep: noSleep,
+    chunkSize: 64, timeout });
+  while (!hung) await new Promise((r) => setImmediate(r));   // the fingerprint runs first
+  timers.at(-1).abort();                       // the hung attempt's own timer fires
+  const done = await run;
+  assert.equal(done.state, 'complete');
+  assert.deepEqual(puts(server), [0, 64]);
+  assert.deepEqual(server.uploads.get('u1').bytes, bytes(100));
+});
+
+test('a completion still running at the end of the budget says so', async () => {
+  let clock = 0;
+  const server = fakeServer({ onComplete: (up) =>
+    json(409, { detail: 'the upload is not complete', received: up.size, state: 'completing' }) });
+  await assert.rejects(
+    uploadFile({ file: fileOf(bytes(100)), batchId: 'b', fetch: server.fetch, chunkSize: 64,
+      sleep: async (ms) => { clock += ms; }, now: () => clock }),
+    (err) => !err.fatal && err.status === 409 && err.message === 'the server is still finishing this file');
+});
+
+test('isImportable reads the name as the server does: NFC, surrounding spaces stripped', () => {
+  assert.equal(isImportable('a.pdf '), true);
+  assert.equal(isImportable('  b.ZIP\t'), true);
+  // No precomposed f-acute exists, so NFC keeps the mark in the extension
+  // and the server's upload_kind refuses it too.
+  assert.equal(isImportable('a.pdf́'), false);
+});
+
+test('the SHA-256 padding length is plain arithmetic, so it never wraps at 2 GiB', () => {
+  // The fingerprint hashes at most 2 MiB today; a 32-bit shift would turn
+  // any input of 2 GiB or more into a negative array length.
+  assert.equal(paddedLength(0), 64);
+  assert.equal(paddedLength(55), 64);
+  assert.equal(paddedLength(56), 128);
+  assert.equal(paddedLength(2 ** 31), 2 ** 31 + 64);
+  assert.equal(paddedLength(2 ** 32 + 100), 2 ** 32 + 128);
 });
