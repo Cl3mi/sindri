@@ -7,11 +7,14 @@ the client's own gold corpus and scoring internals, which is a different
 distribution problem than a stray import inside app/pipeline. This is a
 static, structural guarantee, not a behavioural one: it is checked by parsing
 the source, not by importing it (importing app.eval has its own heavy
-dependencies this test must not require)."""
+dependencies this test must not require). app/batch/ is held to the same
+rule."""
 import ast
 from pathlib import Path
 
-REVIEW_DIR = Path(__file__).resolve().parents[2] / "app" / "review"
+APP = Path(__file__).resolve().parents[2] / "app"
+# Every product package that ships to the client.
+PRODUCT_DIRS = [APP / "review", APP / "batch"]
 
 
 def _imports_app_eval(tree: ast.AST) -> bool:
@@ -27,10 +30,11 @@ def _imports_app_eval(tree: ast.AST) -> bool:
     return False
 
 
-def test_no_review_module_imports_app_eval():
+def test_no_product_module_imports_app_eval():
     offenders = []
-    for path in sorted(REVIEW_DIR.glob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        if _imports_app_eval(tree):
-            offenders.append(path.name)
+    for d in PRODUCT_DIRS:
+        for path in sorted(d.glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            if _imports_app_eval(tree):
+                offenders.append(f"{d.name}/{path.name}")
     assert offenders == []
