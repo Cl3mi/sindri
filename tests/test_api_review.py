@@ -9,7 +9,7 @@ import app.main as main
 from app.main import app
 from app.pipeline.detect import Detection
 from tests.conftest import StubVLMBackend
-from tests.test_api import save_pdf, upload_pdf
+from tests.test_api import save_pdf, start_pdf, upload_pdf
 
 client = TestClient(app)
 
@@ -58,7 +58,7 @@ def test_a_review_store_fault_fails_the_drawing_and_retry_skips_the_gpu(
     monkeypatch.setattr(main, "extract", counting)
     monkeypatch.setattr(main, "build_header", boom)
     sid = save_pdf(client, sample_pdf)["session_id"]
-    client.post(f"/api/documents/{sid}/enqueue")
+    start_pdf(client, sid)
     main.runtime().worker.run_once()
     doc = client.get(f"/api/documents/{sid}").json()
     assert (doc["state"], doc["error_type"]) == ("failed", "review_store:RuntimeError")

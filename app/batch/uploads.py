@@ -39,7 +39,8 @@ from typing import Optional
 
 from app.batch.paths import DOC_ID_RE, has_refused_chars, safe_rel_parts
 from app.batch.pdf_facts import pdf_facts
-from app.batch.repo import BatchError, UnknownBatch, UnknownUpload, UploadConflict
+from app.batch.repo import (BatchError, InvalidTransition, UnknownBatch,
+                            UnknownUpload, UploadConflict)
 from app.batch.unzip import (Ignored, classify, ignored as ignored_entry,
                              shared_headers, summarise_ignored)
 
@@ -632,7 +633,7 @@ class Uploads:
             except OSError as e:
                 log.warning("import dir %s not unmarked: %s", d.name[:8], type(e).__name__)
 
-    def _guarded(self, batch_id, step):
+    def _guarded(self, batch_id, step, client_ids=None):
         """Snapshot the draft's drawings, mark their dirs, then run the repo
         `step` with that snapshot as `expected_ids` -- all under the batch's
         lock, so no completion can commit or unmark in between. The repo
@@ -647,7 +648,13 @@ class Uploads:
         marked: its refusal (or a Discard's idempotent None) is certain, and
         a started batch's dirs are the worker's -- no marker belongs there.
         Read under the batch's lock, so no Start can slip in between; a
-        started batch never becomes a draft again."""
+        started batch never becomes a draft again.
+
+        `client_ids`, when given, is the draft as the CLIENT saw it. It is
+        checked against the snapshot before anything is marked, so a draft
+        that gained or lost a row since the client looked is refused with
+        nothing changed -- the same refusal, for the same reason, one step
+        further out."""
         with self._batch_lock(batch_id):
             try:
                 draft = self.repo.get_batch(batch_id)["draft"]
@@ -656,6 +663,8 @@ class Uploads:
             if not draft:
                 return step(batch_id, expected_ids=[]), []
             snapshot = self.repo.batch_document_ids(batch_id)
+            if client_ids is not None and set(client_ids) != set(snapshot):
+                raise InvalidTransition("the import changed — reload it")
             marked = self._mark(batch_id, snapshot)
             try:
                 return step(batch_id, expected_ids=snapshot), marked
@@ -663,12 +672,13 @@ class Uploads:
                 self._unmark(marked)        # refused or failed: every row still stands
                 raise
 
-    def start_batch(self, batch_id) -> dict:
+    def start_batch(self, batch_id, expected_ids=None) -> dict:
         """Repo.start_batch, with the dropped drawings' dirs removed after
         the commit (marker last, so a removal that stops halfway is still
-        swept). The queued drawings' dirs are unmarked. Returns the repo's
+        swept). The queued drawings' dirs are unmarked. `expected_ids` is
+        the client's view of the draft (see _guarded). Returns the repo's
         {queued, dropped}."""
-        out, marked = self._guarded(batch_id, self.repo.start_batch)
+        out, marked = self._guarded(batch_id, self.repo.start_batch, expected_ids)
         dropped = set(out["dropped"])
         self._unmark(d for d in marked if d.name not in dropped)
         for doc_id in out["dropped"]:

@@ -394,9 +394,51 @@ def test_a_started_import_cannot_be_discarded():
     assert client.delete(f"/api/batches/{batch_id}").status_code == 409
 
 
-def test_a_drawing_in_a_draft_cannot_be_queued_one_by_one():
-    _, done = import_file(pdf_bytes())
-    assert client.post(f"/api/documents/{done['documents'][0]['id']}/enqueue").status_code == 409
+def test_start_with_the_draft_the_client_saw_starts_it():
+    """The interim UI checks the draft holds exactly the drawing on screen,
+    then starts it. Sending that id set lets the server do the check at the
+    moment of Start, under the batch's lock."""
+    batch_id, done = import_file(pdf_bytes())
+    doc_id = done["documents"][0]["id"]
+    r = client.post(f"/api/batches/{batch_id}/start", json={"expected_ids": [doc_id]})
+    assert r.json() == {"queued": 1, "dropped": 0, "documents": [doc_id]}
+    assert client.get(f"/api/documents/{doc_id}").json()["state"] == "queued"
+
+
+def test_start_refuses_a_draft_that_gained_a_row_since_the_client_looked():
+    """The race the UI's own check leaves open: another tab (or an earlier
+    attempt's retried completion) stages a second copy between the UI's
+    GET and its Start. Start would queue it unseen. Refused, changing
+    nothing -- not even a marker."""
+    rt = main.runtime()
+    batch_id, first = import_file(pdf_bytes())
+    _, late = import_file(pdf_bytes(), name="b.pdf", batch_id=batch_id)
+    seen = first["documents"][0]["id"]
+    ids = [seen, late["documents"][0]["id"]]
+    r = client.post(f"/api/batches/{batch_id}/start", json={"expected_ids": [seen]})
+    assert (r.status_code, r.json()) == (409, {"detail": "the import changed — reload it"})
+    view = client.get(f"/api/batches/{batch_id}").json()
+    assert view["batch"]["draft"] is True
+    assert [(d["id"], d["state"]) for d in view["documents"]] == [(i, "staged") for i in ids]
+    for i in ids:
+        d = rt.data.doc_dir(i)
+        assert (d / "input.pdf").exists() and not (d / ".importing").exists()
+
+
+@pytest.mark.parametrize("body", [
+    {"expected_ids": "0" * 32},                 # not a list
+    {"expected_ids": ["Geheim.pdf"]},           # not an id
+    {"expected_ids": ["0" * 31]},
+    {"expected_ids": ["A" * 32]},               # ids are lower-case hex
+    {"expected_ids": [7]},
+    {"expectedIds": ["0" * 32]},                # misspelt: would silently drop the check
+])
+def test_a_malformed_start_request_gets_the_fixed_sentence_and_starts_nothing(body):
+    batch_id, done = import_file(pdf_bytes())
+    r = client.post(f"/api/batches/{batch_id}/start", json=body)
+    assert (r.status_code, r.json()) == (422, {"detail": "request rejected: malformed fields"})
+    assert "Geheim" not in r.text
+    assert client.get(f"/api/documents/{done['documents'][0]['id']}").json()["state"] == "staged"
 
 
 def test_the_document_view_names_its_batch():

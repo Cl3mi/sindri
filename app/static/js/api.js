@@ -105,8 +105,14 @@ export const createBatch = async (name) =>
   jsonOrThrow(await fetch('/api/batches', { method: 'POST', headers: JSON_HEADERS,
                                             body: JSON.stringify({ name }) }), 'Could not start an import');
 export const getBatch = async (id) => jsonOrThrow(await fetch(batchUrl(id)), 'Import not found');
-export const startBatch = async (id) =>
-  jsonOrThrow(await fetch(batchUrl(id, '/start'), { method: 'POST' }), 'Could not start the import');
+// `expectedIds`: the drawings the caller saw in the draft. Sent, the server
+// refuses (409 "the import changed") a draft holding any other set, so a
+// copy staged meanwhile by another tab is never queued unseen.
+export const startBatch = async (id, expectedIds) =>
+  jsonOrThrow(await fetch(batchUrl(id, '/start'), expectedIds === undefined
+    ? { method: 'POST' }
+    : { method: 'POST', headers: JSON_HEADERS,
+        body: JSON.stringify({ expected_ids: expectedIds }) }), 'Could not start the import');
 export const setIncluded = async (id, included) =>
   jsonOrThrow(await fetch(docUrl(id, '/include'), { method: 'POST', headers: JSON_HEADERS,
                                                     body: JSON.stringify({ included }) }),

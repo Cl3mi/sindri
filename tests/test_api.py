@@ -1,3 +1,6 @@
+import hashlib
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
@@ -8,23 +11,46 @@ client = TestClient(app)
 
 
 def save_pdf(test_client, path, filename="sample.pdf"):
-    """POST a PDF to /api/upload (save only) and return its metadata."""
-    with open(path, "rb") as f:
-        r = test_client.post("/api/upload",
-                             files={"file": (filename, f, "application/pdf")})
+    """Import a PDF the way the UI does -- a draft batch of one, the chunked
+    upload protocol, completion -- and return its metadata. Nothing is
+    queued."""
+    data = Path(path).read_bytes()
+    batch = test_client.post("/api/batches", json={"name": filename}).json()
+    r = test_client.post("/api/uploads", json={
+        "batch_id": batch["id"], "name": filename, "size": len(data),
+        "fingerprint": hashlib.sha256(data).hexdigest()})
     assert r.status_code == 200, r.text
-    return r.json()
+    uid = r.json()["upload_id"]
+    if data:
+        assert test_client.put(f"/api/uploads/{uid}?offset=0", content=data).status_code == 200
+    r = test_client.post(f"/api/uploads/{uid}/complete")
+    assert r.status_code == 200, r.text
+    (row,) = r.json()["documents"]
+    return {"session_id": row["id"], "fileName": row["file_name"],
+            "pages": row["pages"], "batch_id": batch["id"]}
+
+
+def start_pdf(test_client, sid):
+    """What the interim UI's "Include and start" does for its batch of one:
+    include the drawing, then start the import -- naming the drawing it
+    expects the draft to hold, as the UI does."""
+    batch_id = test_client.get(f"/api/documents/{sid}").json()["batch_id"]
+    r = test_client.post(f"/api/documents/{sid}/include", json={"included": True})
+    assert r.status_code == 200, r.text
+    r = test_client.post(f"/api/batches/{batch_id}/start", json={"expected_ids": [sid]})
+    assert r.status_code == 200, r.text
+    assert r.json()["documents"] == [sid]
 
 
 def upload_pdf(test_client, path, filename="sample.pdf"):
-    """Upload, queue and extract a PDF through the background worker -- run
+    """Import, queue and extract a PDF through the background worker -- run
     inline, so the test is deterministic -- then open it for review. Returns
     the /open payload (session_id, image_url, rows, notes, marks,
     title_block, writer, events, last_seq)."""
     import app.main as main
     meta = save_pdf(test_client, path, filename)
     sid = meta["session_id"]
-    assert test_client.post(f"/api/documents/{sid}/enqueue").status_code == 200
+    start_pdf(test_client, sid)
     assert main.runtime().worker.run_once() == sid
     doc = test_client.get(f"/api/documents/{sid}").json()
     assert doc["state"] == "ready", doc
@@ -41,6 +67,17 @@ def stub_backend(monkeypatch):
     )
     monkeypatch.setattr("app.main._BACKEND", backend)
     return backend
+
+
+def test_the_single_shot_upload_and_per_drawing_enqueue_are_gone():
+    """Since B2 a drawing arrives through /api/uploads into a draft and is
+    queued only by starting the draft, where the Include rules live. Asked
+    of the route table: a request to an unknown id at /enqueue would 404
+    whether the route existed or not."""
+    routes = {(m, r.path) for r in app.routes for m in (getattr(r, "methods", None) or ())}
+    assert ("POST", "/api/upload") not in routes
+    assert ("POST", "/api/documents/{doc_id}/enqueue") not in routes
+    assert ("POST", "/api/batches/{batch_id}/start") in routes
 
 
 def test_every_test_gets_its_own_data_and_review_dir(tmp_path):
@@ -61,9 +98,10 @@ def test_upload_returns_rows_and_image(sample_pdf, stub_backend):
 
 def test_queued_drawings_report_their_queue_position(sample_pdf, stub_backend):
     a = save_pdf(client, sample_pdf)["session_id"]
-    b = save_pdf(client, sample_pdf)["session_id"]
-    client.post(f"/api/documents/{a}/enqueue")
-    view = client.post(f"/api/documents/{b}/enqueue").json()
+    b = save_pdf(client, sample_pdf)["session_id"]     # a duplicate: start_pdf includes it
+    start_pdf(client, a)
+    start_pdf(client, b)
+    view = client.get(f"/api/documents/{b}").json()
     assert (view["state"], view["queue_position"]) == ("queued", 2)
     assert client.get(f"/api/documents/{a}").json()["queue_position"] == 1
 
@@ -77,7 +115,7 @@ def test_extraction_without_detection_backend_fails_the_document(sample_pdf, mon
             return OcrResult(text="", confidence=0.0)
     monkeypatch.setattr("app.main._BACKEND", ReadOnly())
     sid = save_pdf(client, sample_pdf)["session_id"]
-    client.post(f"/api/documents/{sid}/enqueue")
+    start_pdf(client, sid)
     main.runtime().worker.run_once()
     doc = client.get(f"/api/documents/{sid}").json()
     assert (doc["state"], doc["error_type"]) == ("failed", "RuntimeError")
@@ -117,7 +155,7 @@ def test_upload_returns_metadata_without_extracting(sample_pdf, stub_backend):
 
 
 @pytest.mark.parametrize("method,route", [
-    ("post", "enqueue"), ("post", "open"), ("post", "cancel"), ("post", "retry")])
+    ("post", "open"), ("post", "cancel"), ("post", "retry")])
 def test_document_routes_reject_a_malformed_id(method, route):
     assert getattr(client, method)(f"/api/documents/not-a-valid-uuid/{route}").status_code == 404
 
@@ -129,7 +167,7 @@ def test_an_unknown_document_is_404():
 def test_cancel_and_retry_a_queued_drawing(sample_pdf, stub_backend):
     import app.main as main
     sid = save_pdf(client, sample_pdf)["session_id"]
-    client.post(f"/api/documents/{sid}/enqueue")
+    start_pdf(client, sid)
     assert client.post(f"/api/documents/{sid}/cancel").json()["state"] == "cancelled"
     assert main.runtime().worker.run_once() is None
     assert client.post(f"/api/documents/{sid}/retry").json()["state"] == "queued"
@@ -522,7 +560,7 @@ def test_delete_refuses_the_drawing_the_worker_is_still_running(
         raise RuntimeError("never reached a result")
     monkeypatch.setattr(main, "extract", extract_that_is_cancelled_midway)
     sid = seen["sid"] = save_pdf(client, sample_pdf)["session_id"]
-    client.post(f"/api/documents/{sid}/enqueue")
+    start_pdf(client, sid)
     assert main.runtime().worker.run_once() == sid
     assert (seen["status"], seen["dir_kept"]) == (409, True), seen["body"]
     assert sid not in seen["body"]["detail"]
@@ -631,43 +669,6 @@ def test_a_failed_open_does_not_rotate_the_writer(sample_pdf, stub_backend):
     assert r.status_code == 200, r.text
 
 
-@pytest.mark.parametrize("err,status", [(28, 507), (5, 500)])   # ENOSPC, EIO
-def test_an_upload_that_cannot_be_stored_is_not_called_a_bad_pdf(
-        err, status, sample_pdf, monkeypatch):
-    """A full disk is the server's problem, not the user's file: only a PDF
-    that will not parse is a 400. Nothing half-written is left behind, and
-    the reply is a fixed sentence (an OSError's text names the path)."""
-    import app.main as main
-
-    def failing_open(*a, **k):
-        raise OSError(err, "no", "/some/path")
-    docs = main.runtime().data.docs
-    monkeypatch.setattr(main, "open", failing_open, raising=False)
-    with open(sample_pdf, "rb") as f:
-        r = client.post("/api/upload", files={"file": ("x.pdf", f, "application/pdf")})
-    assert r.status_code == status
-    assert "path" not in r.json()["detail"] and "PDF" not in r.json()["detail"]
-    assert list(docs.iterdir()) == []
-
-
-def test_an_unparseable_upload_is_a_400_and_leaves_nothing(tmp_path):
-    import app.main as main
-    bad = tmp_path / "bad.bin"
-    bad.write_bytes(b"not a pdf at all")
-    with open(bad, "rb") as f:
-        r = client.post("/api/upload", files={"file": ("x.pdf", f, "application/pdf")})
-    assert (r.status_code, r.json()["detail"]) == (400, "could not read the PDF")
-    assert list(main.runtime().data.docs.iterdir()) == []
-
-
-def test_upload_runs_off_the_event_loop():
-    """File, PyMuPDF and SQLite work all block; a sync handler runs in the
-    threadpool instead of stalling every other request."""
-    import inspect
-    import app.main as main
-    assert not inspect.iscoroutinefunction(main.upload)
-
-
 def test_retry_refuses_the_drawing_the_worker_is_still_running(
         sample_pdf, stub_backend, monkeypatch):
     """A cancelled row can still be the worker's current run (cancel is
@@ -685,7 +686,7 @@ def test_retry_refuses_the_drawing_the_worker_is_still_running(
         raise RuntimeError("never reached a result")
     monkeypatch.setattr(main, "extract", extract_that_is_cancelled_midway)
     sid = seen["sid"] = save_pdf(client, sample_pdf)["session_id"]
-    client.post(f"/api/documents/{sid}/enqueue")
+    start_pdf(client, sid)
     assert main.runtime().worker.run_once() == sid
     assert seen["status"] == 409, seen["body"]
     assert client.get(f"/api/documents/{sid}").json()["state"] == "cancelled"
@@ -702,7 +703,7 @@ def test_a_running_drawing_reports_its_progress(sample_pdf, monkeypatch):
         raise RuntimeError("stop here")
     monkeypatch.setattr(main, "extract", extract_reporting)
     sid = seen["sid"] = save_pdf(client, sample_pdf)["session_id"]
-    client.post(f"/api/documents/{sid}/enqueue")
+    start_pdf(client, sid)
     main.runtime().worker.run_once()
     assert seen["doc"]["state"] == "extracting"
     assert seen["doc"]["progress"] == {"step": "detect", "detail": "tile",

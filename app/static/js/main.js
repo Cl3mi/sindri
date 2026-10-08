@@ -376,7 +376,9 @@ async function startExtraction() {
     // Excluded by default (out of scope or a duplicate): the press of
     // "Include and start" is the user including it (decision 26).
     if (w.row && !w.row.included) w.row = await setIncluded(w.id, true);
-    await startBatch(w.batchId);
+    // The check above ran a request ago; [w.id] makes the server repeat it
+    // at the moment of Start, so a copy staged in between is refused too.
+    await startBatch(w.batchId, [w.id]);
     forgetImported(w);
     if (waitingOn !== w || stopping) return;   // Stop pressed meanwhile: Stop owns it now
     pollUntilReady();

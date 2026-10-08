@@ -121,6 +121,33 @@ test('the import wrappers send what the import routes expect', async () => {
   }
 });
 
+// The interim UI starts a draft only if it holds exactly the drawing on
+// screen. Sending those ids makes the SERVER refuse (409) a draft that
+// changed between the UI's look and its Start, instead of queueing a row
+// the user never saw.
+test('startBatch sends the ids the caller expects the draft to hold', async () => {
+  const api = await import('../../app/static/js/api.js');
+  const saved = globalThis.fetch;
+  const sent = [];
+  try {
+    globalThis.fetch = async (url, init = {}) => {
+      sent.push([url, init.method, init.headers?.['Content-Type'] ?? null,
+                 init.body ? JSON.parse(init.body) : null]);
+      return fakeRes(200, { queued: 1 });
+    };
+    await api.startBatch('b1', ['d1']);
+    await api.startBatch('b1', []);
+    await api.startBatch('b1');
+    assert.deepEqual(sent, [
+      ['/api/batches/b1/start', 'POST', 'application/json', { expected_ids: ['d1'] }],
+      ['/api/batches/b1/start', 'POST', 'application/json', { expected_ids: [] }],
+      ['/api/batches/b1/start', 'POST', null, null],
+    ]);
+  } finally {
+    globalThis.fetch = saved;
+  }
+});
+
 test('discardBatch is best effort: it reports, never throws', async () => {
   const { discardBatch } = await import('../../app/static/js/api.js');
   const saved = globalThis.fetch;

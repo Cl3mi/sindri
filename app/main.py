@@ -1,5 +1,3 @@
-import errno
-import hashlib
 import json
 import logging
 import os
@@ -11,10 +9,10 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Annotated, List, Optional
 from urllib.parse import quote
 import fitz  # PyMuPDF
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
@@ -23,7 +21,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect
 from starlette.types import Scope
 from starlette.responses import Response
-from pydantic import BaseModel, StrictBool, StrictInt
+from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, StringConstraints
 from app.models import Characteristic, NoteBlock, MarkBlock, TitleField
 from app.pipeline.extract import extract
 from app.pipeline.ocr import get_backend, backend_status
@@ -218,6 +216,19 @@ class IncludeRequest(BaseModel):
     included: StrictBool        # lax pydantic would read "no" or 0 as a choice
 
 
+# DOC_ID_RE's shape, strict: lax pydantic would coerce a number to a string.
+# pydantic-core's Rust regex has no \A/\Z; its ^ and $ are already strict
+# (no match before a trailing newline, unlike Python's $).
+DocId = Annotated[str, StringConstraints(strict=True, pattern=r"^[0-9a-f]{32}$")]
+
+
+class StartRequest(BaseModel):
+    # Forbid unknown keys: a misspelt `expected_ids` would otherwise be
+    # dropped silently, and with it the very check the client asked for.
+    model_config = ConfigDict(extra="forbid")
+    expected_ids: Optional[List[DocId]] = None
+
+
 @app.get("/api/health")
 def health():
     status = backend_status()
@@ -235,50 +246,6 @@ def health():
         status["disk_free_mb"] = None
     status["min_free_mb"] = rt.uploads.min_free_bytes // batch_uploads.MIB
     return status
-
-
-@app.post("/api/upload")
-def upload(file: UploadFile = File(...)):
-    """Store a PDF as a staged drawing -- a batch of one until B2 brings real
-    batches. Extraction is queued separately and runs in the background
-    worker, so no browser has to stay open (batch design §1).
-
-    A sync handler on purpose: file, PyMuPDF and SQLite work all block, and
-    FastAPI runs a plain `def` in its threadpool instead of on the event loop."""
-    rt = runtime()
-    doc_id = uuid.uuid4().hex
-    work = rt.data.doc_dir(doc_id)
-    pdf_path = work / "input.pdf"
-    digest = hashlib.sha256()
-    try:
-        work.mkdir(parents=True)
-        with open(pdf_path, "wb") as out:
-            while chunk := file.file.read(1 << 20):
-                digest.update(chunk)
-                out.write(chunk)
-    except OSError as e:
-        # The server could not store it -- not the user's file at fault. A
-        # fixed sentence: an OSError's own text names the path. TYPE only in
-        # the log, like everywhere else (CLAUDE.md §1).
-        shutil.rmtree(work, ignore_errors=True)
-        log.warning("upload %s not stored: %s", doc_id[:8], type(e).__name__)
-        if e.errno == errno.ENOSPC:
-            raise HTTPException(status_code=507, detail="not enough disk space to store the drawing")
-        raise HTTPException(status_code=500, detail="could not store the drawing")
-    try:
-        with fitz.open(pdf_path) as doc:
-            pages = doc.page_count
-    except Exception:
-        shutil.rmtree(work, ignore_errors=True)
-        raise HTTPException(status_code=400, detail="could not read the PDF")
-    name = file.filename or "drawing.pdf"
-    try:
-        rt.repo.create_document(doc_id, name, pages, digest.hexdigest())
-    except BaseException:
-        # No row, so nothing would ever list or remove these files.
-        shutil.rmtree(work, ignore_errors=True)
-        raise
-    return {"session_id": doc_id, "fileName": name, "pages": pages}
 
 
 @app.post("/api/batches")
@@ -393,13 +360,20 @@ def include_document(doc_id: str, req: IncludeRequest):
 
 
 @app.post("/api/batches/{batch_id}/start")
-def start_batch(batch_id: str):
+def start_batch(batch_id: str, req: Optional[StartRequest] = None):
     """Queue the included drawings, drop the excluded ones with their files,
     end the draft (design §2). The only way a staged drawing is queued. A
     refusal (409) changes nothing; the UI reloads and the user decides
-    again -- never a silent retry."""
+    again -- never a silent retry.
+
+    `expected_ids`, when sent, is the drawings the client SAW in the draft:
+    a draft that holds any other set (a copy staged by another tab between
+    the client's look and this request) is refused with "the import
+    changed", so nothing is queued that the user did not see. Optional:
+    the interim UI sends it; omitted, the draft is started as it is."""
     rt = runtime()
-    out = rt.uploads.start_batch(_batch_id(batch_id))
+    expected = req.expected_ids if req is not None else None
+    out = rt.uploads.start_batch(_batch_id(batch_id), expected_ids=expected)
     try:
         rt.worker.wake()
     except Exception as e:
@@ -423,15 +397,6 @@ def discard_batch(batch_id: str):
 @app.get("/api/documents/{doc_id}")
 def get_document(doc_id: str):
     _doc_dir(doc_id)
-    return _doc_view(doc_id)
-
-
-@app.post("/api/documents/{doc_id}/enqueue")
-def enqueue_document(doc_id: str):
-    _doc_dir(doc_id)
-    rt = runtime()
-    rt.repo.enqueue(doc_id)
-    rt.worker.wake()
     return _doc_view(doc_id)
 
 
