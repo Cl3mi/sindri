@@ -271,3 +271,9 @@ def test_migrating_twice_is_a_no_op(tmp_path):
     first = db.migrate(conn)
     second = db.migrate(conn)
     assert first == second == len(db.MIGRATIONS)
+
+
+def test_data_dir_has_an_exports_subdirectory(tmp_path):
+    data = DataDir(tmp_path)
+    assert data.exports.is_dir()
+    assert data.export_zip_path("a" * 32) == data.exports / ("a" * 32 + ".zip")

@@ -95,6 +95,11 @@ class DataDir:
         self.docs.mkdir(parents=True, exist_ok=True)
         self.uploads = self.root / "uploads"
         self.uploads.mkdir(parents=True, exist_ok=True)
+        # Mass-export ZIPs (batch design §4): a sibling of docs/ and
+        # uploads/, never inside either -- a ZIP is not one drawing's file
+        # and must not be swept by anything that walks docs/<id>/.
+        self.exports = self.root / "exports"
+        self.exports.mkdir(parents=True, exist_ok=True)
 
     @property
     def db_path(self) -> Path:
@@ -109,3 +114,8 @@ class DataDir:
         if not isinstance(upload_id, str) or not DOC_ID_RE.fullmatch(upload_id):
             raise ValueError("malformed upload id")
         return self.uploads / f"{upload_id}.part"
+
+    def export_zip_path(self, export_id) -> Path:
+        if not isinstance(export_id, str) or not DOC_ID_RE.fullmatch(export_id):
+            raise ValueError("malformed export id")
+        return self.exports / f"{export_id}.zip"
