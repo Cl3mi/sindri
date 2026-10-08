@@ -2,7 +2,7 @@
 
 Plan: `docs/plans/2026-10-07-batch-b2-import-plan.md` (written `fb0d5fb`,
 revised after an Opus plan review `725f957`)
-Milestone: staging-api (task 9 of 13) — next is milestone ui (Tasks 10-13)
+Milestone: ui (task 13 of 13) — B2 COMPLETE; next is B3 (`docs/plans/2026-10-08-batch-b3-ui-plan.md`)
 
 ## Completed task IDs
 - Task 1 — migration 2, upload paths, path safety (`0d977f2`, `6bb924f`)
@@ -14,8 +14,26 @@ Milestone: staging-api (task 9 of 13) — next is milestone ui (Tasks 10-13)
 - Task 7 — ZIP imports (`5fd6263`, `e3fadf0`, `bf6c5a6`, `7f8b8c2`)
 - Task 8 — staging API: include, start, discard (`2882dc7`, `67b987c`)
 - Task 9 — recovery and stale cleanup (`008518d`, `8225080`, `918a2d7`)
+- Task 10 — chunked upload client + badges (`ae2824b`, `d9c120d`, `c923996`, `bc5f98a`)
+- Task 11 — interim UI through the protocol (`2a560c4`, `1e3abd6`)
+- Task 12 — single-shot routes removed; Start takes expected_ids (`d0f3764`)
+- Task 13 — CLAUDE.md B2 paragraph + real-browser drive (`fe157ad`); this checkpoint
 
-## What's done
+## Final result (B2 complete)
+Verified: suite **1802 passed, 2 skipped**; node 159; guard **32 passed, 0
+failed**. Real-browser drive (throwaway, stub backend, node playwright-core +
+cached chromium): **10/10 PASS** — upload → confirm → Start → extracted; a
+dropped first PUT retried; every PUT failing → draft remembered across a
+reload → re-select resumes into the same batch; duplicate badge + "Include
+and start"; multi-page warning stores `allowed_out_of_scope`; a damaged PDF
+toasts; Cancel deletes batch and drawing; plain HTTP over the LAN (no
+`crypto.subtle`) uploads via the JS SHA-256; a 9 MiB file reloaded after its
+first 8 MiB chunk resumes and stages once at full size; a ZIP of 2 PDFs + a
+.txt stages 2 rows with `ignored_total` 1. From Task 10 on, Opus subagents hit
+a weekly limit (resets 2026-10-13); Tasks 12-13 and their reviews ran on
+Sonnet.
+
+## What's done (as of the staging-api checkpoint)
 The whole server side of B2: draft batches, resumable chunked uploads,
 idempotent completion of PDFs and ZIPs into staged documents (hard link +
 `.importing` marker), Include / Start / Discard over HTTP with marker-guarded
@@ -27,9 +45,8 @@ through B1's `/api/upload` + `/enqueue` (moved onto the protocol in Task 11,
 removed in Task 12).
 
 ## What's next
-Task 10 (upload.js client + badges, node tests), Task 11 (interim UI on the
-protocol), Task 12 (remove the old routes, migrate test helpers), Task 13
-(CLAUDE.md + real-browser drive), then the ui checkpoint.
+B3 — plan `docs/plans/2026-10-08-batch-b3-ui-plan.md` (written `eecdd2c`,
+under review), then B4.
 
 ## Decisions / deviations since the plan was written
 - **Plan review (before execution):** C1 recovery runs only while holding the
@@ -114,8 +131,38 @@ protocol), Task 12 (remove the old routes, migrate test helpers), Task 13
 - **Migrations are append-only even before they ship** — a review caught that
   editing migration 2 in place would break any data dir already at version 2;
   the batch column is migration 3.
-- **For Task 11:** the draft memory should retry `/complete` with the
-  remembered upload id rather than re-create the upload.
+- **Upload client (Task 10):** `upload.js` — 8 MiB chunks over 3 lanes;
+  fingerprint = SHA-256 over size + first/last MiB with a pure-JS fallback
+  when `crypto.subtle` is missing (plain HTTP); each request retries non-fatal
+  failures for ~10 min (waits capped, abortable), a PUT attempt times out at
+  max(120 s, bytes / 16 KiB/s) so slow links still import; 409 resyncs to the
+  server's `received` (may go down); a 200 with an invalid body counts as a
+  lost reply; 408/429 retried, 400/404/413/422/507 fatal; an unreadable file
+  is fatal with `reason: 'file_unreadable'`; an import stops starting new
+  files only after a whole budget with no progress from any lane, and stopped
+  files say why ('not attempted: <reason>'); cancel never reads unstarted
+  files. `isImportable` mirrors the server (NFC + trim, PDF/ZIP).
+- **Interim UI (Task 11):** decision logic in `importone.js` (node-tested).
+  The draft is remembered in localStorage per file (name+size+lastModified)
+  from before the first byte until Start/Cancel; a remembered draft that is
+  gone/started falls back once to a fresh draft; a non-fatal failure keeps the
+  draft so re-selecting resumes; a remembered draft's staging view is reused
+  when it holds a completed upload matching name, size, empty folder AND
+  fingerprint (`upload_view` now exposes `fingerprint`) — all matching
+  uploads are considered, the last staged row wins; Start is refused unless
+  the draft holds exactly the shown row; `forgetDraftsOf` clears memory for a
+  drawing reached by link; a read failure keeps a remembered draft. File
+  pickers clear their value so re-selecting the same file fires.
+- **Task 12:** `POST /api/upload` and `/enqueue` removed (`Repo.create_document`
+  / `enqueue` remain as building blocks; nothing in app/ calls them).
+  `POST /api/batches/{id}/start` takes optional `{"expected_ids": [...]}`
+  (strict 32-hex, `extra="forbid"`, fixed 422) checked under the batch lock
+  before marking → 409 "the import changed — reload it" with nothing changed.
+  The interim UI sends `[w.id]`.
+- **Known, left for B3/B4:** best-effort discards can leave a draft holding a
+  staged row that the empty-draft sweep never removes (B3 draft list / B4
+  retention); an in-flight upload can't be cancelled in the interim UI; the
+  same "import changed" message covers two different race windows.
 - **Deferred / known:** a part with `st_nlink > 1` while still receiving (two
   independent faults) answers 500 until restart; `delete_untouched_upload`
   relies on a non-constant clock; resume key is asymmetric on
