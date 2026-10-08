@@ -305,8 +305,9 @@ def test_exports_drop_unconfirmed_suggestions_server_side(
         seen["rows"] = list(rows)
         out_path.write_bytes(b"%PDF")
 
-    monkeypatch.setattr(main, "write_workbook", fake_xlsx)
-    monkeypatch.setattr(main, "render_ballooned_pdf", fake_pdf)
+    import app.batch.export_render as export_render
+    monkeypatch.setattr(export_render, "write_workbook", fake_xlsx)
+    monkeypatch.setattr(export_render, "render_ballooned_pdf", fake_pdf)
     sid = finished(client, sample_pdf,
                    lambda rows: rows + [{**rows[0], "id": "s", "suggested": True}])
     assert client.get(f"/api/documents/{sid}/export/{kind}").status_code == 200
@@ -373,7 +374,8 @@ def test_an_unexpected_render_fault_is_a_500_with_a_fixed_body(
     def broken(*a, **kw):
         raise TypeError("boom: /some/sensitive/path")
 
-    monkeypatch.setattr(main, "write_workbook", broken)
+    import app.batch.export_render as export_render
+    monkeypatch.setattr(export_render, "write_workbook", broken)
     sid = finished(client, sample_pdf)
     r = client.get(f"/api/documents/{sid}/export/xlsx")
     assert r.status_code == 500
@@ -406,7 +408,8 @@ def test_render_export_renders_once_under_concurrent_first_calls(
         with open(out, "wb") as f:
             f.write(b"x" * 2000)
 
-    monkeypatch.setattr(main, "write_workbook", slow_write)
+    import app.batch.export_render as export_render
+    monkeypatch.setattr(export_render, "write_workbook", slow_write)
     results = []
 
     def go():
