@@ -66,6 +66,13 @@ class Worker:
         # CLAUDE.md §4). A median, not a mean: one very slow multi-page
         # drawing must not drag every later ETA with it.
         self._durations = collections.deque(maxlen=20)
+        # Guards _durations: the worker thread appends in _run while API
+        # threads read it through eta_seconds(). The GIL does not make
+        # deque iteration atomic -- sorted()/list() over a deque that is
+        # mutated mid-iteration can raise `RuntimeError: deque mutated
+        # during iteration` even across threads, so every access takes
+        # this lock.
+        self._durations_lock = threading.Lock()
         self._wake = threading.Event()
         # Replaced per loop by start(): each loop watches its OWN event, so a
         # later start() can never clear the stop request of a loop that is
@@ -95,9 +102,11 @@ class Worker:
         """Rolling-median estimate of time left for `queued` drawings still
         ahead. None with no history yet -- CLAUDE.md §4: no field may imply
         a precision it does not have, and zero samples have none."""
-        if not self._durations:
+        with self._durations_lock:
+            snap = list(self._durations)
+        if not snap:
             return None
-        d = sorted(self._durations)
+        d = sorted(snap)
         n = len(d)
         median = d[n // 2] if n % 2 else (d[n // 2 - 1] + d[n // 2]) / 2
         return median * max(queued, 0)
@@ -183,7 +192,8 @@ class Worker:
             log.warning("review record failed for %s: %s", doc_id[:8], type(e).__name__)
             self._settle(doc_id, self.repo.mark_failed, f"review_store:{type(e).__name__}")
             return
-        self._durations.append(time.monotonic() - started)
+        with self._durations_lock:
+            self._durations.append(time.monotonic() - started)
         try:
             self.repo.update_progress(doc_id, self.store.progress(doc_id))
         except Exception as e:

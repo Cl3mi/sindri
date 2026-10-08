@@ -439,3 +439,38 @@ def test_progress_is_computed_and_persisted_once_a_drawing_is_ready(tmp_path):
     # The stub extraction (Harness._extract) returns one Characteristic with
     # needs_review defaulting False -- so it is unchecked, not flagged.
     assert (row["flagged_total"], row["flagged_open"], row["unchecked"]) == (0, 0, 1)
+
+
+def test_eta_history_is_safe_to_read_while_the_worker_writes_it(tmp_path):
+    """sorted(self._durations) on an API thread while the worker thread
+    appends can raise `RuntimeError: deque mutated during iteration` --
+    the GIL does not make iteration atomic. Bounded iterations, no sleeps,
+    so the test fails fast instead of hanging."""
+    h = Harness(tmp_path)
+    errors = []
+    stop = threading.Event()
+
+    def writer():
+        n = 0
+        while not stop.is_set() and n < 5000:
+            h.worker._durations.append(float(n))
+            n += 1
+
+    def reader():
+        n = 0
+        while not stop.is_set() and n < 5000:
+            try:
+                h.worker.eta_seconds(3)
+            except RuntimeError as e:
+                errors.append(e)
+                stop.set()
+            n += 1
+
+    writer_thread = threading.Thread(target=writer)
+    reader_thread = threading.Thread(target=reader)
+    writer_thread.start()
+    reader_thread.start()
+    writer_thread.join(5)
+    reader_thread.join(5)
+    stop.set()
+    assert errors == []
