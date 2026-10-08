@@ -826,6 +826,35 @@ class Repo:
             return [r["id"] for r in self._conn.execute(
                 "SELECT id FROM export WHERE state = 'running'").fetchall()]
 
+    def purge_candidates(self, cutoff: str) -> list:
+        """Finished, exported drawings whose last export is older than
+        `cutoff`. A listing only: purge() re-checks the identical condition
+        inside its own guarded UPDATE, so a race between this read and the
+        sweep reaching a given id (a reopen, a fresh export) simply leaves
+        that row alone instead of purging stale information."""
+        with self._lock:
+            return [r["id"] for r in self._conn.execute(
+                "SELECT id FROM document WHERE state = 'finished'"
+                " AND exported_at IS NOT NULL AND exported_at <= ?"
+                " ORDER BY exported_at, rowid", (cutoff,)).fetchall()]
+
+    def purge(self, doc_id, cutoff: str) -> bool:
+        """Turn a finished, exported-long-enough-ago drawing into a
+        tombstone: state and a timestamp only (decisions 7, 14, 15, 20) --
+        file_name, batch_id, and every progress count stay exactly as they
+        were, because the work list still shows the row with nothing left to
+        open or export. False if the row no longer matches this EXACT
+        condition (reopened, re-exported more recently, already purged, or
+        gone) -- the caller (Housekeeping) deletes files only when this
+        returns True, so a stale candidate list can never cost a file that a
+        human has since touched again."""
+        with self._tx() as c:
+            cur = c.execute(
+                "UPDATE document SET state = 'purged', purged_at = ? WHERE id = ?"
+                " AND state = 'finished' AND exported_at IS NOT NULL AND exported_at <= ?",
+                (self._clock(), doc_id, cutoff))
+            return cur.rowcount == 1
+
     def update_progress(self, doc_id, counts: dict) -> None:
         """Flagged/open/unchecked counts for the work list, computed by
         ReviewStore.progress() and persisted so GET /api/documents never

@@ -468,3 +468,47 @@ def test_finish_export_rejects_a_bad_state(repo):
 def test_finish_export_of_an_unknown_id_is_404(repo):
     with pytest.raises(UnknownExport):
         repo.finish_export("f" * 32, "done")
+
+
+def test_purge_candidates_only_lists_finished_and_exported(repo):
+    (a,) = ids(1)
+    staged(repo, a)
+    assert repo.purge_candidates("2099-01-01") == []
+
+
+def test_purge_turns_a_finished_exported_drawing_into_a_tombstone(repo):
+    (a,) = ids(1)
+    queued(repo, a)
+    repo.claim_next()
+    repo.mark_ready(a)
+    repo.mark_finished(a, 1, 0)
+    repo.mark_exported(a, 1)
+    repo._conn.execute("UPDATE document SET exported_at = '2020-01-01T00:00:00' WHERE id = ?", (a,))
+    assert repo.purge_candidates("2099-01-01") == [a]
+    assert repo.purge(a, "2099-01-01") is True
+    row = repo.get(a)
+    assert row["state"] == "purged" and row["purged_at"]
+
+
+def test_purge_refuses_a_drawing_reopened_since_its_export(repo):
+    (a,) = ids(1)
+    queued(repo, a)
+    repo.claim_next()
+    repo.mark_ready(a)
+    repo.mark_finished(a, 1, 0)
+    repo.mark_exported(a, 1)
+    repo._conn.execute("UPDATE document SET exported_at = '2020-01-01T00:00:00' WHERE id = ?", (a,))
+    repo.events_appended(a, 1)   # reopened: finished -> in_review
+    assert repo.purge(a, "2099-01-01") is False
+    assert repo.get(a)["state"] == "in_review"
+
+
+def test_purge_never_touches_an_unexported_drawing(repo):
+    (a,) = ids(1)
+    queued(repo, a)
+    repo.claim_next()
+    repo.mark_ready(a)
+    repo.mark_finished(a, 1, 0)
+    # never exported
+    assert repo.purge_candidates("2099-01-01") == []
+    assert repo.purge(a, "2099-01-01") is False
