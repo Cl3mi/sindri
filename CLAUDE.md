@@ -215,8 +215,41 @@ since a deletion is invisible to the since-cursor diff (decision 11). The
 two-tab banner and the lagging-journal banner are one `banner.js` state
 machine; stale wins over lagging when both are true, since no retry can
 succeed once another tab holds the writer. **Mass export, retention and the
-access token are still B4** — "export selected" in the work list is a
-client-side loop, not the ZIP+manifest mass export the design describes.
+access token shipped next, in B4** (below) — "export selected" in the work
+list was a client-side loop until then, not the ZIP+manifest mass export the
+design describes.
+
+**BATCH B4 SHIPPED: EXPORT & OPS**
+(2026-10-09, `docs/plans/2026-10-08-batch-b4-export-ops-plan.md`). A
+selection, a batch, or a filtered set of finished drawings exports as one
+ZIP — `POST /api/exports {document_ids}` on its own thread, never behind the
+GPU queue, polled at `GET /api/exports/{id}` and downloaded from
+`.../download` — laid out `<batch>/<rel folder>/<stem>.xlsx` +
+`<stem>_ballooned.pdf` (Windows-safe names, `app/batch/names.py`; collisions
+suffixed `" (2)"`) plus a `manifest.csv` that accounts for every drawing
+asked for, including the skipped ones (`not_finished` / `failed` / `purged`
+/ `export_error: <type>`, or `reopened — later changes not included` for a
+reopened drawing's last sealed revision). The single-document export route
+and the mass export now share ONE render path
+(`app/batch/export_render.py`, moved from `app/main.py`'s original B1 code
+unchanged, `app.main._render_export` now an alias), so the two are
+byte-identical by construction. Export ZIPs are deleted after 24h
+(rebuildable from the same selection; a download of a running or failed job
+is 409, of a swept-but-done job 410). **Retention**: a background thread
+(`app/batch/housekeeping.py`), started only once the extraction worker
+holds its single-process lock, purges every finished, exported drawing
+older than `SINDRI_RETENTION_DAYS` (default 30, `0` = off, negative refuses
+the boot) — its row becomes a `purged` tombstone (410 on open/export, never
+reopened, never re-exported, `/events` also refused); review records are
+never touched by this. **An optional shared access token**
+(`SINDRI_ACCESS_TOKEN`, unset or blank = open) gates every `/api/*` route
+except `/api/auth` (how a token is supplied) and `/api/health`;
+`POST /api/auth` sets an `HttpOnly`/`SameSite=Strict` cookie with no
+`Secure` flag, because a plain-HTTP LAN deployment is already a supported
+shape and a `Secure` cookie would silently never be sent on it. This closes
+the batch/async-review project (B1-B4); HITL phase 2 (forcing, grading, dev
+validation, return bundle) is next. Suite at close: **1946 passed, 2
+skipped**; node 249; guard 32/0.
 
 **`read-lora-v1` IS NOW HARMFUL UNDER THE SHIPPED POLICY — deployment CLOSED**
 (2026-10-05, `docs/plans/2026-10-05-read-adapter-repricing-result.md`;
@@ -268,7 +301,7 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **1850 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **1946 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). **`tesseract` is a device
 prerequisite** — without the binary six tests fail as `TesseractNotFoundError`
 and read as broken code. `SCHEMA_VERSION` = 1 — do not bump it. Split frozen
@@ -1008,7 +1041,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 1850 passed, 2 skipped
+python -m pytest -q                          # 1946 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```

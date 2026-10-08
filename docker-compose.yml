@@ -13,3 +13,9 @@ services:
       - SINDRI_DATA_DIR=/data
       - SINDRI_REVIEW_DIR=/data/reviews
       - SINDRI_REVIEW_CONSENT=0
+      # Days a finished, exported drawing's files are kept before retention
+      # deletes them; 0 turns retention off (batch B4 design §4).
+      - SINDRI_RETENTION_DAYS=30
+      # Uncomment and set to require this token on every /api/* route
+      # (batch B4 design §1, decision 23). Unset = open, as today.
+      # - SINDRI_ACCESS_TOKEN=
