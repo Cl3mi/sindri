@@ -279,6 +279,57 @@ class Repo:
         return {"batch": batch_view(b), "documents": rows, "uploads": uploads,
                 "counts": staging_counts(rows, uploads)}
 
+    def list_documents(self, *, batch_id=None, state=None, search=None,
+                       needs_me=False, since=None) -> list:
+        """Work-list rows (batch design §3), joined with the batch name and
+        ordered by `rowid` -- the true staging/insertion order, and STABLE:
+        it never changes once assigned, unlike `updated_at`, which every
+        edit on a row (and only that row) moves. The review bar's
+        Prev/Skip/Jump (Task 11) and Finish's chain-to-next (Task 13) all
+        depend on this list's order meaning "the order drawings were staged
+        in", not "the order they were last touched in" -- the latter would
+        reorder the whole list out from under the reviewer on every single
+        edit. `since` still filters on `updated_at` (that is genuinely when
+        a row last changed; `rowid` says nothing about it) -- callers diff
+        by it, they do not sort by it. `search` is a case-insensitive
+        substring match on `file_name`; SQLite's default LIKE is
+        ASCII-only case-insensitive, which is a known, honest gap for a
+        single-operator local tool (a non-ASCII query simply finds fewer
+        rows, it does not silently find the wrong ones). `%`/`_` in the
+        query are escaped so they match literally rather than as wildcards."""
+        clauses, params = [], []
+        if batch_id is not None:
+            clauses.append("d.batch_id = ?"); params.append(batch_id)
+        if state is not None:
+            clauses.append("d.state = ?"); params.append(state)
+        if needs_me:
+            clauses.append("d.state IN ('ready', 'in_review')")
+        if search:
+            esc = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            clauses.append("d.file_name LIKE ? ESCAPE '\\'")
+            params.append(f"%{esc}%")
+        if since is not None:
+            clauses.append("d.updated_at > ?"); params.append(since)
+        where = " AND ".join(clauses) if clauses else "1=1"
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT d.*, b.name AS batch_name FROM document d"
+                f" JOIN batch b ON b.id = d.batch_id WHERE {where}"
+                f" ORDER BY d.rowid", tuple(params)).fetchall()
+        return [dict(r) for r in rows]
+
+    def queue_summary(self) -> dict:
+        """Counts for the work list's header line; `eta_seconds` is added by
+        the caller (app.main), which holds the worker, not the repo."""
+        with self._lock:
+            queued = self._conn.execute(
+                "SELECT COUNT(*) FROM document WHERE state = 'queued'").fetchone()[0]
+            extracting = self._conn.execute(
+                "SELECT COUNT(*) FROM document WHERE state = 'extracting'").fetchone()[0]
+            p = self._conn.execute("SELECT value FROM setting WHERE key = 'paused'").fetchone()
+        return {"queued": queued, "extracting": extracting,
+                "paused": p is not None and p["value"] == "1"}
+
     def completed_upload(self, upload_id) -> dict:
         """What a repeated /complete answers: the documents it staged (those
         the user has not removed since) and what it ignored."""

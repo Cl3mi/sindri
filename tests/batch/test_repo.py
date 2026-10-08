@@ -351,3 +351,51 @@ def test_reextract_refuses_anything_but_ready(repo):
     staged(repo, a)
     with pytest.raises(InvalidTransition):
         repo.reextract(a)
+
+
+def test_list_documents_filters_by_batch_state_and_search(repo):
+    a, b = ids(2)
+    d1 = staged(repo, a, "Flansch.pdf")
+    d2 = staged(repo, b, "Welle.pdf")
+    assert [r["id"] for r in repo.list_documents(state="staged")] == [a, b]
+    assert [r["id"] for r in repo.list_documents(search="flan")] == [a]   # case-insensitive
+    assert [r["id"] for r in repo.list_documents(batch_id=d2["batch_id"])] == [b]
+
+
+def test_list_documents_needs_me_is_ready_or_in_review(repo):
+    a, b, c = ids(3)
+    queued(repo, a)
+    repo.claim_next()
+    repo.mark_ready(a)
+    queued(repo, b)
+    repo.claim_next()
+    repo.mark_ready(b)
+    repo.events_appended(b, 1)
+    staged(repo, c)
+    assert {r["id"] for r in repo.list_documents(needs_me=True)} == {a, b}
+
+
+def test_list_documents_since_only_returns_rows_touched_after_the_cursor(repo):
+    a, b = ids(2)
+    staged(repo, a)
+    cursor = repo.get(a)["updated_at"]
+    staged(repo, b)
+    assert [r["id"] for r in repo.list_documents(since=cursor)] == [b]
+
+
+def test_list_documents_joins_the_batch_name(repo):
+    (a,) = ids(1)
+    d = staged(repo, a, "x.pdf")
+    name = repo._conn.execute("SELECT name FROM batch WHERE id = ?", (d["batch_id"],)).fetchone()[0]
+    (row,) = repo.list_documents()
+    assert row["batch_name"] == name
+
+
+def test_queue_summary_counts_queued_and_extracting_and_paused(repo):
+    a, b = ids(2)
+    queued(repo, a)
+    queued(repo, b)
+    repo.claim_next()
+    assert repo.queue_summary() == {"queued": 1, "extracting": 1, "paused": False}
+    repo.set_paused(True)
+    assert repo.queue_summary()["paused"] is True
