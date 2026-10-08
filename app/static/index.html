@@ -119,6 +119,23 @@
     </div>
   </section>
 
+  <!-- ===== STAGING (batch design §2) ============================ -->
+  <section id="screen-staging" hidden>
+    <div class="wl-toolbar">
+      <a href="#/" class="btn ghost">← Work list</a>
+      <span id="sv-counts" class="wl-queue-header"></span>
+      <div class="spacer"></div>
+      <span id="sv-uploads" class="muted"></span>
+      <button class="btn ghost" id="sv-discard">Discard</button>
+      <button class="btn primary" id="sv-start">Start batch</button>
+    </div>
+    <p id="sv-empty" class="muted" hidden>This import holds no readable PDF — every file was ignored or none was a PDF.</p>
+    <table class="wl-table">
+      <thead><tr><th>Include</th><th>File</th><th>Pages</th><th>Size</th><th>Notes</th><th></th></tr></thead>
+      <tbody id="sv-body"></tbody>
+    </table>
+  </section>
+
   <!-- ===== BODY (split layout) -- the review screen ============= -->
   <main id="shell-body" hidden>
 
