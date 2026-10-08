@@ -99,3 +99,101 @@ test('archiveEmptyMessage says files were ignored when a complete upload ignored
   assert.equal(archiveEmptyMessage(view),
     'This import holds no readable PDF — every file was ignored or none was a PDF.');
 });
+
+// removalMessage: deleteDocument/deleteUpload (api.js) are best-effort and
+// never throw, so a `try/catch` around either call can never see a refusal
+// -- this is the only place that can. { ok: true } and a thrown-style
+// non-result both mean "nothing to say" (the removal worked, or there was
+// never a call to judge).
+test('removalMessage is silent on success or a missing result', () => {
+  const { removalMessage } = mod;
+  assert.equal(removalMessage({ ok: true, status: 200 }), null);
+  assert.equal(removalMessage(undefined), null);
+  assert.equal(removalMessage(null), null);
+});
+
+test('removalMessage treats a 409 as "the import changed", not a generic failure', () => {
+  const { removalMessage } = mod;
+  const msg = removalMessage({ ok: false, status: 409 });
+  assert.equal(msg.kind, 'warn');
+  assert.equal(msg.msg, 'The import changed — review it and try again.');
+});
+
+test('removalMessage reports any other failure as a plain could-not-remove', () => {
+  const { removalMessage } = mod;
+  const msg = removalMessage({ ok: false, status: 0 });
+  assert.equal(msg.kind, 'error');
+  assert.match(msg.msg, /could not remove it/i);
+});
+
+// startConflictCopy: Start's two distinct 409s (app/batch/repo.py)
+// distinguished by the server's own FIXED sentence (CLAUDE.md §4 -- a
+// string compared exactly, not a guess from the status code alone).
+test('startConflictCopy recognises the already-started detail and does not call it "changed"', () => {
+  const { startConflictCopy } = mod;
+  const copy = startConflictCopy('this import has already started');
+  assert.equal(copy.title, 'Already started');
+  assert.doesNotMatch(copy.msg, /changed/i);
+});
+
+test('startConflictCopy defaults to the "import changed" copy for any other detail', () => {
+  const { startConflictCopy } = mod;
+  assert.equal(startConflictCopy('the import changed — reload it').title, 'The import changed');
+  assert.equal(startConflictCopy(undefined).title, 'The import changed');
+});
+
+// orphanedUploadIds: the only identity importFiles exposes to a caller that
+// never sees an upload's id before it completes is the file's own name and
+// size (same identity importone.js's inspectDraft matches a resumed draft
+// by) -- matched only among uploads the server has not already completed,
+// and only for files this run's result marked as CANCELLED, not merely
+// failed for their own reason.
+test('orphanedUploadIds matches a cancelled file to its incomplete upload by name and size', () => {
+  const { orphanedUploadIds } = mod;
+  const uploads = [
+    { id: 'u1', name: 'a.pdf', size: 100, state: 'receiving' },
+    { id: 'u2', name: 'b.pdf', size: 200, state: 'complete' },
+  ];
+  const cancelled = [{ name: 'a.pdf', size: 100 }];
+  assert.deepEqual(orphanedUploadIds(uploads, cancelled), ['u1']);
+});
+
+test('orphanedUploadIds never matches an upload the server already completed', () => {
+  const { orphanedUploadIds } = mod;
+  const uploads = [{ id: 'u2', name: 'b.pdf', size: 200, state: 'complete' }];
+  assert.deepEqual(orphanedUploadIds(uploads, [{ name: 'b.pdf', size: 200 }]), []);
+});
+
+test('orphanedUploadIds is empty with nothing cancelled or nothing incomplete', () => {
+  const { orphanedUploadIds } = mod;
+  assert.deepEqual(orphanedUploadIds([], []), []);
+  assert.deepEqual(orphanedUploadIds(undefined, undefined), []);
+});
+
+// pendingItems: the merge #sv-pending renders from -- server-known
+// incomplete uploads plus local in-flight ones an Add-files run in this tab
+// has not yet been confirmed by a reload, told apart by `local` so the row
+// builder knows whether to offer Remove (DELETE) or Cancel (abort).
+test('pendingItems lists server-incomplete uploads, never a complete one', () => {
+  const { pendingItems } = mod;
+  const uploads = [
+    { id: 'u1', name: 'a.pdf', size: 1, state: 'receiving', received: 0 },
+    { id: 'u2', name: 'b.pdf', size: 2, state: 'complete', received: 2 },
+  ];
+  const items = pendingItems(uploads, []);
+  assert.deepEqual(items.map((i) => i.id), ['u1']);
+  assert.equal(items[0].local, false);
+});
+
+test('pendingItems appends local in-flight entries not yet done', () => {
+  const { pendingItems } = mod;
+  const addProgress = [
+    { name: 'c.pdf', sent: 10, total: 100, done: false },
+    { name: 'd.pdf', sent: 100, total: 100, done: true },
+  ];
+  const items = pendingItems([], addProgress);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].local, true);
+  assert.equal(items[0].name, 'c.pdf');
+  assert.equal(items[0].received, 10);
+});
