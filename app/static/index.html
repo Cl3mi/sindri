@@ -72,11 +72,16 @@
   <section id="screen-worklist" hidden>
     <div class="wl-toolbar">
       <button class="btn primary" id="wl-import"><svg class="icon" width="14" height="14"><use href="#i-plus"/></svg> Import</button>
+      <button class="btn ghost" id="wl-import-folder"><svg class="icon" width="14" height="14"><use href="#i-plus"/></svg> Import folder</button>
       <div class="search" id="wl-search-wrap">
         <svg width="13" height="13"><use href="#i-search"/></svg>
         <input type="search" id="wl-search" placeholder="Search by file name…" autocomplete="off" />
       </div>
       <input type="file" id="wl-import-input" multiple accept=".pdf,.zip" class="sr" />
+      <!-- webkitdirectory has no matching `accept`: a folder can hold any
+           file type, so the picker takes everything and wireImport()
+           filters with isImportable() before anything is uploaded. -->
+      <input type="file" id="wl-import-folder-input" webkitdirectory multiple class="sr" />
       <select id="wl-batch-filter"><option value="">All batches</option></select>
       <select id="wl-state-filter">
         <option value="">All states</option>

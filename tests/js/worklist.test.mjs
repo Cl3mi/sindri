@@ -78,3 +78,37 @@ test('shouldFullRefresh never fires on poll 0 (nothing has polled yet)', async (
   const { shouldFullRefresh } = await import('../../app/static/js/worklist.js');
   assert.equal(shouldFullRefresh(0), false);
 });
+
+// Review finding on 84168f4 (CRITICAL): deleteDocument is best-effort and
+// resolves { ok: false, status } instead of throwing on a refusal (so Stop's
+// own retry loop can tell "gone" from "hiccup" without a catch) -- a bulk
+// loop that only counts THROWN errors silently treats a refused delete as a
+// success. This stubs exactly what deleteDocument resolves on a 409 (the
+// drawing is still extracting) and checks the tally reads it as a failure,
+// with the fixed per-row message.
+test('summarizeBulkFailures counts a resolved {ok:false} as a failure, not just a thrown one', async () => {
+  const { summarizeBulkFailures } = await import('../../app/static/js/worklist.js');
+  const results = [
+    { ok: true, id: 'a' },                 // a normal success (e.g. moveToFront's JSON)
+    { ok: false, status: 409 },            // deleteDocument's best-effort refusal: still extracting
+    { ok: false, status: 0 },              // deleteDocument's best-effort refusal: no response at all
+  ];
+  const summary = summarizeBulkFailures(results);
+  assert.equal(summary.count, 2);
+  assert.match(summary.text, /still extracting — cancel it first/);
+});
+
+test('summarizeBulkFailures returns null when nothing failed', async () => {
+  const { summarizeBulkFailures } = await import('../../app/static/js/worklist.js');
+  assert.equal(summarizeBulkFailures([{ ok: true }, { id: 'x' }]), null);
+});
+
+test('summarizeBulkFailures groups failures by status with a fixed message per status', async () => {
+  const { summarizeBulkFailures } = await import('../../app/static/js/worklist.js');
+  const summary = summarizeBulkFailures([
+    { ok: false, status: 409 }, { ok: false, status: 409 }, { ok: false, status: 500 },
+  ]);
+  assert.equal(summary.count, 3);
+  assert.match(summary.text, /2 still extracting — cancel it first/);
+  assert.match(summary.text, /1 failed \(500\)/);
+});

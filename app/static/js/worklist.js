@@ -43,11 +43,38 @@ export function shouldFullRefresh(pollCount) {
   return pollCount > 0 && pollCount % 20 === 0;
 }
 
+// Bulk routes under api.js are not uniform: moveToFront/cancelDocument/
+// retryDocument throw (jsonOrThrow) on a refusal, but deleteDocument is
+// BEST-EFFORT and never throws -- it resolves { ok: false, status } instead
+// (so Stop's own retry loop can tell "gone" from "hiccup" without a catch).
+// A bulk loop that only counts thrown errors therefore swallows every
+// refused delete (409: the drawing is still extracting) as a silent
+// success, and the row simply stays in the list with no explanation
+// (review finding on 84168f4). `runBulk` below always normalises its
+// per-row outcome into this same { ok, status } shape before tallying, so
+// this pure function is the single place "did this row fail" is decided.
+const BULK_FAIL_MESSAGES = {
+  409: 'still extracting — cancel it first',
+};
+
+export function summarizeBulkFailures(results) {
+  const failed = results.filter((r) => r && r.ok === false);
+  if (!failed.length) return null;
+  const byStatus = new Map();
+  for (const r of failed) byStatus.set(r.status, (byStatus.get(r.status) || 0) + 1);
+  const text = [...byStatus.entries()]
+    .map(([status, n]) => `${n} ${BULK_FAIL_MESSAGES[status] || `failed${status ? ` (${status})` : ''}`}`)
+    .join('; ');
+  return { count: failed.length, text };
+}
+
 // ----- DOM (checked by import only; see tests/js/worklist.test.mjs) ---
 let _docs = [];
 let _cursor = null;
 let _pollTimer = null;
 let _selected = new Set();
+let _refreshing = false;   // an in-flight GET /api/documents
+let _refreshAgain = false; // a refresh was asked for while one was already running
 
 function row(d) {
   const tr = document.createElement('tr');
@@ -82,12 +109,25 @@ function row(d) {
   tr.querySelector('.wl-batch').textContent = d.batch_name || '';
   tr.querySelector('.wl-updated').textContent = d.updated_at || '';
   tr.querySelector('.wl-badges').textContent = badges;
+  // setAttribute never parses its value as markup (unlike innerHTML), so a
+  // file name with quotes or angle brackets in it is still safe here.
+  tr.querySelector('.wl-row-check')?.setAttribute('aria-label', `Select ${d.file_name}`);
   return tr;
+}
+
+// A selection must never outlive the row it points at: a drawing removed
+// by another tab (or by this tab's own bulk Remove) would otherwise leave a
+// phantom entry in `_selected`, counted in the bulk bar and resurrected the
+// next time "select all" is pressed.
+function pruneSelected() {
+  const ids = new Set(_docs.map((d) => d.id));
+  for (const id of _selected) if (!ids.has(id)) _selected.delete(id);
 }
 
 function render() {
   const body = document.getElementById('wl-body');
   if (!body) return;
+  pruneSelected();
   const filtered = filterDocuments(_docs, currentFilters());
   body.innerHTML = '';
   for (const d of filtered) body.appendChild(row(d));
@@ -125,8 +165,21 @@ export function initWorkList({ listDocuments, moveToFront, cancelDocument, retry
   workListBadgesFor = workListBadgesFn || (() => []);
   docUrlFor = (d) => docUrl(d.id);
 
+  document.getElementById('wl-search')?.setAttribute('aria-label', 'Search by file name');
+  document.getElementById('wl-select-all')?.setAttribute('aria-label', 'Select all');
+  document.getElementById('wl-batch-filter')?.setAttribute('aria-label', 'Filter by batch');
+  document.getElementById('wl-state-filter')?.setAttribute('aria-label', 'Filter by state');
+
+  // Two pollers (the 3 s tick and a visibilitychange firing mid-request)
+  // must never race: a reply landing out of order could merge an older
+  // `_cursor` over a newer one and quietly resurrect a row just removed. A
+  // refresh asked for while one is already in flight is deferred -- not
+  // dropped -- by setting `_refreshAgain` and running once more, as a FULL
+  // reload, the moment the in-flight one finishes.
   async function refresh(full = false) {
     if (!listDocuments) return;
+    if (_refreshing) { _refreshAgain = true; return; }
+    _refreshing = true;
     try {
       const body = await listDocuments(full ? {} : { since: _cursor || undefined });
       if (full) _docs = body.documents;
@@ -140,6 +193,12 @@ export function initWorkList({ listDocuments, moveToFront, cancelDocument, retry
       render();
     } catch (err) {
       toast?.({ kind: 'error', title: 'Could not refresh the work list', msg: String(err?.message || err) });
+    } finally {
+      _refreshing = false;
+      if (_refreshAgain) {
+        _refreshAgain = false;
+        refresh(true);
+      }
     }
   }
 
@@ -178,13 +237,27 @@ export function initWorkList({ listDocuments, moveToFront, cancelDocument, retry
   async function runBulk(fn, toastFn) {
     if (!fn) return;
     const ids = [..._selected];
-    let failed = 0;
+    const results = [];
     for (const id of ids) {
-      try { await fn(id); } catch { failed++; }
+      try {
+        const r = await fn(id);
+        // Most routes (moveToFront/cancelDocument/retryDocument) throw on a
+        // refusal and resolve the server's JSON on success; deleteDocument
+        // is best-effort and resolves { ok, status } either way. Normalise
+        // both shapes to the same thing summarizeBulkFailures reads, so a
+        // route that quietly says "no" is never mistaken for a success.
+        results.push(r && typeof r === 'object' && r.ok === false ? r : { ok: true });
+      } catch (err) {
+        results.push({ ok: false, status: err?.status ?? 0 });
+      }
     }
     _selected = new Set();
     await refresh(true);
-    if (failed) toastFn?.({ kind: 'warn', title: 'Some drawings were not changed', msg: `${failed} of ${ids.length} failed.` });
+    const summary = summarizeBulkFailures(results);
+    if (summary) {
+      toastFn?.({ kind: 'warn', title: 'Some drawings were not changed',
+                  msg: `${summary.count} of ${ids.length} failed: ${summary.text}.` });
+    }
   }
 
   async function runExport(downloadFn, toastFn) {
