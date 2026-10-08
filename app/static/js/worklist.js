@@ -70,17 +70,28 @@ export function applyPatch(docs, id, patch) {
 // (review finding on 84168f4). `runBulk` below always normalises its
 // per-row outcome into this same { ok, status } shape before tallying, so
 // this pure function is the single place "did this row fail" is decided.
+//
+// A 409 means something different per action -- deleteDocument's is "the
+// worker still holds it", reextractDocument's is "has_events() is true, a
+// human already reviewed it" (design §2's "ready with no review events"
+// clause) -- so the message is keyed by action, not just by status. No
+// action given (the original shape, kept so existing callers/tests are
+// unaffected) falls back to 'default', which reads the same as the
+// original delete-only message.
 const BULK_FAIL_MESSAGES = {
-  409: 'still extracting — cancel it first',
+  default: { 409: 'still extracting — cancel it first' },
+  deleteDocument: { 409: 'still extracting — cancel it first' },
+  reextractDocument: { 409: 'already reviewed — re-extract only works on untouched drawings' },
 };
 
-export function summarizeBulkFailures(results) {
+export function summarizeBulkFailures(results, action = 'default') {
+  const messages = BULK_FAIL_MESSAGES[action] || {};
   const failed = results.filter((r) => r && r.ok === false);
   if (!failed.length) return null;
   const byStatus = new Map();
   for (const r of failed) byStatus.set(r.status, (byStatus.get(r.status) || 0) + 1);
   const text = [...byStatus.entries()]
-    .map(([status, n]) => `${n} ${BULK_FAIL_MESSAGES[status] || `failed${status ? ` (${status})` : ''}`}`)
+    .map(([status, n]) => `${n} ${messages[status] || `failed${status ? ` (${status})` : ''}`}`)
     .join('; ');
   return { count: failed.length, text };
 }
@@ -173,8 +184,8 @@ function updateBulkBar() {
 }
 
 export function initWorkList({ listDocuments, moveToFront, cancelDocument, retryDocument,
-                               deleteDocument, downloadExport, pauseQueue, resumeQueue,
-                               toast, badgesFor: workListBadgesFn, onOpenDoc } = {}) {
+                               deleteDocument, reextractDocument, downloadExport, pauseQueue,
+                               resumeQueue, toast, badgesFor: workListBadgesFn, onOpenDoc } = {}) {
   // Every dependency is injected and every DOM lookup is guarded with `?.`:
   // this function is called from main.js at init() time, but the node
   // import-smoke test above calls it with none of index.html's elements
@@ -248,10 +259,19 @@ export function initWorkList({ listDocuments, moveToFront, cancelDocument, retry
   document.getElementById('wl-bulk-front')?.addEventListener('click', () => runBulk(moveToFront, toast));
   document.getElementById('wl-bulk-cancel')?.addEventListener('click', () => runBulk(cancelDocument, toast));
   document.getElementById('wl-bulk-retry')?.addEventListener('click', () => runBulk(retryDocument, toast));
-  document.getElementById('wl-bulk-remove')?.addEventListener('click', () => runBulk(deleteDocument, toast));
+  document.getElementById('wl-bulk-remove')?.addEventListener('click', () => runBulk(deleteDocument, toast, 'deleteDocument'));
+  document.getElementById('wl-bulk-reextract')?.addEventListener('click', () => {
+    // Design §2: re-extract discards the drawing's current proposal, so a
+    // bulk run over several rows (picked once, not one at a time) asks
+    // before doing anything a reviewer cannot undo from this screen.
+    const n = _selected.size;
+    if (!n) return;
+    if (!confirm(`Re-extract ${n} drawing${n === 1 ? '' : 's'}? Their current proposals are discarded.`)) return;
+    runBulk(reextractDocument, toast, 'reextractDocument');
+  });
   document.getElementById('wl-bulk-export')?.addEventListener('click', () => runExport(downloadExport, toast));
 
-  async function runBulk(fn, toastFn) {
+  async function runBulk(fn, toastFn, action = 'default') {
     if (!fn) return;
     const ids = [..._selected];
     const results = [];
@@ -270,7 +290,7 @@ export function initWorkList({ listDocuments, moveToFront, cancelDocument, retry
     }
     _selected = new Set();
     await refresh(true);
-    const summary = summarizeBulkFailures(results);
+    const summary = summarizeBulkFailures(results, action);
     if (summary) {
       toastFn?.({ kind: 'warn', title: 'Some drawings were not changed',
                   msg: `${summary.count} of ${ids.length} failed: ${summary.text}.` });

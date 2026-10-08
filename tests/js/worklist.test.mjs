@@ -113,6 +113,21 @@ test('summarizeBulkFailures groups failures by status with a fixed message per s
   assert.match(summary.text, /1 failed \(500\)/);
 });
 
+// Re-extract's 409 means something different from delete's: design §2's
+// "ready with no review events" clause refuses the moment has_events() is
+// true, i.e. a human already touched the drawing -- not "still extracting".
+// A shared, action-less message would call that the wrong thing, so the
+// action name picks which message table a 409 reads from.
+test('summarizeBulkFailures gives reextractDocument its own 409 message (already reviewed, not still extracting)', async () => {
+  const { summarizeBulkFailures } = await import('../../app/static/js/worklist.js');
+  const summary = summarizeBulkFailures([
+    { ok: false, status: 409 }, { ok: true },
+  ], 'reextractDocument');
+  assert.equal(summary.count, 1);
+  assert.match(summary.text, /already reviewed — re-extract only works on untouched drawings/);
+  assert.doesNotMatch(summary.text, /still extracting/);
+});
+
 // applyPatch: the pure half of initWorkList's markDoc (the DOM-wiring half
 // re-renders too) -- a reviewer-just-finished drawing is marked 'finished'
 // in the cache INSTANTLY, rather than waiting on the next poll tick or an

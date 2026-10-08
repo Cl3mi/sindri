@@ -105,7 +105,8 @@ function init() {
   pingHealth();
   workList = initWorkList({
     listDocuments, moveToFront, cancelDocument, retryDocument, deleteDocument,
-    downloadExport, pauseQueue, resumeQueue, toast, badgesFor: workListBadges,
+    reextractDocument, downloadExport, pauseQueue, resumeQueue, toast,
+    badgesFor: workListBadges,
   });
   stagingView = initStagingView({
     getBatch, setIncluded, startBatch, discardBatch, deleteDocument,
