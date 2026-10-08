@@ -56,6 +56,16 @@ let stagingView = null;   // initStagingView()'s handle (this task)
 // reviewer has moved on.
 let autoOpenCandidate = null;
 let autoOpenTimer = null;
+// Every id this TAB has sealed with Finish this session, and not yet
+// confirmed gone from the ready/in_review cache. Defense in depth for the
+// browser-drive finding: right after Finish, the client's own 3 s poll
+// window can still list the just-finished drawing as ready/in_review (the
+// server has moved it on; the cache has not caught up), so skip()'s
+// cross-batch fallback could otherwise pick it straight back. Pruned
+// lazily in worklistDocsCache() -- "cleared on a refresh that confirms
+// the state" means confirmed by whatever the cache says the NEXT time
+// anything reads it, not by a callback wired into worklist.js's own poll.
+let recentlyFinished = new Set();
 
 // The review journal: every state operation, numbered and flushed to the
 // server (docs/plans/2026-10-07-hitl-review-grading-design.md §2). It is
@@ -1129,11 +1139,22 @@ async function finish() {
       document.querySelector('#filter-pills button[data-filter="review"]')?.click();
     } else if (res.status === 'done') {
       toast({ kind: 'ok', title: 'Finished', msg: `Review sealed as revision r${res.revision}` });
+      // The browser drive's finding: the work list's own 3 s poll window
+      // can still list THIS drawing as ready/in_review right here -- the
+      // server has just sealed it, but nothing has told the client cache
+      // yet. Mark it locally for an instant correct read (markDoc,
+      // worklist.js) and keep it in `recentlyFinished` as a defense-in-depth
+      // belt (reviewbar.js composes it into every exclusion below), THEN
+      // await an authoritative refresh before computing where to go next --
+      // nextAfterFinish must never be able to pick the drawing just sealed.
+      recentlyFinished.add(snapshot.sessionId);
+      workList?.markDoc(snapshot.sessionId, { state: 'finished' });
+      await workList?.refresh(true);
       // finisher.run() returns only { status, revision } (finish.js) -- the
       // snapshot taken at the top of finish() is what names which drawing
       // this run was for. currentBatchId() still reads state.sessionId,
       // which has not moved on yet at this point in the function.
-      const next = nextAfterFinish(worklistDocsCache(), currentBatchId(), snapshot.sessionId);
+      const next = nextAfterFinish(worklistDocsCache(), currentBatchId(), snapshot.sessionId, recentlyFinished);
       if (next.status === 'next') {
         go(docUrl(next.id));
       } else if (next.status === 'extracting') {
@@ -1171,7 +1192,9 @@ async function finish() {
 function wireReviewBar() {
   document.getElementById('rb-prev')?.addEventListener('click', () => {
     if (warnFinishing()) return;
-    const id = prevId(worklistDocsCache(), currentBatchId(), state.sessionId);
+    // recentlyFinished: defense in depth so Prev cannot land on a drawing
+    // this tab just sealed, even if the cache has not caught up yet.
+    const id = prevId(worklistDocsCache(), currentBatchId(), state.sessionId, recentlyFinished);
     if (id) go(docUrl(id));
   });
   document.getElementById('rb-skip')?.addEventListener('click', () => {
@@ -1179,7 +1202,7 @@ function wireReviewBar() {
     // skip() calls `go` itself (reviewbar.js) -- it takes `navigate` as a
     // dependency rather than returning an id for the caller to setHash()
     // with, which is exactly the shape of mistake decision 10 is about.
-    skip(worklistDocsCache(), currentBatchId(), state.sessionId, { navigate: go, docUrl });
+    skip(worklistDocsCache(), currentBatchId(), state.sessionId, { navigate: go, docUrl, excludeIds: recentlyFinished });
   });
   document.getElementById('rb-jump')?.addEventListener('click', openJumpPalette);   // guards itself (warnFinishing)
 }
@@ -1229,11 +1252,12 @@ function openJumpPalette() {
   if (!backdrop || !input || !list) return;
   if (!backdrop.hidden) return;   // already open -- Ctrl+K again is a no-op, not a second instance
 
-  // Excludes the drawing already open: selecting it would re-/open it,
-  // minting a new writer and wiping unflushed events (reopen.js's
-  // shouldReopen is the defense-in-depth half of this fix, for every path
-  // that is not this palette).
-  const candidates = jumpCandidates(worklistDocsCache(), state.sessionId);
+  // Excludes the drawing already open (selecting it would re-/open it,
+  // minting a new writer and wiping unflushed events -- reopen.js's
+  // shouldReopen is the defense-in-depth half of that fix, for every path
+  // that is not this palette) AND every id this tab has just sealed with
+  // Finish, in case the cache has not caught up with the server yet.
+  const candidates = jumpCandidates(worklistDocsCache(), [state.sessionId, ...recentlyFinished]);
   const previouslyFocused = document.activeElement;
   let filtered = candidates;
   let activeIndex = 0;
@@ -1320,7 +1344,23 @@ function openJumpPalette() {
 // worklist.js's initWorkList() keeps the same array the review bar navigates
 // over (one source of truth for ordering -- decision 8); getDocs() is its
 // accessor onto that cache.
-function worklistDocsCache() { return workList ? workList.getDocs() : []; }
+function worklistDocsCache() {
+  const docs = workList ? workList.getDocs() : [];
+  pruneRecentlyFinished(docs);
+  return docs;
+}
+
+// An id leaves `recentlyFinished` once the cache itself confirms the
+// server's state change -- gone entirely, or present but no longer
+// ready/in_review -- so the guard does not grow forever across a long
+// session and a LEGITIMATE re-extract of that same id (a future feature)
+// is not permanently blocked from ever being navigated to again.
+function pruneRecentlyFinished(docs) {
+  for (const id of recentlyFinished) {
+    const d = docs.find((x) => x.id === id);
+    if (!d || !(d.state === 'ready' || d.state === 'in_review')) recentlyFinished.delete(id);
+  }
+}
 
 // ===== Undo / Redo ==================================================
 function wireUndoRedo() {

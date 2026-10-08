@@ -27,6 +27,17 @@ test('prevId returns the id before the current one in the batch, or null at the 
   assert.equal(prevId(DOCS, 'b1', 'a'), null);
 });
 
+test('navOrder/prevId/nextId skip an excluded id as if it were not reviewable', () => {
+  const docs = [
+    { id: 'a', batch_id: 'b1', state: 'ready' },
+    { id: 'stale', batch_id: 'b1', state: 'ready' },
+    { id: 'b', batch_id: 'b1', state: 'in_review' },
+  ];
+  assert.deepEqual(navOrder(docs, 'b1', 'stale').map((d) => d.id), ['a', 'b']);
+  assert.equal(nextId(docs, 'b1', 'a', 'stale'), 'b');
+  assert.equal(prevId(docs, 'b1', 'b', 'stale'), 'a');
+});
+
 test('nextAfterFinish prefers the next ready/in_review drawing in the same batch', () => {
   assert.deepEqual(nextAfterFinish(DOCS, 'b1', 'a'), { status: 'next', id: 'b' });
 });
@@ -46,6 +57,17 @@ test('nextAfterFinish says "done" when nothing is ready and nothing is extractin
     { status: 'done' });
 });
 
+// Defense in depth for item 1's main fix (main.js awaits a full refresh
+// before calling this): an EARLIER finish's id, still stale in the cache
+// for whatever reason, must not be picked either.
+test('nextAfterFinish also excludes every id in an extra excludeIds set', () => {
+  const docs = [
+    { id: 'a', batch_id: 'b1', state: 'ready' },
+    { id: 'earlier-finish', batch_id: 'b1', state: 'ready' },
+  ];
+  assert.deepEqual(nextAfterFinish(docs, 'b1', 'a', new Set(['earlier-finish'])), { status: 'done' });
+});
+
 test('jumpCandidates is every ready/in_review drawing across every batch', () => {
   assert.deepEqual(jumpCandidates(DOCS).map((d) => d.id), ['a', 'b', 'd']);
 });
@@ -61,6 +83,17 @@ test('jumpCandidates excludes the given id, when one is given', () => {
 test('jumpCandidates with no excludeId behaves exactly as before', () => {
   assert.deepEqual(jumpCandidates(DOCS, undefined).map((d) => d.id), ['a', 'b', 'd']);
   assert.deepEqual(jumpCandidates(DOCS, null).map((d) => d.id), ['a', 'b', 'd']);
+});
+
+// The B3 browser drive's finding: right after Finish, the client's own 3s
+// poll window can still list the just-finished drawing as ready/in_review
+// (the server has moved it on, the client cache has not caught up yet).
+// excludeId/excludeIds must also accept a Set or array of several ids --
+// "the currently open drawing" AND "every id just sealed this session" are
+// two different exclusions, from two different callers, that must compose.
+test('jumpCandidates excludes every id in a Set or array, not only a single one', () => {
+  assert.deepEqual(jumpCandidates(DOCS, new Set(['a', 'b'])).map((d) => d.id), ['d']);
+  assert.deepEqual(jumpCandidates(DOCS, ['a', 'b']).map((d) => d.id), ['d']);
 });
 
 // skip() is the fix for decision 10: a bare hash write (what "Skip for now"
@@ -99,6 +132,39 @@ test('skip does nothing -- and never calls navigate -- when nothing is left to s
     { navigate: (url) => calls.push(url), docUrl: (i) => `#/doc/${i}` });
   assert.equal(id, null);
   assert.deepEqual(calls, []);
+});
+
+// The critical defense-in-depth case: the just-finished drawing is still
+// sitting in the cache marked ready/in_review (the poll race), in the SAME
+// batch as the current one -- the exact shape of the bug the browser drive
+// found. excludeIds must keep it out of both the same-batch path (nextId)
+// and the cross-batch fallback (jumpCandidates).
+test('skip never navigates to an id in excludeIds, even when the stale cache still lists it as reviewable', () => {
+  const docs = [
+    { id: 'a', batch_id: 'b1', state: 'ready' },             // currently open
+    { id: 'just-finished', batch_id: 'b1', state: 'ready' }, // stale: server already sealed it
+    { id: 'c', batch_id: 'b2', state: 'ready' },
+  ];
+  const dispatched = [];
+  const id = skip(docs, 'b1', 'a', {
+    navigate: (url) => navigate(url, { dispatch: () => dispatched.push(url) }),
+    docUrl: (i) => `#/doc/${i}`,
+    excludeIds: new Set(['just-finished']),
+  });
+  assert.equal(id, 'c');
+  assert.deepEqual(dispatched, ['#/doc/c']);
+});
+
+test('skip with excludeIds still finds a legitimate same-batch target', () => {
+  const docs = [
+    { id: 'a', batch_id: 'b1', state: 'ready' },
+    { id: 'just-finished', batch_id: 'b1', state: 'ready' },
+    { id: 'b', batch_id: 'b1', state: 'in_review' },
+  ];
+  const id = skip(docs, 'b1', 'a', {
+    navigate: () => {}, docUrl: (i) => `#/doc/${i}`, excludeIds: ['just-finished'],
+  });
+  assert.equal(id, 'b');
 });
 
 // nextReadyCopy: Finish's "extracting" chain-to-next toast (CLAUDE.md §4 --

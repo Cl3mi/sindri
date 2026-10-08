@@ -43,6 +43,23 @@ export function shouldFullRefresh(pollCount) {
   return pollCount > 0 && pollCount % 20 === 0;
 }
 
+// Pure half of initWorkList's markDoc: a new array with `id`'s entry
+// shallow-merged with `patch`, or the SAME array back (no copy) when `id`
+// is not present -- a caller can compare by reference to tell "nothing
+// changed" from "changed, but to the same values" if it ever needs to.
+// Exists so a client-caused state change (Finish sealing a drawing, a
+// reextract, a removal) can be reflected in the cache INSTANTLY, rather
+// than waiting on the next 3 s poll tick or an awaited refresh that may
+// itself still be in flight -- reviewbar.js's nextAfterFinish/skip/jump
+// must never read a just-finished drawing as still ready/in_review.
+export function applyPatch(docs, id, patch) {
+  const idx = docs.findIndex((d) => d.id === id);
+  if (idx === -1) return docs;
+  const next = docs.slice();
+  next[idx] = { ...next[idx], ...patch };
+  return next;
+}
+
 // Bulk routes under api.js are not uniform: moveToFront/cancelDocument/
 // retryDocument throw (jsonOrThrow) on a refusal, but deleteDocument is
 // BEST-EFFORT and never throws -- it resolves { ok: false, status } instead
@@ -288,6 +305,15 @@ export function initWorkList({ listDocuments, moveToFront, cancelDocument, retry
     if (!document.hidden) refresh();
   });
 
+  // The DOM-wiring half of applyPatch: updates the mutable cache in place
+  // and re-renders, so a client-caused state change (Finish sealing a
+  // drawing, a reextract, a removal) shows up on screen the same tick,
+  // not only after the next poll or an awaited refresh.
+  function markDoc(id, patch) {
+    _docs = applyPatch(_docs, id, patch);
+    render();
+  }
+
   refresh(true);
   startPolling();
   // getDocs: the review bar (Task 13) navigates over the SAME fetched list
@@ -296,7 +322,11 @@ export function initWorkList({ listDocuments, moveToFront, cancelDocument, retry
   // itself is showing. getQueue: Finish's "extracting" toast (reviewbar.js's
   // nextReadyCopy) needs the same queue summary this screen's own header
   // already shows, rather than a second request for the same numbers.
-  return { refresh, getDocs: () => _docs, getQueue: () => _lastQueue };
+  // markDoc: Finish's success path (main.js) marks the just-sealed drawing
+  // 'finished' here BEFORE awaiting an authoritative refresh, closing the
+  // window where nextAfterFinish could otherwise read it as still
+  // ready/in_review from the client's own stale cache.
+  return { refresh, getDocs: () => _docs, getQueue: () => _lastQueue, markDoc };
 }
 
 let workListBadgesFor = () => [];

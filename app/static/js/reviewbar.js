@@ -6,45 +6,71 @@
 
 const REVIEWABLE = (d) => d.state === 'ready' || d.state === 'in_review';
 
-export function navOrder(docs, batchId) {
-  return docs.filter((d) => d.batch_id === batchId && REVIEWABLE(d));
+// Normalises the several shapes an "ids to exclude" argument can take --
+// nothing, a bare id, an array, or a Set -- into one Set, so every function
+// below accepts whichever is convenient at its call site without the
+// caller wrapping it first. Two different callers need to exclude two
+// different things (the drawing already open; every id the client has
+// just sealed this session, batch-async-review.md's `recentlyFinished`),
+// and both need to compose into one filter.
+function toExcludeSet(excludeIds) {
+  if (!excludeIds) return new Set();
+  if (excludeIds instanceof Set) return new Set(excludeIds);
+  if (Array.isArray(excludeIds)) return new Set(excludeIds);
+  return new Set([excludeIds]);
 }
 
-export function prevId(docs, batchId, currentId) {
-  const order = navOrder(docs, batchId);
+export function navOrder(docs, batchId, excludeIds) {
+  const exclude = toExcludeSet(excludeIds);
+  return docs.filter((d) => d.batch_id === batchId && REVIEWABLE(d) && !exclude.has(d.id));
+}
+
+export function prevId(docs, batchId, currentId, excludeIds) {
+  const order = navOrder(docs, batchId, excludeIds);
   const i = order.findIndex((d) => d.id === currentId);
   return i > 0 ? order[i - 1].id : null;
 }
 
 // Mirrors prevId for "Skip for now", which moves forward without changing
 // anything (design §3): same list, next entry, or null at the end.
-export function nextId(docs, batchId, currentId) {
-  const order = navOrder(docs, batchId);
+export function nextId(docs, batchId, currentId, excludeIds) {
+  const order = navOrder(docs, batchId, excludeIds);
   const i = order.findIndex((d) => d.id === currentId);
   return i >= 0 && i < order.length - 1 ? order[i + 1].id : null;
 }
 
 // After Finish (design §3): the next ready/in-review drawing in the SAME
-// batch (the one just finished is no longer in that list -- its state has
-// moved past `ready`/`in_review` by the time this runs), else the first
-// ready/in-review drawing in ANY batch, else "extracting" if something is
-// still on its way (queued or extracting, anywhere), else "done".
-export function nextAfterFinish(docs, batchId, finishedId) {
-  const sameBatch = navOrder(docs, batchId).filter((d) => d.id !== finishedId);
+// batch, else the first ready/in-review drawing in ANY batch, else
+// "extracting" if something is still on its way (queued or extracting,
+// anywhere), else "done". `finishedId` is always excluded -- in principle
+// its state has already moved past ready/in_review by the time this runs,
+// but the client's own poll window can still show it stale (the bug this
+// plan's "navigation never returns to a drawing just finished" fix
+// closes) -- and `excludeIds` lets the caller add any OTHER id it does not
+// trust yet (an earlier finish still unconfirmed in the cache).
+export function nextAfterFinish(docs, batchId, finishedId, excludeIds) {
+  const exclude = toExcludeSet(excludeIds);
+  exclude.add(finishedId);
+  const sameBatch = navOrder(docs, batchId, exclude);
   if (sameBatch.length) return { status: 'next', id: sameBatch[0].id };
-  const anyBatch = jumpCandidates(docs).filter((d) => d.id !== finishedId);
+  const anyBatch = jumpCandidates(docs, exclude);
   if (anyBatch.length) return { status: 'next', id: anyBatch[0].id };
   const onTheWay = docs.some((d) => d.state === 'queued' || d.state === 'extracting');
   return onTheWay ? { status: 'extracting' } : { status: 'done' };
 }
 
-// excludeId: the drawing already open, when there is one. Re-offering it
-// as a Jump target would let a reviewer "jump" to the drawing they are
-// already on, which re-/opens it -- a fresh /open mints a new writer and
+// excludeIds: the drawing already open and/or every id just sealed this
+// session, when there are any. Re-offering the open drawing as a Jump
+// target would let a reviewer "jump" to the drawing they are already on,
+// which re-/opens it -- a fresh /open mints a new writer and
 // journal.resume() wipes `pending`, silently losing unflushed edits
-// (reopen.js's shouldReopen is the defense-in-depth half of this fix).
-export function jumpCandidates(docs, excludeId) {
-  return docs.filter((d) => REVIEWABLE(d) && d.id !== excludeId);
+// (reopen.js's shouldReopen is the defense-in-depth half of that fix).
+// Re-offering a just-finished drawing is the SAME shape of bug one step
+// later: the client's own poll window can still list it as ready/in_review
+// after Finish has already sealed it server-side.
+export function jumpCandidates(docs, excludeIds) {
+  const exclude = toExcludeSet(excludeIds);
+  return docs.filter((d) => REVIEWABLE(d) && !exclude.has(d.id));
 }
 
 // The Jump (Ctrl+K) palette's type-to-filter: case-insensitive substring on
@@ -68,10 +94,15 @@ export function filterJump(candidates, query) {
 // the bug decision 10 fixes (history.replaceState alone never dispatches),
 // so there is no id-only return path left for a caller to misuse the same
 // way again. Returns the id it navigated to, or null if there was nowhere
-// to go (and navigate is then never called at all).
-export function skip(docs, batchId, currentId, { navigate: nav, docUrl }) {
-  const id = nextId(docs, batchId, currentId)
-    || jumpCandidates(docs).find((d) => d.id !== currentId)?.id
+// to go (and navigate is then never called at all). `excludeIds` (a
+// single id, array or Set) is composed with `currentId` for the cross-batch
+// fallback -- `currentId` itself is NOT removed from the same-batch list
+// nextId reads, which still needs it present to find its own position.
+export function skip(docs, batchId, currentId, { navigate: nav, docUrl, excludeIds } = {}) {
+  const fallbackExclude = toExcludeSet(excludeIds);
+  fallbackExclude.add(currentId);
+  const id = nextId(docs, batchId, currentId, excludeIds)
+    || jumpCandidates(docs, fallbackExclude)[0]?.id
     || null;
   if (id) nav(docUrl(id));
   return id;

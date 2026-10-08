@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { filterDocuments, formatEta, formatQueueHeader } =
+const { filterDocuments, formatEta, formatQueueHeader, applyPatch } =
   await import('../../app/static/js/worklist.js');
 
 const DOCS = [
@@ -111,4 +111,22 @@ test('summarizeBulkFailures groups failures by status with a fixed message per s
   assert.equal(summary.count, 3);
   assert.match(summary.text, /2 still extracting — cancel it first/);
   assert.match(summary.text, /1 failed \(500\)/);
+});
+
+// applyPatch: the pure half of initWorkList's markDoc (the DOM-wiring half
+// re-renders too) -- a reviewer-just-finished drawing is marked 'finished'
+// in the cache INSTANTLY, rather than waiting on the next poll tick or an
+// await'd refresh, so nextAfterFinish (reviewbar.js) can never read a
+// stale ready/in_review state for the drawing Finish just sealed.
+test('applyPatch shallow-merges patch into the matching doc, leaving others untouched', () => {
+  const docs = [{ id: 'a', state: 'ready' }, { id: 'b', state: 'ready' }];
+  const next = applyPatch(docs, 'a', { state: 'finished' });
+  assert.deepEqual(next, [{ id: 'a', state: 'finished' }, { id: 'b', state: 'ready' }]);
+  assert.notEqual(next, docs);          // a new array, not a mutation
+  assert.equal(docs[0].state, 'ready'); // the original entry is untouched
+});
+
+test('applyPatch returns the SAME array, unchanged, when the id is not present', () => {
+  const docs = [{ id: 'a', state: 'ready' }];
+  assert.equal(applyPatch(docs, 'missing', { state: 'finished' }), docs);
 });
