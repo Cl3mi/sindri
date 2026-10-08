@@ -3,8 +3,8 @@
 Plan: `docs/plans/2026-10-08-batch-b4-export-ops-plan.md` (written `48b358e`,
 revised after a plan review `3a2fc84`; one re-check finding carried as an
 execution requirement for Tasks 6/8, below)
-Milestone: mass-export-server (task 6 of 15) — next is Task 7 (purge),
-milestone retention after Task 9
+Milestone: retention (task 9 of 15) — next is Task 10 (`app/auth.py`),
+milestone access-token after Task 11
 
 ## Completed task IDs
 - Task 1 — migration 5: the `export` job table (`e359edc`)
@@ -15,8 +15,12 @@ milestone retention after Task 9
 - Task 5 — `app/batch/exports.py` mass-export engine (`3adf9e5`, `cc29f4c`)
 - Task 6 — `/api/exports` routes + interrupted-export recovery at startup
   (`58983a4`, `6cdcfaa`)
+- Task 7 — Repo `purge_candidates` / guarded `purge` (`f1dd82c`)
+- Task 8 — `app/batch/housekeeping.py` retention + export-ZIP sweep thread
+  (`d020fb9`)
+- Task 9 — purged drawings answer 410 on open/export (`7eec43c`)
 
-Suite: 1914 passed, 2 skipped. Node tests: 249. Guard 32/0.
+Suite: 1929 passed, 2 skipped. Node tests: 249. Guard 32/0.
 
 ## What's done
 A selection of drawings exports server-side as one ZIP plus a manifest, on
@@ -26,10 +30,18 @@ progress and outcome live in the index; a job a crash left `running` is
 marked failed at startup; the ZIP is built in a temp file and renamed only on
 success. B3 is complete (`c2e5211`).
 
+Retention: a finished drawing exported more than `SINDRI_RETENTION_DAYS`
+(default 30, 0 = off, negative refuses the boot) ago is marked `purged` by
+one guarded UPDATE and only then has its drawing dir deleted; its review
+record (a separate tree) is never touched. The sweep runs once at start and
+hourly, on its own thread, started only after the worker has the
+single-process lock.
+
 ## What's next
-Tasks 7-9 (purge with tombstones, housekeeping thread, 410 for purged
-drawings), then the access token (10-11), then the UI, compose and docs, and
-the real-browser drive (12-15).
+The access token (10-11), then the UI, compose and docs, and the
+real-browser drive (12-15). **Task 13 must also:** show a 410 on open as
+"deleted by retention" with no retry (409 stays "try again"), and give the
+`purged` state a work-list badge/label (none exists in `app/static/js`).
 
 ## Decisions / deviations since the plan was written
 - **EXECUTION REQUIREMENT (plan re-check), applied in Task 6:** the plan's
@@ -65,5 +77,18 @@ the real-browser drive (12-15).
   - a done job whose ZIP was swept gives 410;
   - the download name is a fixed `sindri-export.zip`, never derived from a
     client name.
+- **Retention (Tasks 7-9):**
+  - no migration was needed (`purged_at` exists since migration 1, `state`
+    has no CHECK);
+  - a file-delete fault after a won purge is logged (id prefix + type) and the
+    sweep moves on, where the plan's `rmtree(ignore_errors=True)` would have
+    hidden it;
+  - **gaps found and closed in Task 9:** `/events` had no state check, so a
+    stale tab could append to a purged drawing's journal (now 409, as
+    `/seal` already was); and the mass export's `purged` skip reason was
+    dead code, because a tombstone keeps its `final_revision` (now checked
+    first);
+  - re-extract/retry/move-to-front already refuse a tombstone (409), and
+    DELETE still removes it.
 - **Commit-message hook:** it also rejects a bare `.xlsx` / `.csv` in commit
   prose, like `.pdf` in commands — word messages generically.
