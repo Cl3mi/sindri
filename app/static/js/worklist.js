@@ -33,6 +33,18 @@ export function formatQueueHeader(q) {
   return `Extracting · ${q.queued} queued · ${formatEta(q.eta_seconds)}`;
 }
 
+// The #wl-pause-resume button's own label, independent of the queue-header
+// text above: render() used to set the header from `_lastQueue` but never
+// touched this button, so it always read "Pause" even once the queue really
+// was paused -- the click handler's toggle itself was always correct (it
+// reads `_lastQueue?.paused` directly), but nothing on screen ever told the
+// reviewer which action the button would take next. `queue` is null before
+// the first `GET /api/documents` reply lands, which must read as the
+// not-paused default rather than throw on `queue.paused`.
+export function pauseButtonLabel(queue) {
+  return queue?.paused ? 'Resume' : 'Pause';
+}
+
 // A deletion is invisible to the since-cursor poll (GET /api/documents?since=
 // only ever returns rows that CHANGED; a removed row has no updated_at to be
 // newer than anything, so it would simply never be noticed missing). Every
@@ -161,6 +173,8 @@ function render() {
   for (const d of filtered) body.appendChild(row(d));
   const header = document.getElementById('wl-queue-header');
   if (header) header.textContent = formatQueueHeader(_lastQueue || { queued: 0, extracting: 0, paused: false, eta_seconds: null });
+  const pauseBtn = document.getElementById('wl-pause-resume');
+  if (pauseBtn) pauseBtn.textContent = pauseButtonLabel(_lastQueue);
   updateBulkBar();
 }
 

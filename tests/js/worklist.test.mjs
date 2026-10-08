@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { filterDocuments, formatEta, formatQueueHeader, applyPatch } =
+const { filterDocuments, formatEta, formatQueueHeader, applyPatch, pauseButtonLabel } =
   await import('../../app/static/js/worklist.js');
 
 const DOCS = [
@@ -48,6 +48,20 @@ test('formatQueueHeader covers idle, paused, and extracting with an estimate', (
     'Paused · 4 queued');
   assert.equal(formatQueueHeader({ queued: 4, extracting: 1, paused: false, eta_seconds: 600 }),
     'Extracting · 4 queued · ~10m left');
+});
+
+// The Pause/Resume button's own label never followed the queue's real
+// state (render() set the queue-header text from `_lastQueue` but never
+// touched this button) -- the underlying toggle was always correct (the
+// click handler reads `_lastQueue?.paused` itself), but the button told the
+// user nothing, so Pause always looked like a no-op. A `null` queue (no
+// summary fetched yet, e.g. the very first render) must read as the
+// not-paused default rather than throw on `queue.paused`.
+test('pauseButtonLabel follows the queue\'s paused flag, defaulting to Pause when unknown', () => {
+  assert.equal(pauseButtonLabel({ paused: true }), 'Resume');
+  assert.equal(pauseButtonLabel({ paused: false }), 'Pause');
+  assert.equal(pauseButtonLabel(null), 'Pause');
+  assert.equal(pauseButtonLabel(undefined), 'Pause');
 });
 
 test('initWorkList is exported and callable with no DOM work-list elements present (no-op, no throw)', async () => {
