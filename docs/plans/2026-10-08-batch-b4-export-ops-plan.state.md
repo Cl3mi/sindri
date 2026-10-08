@@ -3,8 +3,9 @@
 Plan: `docs/plans/2026-10-08-batch-b4-export-ops-plan.md` (written `48b358e`,
 revised after a plan review `3a2fc84`; one re-check finding carried as an
 execution requirement for Tasks 6/8, below)
-Milestone: access-token (task 11 of 15) — next is Task 12 (token prompt
-UI), then the final milestone (UI, compose, docs, real-browser drive)
+Milestone: ui-compose-docs-e2e (task 15 of 15) — **B4 COMPLETE, and with it
+the batch/async-review project (B1-B4)**. Next is HITL phase 2 (its own
+plan). Nothing is pushed.
 
 ## Completed task IDs
 - Task 1 — migration 5: the `export` job table (`e359edc`)
@@ -21,8 +22,39 @@ UI), then the final milestone (UI, compose, docs, real-browser drive)
 - Task 9 — purged drawings answer 410 on open/export (`7eec43c`)
 - Task 10 — `app/auth.py` constant-time token gate (`8cbd3da`)
 - Task 11 — token middleware + `POST /api/auth` (`8bc8e55`)
+- Task 12 — token prompt UI (`5f0a0fc`)
+- Task 13 — work-list mass export, retention 410 copy, purged badge
+  (`c2445da`, `2447248`)
+- Task 14 — compose, Dockerfile, CLAUDE.md B4 paragraph (`734d954`,
+  `abc5a45`)
+- Task 15 — real-browser drive; the one bug it found fixed (`718efa5`)
 
-Suite: 1946 passed, 2 skipped. Node tests: 249. Guard 32/0.
+Suite: 1946 passed, 2 skipped (verified by the controller at close).
+Node tests: 272. Guard 32/0. `docker compose config` valid.
+
+## Real-browser drive (node Playwright, scratch data dir, synthetic drawings)
+All PASS on the final run:
+- **Mass export:**
+  - select 2 finished + 1 unfinished, then Export selected; the button shows
+    "Exporting n / 3…" and is disabled, then re-enables;
+  - the ZIP downloads and holds both drawings' workbook + ballooned file;
+  - the manifest has 3 rows (blank, blank, `not_finished`);
+  - the mass-export member bytes equal the single-drawing export bytes.
+- **Retention:**
+  - `exported_at` backdated 40 days in the scratch index, then a restart
+    with 30 days; the startup sweep purges it;
+  - the drawing dir is gone and the review dir kept;
+  - the "Deleted (retention)" chip shows;
+  - a direct `#/doc/<id>` shows the retention sentence with no retry and
+    lands on the work list;
+  - bulk Remove deletes the tombstone.
+- **Access token:**
+  - the prompt appears on load;
+  - a wrong token shows "Incorrect token." inline;
+  - the right token sets an HttpOnly/SameSite=Strict cookie and loads the
+    work list;
+  - a reload does not re-prompt;
+  - `/api/health` is open, and `/api/documents` without the token is 401. Node tests: 249. Guard 32/0.
 
 ## What's done
 A selection of drawings exports server-side as one ZIP plus a manifest, on
@@ -46,10 +78,8 @@ matches. `POST /api/auth` sets that cookie (HttpOnly, SameSite=Strict, no
 Secure — LAN plain HTTP, decision 10, session cookie) only on a match.
 
 ## What's next
-The token prompt UI, mass-export UI, compose and docs, and the real-browser
-drive (12-15). The UI should treat ANY 401 from `/api/*` as "show the token
-prompt" (the gate is middleware), and a 401 from `/api/auth` as "wrong
-token". **Task 13 must also:** show a 410 on open as
+Nothing in B4. The operator reviews and pushes (the branch is unpushed), and
+then HITL phase 2 (forcing + audit) gets its own plan. **Task 13 must also:** show a 410 on open as
 "deleted by retention" with no retry (409 stays "try again"), and give the
 `purged` state a work-list badge/label (none exists in `app/static/js`).
 
@@ -109,5 +139,25 @@ token". **Task 13 must also:** show a 410 on open as
   - `POST /api/auth` answers 401 even when auth is off, so it never reveals
     whether a token is configured;
   - `tests/conftest.py` unsets `SINDRI_ACCESS_TOKEN` per test.
+- **Token prompt (Task 12):**
+  - one wrapped global `fetch` covers api.js, upload.js, polling and the
+    journal;
+  - the prompt is single-flight and retries once after login;
+  - a 401 from `/api/auth` itself is NOT re-intercepted (the plan's code
+    would have deadlocked on a wrong token);
+  - the token lives only in the password input — the HttpOnly cookie
+    carries it.
+- **Mass-export UI (Task 13):**
+  - the download is a plain same-origin anchor navigation, not fetch + blob,
+    because a ZIP can be gigabytes;
+  - the button state resets in a `finally` on every outcome;
+  - a 410 on open shows "This drawing's files were deleted by retention (its
+    review record is kept)." with no retry;
+  - purged rows get a muted "Deleted (retention)" chip and are excluded from
+    "needs me".
+- **Found by the drive (Task 15):** a bookmarked purged drawing never reached
+  the 410 handler (routing branches on state first) and showed the generic
+  toast. Fixed with a pure `unopenableDocCopy(doc)` sharing the
+  retention-sentence constant — no `/open` round-trip.
 - **Commit-message hook:** it also rejects a bare `.xlsx` / `.csv` in commit
   prose, like `.pdf` in commands — word messages generically.
