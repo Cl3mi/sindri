@@ -39,6 +39,15 @@
 
 <div id="app">
 
+  <div class="banner banner-warn" id="banner-stale" hidden>
+    This drawing was opened in another tab or browser — reload to continue here.
+    <span id="banner-stale-count"></span>
+  </div>
+  <div class="banner banner-warn" id="banner-lagging" hidden>
+    Changes not yet saved — retrying in <span id="banner-lagging-countdown">—</span>s.
+    <button class="btn ghost" id="banner-lagging-retry">Retry now</button>
+  </div>
+
   <!-- ===== HEADER =============================================== -->
   <header id="shell-header">
     <div class="brand">
@@ -46,10 +55,18 @@
       <span class="sub">Drawing Inspection Workbench</span>
     </div>
 
-    <div class="file-chip" id="file-chip" hidden>
-      <svg width="13" height="13"><use href="#i-folder"/></svg>
-      <span class="name" id="file-name">—</span>
-      <button id="file-close" title="Close drawing"><svg width="11" height="11"><use href="#i-x"/></svg></button>
+    <div class="review-bar" id="review-bar-nav" hidden>
+      <a href="#/" class="btn ghost">← Work list</a>
+      <span id="rb-batch">Batch "…"</span>
+      <span id="rb-position">1 of 1</span>
+      <button class="btn ghost" id="rb-prev">‹ Prev</button>
+      <button class="btn ghost" id="rb-skip">Skip for now ›</button>
+      <button class="btn ghost" id="rb-jump">Jump to… (Ctrl+K)</button>
+      <div class="file-chip" id="file-chip" hidden>
+        <svg width="13" height="13"><use href="#i-folder"/></svg>
+        <span class="name" id="file-name">—</span>
+        <button id="file-close" title="Close drawing"><svg width="11" height="11"><use href="#i-x"/></svg></button>
+      </div>
     </div>
 
     <div class="spacer"></div>

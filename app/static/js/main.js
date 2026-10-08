@@ -6,7 +6,7 @@ import { state, on, restoreSession, clearSession, undo, redo,
 import { getDocument, cancelDocument, openDocument, deleteDocument, downloadExport,
          health, postEvents, beaconEvents, sealSession, createBatch, getBatch,
          startBatch, discardBatch, setIncluded, listDocuments, moveToFront,
-         reextractDocument, retryDocument, pauseQueue, resumeQueue } from './api.js';
+         reextractDocument, retryDocument, pauseQueue, resumeQueue, deleteUpload } from './api.js';
 import { uploadFile, UploadError, forgetDraft, forgetDraftsOf, importFiles,
          isImportable, batchNameFor } from './upload.js';
 import { importSingle, stagesOnly } from './importone.js';
@@ -18,7 +18,9 @@ import { nextStopStep } from './stop.js';
 import { initViewer } from './viewer.js';
 import { initTable } from './table.js';
 import { initWorkList } from './worklist.js';
-import { stagingUrl } from './router.js';
+import { parseRoute, docUrl, stagingUrl, worklistUrl, navigate } from './router.js';
+import { prevId, nextAfterFinish, jumpCandidates, skip, navOrder } from './reviewbar.js';
+import { initStagingView } from './stagingview.js';
 import {
   toast, initModal, openHelp, initSplitter,
   initThemeAndDensity, initDragDrop,
@@ -45,6 +47,15 @@ let staleShown = false;   // "opened in another tab" already said for this drawi
 let pendingOpen = null;   // id
 let closePendingToast = null;
 let workList = null;      // initWorkList()'s handle; Task 13 reads it back via workList.getDocs()
+let stagingView = null;   // initStagingView()'s handle (this task)
+// A single-drawing import's id, once started, while it is still on its way
+// (design §3 "batch of one"): if the reviewer stays on the work list and
+// opens nothing else meanwhile, it opens itself the moment it is ready --
+// the same auto-open the old single-screen UI gave for free by never
+// leaving the drawing's own screen. null once opened, cancelled, or the
+// reviewer has moved on.
+let autoOpenCandidate = null;
+let autoOpenTimer = null;
 
 // The review journal: every state operation, numbered and flushed to the
 // server (docs/plans/2026-10-07-hitl-review-grading-design.md §2). It is
@@ -86,44 +97,211 @@ function init() {
     listDocuments, moveToFront, cancelDocument, retryDocument, deleteDocument,
     downloadExport, pauseQueue, resumeQueue, toast, badgesFor: workListBadges,
   });
+  stagingView = initStagingView({
+    getBatch, setIncluded, startBatch, discardBatch, deleteDocument,
+    deleteUpload, importFiles, isImportable, toast,
+    onStarted: (res) => {
+      // res is startBatch's { queued, dropped } (repo.py's start_batch),
+      // or { discarded: true } from the Discard button -- only a genuine
+      // start of exactly one drawing is a "batch of one" to auto-open.
+      if (res && Array.isArray(res.queued) && res.queued.length === 1) {
+        autoOpenCandidate = res.queued[0];
+        watchAutoOpen();
+      }
+      go(worklistUrl());
+    },
+  });
   wireImport();
-  resumeFromHash();
+  wireReviewBar();
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'k') { e.preventDefault(); openJumpPalette(); }
+  });
+  window.addEventListener('hashchange', routeFromHash);
+  routeFromHash();   // replaces the old resumeFromHash() call
 }
 
-// ===== Link / reload =================================================
-// #doc=<id> keeps the drawing addressable, so a reload -- or coming back
-// tomorrow with the same link -- reopens it where the reviewer stopped.
-function setHash(id) { history.replaceState(null, '', id ? `#doc=${id}` : '#'); }
-function hashDoc() { return /^#doc=([0-9a-f]{32})$/.exec(location.hash)?.[1] || null; }
+// ===== Router =========================================================
+// The hash scheme moved from B1's `#doc=<id>` to router.js's `#/`,
+// `#/staging/<batch>`, `#/doc/<id>` (decision 3). setHash now takes a
+// whole URL (one of router.js's builders) rather than a bare id.
+function setHash(url) { history.replaceState(null, '', url); }
+function currentRoute() { return parseRoute(location.hash); }
 
-async function resumeFromHash() {
-  const id = hashDoc();
-  if (!id) return;
-  resuming = true;   // set before the first await: an upload now would race the link
+// history.replaceState (setHash above) never fires `hashchange` -- that
+// event is the BROWSER's own notice of a navigation it performed, and a
+// script writing history silently is invisible to it (decision 10). Every
+// router-driven entry point (Prev, Skip, Jump, Finish's chain-to-next, the
+// post-import and post-start redirects) calls go(), not setHash(), so the
+// screen actually updates instead of only the address bar. The handful of
+// EXISTING setHash() calls elsewhere in this file (showConfirm's caller, the
+// extracting overlay, a freshly opened review) already update their own
+// screen through a direct function call and stay as plain setHash() --
+// re-dispatching for those would refetch a document already on screen.
+function go(url) {
+  navigate(url, {
+    setUrl: (u) => history.replaceState(null, '', u),
+    dispatch: () => { routeFromHash(); },
+  });
+}
+
+// Re-entrancy guard lives HERE, not inside go() -- routeFromHash also runs
+// from the native `hashchange` listener (a real link click, back/forward),
+// which go()'s own dispatch does not see. Guarding only go() would still
+// let a real link click race a go()-driven dispatch still in flight; this
+// way every path that can start a route dispatch shares the same guard.
+// The guard QUEUES rather than drops a navigation that arrives mid-route
+// (EXECUTION REQUIREMENT, plan re-review): a second hashchange/go() call
+// while a route is already in flight would otherwise be silently lost --
+// e.g. two Skips in quick succession must land on the SECOND target, not
+// get stuck on whichever hash happened to be current when the first
+// dispatch started.
+let navigating = false;
+let rerouteRequested = false;
+async function routeFromHash() {
+  if (navigating) { rerouteRequested = true; return; }
+  navigating = true;
   try {
-    const doc = await getDocument(id);
-    await routeDocument(doc);
-  } catch (err) {
-    // Only a drawing that is really gone loses its link; a hiccup keeps it
-    // so a reload tries again.
-    if (err?.status === 404) {
-      setHash(null);
-      toast({ kind: 'warn', title: 'Drawing not found', msg: 'The drawing in this link was removed.' });
-    } else {
-      toast({ kind: 'error', title: 'Could not reach the drawing',
-              msg: `${String(err?.message || err)} — reload the page to try again.` });
-    }
+    do {
+      rerouteRequested = false;
+      await routeOnce(currentRoute());
+    } while (rerouteRequested);
   } finally {
-    resuming = false;
+    navigating = false;
   }
+}
+
+async function routeOnce(route) {
+  // Leaving a drawing (to the work list or staging) must not silently drop
+  // unsaved review edits -- the doc-to-doc case (Prev/Skip/Jump/Finish's
+  // chain, or a hash edited by hand to another #/doc/<id>) is already
+  // guarded inside openForReview, reached via routeDocument below, so this
+  // only needs to cover navigation AWAY from review entirely. The hash (or
+  // go()'s setUrl) has already written the new URL by the time this runs --
+  // native hashchange fires after the browser's own navigation, and go()
+  // calls setUrl before dispatch -- so "stay" must put it back itself.
+  if (route.name !== 'doc' && journal.active) {
+    if (!(await flushBeforeLeaving(journal, confirmLeaveUnsaved))) {
+      setHash(docUrl(journal.sessionId));
+      return;
+    }
+  }
+  showScreen(route.name);
+  if (route.name === 'doc') {
+    resuming = true;   // set before the first await: an upload now would race the link
+    try {
+      const doc = await getDocument(route.id);
+      await routeDocument(doc);
+    } catch (err) {
+      // Only a drawing that is really gone loses its link; a hiccup keeps it
+      // so a reload tries again.
+      if (err?.status === 404) {
+        setHash(worklistUrl());
+        toast({ kind: 'warn', title: 'Drawing not found', msg: 'The drawing in this link was removed.' });
+        showScreen('worklist');
+        // A deletion is invisible to the since-cursor poll (decision 11):
+        // the work list's cached copy of this (now-gone) drawing would
+        // otherwise sit there until its next scheduled full reload, up to
+        // ~1 minute away. A 404 on a drawing it had cached is the clearest
+        // possible signal that its cache is stale right now.
+        workList?.refresh(true);
+      } else {
+        toast({ kind: 'error', title: 'Could not reach the drawing',
+                msg: `${String(err?.message || err)} — reload the page to try again.` });
+      }
+    } finally {
+      resuming = false;
+    }
+  } else if (route.name === 'staging') {
+    await stagingView.load(route.batchId);
+  }
+}
+
+function showScreen(name) {
+  document.getElementById('screen-worklist').hidden = name !== 'worklist';
+  document.getElementById('screen-staging').hidden = name !== 'staging';
+  document.getElementById('shell-body').hidden = name !== 'doc';
+  if (name !== 'doc') setReviewBarVisible(false);
+}
+
+// The review bar (batch label, Prev/Skip/Jump) only makes sense once a
+// drawing is actually open FOR REVIEW. #/doc/<id> for a drawing that is
+// still staged, queued, extracting, failed or cancelled shows the confirm
+// panel or the extracting overlay instead (both already live inside
+// shell-body, unchanged from B1) -- there is no batch position to report
+// for those, so the bar stays hidden until routeDocument says otherwise.
+function setReviewBarVisible(visible) {
+  const el = document.getElementById('review-bar-nav');
+  if (el) el.hidden = !visible;
+  if (visible) updateReviewBarInfo();
+}
+
+// "Batch '<name>'" and "N of M" -- both server strings (file/batch names),
+// so textContent only, never innerHTML. navOrder is the exact list
+// Prev/Skip/Jump walk (decision 8), so the position always agrees with
+// what those buttons would do.
+function updateReviewBarInfo() {
+  const docs = worklistDocsCache();
+  const batchId = currentBatchId();
+  const order = navOrder(docs, batchId);
+  const idx = order.findIndex((d) => d.id === state.sessionId);
+  const batchName = docs.find((d) => d.batch_id === batchId)?.batch_name || '…';
+  const batchEl = document.getElementById('rb-batch');
+  const posEl = document.getElementById('rb-position');
+  if (batchEl) batchEl.textContent = `Batch "${batchName}"`;
+  if (posEl) posEl.textContent = idx >= 0 ? `${idx + 1} of ${order.length}` : '';
+}
+
+// Batch-of-one auto-open (design §3, decision 17 -- one drawing is still a
+// batch of one). Self-contained rather than piggy-backing on the work
+// list's own poll: it only needs to watch ONE id until it leaves the
+// queue, and stops the moment its own two conditions (still on the work
+// list, nothing else opened) stop holding -- cheaper to read on its own
+// than to thread a callback through worklist.js for a single caller.
+function watchAutoOpen() {
+  clearTimeout(autoOpenTimer);
+  if (!autoOpenCandidate) return;
+  autoOpenTimer = setTimeout(async () => {
+    if (!autoOpenCandidate) return;
+    if (currentRoute().name !== 'worklist' || state.sessionId) {
+      autoOpenCandidate = null;   // the reviewer moved on; its own link still opens it later
+      return;
+    }
+    let doc;
+    try {
+      doc = await getDocument(autoOpenCandidate);
+    } catch {
+      autoOpenCandidate = null;   // gone, or unreachable -- nothing worth retrying forever for
+      return;
+    }
+    if (!autoOpenCandidate) return;   // cancelled while the request was out
+    if (doc.state === 'ready' || doc.state === 'in_review') {
+      const id = autoOpenCandidate;
+      autoOpenCandidate = null;
+      go(docUrl(id));
+      return;
+    }
+    if (doc.state !== 'queued' && doc.state !== 'extracting') {
+      autoOpenCandidate = null;   // failed, cancelled, or otherwise done waiting for
+      return;
+    }
+    watchAutoOpen();
+  }, 3000);
 }
 
 async function routeDocument(doc) {
   waitingOn = { id: doc.id, batchId: doc.batch_id, fileName: doc.file_name, pages: doc.pages };
-  if (doc.state === 'staged') await showStaged(doc);
-  else if (doc.state === 'queued' || doc.state === 'extracting') { showExtracting(doc.file_name); pollUntilReady(); }
-  else if (['ready', 'in_review', 'finished'].includes(doc.state)) await loadForReview(doc.id);
-  else {
+  if (doc.state === 'staged') {
+    setReviewBarVisible(false);
+    await showStaged(doc);
+  } else if (doc.state === 'queued' || doc.state === 'extracting') {
+    setReviewBarVisible(false);
+    showExtracting(doc.file_name);
+    pollUntilReady();
+  } else if (['ready', 'in_review', 'finished'].includes(doc.state)) {
+    await loadForReview(doc.id);
+    setReviewBarVisible(true);
+  } else {
+    setReviewBarVisible(false);
     toast({ kind: 'error', title: `Drawing ${doc.state}`,
             msg: doc.error_type ? `Extraction failed (${doc.error_type}).` : 'Upload it again to retry.' });
     waitingOn = null;
@@ -152,14 +330,19 @@ async function showStaged(doc) {
 }
 
 // After backing out of a drawing: the review still on screen (a drawing
-// dropped while reviewing another), else the empty state.
+// dropped while reviewing another), else the router's home screen.
 function backToEmptyOrCurrent() {
-  setHash(state.sessionId || null);
+  setHash(state.sessionId ? docUrl(state.sessionId) : worklistUrl());
   if (state.sessionId) {
     document.getElementById('plan-confirm').hidden = true;
     document.getElementById('plan-extracting').hidden = true;
   } else {
-    backToEmpty();
+    // backToEmpty()'s "plan-empty" drop zone was B1's single-screen home;
+    // the router's home screen is the work list now (decision 9), so this
+    // branch shows that instead. backToEmpty() and plan-empty's markup are
+    // left in index.html unused rather than deleted -- removing dead B1
+    // markup is a cleanup, not part of this fix.
+    showScreen('worklist');
   }
 }
 
@@ -176,11 +359,12 @@ function wireHeader() {
       beaconEvents(journal.sessionId, journal.writer, journal.pending);
     }
     clearSession();
-    setHash(null);
+    setHash(worklistUrl());
     // A drawing was waiting for this one's changes to save. Closing is the
     // reviewer leaving anyway (the beacon above was the last try), so open
     // it now rather than leave it waiting on a drawing nobody is reviewing.
     if (pendingOpen) loadForReview(pendingOpen, { skipFlush: true });
+    else showScreen('worklist');   // decision 9: the router's home is the work list, not an empty review
   });
   on('session', () => {
     const chip  = document.getElementById('file-chip');
@@ -276,7 +460,12 @@ async function handleFile(file) {
     }
     const { row } = out;
     waitingOn = { id: row.id, batchId: out.batchId, fileName: row.file_name, pages: row.pages, row, file };
-    setHash(row.id);
+    setHash(docUrl(row.id));
+    // Unlike the router-driven entry points, a drag-drop/picker upload can
+    // land while the work list (or staging) screen is showing -- showConfirm
+    // only fills shell-body's markup, so the screen itself must be switched
+    // here or the confirm panel renders invisibly behind the current screen.
+    showScreen('doc');
     showConfirm(row);
   } catch (err) {
     if (err instanceof UploadError && !err.fatal) {
@@ -309,13 +498,7 @@ async function handleFile(file) {
 // `webkitdirectory`), so its files are screened with `isImportable` here;
 // whatever survives carries its own `webkitRelativePath`, which
 // `uploadFile`'s `relPath` default (`relPathOf`, upload.js) reads without
-// this file doing anything extra. `stagingUrl` + `history.replaceState` is
-// used rather than the router's `go()`/`navigate()` seam: Task 13 owns the
-// hashchange-driven dispatch and is expected to land after this task in a
-// strict reading of the plan's order, so wiring `go()` here would mean
-// using a function this task does not define. Task 13 can replace the
-// `history.replaceState(null, '', stagingUrl(batchId))` below with
-// `go(stagingUrl(batchId))` once it exists, with no other change needed here.
+// this file doing anything extra.
 function wireImport() {
   document.getElementById('wl-import')?.addEventListener('click', () => {
     document.getElementById('wl-import-input')?.click();
@@ -360,11 +543,9 @@ async function startImport(e, isFolder) {
       toast({ kind: 'warn', title: 'Some files did not import',
               msg: `${parts.join('; ')}. Open the import to retry or discard it.` });
     }
-    // Not setHash(): that helper still writes B1's `#doc=<id>` shape
-    // (Task 13 replaces it with the router's `go()`). The staging URL is
-    // the new `#/staging/<batch>` scheme straight from router.js, written
-    // directly so this task does not depend on a function it does not own.
-    history.replaceState(null, '', stagingUrl(batchId));
+    // go(), not setHash(): the staging screen must actually appear, and
+    // history.replaceState alone never fires hashchange (decision 10).
+    go(stagingUrl(batchId));
   } catch (err) {
     toast({ kind: 'error', title: 'Could not start the import', msg: String(err?.message || err) });
   } finally {
@@ -561,7 +742,7 @@ function removeWhenStopped(id, failures = 0, cancelled = false) {
       document.getElementById('ex-detail').textContent = cancelled
         ? 'It is cancelled and will not be extracted, but the server did not remove it. Close this and carry on.'
         : 'The server confirmed neither the cancel nor the removal, so it may still be extracted. '
-          + `Close this; its link is ${location.origin}${location.pathname}#doc=${id}`;
+          + `Close this; its link is ${location.origin}${location.pathname}${docUrl(id)}`;
       setStopLabel('Close');
       document.getElementById('ex-stop').disabled = false;
       return;
@@ -634,7 +815,7 @@ async function openForReview(id, { skipFlush = false } = {}) {
       closePendingToast?.();
       closePendingToast = toast({ kind: 'warn', title: 'Stayed on this drawing', timeout: 0,
         msg: 'The other drawing opens by itself once this one\'s changes are saved. '
-           + `Its link: ${location.origin}${location.pathname}#doc=${id}` });
+           + `Its link: ${location.origin}${location.pathname}${docUrl(id)}` });
       scheduleFlush(flushBackoff);
       return;
     }
@@ -653,7 +834,16 @@ async function openForReview(id, { skipFlush = false } = {}) {
     flushBackoff = 500;
     staleShown = false;
     if (waitingOn?.id === id) waitingOn = null;   // never another drawing's
-    setHash(id);
+    setHash(docUrl(id));
+    // openForReview is reached by more than one caller's dispatch --
+    // routeDocument's own #/doc/<id> route, but also a flush completing in
+    // the background (scheduleFlush's 'open'/'open_stale') and the
+    // file-close handler opening a drawing that was waiting (pendingOpen).
+    // None of those go through routeDocument's own showScreen/
+    // setReviewBarVisible calls, so a successful open asserts them itself
+    // rather than leaving the screen wherever it happened to be.
+    showScreen('doc');
+    setReviewBarVisible(true);
     hideExtracting();
     const n = data.rows.length;
     const nEv = data.events.length;
@@ -665,14 +855,16 @@ async function openForReview(id, { skipFlush = false } = {}) {
     hideExtracting();
     toast({ kind: 'error', title: 'Could not open the drawing',
             msg: state.sessionId && state.sessionId !== id
-              ? `${String(err.message || err)} — its link: ${location.origin}${location.pathname}#doc=${id}`
+              ? `${String(err.message || err)} — its link: ${location.origin}${location.pathname}${docUrl(id)}`
               : `${String(err.message || err)} — reload the page to try again.` });
     if (state.sessionId) {
       backToEmptyOrCurrent();
     } else {
-      // Keep the link on the drawing that failed, so a reload retries it.
-      backToEmpty();
-      setHash(id);
+      // Keep the link on the drawing that failed, so a reload retries it --
+      // the router's home screen (decision 9) is the work list, not B1's
+      // single-screen empty state.
+      showScreen('worklist');
+      setHash(docUrl(id));
     }
   } finally {
     setIdle();
@@ -849,6 +1041,28 @@ async function finish() {
       document.querySelector('#filter-pills button[data-filter="review"]')?.click();
     } else if (res.status === 'done') {
       toast({ kind: 'ok', title: 'Finished', msg: `Review sealed as revision r${res.revision}` });
+      // finisher.run() returns only { status, revision } (finish.js) -- the
+      // snapshot taken at the top of finish() is what names which drawing
+      // this run was for. currentBatchId() still reads state.sessionId,
+      // which has not moved on yet at this point in the function.
+      const next = nextAfterFinish(worklistDocsCache(), currentBatchId(), snapshot.sessionId);
+      if (next.status === 'next') {
+        go(docUrl(next.id));
+      } else if (next.status === 'extracting') {
+        // Intentionally not a computed number here: nextAfterFinish's
+        // 'extracting' branch only knows SOMETHING is on its way, not which
+        // drawing or its own ETA -- the work list's queue header, already
+        // visible once the reviewer lands there or glances at it, is where
+        // that number lives. This toast's copy says so rather than
+        // inventing a second estimate.
+        toast({ kind: 'warn', title: 'Next drawing ready in ≈ N min',
+                msg: 'Still extracting — the work list will show it.' });
+      } else {
+        // B4 builds mass export; until then the work list's per-drawing
+        // export buttons (already shipped) are what "Export batch" means.
+        toast({ kind: 'ok', title: 'Batch complete', msg: 'Export batch from the work list.' });
+        go(worklistUrl());
+      }
     }
   } catch (err) {
     toast({ kind: 'error', title: 'Finish failed', msg: String(err.message || err) });
@@ -863,6 +1077,42 @@ async function finish() {
     if (journal.active && (journal.pending.length || pendingOpen)) scheduleFlush(flushBackoff);
   }
 }
+
+// ===== Review bar ====================================================
+function wireReviewBar() {
+  document.getElementById('rb-prev')?.addEventListener('click', () => {
+    const id = prevId(worklistDocsCache(), currentBatchId(), state.sessionId);
+    if (id) go(docUrl(id));
+  });
+  document.getElementById('rb-skip')?.addEventListener('click', () => {
+    // skip() calls `go` itself (reviewbar.js) -- it takes `navigate` as a
+    // dependency rather than returning an id for the caller to setHash()
+    // with, which is exactly the shape of mistake decision 10 is about.
+    skip(worklistDocsCache(), currentBatchId(), state.sessionId, { navigate: go, docUrl });
+  });
+  document.getElementById('rb-jump')?.addEventListener('click', openJumpPalette);
+}
+
+function currentBatchId() {
+  return worklistDocsCache().find((d) => d.id === state.sessionId)?.batch_id || null;
+}
+
+// A minimal type-to-filter palette: reuses the browser's own prompt() rather
+// than a new modal component, because this is the one piece of B3 the design
+// marks "Ctrl+K" without specifying a visual design, and a bespoke combobox
+// is not worth building before the operator has used the simple version.
+function openJumpPalette() {
+  const candidates = jumpCandidates(worklistDocsCache());
+  const label = candidates.map((d, i) => `${i + 1}. ${d.file_name}`).join('\n');
+  const pick = prompt(`Jump to (type a number):\n${label}`);
+  const idx = parseInt(pick, 10) - 1;
+  if (candidates[idx]) go(docUrl(candidates[idx].id));
+}
+
+// worklist.js's initWorkList() keeps the same array the review bar navigates
+// over (one source of truth for ordering -- decision 8); getDocs() is its
+// accessor onto that cache.
+function worklistDocsCache() { return workList ? workList.getDocs() : []; }
 
 // ===== Undo / Redo ==================================================
 function wireUndoRedo() {
