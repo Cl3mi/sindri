@@ -130,6 +130,24 @@ MIGRATIONS = [
     ALTER TABLE document ADD COLUMN flagged_open INTEGER;
     ALTER TABLE document ADD COLUMN unchecked INTEGER;
     """,
+    # 5: mass-export jobs (batch B4, design §4). A row per POST
+    # /api/exports, not an in-memory dict: a poll from any tab must see the
+    # same progress, and a server restart mid-build must show `failed`
+    # rather than a `running` job nothing will ever finish (app/batch/exports.py
+    # Task 9 requeues/fails these at startup the same way requeue_interrupted
+    # does for extraction).
+    """
+    CREATE TABLE export (
+        id TEXT PRIMARY KEY,
+        document_ids TEXT NOT NULL,        -- JSON list, the request's own order
+        state TEXT NOT NULL,               -- running, done, failed
+        done INTEGER NOT NULL DEFAULT 0,
+        total INTEGER NOT NULL,
+        error_type TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    """,
 ]
 
 

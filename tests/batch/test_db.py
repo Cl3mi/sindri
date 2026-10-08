@@ -250,3 +250,24 @@ def test_migration_4_leaves_existing_rows_null(tmp_path, monkeypatch):
     row = conn.execute("SELECT flagged_total, flagged_open, unchecked"
                        " FROM document WHERE id = 'd'").fetchone()
     assert tuple(row) == (None, None, None)
+
+
+def test_the_export_job_migration_adds_the_table(tmp_path):
+    conn = db.connect(tmp_path / "s.db")
+    db.migrate(conn)
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "export" in tables
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(export)")}
+    assert {"id", "document_ids", "state", "done", "total",
+            "error_type", "created_at", "updated_at"} <= cols
+
+
+def test_migrating_twice_is_a_no_op(tmp_path):
+    """Confirms the migration count this plan's code was actually written
+    against -- a mismatch here means B3's migration landed with a different
+    number than this plan assumed, and this task's migration must be
+    renumbered before anything else in this file is trusted."""
+    conn = db.connect(tmp_path / "s.db")
+    first = db.migrate(conn)
+    second = db.migrate(conn)
+    assert first == second == len(db.MIGRATIONS)
