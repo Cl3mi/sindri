@@ -50,6 +50,19 @@ test('jumpCandidates is every ready/in_review drawing across every batch', () =>
   assert.deepEqual(jumpCandidates(DOCS).map((d) => d.id), ['a', 'b', 'd']);
 });
 
+// Re-offering the currently open drawing as a Jump target is the bug this
+// closes: selecting it would re-/open the drawing already open, minting a
+// new writer and wiping unflushed events (reopen.js's shouldReopen is the
+// defense-in-depth half of this same fix).
+test('jumpCandidates excludes the given id, when one is given', () => {
+  assert.deepEqual(jumpCandidates(DOCS, 'b').map((d) => d.id), ['a', 'd']);
+});
+
+test('jumpCandidates with no excludeId behaves exactly as before', () => {
+  assert.deepEqual(jumpCandidates(DOCS, undefined).map((d) => d.id), ['a', 'b', 'd']);
+  assert.deepEqual(jumpCandidates(DOCS, null).map((d) => d.id), ['a', 'b', 'd']);
+});
+
 // skip() is the fix for decision 10: a bare hash write (what "Skip for now"
 // did before this plan's revision) never fires hashchange, so pressing it
 // changed the URL and nothing on screen. skip() takes `navigate` itself

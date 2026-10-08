@@ -48,6 +48,18 @@ export function restoreReview(data, { restoreSession, clearSession, journal, fin
   return pairs;
 }
 
+// Whether `id` actually needs a fresh /open. Re-opening the drawing already
+// open would mint a NEW writer and journal.resume() wipes `pending` -- so
+// unflushed edits would be silently lost the moment a reviewer re-selects
+// their own open drawing (a Jump palette listing it, a hash re-dispatch to
+// the same #/doc/<id>, a stale link, a race). The primary fix is never
+// OFFERING the open drawing as a candidate (reviewbar.js's jumpCandidates
+// takes an excludeId); this is the second line of defense for every other
+// path that can still ask to open `id`.
+export function shouldReopen(journal, id) {
+  return !(journal.active && journal.sessionId === id);
+}
+
 // Before leaving the drawing the journal is on (opening another, or
 // reopening this one): journal.start()/resume() discard unflushed events
 // and /open rotates the writer, so flush first. Resolves true to go ahead.

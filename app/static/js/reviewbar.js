@@ -38,8 +38,13 @@ export function nextAfterFinish(docs, batchId, finishedId) {
   return onTheWay ? { status: 'extracting' } : { status: 'done' };
 }
 
-export function jumpCandidates(docs) {
-  return docs.filter(REVIEWABLE);
+// excludeId: the drawing already open, when there is one. Re-offering it
+// as a Jump target would let a reviewer "jump" to the drawing they are
+// already on, which re-/opens it -- a fresh /open mints a new writer and
+// journal.resume() wipes `pending`, silently losing unflushed edits
+// (reopen.js's shouldReopen is the defense-in-depth half of this fix).
+export function jumpCandidates(docs, excludeId) {
+  return docs.filter((d) => REVIEWABLE(d) && d.id !== excludeId);
 }
 
 // The Jump (Ctrl+K) palette's type-to-filter: case-insensitive substring on

@@ -13,7 +13,7 @@ import { importSingle, stagesOnly } from './importone.js';
 import { badgesFor, workListBadges } from './badges.js';
 import { createJournal } from './journal.js';
 import { createFinisher, createExporter } from './finish.js';
-import { restoreReview, flushBeforeLeaving, afterFlush } from './reopen.js';
+import { restoreReview, flushBeforeLeaving, afterFlush, shouldReopen } from './reopen.js';
 import { nextStopStep } from './stop.js';
 import { initViewer } from './viewer.js';
 import { initTable } from './table.js';
@@ -164,6 +164,21 @@ function routeFromHash() { return router.run(); }
 
 async function routeOnce() {
   const route = currentRoute();
+  // A Finish in flight is mid-seal: finisher.run() reads journal.writer at
+  // the top and again when it posts the seal, and opening ANOTHER drawing
+  // in between rotates that writer out from under it (openForReview ->
+  // openDocument -> journal.resume()), so the seal the server receives no
+  // longer matches the writer Finish started with. Blocked centrally here
+  // rather than only at each button, so a direct hash edit or a stale
+  // go() queued just before Finish started cannot slip past the buttons'
+  // own guard (warnFinishing, wireReviewBar). The hash already changed by
+  // the time this runs (decision 10's "stay must put it back itself"), so
+  // revert it to the drawing actually being finished.
+  if (finishing && route.name === 'doc') {
+    warnFinishing();
+    setHash(docUrl(journal.sessionId));
+    return;
+  }
   // Leaving a drawing (to the work list or staging) must not silently drop
   // unsaved review edits -- the doc-to-doc case (Prev/Skip/Jump/Finish's
   // chain, or a hash edited by hand to another #/doc/<id>) is already
@@ -268,6 +283,14 @@ function watchAutoOpen() {
     }
     if (!autoOpenCandidate) return;   // cancelled while the request was out
     if (doc.state === 'ready' || doc.state === 'in_review') {
+      // Re-checked here, not only before the await above: the reviewer can
+      // navigate away from the work list, or open a different drawing,
+      // during the getDocument() round trip -- the condition must hold at
+      // the moment of go(), not merely when this tick started.
+      if (currentRoute().name !== 'worklist' || state.sessionId) {
+        autoOpenCandidate = null;
+        return;
+      }
       const id = autoOpenCandidate;
       autoOpenCandidate = null;
       go(docUrl(id));
@@ -781,6 +804,21 @@ async function loadForReview(id, opts) {
 }
 
 async function openForReview(id, { skipFlush = false } = {}) {
+  // Defense-in-depth (the primary fix is jumpCandidates' excludeId, which
+  // never OFFERS the open drawing as a target): a stale link, a hash
+  // edited by hand, or a queued navigation could still ask to open the
+  // drawing already open. A fresh /open would mint a new writer and
+  // journal.resume() would wipe unflushed `pending` events for a drawing
+  // that was never actually left -- so this is a pure no-op on the
+  // network, just making sure the screen/hash/review bar agree with what
+  // is already true.
+  if (!shouldReopen(journal, id)) {
+    if (waitingOn?.id === id) waitingOn = null;
+    setHash(docUrl(id));
+    showScreen('doc');
+    setReviewBarVisible(true);
+    return;
+  }
   // Taken synchronously, before any await, so a second flush tick cannot
   // start a second open of the same waiting drawing. "Stay" re-sets it.
   if (pendingOpen === id) {
@@ -1019,8 +1057,17 @@ async function finish() {
   btn.disabled = true;        // no second click while sealing/exporting
   setBusy('Finishing…');
   finishing = true;
+  setReviewBarButtonsDisabled(true);
   try {
     const res = await finisher.run(snapshot);
+    // Cleared the moment finisher.run() resolves, not only in the `finally`
+    // below: the chain-to-next go() calls a few lines down are themselves
+    // navigation, and routeOnce's own finishing guard would otherwise block
+    // Finish's OWN successful chain to the next drawing. The race this
+    // guard exists for (another navigation rotating journal.writer while
+    // finisher.run() is reading it) is over the instant run() returns.
+    finishing = false;
+    setReviewBarButtonsDisabled(false);
     if (res.status === 'blocked') {
       const n = progress().outstanding;
       toast({ kind: 'warn', title: 'Not finished yet',
@@ -1055,6 +1102,7 @@ async function finish() {
     toast({ kind: 'error', title: 'Finish failed', msg: String(err.message || err) });
   } finally {
     finishing = false;
+    setReviewBarButtonsDisabled(false);
     setIdle();
     btn.disabled = !state.sessionId;
     // The flush timer was cleared above; if events are still pending (a
@@ -1068,16 +1116,43 @@ async function finish() {
 // ===== Review bar ====================================================
 function wireReviewBar() {
   document.getElementById('rb-prev')?.addEventListener('click', () => {
+    if (warnFinishing()) return;
     const id = prevId(worklistDocsCache(), currentBatchId(), state.sessionId);
     if (id) go(docUrl(id));
   });
   document.getElementById('rb-skip')?.addEventListener('click', () => {
+    if (warnFinishing()) return;
     // skip() calls `go` itself (reviewbar.js) -- it takes `navigate` as a
     // dependency rather than returning an id for the caller to setHash()
     // with, which is exactly the shape of mistake decision 10 is about.
     skip(worklistDocsCache(), currentBatchId(), state.sessionId, { navigate: go, docUrl });
   });
-  document.getElementById('rb-jump')?.addEventListener('click', openJumpPalette);
+  document.getElementById('rb-jump')?.addEventListener('click', openJumpPalette);   // guards itself (warnFinishing)
+}
+
+// Prev/Skip/Jump (buttons, Ctrl+K, and the palette's own Enter/click) all
+// end in a call to go() that would open another drawing mid-Finish --
+// finisher.run() is reading journal.writer across its own await boundary
+// (the flush, then the seal), and opening a different drawing rotates that
+// writer out from under it (openForReview -> journal.resume()). This is
+// the guard they all share; routeOnce has the same check centrally, for
+// the paths these buttons do not cover (a direct hash edit, a queued
+// go()). Returns true when it blocked the action, so a caller can `return`.
+function warnFinishing() {
+  if (!finishing) return false;
+  toast({ kind: 'warn', title: 'Finishing — one moment', msg: 'This drawing is being sealed. Try again once it finishes.' });
+  return true;
+}
+
+// Visually matches warnFinishing's refusal: a disabled button not even
+// clickable is clearer than one that clicks and immediately toasts.
+function setReviewBarButtonsDisabled(disabled) {
+  const prev = document.getElementById('rb-prev');
+  const skipBtn = document.getElementById('rb-skip');
+  const jump = document.getElementById('rb-jump');
+  if (prev) prev.disabled = disabled;
+  if (skipBtn) skipBtn.disabled = disabled;
+  if (jump) jump.disabled = disabled;
 }
 
 function currentBatchId() {
@@ -1090,13 +1165,21 @@ function currentBatchId() {
 // never innerHTML. One instance's listeners are all removed on close, so
 // pressing Ctrl+K again starts clean rather than stacking handlers.
 function openJumpPalette() {
+  // Covers Ctrl+K (init()'s keydown listener calls this directly, bypassing
+  // wireReviewBar's own click guard) as well as the button's click, which
+  // already checked but costs nothing to check again here.
+  if (warnFinishing()) return;
   const backdrop = document.getElementById('jump-backdrop');
   const input = document.getElementById('jump-input');
   const list = document.getElementById('jump-list');
   if (!backdrop || !input || !list) return;
   if (!backdrop.hidden) return;   // already open -- Ctrl+K again is a no-op, not a second instance
 
-  const candidates = jumpCandidates(worklistDocsCache());
+  // Excludes the drawing already open: selecting it would re-/open it,
+  // minting a new writer and wiping unflushed events (reopen.js's
+  // shouldReopen is the defense-in-depth half of this fix, for every path
+  // that is not this palette).
+  const candidates = jumpCandidates(worklistDocsCache(), state.sessionId);
   const previouslyFocused = document.activeElement;
   let filtered = candidates;
   let activeIndex = 0;
@@ -1127,6 +1210,10 @@ function openJumpPalette() {
   function openSelected() {
     const d = filtered[activeIndex];
     if (!d) return;
+    // Checked again here, not only before the palette opened: a Finish can
+    // start WHILE the palette is sitting open and the reviewer then presses
+    // Enter or clicks an item.
+    if (warnFinishing()) return;
     close();
     go(docUrl(d.id));
   }

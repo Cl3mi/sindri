@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { restoreReview, flushBeforeLeaving } = await import('../../app/static/js/reopen.js');
+const { restoreReview, flushBeforeLeaving, shouldReopen } = await import('../../app/static/js/reopen.js');
 const { createJournal } = await import('../../app/static/js/journal.js');
 
 function fakes({ restoreThrows = false } = {}) {
@@ -172,4 +172,25 @@ test('nothing pending, or the same drawing, sends no beacon', () => {
   g.journal.record({ kind: 'do', op: { event: () => ({ type: 'accept', ids: [] }) } });
   restoreReview(payload(), g.deps);   // /open rotated that writer: a beacon would only be refused
   assert.equal(g.log.filter((e) => e[0] === 'beacon').length, 0);
+});
+
+// ---- shouldReopen: the defense-in-depth half of the re-open bug ----------
+// Re-opening the drawing already open would call /open again, which mints a
+// NEW writer and journal.resume() wipes `pending` -- so unflushed edits are
+// silently lost the moment a reviewer re-selects their own open drawing
+// (Jump listing it, or a hash re-dispatch to the same #/doc/<id>). The
+// primary fix excludes the open drawing from the Jump palette's candidates
+// (reviewbar.js); this is the second line of defense for every other path
+// that can still ask to open `id` -- a stale link, a race, a bookmark.
+test('shouldReopen is false for the drawing already open', () => {
+  const journal = createJournal({ send: async () => ({ contiguous: 0 }) });
+  journal.start('open-id', 'w1');
+  assert.equal(shouldReopen(journal, 'open-id'), false);
+});
+
+test('shouldReopen is true for any other drawing, or when nothing is open yet', () => {
+  const journal = createJournal({ send: async () => ({ contiguous: 0 }) });
+  assert.equal(shouldReopen(journal, 'anything'), true);   // journal.active is false
+  journal.start('open-id', 'w1');
+  assert.equal(shouldReopen(journal, 'other-id'), true);
 });
