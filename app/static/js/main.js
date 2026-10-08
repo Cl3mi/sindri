@@ -19,8 +19,9 @@ import { initViewer } from './viewer.js';
 import { initTable } from './table.js';
 import { initWorkList } from './worklist.js';
 import { parseRoute, docUrl, stagingUrl, worklistUrl, navigate } from './router.js';
-import { prevId, nextAfterFinish, jumpCandidates, skip, navOrder } from './reviewbar.js';
+import { prevId, nextAfterFinish, jumpCandidates, skip, navOrder, nextReadyCopy, filterJump } from './reviewbar.js';
 import { initStagingView } from './stagingview.js';
+import { createSerialRunner } from './serial.js';
 import {
   toast, initModal, openHelp, initSplitter,
   initThemeAndDensity, initDragDrop,
@@ -149,28 +150,20 @@ function go(url) {
 // which go()'s own dispatch does not see. Guarding only go() would still
 // let a real link click race a go()-driven dispatch still in flight; this
 // way every path that can start a route dispatch shares the same guard.
-// The guard QUEUES rather than drops a navigation that arrives mid-route
-// (EXECUTION REQUIREMENT, plan re-review): a second hashchange/go() call
-// while a route is already in flight would otherwise be silently lost --
-// e.g. two Skips in quick succession must land on the SECOND target, not
-// get stuck on whichever hash happened to be current when the first
-// dispatch started.
-let navigating = false;
-let rerouteRequested = false;
-async function routeFromHash() {
-  if (navigating) { rerouteRequested = true; return; }
-  navigating = true;
-  try {
-    do {
-      rerouteRequested = false;
-      await routeOnce(currentRoute());
-    } while (rerouteRequested);
-  } finally {
-    navigating = false;
-  }
-}
+// createSerialRunner (serial.js, node-tested) QUEUES rather than drops a
+// navigation that arrives mid-route (EXECUTION REQUIREMENT, plan
+// re-review): a second hashchange/go() call while a route is already in
+// flight would otherwise be silently lost -- e.g. two Skips in quick
+// succession must land on the SECOND target, not get stuck on whichever
+// hash happened to be current when the first dispatch started. routeOnce
+// takes no argument and reads currentRoute() itself, so the re-run the
+// guard triggers sees whatever hash is current AT THAT MOMENT, not a
+// snapshot taken when the extra call arrived.
+const router = createSerialRunner(routeOnce);
+function routeFromHash() { return router.run(); }
 
-async function routeOnce(route) {
+async function routeOnce() {
+  const route = currentRoute();
   // Leaving a drawing (to the work list or staging) must not silently drop
   // unsaved review edits -- the doc-to-doc case (Prev/Skip/Jump/Finish's
   // chain, or a hash edited by hand to another #/doc/<id>) is already
@@ -337,11 +330,11 @@ function backToEmptyOrCurrent() {
     document.getElementById('plan-confirm').hidden = true;
     document.getElementById('plan-extracting').hidden = true;
   } else {
-    // backToEmpty()'s "plan-empty" drop zone was B1's single-screen home;
-    // the router's home screen is the work list now (decision 9), so this
-    // branch shows that instead. backToEmpty() and plan-empty's markup are
-    // left in index.html unused rather than deleted -- removing dead B1
-    // markup is a cleanup, not part of this fix.
+    // "plan-empty"'s drop zone was B1's single-screen home; the router's
+    // home screen is the work list now (decision 9), so this branch shows
+    // that instead. The markup itself stays in index.html -- it is NOT
+    // dead: viewer.js still shows/hides it as the drawing viewport's own
+    // "no image loaded" placeholder, independent of this router.
     showScreen('worklist');
   }
 }
@@ -584,12 +577,6 @@ function setStartLabel(text) {
   const btn = document.getElementById('cf-start');
   const node = [...btn.childNodes].reverse().find((n) => n.nodeType === Node.TEXT_NODE && n.textContent.trim());
   if (node) node.textContent = ` ${text} `;
-}
-
-function backToEmpty() {
-  document.getElementById('plan-confirm').hidden = true;
-  document.getElementById('plan-extracting').hidden = true;
-  document.getElementById('plan-empty').hidden = false;
 }
 
 // The draft is no longer one to resume into (started or discarded). Only
@@ -1049,14 +1036,14 @@ async function finish() {
       if (next.status === 'next') {
         go(docUrl(next.id));
       } else if (next.status === 'extracting') {
-        // Intentionally not a computed number here: nextAfterFinish's
-        // 'extracting' branch only knows SOMETHING is on its way, not which
-        // drawing or its own ETA -- the work list's queue header, already
-        // visible once the reviewer lands there or glances at it, is where
-        // that number lives. This toast's copy says so rather than
-        // inventing a second estimate.
-        toast({ kind: 'warn', title: 'Next drawing ready in ≈ N min',
-                msg: 'Still extracting — the work list will show it.' });
+        // nextAfterFinish's 'extracting' branch only knows SOMETHING is on
+        // its way, not which drawing -- but the work list's own queue
+        // summary (the SAME one its header already shows, via getQueue())
+        // does carry a per-drawing estimate once nextReadyCopy divides its
+        // cumulative eta_seconds by how many are queued (CLAUDE.md §4: a
+        // number with no basis is "estimating…", never a guess).
+        const copy = nextReadyCopy(workList?.getQueue());
+        toast({ kind: 'warn', title: copy.title, msg: copy.msg });
       } else {
         // B4 builds mass export; until then the work list's per-drawing
         // export buttons (already shipped) are what "Export batch" means.
@@ -1097,16 +1084,96 @@ function currentBatchId() {
   return worklistDocsCache().find((d) => d.id === state.sessionId)?.batch_id || null;
 }
 
-// A minimal type-to-filter palette: reuses the browser's own prompt() rather
-// than a new modal component, because this is the one piece of B3 the design
-// marks "Ctrl+K" without specifying a visual design, and a bespoke combobox
-// is not worth building before the operator has used the simple version.
+// A minimal in-page combobox: a text input filtered by filterJump
+// (reviewbar.js, node-tested) plus a list, not a new design system. File
+// names are server strings, so every list item is built via textContent,
+// never innerHTML. One instance's listeners are all removed on close, so
+// pressing Ctrl+K again starts clean rather than stacking handlers.
 function openJumpPalette() {
+  const backdrop = document.getElementById('jump-backdrop');
+  const input = document.getElementById('jump-input');
+  const list = document.getElementById('jump-list');
+  if (!backdrop || !input || !list) return;
+  if (!backdrop.hidden) return;   // already open -- Ctrl+K again is a no-op, not a second instance
+
   const candidates = jumpCandidates(worklistDocsCache());
-  const label = candidates.map((d, i) => `${i + 1}. ${d.file_name}`).join('\n');
-  const pick = prompt(`Jump to (type a number):\n${label}`);
-  const idx = parseInt(pick, 10) - 1;
-  if (candidates[idx]) go(docUrl(candidates[idx].id));
+  const previouslyFocused = document.activeElement;
+  let filtered = candidates;
+  let activeIndex = 0;
+
+  function renderList() {
+    list.innerHTML = '';
+    filtered.forEach((d, i) => {
+      const li = document.createElement('li');
+      li.textContent = d.file_name;
+      li.className = i === activeIndex ? 'active' : '';
+      li.dataset.index = String(i);
+      list.appendChild(li);
+    });
+  }
+
+  function close() {
+    backdrop.hidden = true;
+    input.removeEventListener('input', onInput);
+    input.removeEventListener('keydown', onKeydown);
+    list.removeEventListener('click', onListClick);
+    backdrop.removeEventListener('mousedown', onBackdropClick);
+    // Focus returns to whatever had it before Ctrl+K -- usually the Jump
+    // button itself, but never assumed: this works regardless of how the
+    // palette was opened.
+    if (previouslyFocused && typeof previouslyFocused.focus === 'function') previouslyFocused.focus();
+  }
+
+  function openSelected() {
+    const d = filtered[activeIndex];
+    if (!d) return;
+    close();
+    go(docUrl(d.id));
+  }
+
+  function onInput() {
+    filtered = filterJump(candidates, input.value);
+    activeIndex = 0;
+    renderList();
+  }
+  function onKeydown(e) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      activeIndex = filtered.length ? Math.min(activeIndex + 1, filtered.length - 1) : 0;
+      renderList();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      activeIndex = Math.max(activeIndex - 1, 0);
+      renderList();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      openSelected();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      close();
+    }
+  }
+  function onListClick(e) {
+    const li = e.target.closest('li');
+    if (!li) return;
+    activeIndex = Number(li.dataset.index);
+    openSelected();
+  }
+  // mousedown, not click: fires before the input's own blur, and a click
+  // that STARTS outside the palette and is dragged onto it never counts as
+  // "outside" either way (the target is read at press time, same place).
+  function onBackdropClick(e) {
+    if (e.target === backdrop) close();
+  }
+
+  input.value = '';
+  renderList();
+  backdrop.hidden = false;
+  input.addEventListener('input', onInput);
+  input.addEventListener('keydown', onKeydown);
+  list.addEventListener('click', onListClick);
+  backdrop.addEventListener('mousedown', onBackdropClick);
+  input.focus();
 }
 
 // worklist.js's initWorkList() keeps the same array the review bar navigates

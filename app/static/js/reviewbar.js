@@ -42,6 +42,17 @@ export function jumpCandidates(docs) {
   return docs.filter(REVIEWABLE);
 }
 
+// The Jump (Ctrl+K) palette's type-to-filter: case-insensitive substring on
+// file name, over whatever list the caller already narrowed down (normally
+// jumpCandidates(docs)). An empty/missing query matches everything, same as
+// filterDocuments' search field (worklist.js) and filterJump never changes
+// the given order -- the palette's own ↑/↓ relies on that staying List order.
+export function filterJump(candidates, query) {
+  const q = (query || '').toLowerCase();
+  if (!q) return candidates;
+  return candidates.filter((d) => d.file_name.toLowerCase().includes(q));
+}
+
 // "Skip for now" (design §3): the next reviewable drawing after the current
 // one in the SAME batch, falling back to any other batch's -- the same
 // fallback nextAfterFinish uses, since running out of drawings to skip to
@@ -59,4 +70,25 @@ export function skip(docs, batchId, currentId, { navigate: nav, docUrl }) {
     || null;
   if (id) nav(docUrl(id));
   return id;
+}
+
+// Finish's "extracting" chain-to-next toast (main.js): the queue's
+// `eta_seconds` (app.batch.repo.queue_summary / the worker's rolling
+// median) is CUMULATIVE over every queued drawing, not one drawing's wait
+// -- quoting it whole would overstate "the next drawing" by a factor of
+// however many are ahead of it. Dividing by `queued` gives the per-drawing
+// estimate the toast actually promises, clamped so it is never 0 min
+// (true, but reads as "basically now", which it may not be) and never
+// divides by zero when nothing is queued yet (its own eta is one
+// drawing's already). `eta_seconds == null` means no sample exists yet
+// (worker.py: a fresh process with no completed extraction) -- CLAUDE.md
+// §4 forbids a number with no basis, so that case gets words, not a
+// guessed 0 or a stale number.
+export function nextReadyCopy(queue) {
+  if (!queue || queue.eta_seconds == null) {
+    return { title: 'Next drawing is still extracting', msg: 'Estimating how long it will take.' };
+  }
+  const perDrawingMin = Math.max(1, Math.round(queue.eta_seconds / Math.max(queue.queued, 1) / 60));
+  return { title: `Next drawing ready in ≈ ${perDrawingMin} min`,
+           msg: 'Still extracting — the work list will show it.' };
 }

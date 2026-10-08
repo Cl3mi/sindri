@@ -293,8 +293,10 @@ export function initWorkList({ listDocuments, moveToFront, cancelDocument, retry
   // getDocs: the review bar (Task 13) navigates over the SAME fetched list
   // rather than polling a second time, so Prev/Skip/Jump/Finish's "next
   // drawing" can never see a different snapshot than what the work list
-  // itself is showing.
-  return { refresh, getDocs: () => _docs };
+  // itself is showing. getQueue: Finish's "extracting" toast (reviewbar.js's
+  // nextReadyCopy) needs the same queue summary this screen's own header
+  // already shows, rather than a second request for the same numbers.
+  return { refresh, getDocs: () => _docs, getQueue: () => _lastQueue };
 }
 
 let workListBadgesFor = () => [];

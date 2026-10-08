@@ -843,6 +843,51 @@ kbd {
   to   { opacity: 1; transform: none; }
 }
 
+/* ===== Jump palette (Ctrl+K) ===================================== */
+/* Same visual shape as #modal-backdrop above, but `hidden` toggled by
+   main.js's openJumpPalette rather than a `data-open` attribute -- this
+   backdrop has no other state to coordinate with. */
+#jump-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 8, 12, 0.7);
+  backdrop-filter: blur(4px);
+  z-index: 200;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+}
+#jump-backdrop[hidden] { display: none; }
+.jump-palette {
+  width: min(480px, 92vw);
+  max-height: 60vh;
+  overflow: auto;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-pop);
+  padding: 10px;
+}
+.jump-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  font-size: var(--fs-md);
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  color: var(--fg);
+}
+.jump-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.jump-list li {
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.jump-list li.active, .jump-list li:hover { background: var(--bg-hover); color: var(--fg); }
+
 /* ===== Hidden file input ====================================== */
 input[type="file"].sr {
   position: absolute; width: 1px; height: 1px;
