@@ -41,7 +41,6 @@ let stopGaveUp = false;   // removal kept failing; the Stop button now closes th
 let resuming = false;     // the #doc link is still being opened at page load
 let opening = 0;          // loadForReview calls in progress (a count, so an overlap cannot clear it early)
 let finishing = false;    // a Finish is running: never switch drawings under it
-let staleShown = false;   // "opened in another tab" already said for this drawing
 // A ready drawing the reviewer chose NOT to switch to yet, because the open
 // one's changes had not saved. It opens by itself once they have
 // (afterFlush); until then it is the one drawing this tab is waiting on.
@@ -375,6 +374,7 @@ function wireHeader() {
       beaconEvents(journal.sessionId, journal.writer, journal.pending);
     }
     clearSession();
+    hideStaleBanner();
     setHash(worklistUrl());
     // A drawing was waiting for this one's changes to save. Closing is the
     // reviewer leaving anyway (the beacon above was the last try), so open
@@ -804,6 +804,10 @@ async function loadForReview(id, opts) {
 }
 
 async function openForReview(id, { skipFlush = false } = {}) {
+  // A freshly opened drawing never keeps yesterday's stale banner: this tab
+  // may be opening a NEW drawing while still shown read-only for the one it
+  // just left (the read-only state is per screen, not per drawing).
+  hideStaleBanner();
   // Defense-in-depth (the primary fix is jumpCandidates' excludeId, which
   // never OFFERS the open drawing as a target): a stale link, a hash
   // edited by hand, or a queued navigation could still ask to open the
@@ -857,7 +861,6 @@ async function openForReview(id, { skipFlush = false } = {}) {
     restoreReview(data, { restoreSession, clearSession, journal, finisher, beacon: beaconEvents });
     clearTimeout(flushTimer);
     flushBackoff = 500;
-    staleShown = false;
     if (waitingOn?.id === id) waitingOn = null;   // never another drawing's
     setHash(docUrl(id));
     // openForReview is reached by more than one caller's dispatch --
@@ -982,6 +985,30 @@ function wireJournal() {
   });
 }
 
+// The losing side of a two-tab takeover (StaleWriter; design §3): persistent,
+// not a toast that scrolls away, because the refusal is permanent for this
+// tab -- only a reload gets a fresh writer. state.readOnly makes it actually
+// block edits (apply()/undo()/redo() in state.js), not merely look blocked.
+function showStaleBanner(unsavedCount) {
+  state.readOnly = true;
+  const el = document.getElementById('banner-stale');
+  if (!el) return;
+  el.hidden = false;
+  const countEl = document.getElementById('banner-stale-count');
+  if (countEl) countEl.textContent = unsavedCount ? ` (${unsavedCount} change${unsavedCount === 1 ? '' : 's'} not kept)` : '';
+  // Read-only now: further edits would only be refused the same way, so
+  // disable the controls that would otherwise look live. state.readOnly
+  // already refuses the mutation itself; this adds the visible cue the
+  // design asks for on top of that guard.
+  document.getElementById('finish-btn').disabled = true;
+}
+
+function hideStaleBanner() {
+  state.readOnly = false;
+  const el = document.getElementById('banner-stale');
+  if (el) el.hidden = true;
+}
+
 function scheduleFlush(delay) {
   clearTimeout(flushTimer);
   flushTimer = setTimeout(async () => {
@@ -1010,11 +1037,9 @@ function scheduleFlush(delay) {
         scheduleFlush(flushBackoff);
         break;
       case 'stale':
-        // Said once per drawing, not again on every edit's flush.
-        if (!staleShown) {
-          staleShown = true;
-          toast({ kind: 'warn', title: 'Opened in another tab', msg: 'Reload to continue here.' });
-        }
+        // showStaleBanner's own `el.hidden` check makes a repeat call here a
+        // no-op visually, so no "already shown" flag is needed any more.
+        showStaleBanner(journal.pending.length);
         break;
       case 'retry':
         // Keep everything pending and retry, backing off to 10 s; Finish

@@ -77,3 +77,45 @@ test('opConfirmSuggestions de-duplicates ids in its own logged event', () => {
   S.apply(op);
   assert.deepEqual(op.event().ids, ['s']);
 });
+
+// The stale-tab banner (banner.js) is read-only: another tab holds the
+// writer, so a further apply()/undo()/redo() here would only be refused the
+// same way the next flush is -- and every edit path (table, viewer, the
+// keyboard shortcuts) ultimately calls one of these three, so gating them
+// here is the single chokepoint that blocks all of them at once.
+test('apply() is a no-op while readOnly: no mutation, no op emitted', () => {
+  load([row('a', 0, 0)]);
+  S.state.readOnly = true;
+  let opEmitted = false;
+  const off = S.on('op', () => { opEmitted = true; });
+  S.apply(S.opDeleteRow('a'));
+  off();
+  S.state.readOnly = false;
+  assert.equal(S.state.rows.length, 1);
+  assert.equal(opEmitted, false);
+});
+
+test('undo()/redo() are no-ops while readOnly', () => {
+  load([row('a', 0, 0)]);
+  S.apply(S.opDeleteRow('a'));
+  assert.equal(S.state.rows.length, 0);
+  S.state.readOnly = true;
+  S.undo();
+  assert.equal(S.state.rows.length, 0);   // still deleted: undo was refused
+  S.state.readOnly = false;
+  S.undo();
+  assert.equal(S.state.rows.length, 1);   // works again once read-only lifts
+  S.state.readOnly = true;
+  S.redo();
+  assert.equal(S.state.rows.length, 1);   // still restored: redo was refused
+  S.state.readOnly = false;
+});
+
+test('setSession() and clearSession() reset readOnly: a fresh or closed drawing is never stuck read-only', () => {
+  S.state.readOnly = true;
+  load([row('a', 0, 0)]);
+  assert.equal(S.state.readOnly, false);
+  S.state.readOnly = true;
+  S.clearSession();
+  assert.equal(S.state.readOnly, false);
+});

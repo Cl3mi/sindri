@@ -919,3 +919,12 @@ input[type="file"].sr {
 .wl-bulk { display: flex; gap: 8px; align-items: center; padding: 8px 14px; border-top: 1px solid var(--border); }
 .state-chip { padding: 1px 8px; border-radius: 10px; background: var(--bg-hover); font-size: var(--fs-xs); }
 .muted { color: var(--fg-muted); font-size: var(--fs-xs); }
+
+/* ===== Banners (banner.js, batch design §3/§5) ====================== */
+/* Shared by the two-tab read-only banner and the lagging-journal retry
+   banner -- sticky, not a toast, because both refusals persist across every
+   edit until the reviewer reloads or the journal catches up. Text is a
+   fixed dark color rather than var(--fg): --warn is the same gold in both
+   themes, and light theme's --fg is nearly as light as its background. */
+.banner { position: sticky; top: 0; z-index: 5; padding: 8px 14px; font-size: var(--fs-sm); display: flex; gap: 10px; align-items: center; }
+.banner-warn { background: var(--warn); color: #1f2328; }

@@ -30,6 +30,12 @@ export const state = {
   search: '',
   ocrBackend: '—',
   ocrOk: null,       // null | true | false
+  // Another tab holds this drawing's writer (banner.js's 'stale' banner):
+  // every retry would be refused the same way the server already refused
+  // this tab's last flush, so apply()/undo()/redo() below refuse too rather
+  // than build local history the journal can never send. Reset on both a
+  // fresh open and a close, so it never survives into the next drawing.
+  readOnly: false,
 };
 
 export function setSession(payload) {
@@ -41,6 +47,7 @@ export function setSession(payload) {
   state.title_block = payload.title_block ?? [];
   state.fileName  = payload.fileName ?? state.fileName;
   state.selectedId = null;
+  state.readOnly  = false;
   undoStack.length = 0;
   redoStack.length = 0;
   emit('session', state);
@@ -57,6 +64,7 @@ export function clearSession() {
   state.marks     = null;
   state.title_block = [];
   state.selectedId = null;
+  state.readOnly  = false;
   undoStack.length = 0;
   redoStack.length = 0;
   emit('session', state);
@@ -72,6 +80,7 @@ const redoStack = [];
 // if that file falls out of step with this one, seal reports mismatches on
 // healthy sessions.
 export function apply(op) {
+  if (state.readOnly) return;   // another tab holds the writer; see state.readOnly
   op.do();
   undoStack.push(op);
   redoStack.length = 0;
@@ -80,6 +89,7 @@ export function apply(op) {
   emit('history');
 }
 export function undo() {
+  if (state.readOnly) return;
   const op = undoStack.pop();
   if (!op) return;
   op.undo();
@@ -89,6 +99,7 @@ export function undo() {
   emit('history');
 }
 export function redo() {
+  if (state.readOnly) return;
   const op = redoStack.pop();
   if (!op) return;
   op.do();
