@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 from app.batch.db import connect, migrate
+from app.batch.exports import Exports
 from app.batch.paths import DataDir
 from app.batch.repo import Repo, UnknownDocument
 from app.batch.uploads import MIB, Uploads
@@ -48,6 +49,10 @@ class Runtime:
             raise
         self.repo = Repo(self.conn)
         self.uploads = Uploads(self.repo, self.data, min_free_bytes=min_free_mb * MIB)
+        # Built before the Worker so the startup hook below can reach it --
+        # the disk guard it shares with imports (self.uploads) must already
+        # exist too.
+        self.exports = Exports(self.repo, self.data, self.store, self.uploads)
         # Recovery runs inside Worker.start(), under the single-process lock
         # (review C1): a second process that fails to get the lock never
         # sweeps the first one's in-flight imports.
@@ -55,12 +60,12 @@ class Runtime:
                              startup=self._run_startup_recovery)
 
     def _run_startup_recovery(self) -> None:
-        """Both sweeps are guarded INDEPENDENTLY (CLAUDE.md §4): they protect
-        unrelated failure modes (an interrupted import vs. an interrupted
-        re-extract), so a fault in one must not skip the other. Worker.start()
-        itself wraps the whole call in a try/except too, but only as a
-        backstop against something neither sweep anticipated -- the real
-        isolation is here."""
+        """All three sweeps are guarded INDEPENDENTLY (CLAUDE.md §4): they
+        protect unrelated failure modes (an interrupted import, an
+        interrupted re-extract, an interrupted mass export), so a fault in
+        one must not skip the others. Worker.start() itself wraps the whole
+        call in a try/except too, but only as a backstop against something
+        none of the three anticipated -- the real isolation is here."""
         try:
             self.uploads.recover()
         except Exception as e:
@@ -69,6 +74,10 @@ class Runtime:
             self._recover_reextract_stashes()
         except Exception as e:
             log.warning("startup recovery (reextract stash) failed: %s", type(e).__name__)
+        try:
+            self.exports.fail_interrupted()
+        except Exception as e:
+            log.warning("startup recovery (exports) failed: %s", type(e).__name__)
 
     def _recover_reextract_stashes(self) -> None:
         """A crash between app.main's reextract route renaming

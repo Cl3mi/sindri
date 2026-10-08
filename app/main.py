@@ -226,6 +226,10 @@ class StartRequest(BaseModel):
     expected_ids: Optional[List[DocId]] = None
 
 
+class ExportRequest(BaseModel):
+    document_ids: List[DocId]
+
+
 @app.get("/api/health")
 def health():
     status = backend_status()
@@ -783,6 +787,36 @@ def export_document(doc_id: str, kind: str, rev: Optional[int] = None):
     disposition = _content_disposition(Path(doc["file_name"]).stem + suffix)
     return FileResponse(path, media_type=media,
                         headers={"Content-Disposition": disposition})
+
+
+@app.post("/api/exports")
+def create_export(req: ExportRequest):
+    """Mass export (batch design §4): its own thread, started and returned
+    immediately -- the browser polls GET /api/exports/{id} for progress."""
+    return runtime().exports.start(req.document_ids)
+
+
+@app.get("/api/exports/{export_id}")
+def get_export_status(export_id: str):
+    return runtime().exports.status(export_id)
+
+
+@app.get("/api/exports/{export_id}/download")
+def download_export(export_id: str):
+    rt = runtime()
+    job = rt.exports.status(export_id)
+    if job["state"] == "running":
+        raise HTTPException(status_code=409, detail="export still building")
+    if job["state"] == "failed":
+        raise HTTPException(status_code=500, detail="export failed")
+    path = rt.data.export_zip_path(export_id)
+    if not path.is_file():
+        # Deleted by the 24h cleanup (Task 7): rebuildable from the same
+        # selection, so this is not a data loss, but the client must ask
+        # again rather than get a 200 for a file that no longer exists.
+        raise HTTPException(status_code=410, detail="export expired — request it again")
+    return FileResponse(path, media_type="application/zip",
+                        headers={"Content-Disposition": _content_disposition("sindri-export.zip")})
 
 
 @app.post("/api/read_region")

@@ -257,3 +257,78 @@ def test_recovery_runs_before_interrupted_extractions_are_requeued(tmp_path, mon
     finally:
         rt.close()
     assert calls == ["recover", "requeue"]
+
+
+def test_export_recovery_runs_independently_of_upload_recovery(tmp_path, monkeypatch):
+    """REQUIRED (decision 12): each of the three startup sweeps is guarded
+    separately -- a fault in the upload sweep must not skip export recovery,
+    mirroring test_reextract_stash_recovery_runs_independently_of_upload_recovery
+    above for the exports sweep instead of the reextract-stash one."""
+    rt = make(tmp_path)
+    job = rt.repo.create_export(["a" * 32])
+
+    def boom():
+        raise OSError("disk fault")
+    monkeypatch.setattr(rt.uploads, "recover", boom)
+    try:
+        rt.start()
+        assert rt.worker.running
+        got = rt.repo.get_export(job["id"])
+        assert (got["state"], got["error_type"]) == ("failed", "interrupted")
+    finally:
+        rt.close()
+
+
+def test_upload_recovery_runs_despite_a_fault_in_export_recovery(tmp_path, monkeypatch):
+    """The other direction: a fault in export recovery must not skip the
+    upload sweep."""
+    rt = make(tmp_path)
+    in_flight = rt.data.doc_dir("a" * 32)
+    leftover(in_flight)
+
+    def boom():
+        raise OSError("disk fault")
+    monkeypatch.setattr(rt.exports, "fail_interrupted", boom)
+    try:
+        rt.start()
+        assert rt.worker.running
+        assert not (in_flight / ".importing").exists()
+    finally:
+        rt.close()
+
+
+def test_an_interrupted_export_is_marked_failed_at_startup(tmp_path):
+    """A mass-export job still `running` when the process died is NOT
+    resumed -- the thread that was building it is gone, so there is nothing
+    to continue a ZIP from (batch design §4, decision 12). Wired into the
+    same startup path as upload recovery, under the single-process lock."""
+    rt = make(tmp_path)
+    job = rt.repo.create_export(["a" * 32])
+    stray = rt.data.exports / f"{job['id']}.abc123.tmp.zip"
+    stray.write_bytes(b"partial")
+    try:
+        rt.start()
+        got = rt.repo.get_export(job["id"])
+        assert (got["state"], got["error_type"]) == ("failed", "interrupted")
+        assert not stray.exists()
+    finally:
+        rt.close()
+
+
+def test_export_recovery_runs_only_under_the_single_worker_lock(tmp_path):
+    """Mirrors test_recovery_runs_only_under_the_single_worker_lock above: a
+    second process that cannot take the worker lock must not touch another
+    process's in-flight export either -- it never runs fail_interrupted at
+    all, so the job it would otherwise have marked `failed` stays `running`
+    until a process that DOES hold the lock restarts."""
+    rt = make(tmp_path)
+    job = rt.repo.create_export(["a" * 32])
+    holder = open(rt.data.root / "worker.lock", "w")      # the other process
+    fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        with pytest.raises(RuntimeError, match="another process"):
+            rt.start()
+        assert rt.repo.get_export(job["id"])["state"] == "running"
+    finally:
+        holder.close()
+        rt.close()

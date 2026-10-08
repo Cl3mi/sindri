@@ -382,6 +382,41 @@ def test_an_unexpected_render_fault_is_a_500_with_a_fixed_body(
     assert r.json() == {"detail": "export failed"}
 
 
+def test_mass_export_builds_a_zip_and_reports_progress(sample_pdf, stub_backend):
+    import app.main as main
+    sid = finished(client, sample_pdf)
+    r = client.post("/api/exports", json={"document_ids": [sid]})
+    assert r.status_code == 200, r.text
+    job_id = r.json()["id"]
+    main.runtime().exports.status(job_id)   # exists immediately, even before the thread finishes
+    import time
+    for _ in range(50):
+        status = client.get(f"/api/exports/{job_id}").json()
+        if status["state"] != "running":
+            break
+        time.sleep(0.05)
+    assert status["state"] == "done"
+    dl = client.get(f"/api/exports/{job_id}/download")
+    assert dl.status_code == 200
+    assert dl.headers["content-type"] == "application/zip"
+
+
+def test_mass_export_of_an_unknown_id_404s():
+    assert client.get(f"/api/exports/{'a' * 32}").status_code == 404
+
+
+def test_downloading_an_export_still_building_is_409():
+    import app.main as main
+    job = main.runtime().exports.repo.create_export(["x" * 32])
+    r = client.get(f"/api/exports/{job['id']}/download")
+    assert r.status_code == 409
+
+
+def test_mass_export_request_rejects_a_malformed_id():
+    r = client.post("/api/exports", json={"document_ids": ["not-hex"]})
+    assert r.status_code == 422
+
+
 def test_render_export_renders_once_under_concurrent_first_calls(
         sample_pdf, stub_backend, monkeypatch):
     """Two callers racing the FIRST export of a revision must not share a
