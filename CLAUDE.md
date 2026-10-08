@@ -180,6 +180,44 @@ one PDF as a batch of one through `app/static/js/upload.js` and remembers
 the draft per file, so re-selecting an interrupted file resumes it; B3 adds
 the staging view, folders and ZIPs in the UI.
 
+**BATCH B3 SHIPPED: THE ROUTER, WORK LIST, STAGING VIEW AND REVIEW BAR**
+(2026-10-08, `docs/plans/2026-10-08-batch-b3-ui-plan.md`). The hash scheme
+moved from B1's `#doc=<id>` to the design's `#/` (work list), `#/staging/<batch>`
+(staging), `#/doc/<id>` (review) — a bookmarked `#doc=` link from before this
+ships is NOT rewritten and will fall back to the work list (`router.js`'s
+`parseRoute` treats an unrecognised route that way on purpose). The work list
+polls `GET /api/documents?since=<cursor>` every 3 s while the tab is visible,
+with filters (batch, state, name search, "needs me" = ready + in_review) and
+bulk move-to-front/cancel/retry/remove/export-selected (the last three are
+plain per-id loops over existing guarded routes, not new server surface).
+Flagged/open/unchecked are now real, persisted `document` columns
+(migration 4) computed by `ReviewStore.progress()` — mirrors `state.js`'s
+`progress()` exactly — and kept current from both places a review changes
+(`/events`, `/seal`), with a lazy backfill in `GET /api/documents` for any
+row from before this migration (NULL, never a lying zero). Re-extract is a
+NEW transition (`ready` → `queued`, discarding the old proposal), refused
+the moment `ReviewStore.has_events()` is true — it is not Retry, which only
+ever leaves `failed`/`cancelled`. The review bar's Prev/Skip/Jump and
+Finish's "next drawing" all read the SAME list the work list polls, filtered
+by `reviewbar.js`'s pure `navOrder`/`nextAfterFinish` — ordering is
+`list_documents`'s `ORDER BY rowid`, the true staging order, which survives
+a drawing being queued (only the since-cursor filter compares `updated_at`;
+sorting the LIST by it was considered and rejected as a bug, not an
+imprecision — decision 8). **A hash written by `history.replaceState` does
+not fire `hashchange`**, so Prev/Skip/Jump/Finish's chain-to-next and the
+post-import redirect all go through `router.js`'s `navigate(url, {setUrl,
+dispatch})` seam via `main.js`'s `go()`, which calls `routeFromHash` itself
+instead of waiting for an event that never comes (decision 10); every other
+`setHash()` call, which already updates its own screen through a direct
+function call, is unchanged. The work list does a full reload every 20th
+poll and after any 404 the review screen hits on a drawing it had cached,
+since a deletion is invisible to the since-cursor diff (decision 11). The
+two-tab banner and the lagging-journal banner are one `banner.js` state
+machine; stale wins over lagging when both are true, since no retry can
+succeed once another tab holds the writer. **Mass export, retention and the
+access token are still B4** — "export selected" in the work list is a
+client-side loop, not the ZIP+manifest mass export the design describes.
+
 **`read-lora-v1` IS NOW HARMFUL UNDER THE SHIPPED POLICY — deployment CLOSED**
 (2026-10-05, `docs/plans/2026-10-05-read-adapter-repricing-result.md`;
 DERIVED, `--reapply-policy` on stored dev dumps, pad 6). The scoped adapter's
@@ -230,7 +268,7 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **1802 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **1850 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). **`tesseract` is a device
 prerequisite** — without the binary six tests fail as `TesseractNotFoundError`
 and read as broken code. `SCHEMA_VERSION` = 1 — do not bump it. Split frozen
@@ -970,7 +1008,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 1802 passed, 2 skipped
+python -m pytest -q                          # 1850 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```
