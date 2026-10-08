@@ -784,14 +784,34 @@ class Repo:
             return self._export_row(c, export_id)
 
     def update_export_progress(self, export_id, done: int) -> None:
+        """A no-op once the job has left `running` (finished or recovered as
+        `failed`): a progress tick from a thread racing its own job's
+        termination must not resurrect a count on a row that is already
+        someone else's finished business."""
         with self._tx() as c:
-            c.execute("UPDATE export SET done = ?, updated_at = ? WHERE id = ?",
+            c.execute("UPDATE export SET done = ?, updated_at = ?"
+                      " WHERE id = ? AND state = 'running'",
                       (done, self._clock(), export_id))
 
     def finish_export(self, export_id, state: str, error_type: str = None) -> None:
+        """Guarded exactly like a document transition (`_move`): only a
+        `running` job may finish, and only into `done` or `failed`. Recovery
+        marks an orphaned job `failed` because the thread that was building
+        it is gone; nothing may then resurrect it as `done`, and a job that
+        is already finished never changes again."""
+        if state not in ("done", "failed"):
+            raise ValueError(f"not a terminal export state: {state!r}")
         with self._tx() as c:
-            c.execute("UPDATE export SET state = ?, error_type = ?, updated_at = ?"
-                      " WHERE id = ?", (state, error_type, self._clock(), export_id))
+            cur = c.execute(
+                "UPDATE export SET state = ?, error_type = ?, updated_at = ?"
+                " WHERE id = ? AND state = 'running'",
+                (state, error_type, self._clock(), export_id))
+            if cur.rowcount == 0:
+                row = c.execute("SELECT state FROM export WHERE id = ?",
+                                (export_id,)).fetchone()
+                if row is None:
+                    raise UnknownExport(f"no export {str(export_id)[:8]}")
+                raise InvalidTransition(f"export is {row['state']}, not running")
 
     def get_export(self, export_id) -> dict:
         with self._lock:

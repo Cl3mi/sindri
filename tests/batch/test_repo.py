@@ -440,3 +440,31 @@ def test_running_exports_lists_only_running_jobs(repo):
     b = repo.create_export(["b"])
     repo.finish_export(b["id"], "done")
     assert repo.running_exports() == [a["id"]]
+
+
+def test_finish_export_on_an_already_done_job_is_refused(repo):
+    """Recovery marks an orphaned job `failed`; nothing may resurrect a
+    finished job as `done` afterwards -- a job that is already finished
+    never changes again."""
+    job = repo.create_export(["a"])
+    repo.finish_export(job["id"], "done")
+    with pytest.raises(InvalidTransition):
+        repo.finish_export(job["id"], "failed", error_type="OSError")
+
+
+def test_update_export_progress_on_a_failed_job_is_a_no_op(repo):
+    job = repo.create_export(["a", "b"])
+    repo.finish_export(job["id"], "failed", error_type="OSError")
+    repo.update_export_progress(job["id"], 1)
+    assert repo.get_export(job["id"])["done"] == 0
+
+
+def test_finish_export_rejects_a_bad_state(repo):
+    job = repo.create_export(["a"])
+    with pytest.raises(ValueError):
+        repo.finish_export(job["id"], "running")
+
+
+def test_finish_export_of_an_unknown_id_is_404(repo):
+    with pytest.raises(UnknownExport):
+        repo.finish_export("f" * 32, "done")
