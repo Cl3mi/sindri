@@ -133,9 +133,9 @@ MIGRATIONS = [
     # 5: mass-export jobs (batch B4, design §4). A row per POST
     # /api/exports, not an in-memory dict: a poll from any tab must see the
     # same progress, and a server restart mid-build must show `failed`
-    # rather than a `running` job nothing will ever finish (app/batch/exports.py
-    # Task 9 requeues/fails these at startup the same way requeue_interrupted
-    # does for extraction).
+    # rather than a `running` job nothing will ever finish (Task 6 wires
+    # app/batch/exports.py's fail_interrupted() into the startup recovery
+    # the same way requeue_interrupted does for extraction).
     """
     CREATE TABLE export (
         id TEXT PRIMARY KEY,

@@ -55,6 +55,10 @@ class UnknownUpload(BatchError):
     status = 404
 
 
+class UnknownExport(BatchError):
+    status = 404
+
+
 class UploadConflict(InvalidTransition):
     """A 409 that says where the upload really stands. `extra` (numbers and a
     state name only) rides in the reply body -- app.main's handler merges it
@@ -755,6 +759,52 @@ class Repo:
         with self._tx() as c:
             c.execute("UPDATE document SET exported_at = ?, exported_revision = ? "
                       "WHERE id = ?", (self._clock(), revision, doc_id))
+
+    @staticmethod
+    def _export_row(c, export_id) -> dict:
+        row = c.execute("SELECT * FROM export WHERE id = ?", (export_id,)).fetchone()
+        if row is None:
+            raise UnknownExport(f"no export {str(export_id)[:8]}")
+        d = dict(row)
+        d["document_ids"] = json.loads(d["document_ids"])
+        return d
+
+    def create_export(self, document_ids: list) -> dict:
+        """A mass-export job (batch design §4): a row of its own, so a poll
+        from any tab sees the same progress and a server restart mid-build
+        reads as `failed`, not frozen (app/batch/exports.py's startup
+        recovery, Task 6)."""
+        now = self._clock()
+        export_id = uuid.uuid4().hex
+        with self._tx() as c:
+            c.execute(
+                "INSERT INTO export (id, document_ids, state, done, total,"
+                " created_at, updated_at) VALUES (?, ?, 'running', 0, ?, ?, ?)",
+                (export_id, json.dumps(list(document_ids)), len(document_ids), now, now))
+            return self._export_row(c, export_id)
+
+    def update_export_progress(self, export_id, done: int) -> None:
+        with self._tx() as c:
+            c.execute("UPDATE export SET done = ?, updated_at = ? WHERE id = ?",
+                      (done, self._clock(), export_id))
+
+    def finish_export(self, export_id, state: str, error_type: str = None) -> None:
+        with self._tx() as c:
+            c.execute("UPDATE export SET state = ?, error_type = ?, updated_at = ?"
+                      " WHERE id = ?", (state, error_type, self._clock(), export_id))
+
+    def get_export(self, export_id) -> dict:
+        with self._lock:
+            return self._export_row(self._conn, export_id)
+
+    def running_exports(self) -> list:
+        """At startup: jobs a crashed process left `running` forever
+        (app/batch/exports.py's recovery marks each one `failed`, since the
+        thread that was building it is gone -- there is nothing to resume a
+        ZIP build from)."""
+        with self._lock:
+            return [r["id"] for r in self._conn.execute(
+                "SELECT id FROM export WHERE state = 'running'").fetchall()]
 
     def update_progress(self, doc_id, counts: dict) -> None:
         """Flagged/open/unchecked counts for the work list, computed by

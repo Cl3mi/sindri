@@ -404,3 +404,39 @@ def test_queue_summary_counts_queued_and_extracting_and_paused(repo):
     assert repo.queue_summary() == {"queued": 1, "extracting": 1, "paused": False}
     repo.set_paused(True)
     assert repo.queue_summary()["paused"] is True
+
+
+from app.batch.repo import UnknownExport
+
+
+def test_create_export_stores_the_document_ids_in_order(repo):
+    job = repo.create_export(["b", "a", "c"])
+    assert job["document_ids"] == ["b", "a", "c"]
+    assert (job["state"], job["done"], job["total"]) == ("running", 0, 3)
+
+
+def test_update_export_progress_advances_done(repo):
+    job = repo.create_export(["a", "b"])
+    repo.update_export_progress(job["id"], 1)
+    assert repo.get_export(job["id"])["done"] == 1
+
+
+def test_finish_export_records_state_and_error_type(repo):
+    job = repo.create_export(["a"])
+    repo.finish_export(job["id"], "failed", error_type="OSError")
+    got = repo.get_export(job["id"])
+    assert (got["state"], got["error_type"]) == ("failed", "OSError")
+
+
+def test_get_export_of_an_unknown_id_is_404(repo):
+    with pytest.raises(UnknownExport):
+        repo.get_export("f" * 32)
+
+
+def test_running_exports_lists_only_running_jobs(repo):
+    """The query Task 6's startup recovery reads: a job already `done` or
+    `failed` is someone else's finished business, not a crash leftover."""
+    a = repo.create_export(["a"])
+    b = repo.create_export(["b"])
+    repo.finish_export(b["id"], "done")
+    assert repo.running_exports() == [a["id"]]
