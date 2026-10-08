@@ -41,8 +41,10 @@
 5. **Re-extract is a new transition, not a repurposed Retry.** Retry (B1) only leaves `failed`/`cancelled`; re-extract leaves `ready` and is refused the moment `ReviewStore.has_events()` is true, so it can never discard a single edit a human made. The route deletes `result.json` before queuing (the worker only re-extracts when that file is missing) and resets the new progress columns to `NULL`.
 6. **Move to front is `priority = current max + 1`, refused off `queued`.** A bulk "move to front" is the client calling it once per id in the order shown (not a new bulk endpoint): each call reads a fresh max, so the visual order survives even though every call is a separate transaction — the design does not require millisecond-exact simultaneity, only that the front of the queue matches what the user saw.
 7. **Pause/resume gets two tiny routes** (`POST /api/queue/pause` / `/resume`) over the `Repo.set_paused` already written in B1 but never exposed.
-8. **The review bar's navigation order is "the batch's ready/in-review drawings in list order"** (design §3), computed from the SAME `GET /api/documents` payload the work list already polls (filtered client-side to the current batch and those two states) rather than a second endpoint — one source of truth for ordering, and it is already sorted by `updated_at` which is a stable, if imperfect, proxy for "list order" (staging order is lost once drawings are queued and their `rowid` is no longer surfaced to the client; this is a known limitation, not silently wrong — Prev/Skip/Jump all use the same order, so they are at least mutually consistent).
+8. **The review bar's navigation order is "the batch's ready/in-review drawings in list order"** (design §3), computed from the SAME `GET /api/documents` payload the work list already polls (filtered client-side to the current batch and those two states) rather than a second endpoint — one source of truth for ordering. `list_documents` sorts by `d.rowid`, the true staging/insertion order (it survives a drawing being queued — only `rowid` is stable and monotonic; `updated_at` is not, since any later event on an UNRELATED row, or this one, changes it). An earlier draft of this plan sorted by `updated_at` instead; that was a bug, not an acceptable imprecision — it would have reordered the whole list every time any row changed, which is the opposite of what Prev/Skip/Jump need. `since`-cursor filtering still compares `updated_at` (`list_documents`'s `WHERE` clause), since that is genuinely when a row last changed and `rowid` says nothing about it.
 9. **The two-tab banner and the lagging-journal banner are two different triggers of one `banner.js` state machine**, because both end in "this tab cannot be trusted to save right now" but need different copy and different recovery (reload vs. retry).
+10. **A hash change written by `history.replaceState` does not fire `hashchange`** (that event only fires for a navigation the BROWSER performs — a real link click, back/forward, or an assignment to `location.hash`), so B1's `setHash()` helper, reused verbatim, would make Prev/Skip/Jump/Finish's chain-to-next/the post-import redirect silent no-ops: the address bar would change and nothing on screen would. `router.js` therefore exports a `navigate(url, { setUrl, dispatch })` seam — pure and node-testable — and `main.js`'s `go(url)` wraps it with the real `history.replaceState` and `routeFromHash`. The re-entrancy guard lives INSIDE `routeFromHash` itself, not inside `go()`: `routeFromHash` also runs from the native `hashchange` listener (a real link click, back/forward), which never goes through `go()` at all, so a guard only in `go()` would still let a real link click race a `go()`-driven dispatch still in flight. The handful of EXISTING `setHash()` calls that already update the screen themselves through a direct function call (showing the confirm panel, the extracting overlay, or a freshly opened review) are left as plain `setHash()` — they are not "navigation" in the router sense and re-dispatching for them would refetch a document that is already on screen for no reason. Only the five router-driven entry points (Prev, Skip, Jump, Finish's chain-to-next, and the post-import/post-start redirects to staging/work-list) go through `go()`.
+11. **A deletion is invisible to the since-cursor poll**: `GET /api/documents?since=` only ever returns rows that CHANGED, and a removed row simply never appears in a diff again — it has no `updated_at` to be newer than anything. The work list therefore does a full (`since`-less) reload every 20th poll (~1 minute at the 3 s cadence, `worklist.js`'s pure `shouldFullRefresh`) and immediately after any 404 the review screen hits on a drawing the work list had cached, rather than only ever growing a list that can shrink.
 
 ---
 
@@ -55,9 +57,9 @@
 | `app/batch/repo.py` | + `update_progress`, `move_to_front`, `reextract`, `list_documents`, `queue_summary` |
 | `app/batch/worker.py` | + rolling-median duration tracking, `eta_seconds`, computes and persists progress right after `store.create` |
 | `app/main.py` | `GET /api/documents`, `POST /api/documents/{id}/move_to_front`, `POST /api/documents/{id}/reextract`, `POST /api/queue/pause`, `POST /api/queue/resume`; progress recompute wired into `/events` and `/seal` |
-| `app/static/js/router.js` (new) | hash parsing (`parseRoute`) and a tiny dispatcher that drives the three screens |
+| `app/static/js/router.js` (new) | hash parsing (`parseRoute`), the URL builders, and `navigate` -- the seam that makes a programmatic hash change actually dispatch (`history.replaceState` alone never fires `hashchange`) |
 | `app/static/js/worklist.js` (new) | pure: `filterDocuments`, `formatQueueHeader`, `formatEta`; DOM: render + poll + bulk actions |
-| `app/static/js/reviewbar.js` (new) | pure: `navOrder`, `prevId`, `nextAfterFinish`, `jumpCandidates`; DOM: the bar itself |
+| `app/static/js/reviewbar.js` (new) | pure: `navOrder`, `prevId`, `nextId`, `nextAfterFinish`, `jumpCandidates`, `skip` (calls `navigate` itself); DOM: the bar itself |
 | `app/static/js/banner.js` (new) | pure: `bannerFor({ stale, lagging, retryAt })`; DOM: the banner element |
 | `app/static/js/stagingview.js` (new) | staging screen: render rows + badges + Include + Start/Discard/remove-one-row |
 | `app/static/js/api.js` | + `listDocuments`, `moveToFront`, `reextractDocument`, `pauseQueue`, `resumeQueue` |
@@ -198,17 +200,25 @@ def test_progress_counts_flagged_open_and_unchecked(tmp_path):
     assert store.progress("s1") == {"flagged_total": 2, "flagged_open": 1, "unchecked": 1}
 
 
-def test_progress_counts_a_confirmed_suggestion_as_a_flagged_balloon(tmp_path):
-    """confirm_suggestions turns a suggestion into a normal, reviewed
-    balloon (suggestion-tray design) -- it leaves `unchecked` and joins the
-    flagged/open count, already resolved."""
+def test_progress_counts_a_confirmed_suggestion_by_its_own_needs_review_flag(tmp_path):
+    """confirm_suggestions turns a suggestion into a normal balloon
+    (suggestion-tray design) -- but mirrors state.js's progress() EXACTLY
+    (no new semantics): whether it lands in `flagged` or `unchecked`
+    depends on the row's OWN needs_review, not on having just been
+    confirmed. Confirming is not itself a reason to flag a row -- and every
+    suggestion in practice already has needs_review False (it was dropped
+    for LOW CONFIDENCE, a drop-stage reason, not a review-flag reason; see
+    app/pipeline/policy_rules.py's stage-2 drops)."""
     store = ReviewStore(tmp_path)
     writer = store.create("s1", {}, {"rows": [
         {"id": "a", "needs_review": False, "suggested": True},
     ]})
     assert store.progress("s1") == {"flagged_total": 0, "flagged_open": 0, "unchecked": 0}
     store.append("s1", writer, [{"seq": 1, "type": "confirm_suggestions", "ids": ["a"]}])
-    assert store.progress("s1") == {"flagged_total": 1, "flagged_open": 0, "unchecked": 0}
+    # Still not flagged: needs_review on this row was False before AND after
+    # confirming. It simply moves from "not a balloon yet" (a suggestion) to
+    # an unchecked balloon -- exactly what state.js's progress() would count.
+    assert store.progress("s1") == {"flagged_total": 0, "flagged_open": 0, "unchecked": 1}
 
 
 def test_progress_does_not_rotate_the_writer_or_touch_the_journal(tmp_path):
@@ -655,7 +665,14 @@ Expected: FAIL — `AttributeError: 'Repo' object has no attribute 'list_documen
         substring match on `file_name` -- SQLite's default LIKE is
         ASCII-only case-insensitive, which is a known, honest gap for a
         single-operator local tool (a non-ASCII query simply finds fewer
-        rows, it does not silently find the wrong ones)."""
+        rows, it does not silently find the wrong ones). Sorted by `rowid`
+        -- the true staging/insertion order, and STABLE: it never changes
+        once assigned, unlike `updated_at`, which every edit on a row (and
+        only that row) moves. The review bar's Prev/Skip/Jump (Task 11) and
+        Finish's chain-to-next (Task 13) all depend on this list's order
+        meaning "the order drawings were staged in", not "the order they
+        were last touched in" -- the latter would reorder the whole list out
+        from under the reviewer on every single edit."""
         clauses, params = [], []
         if batch_id is not None:
             clauses.append("d.batch_id = ?"); params.append(batch_id)
@@ -674,7 +691,7 @@ Expected: FAIL — `AttributeError: 'Repo' object has no attribute 'list_documen
             rows = self._conn.execute(
                 f"SELECT d.*, b.name AS batch_name FROM document d"
                 f" JOIN batch b ON b.id = d.batch_id WHERE {where}"
-                f" ORDER BY d.updated_at, d.rowid", tuple(params)).fetchall()
+                f" ORDER BY d.rowid", tuple(params)).fetchall()
         return [dict(r) for r in rows]
 
     def queue_summary(self) -> dict:
@@ -767,6 +784,11 @@ def test_move_to_front_refuses_an_extracting_drawing(sample_pdf):
     meta = save_pdf(client, sample_pdf, "a.pdf")
     sid = meta["session_id"]
     start_pdf(client, sid)
+    # start_pdf only leaves the drawing `queued` -- move_to_front ALLOWS
+    # that state (it is the only one it makes sense for). claim_next() moves
+    # it to `extracting` without running the stub worker loop, which is the
+    # state this test is actually named for.
+    main.runtime().repo.claim_next()
     r = client.post(f"/api/documents/{sid}/move_to_front")
     assert r.status_code == 409, r.text
 
@@ -1021,7 +1043,7 @@ EOF
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { parseRoute } = await import('../../app/static/js/router.js');
+const { parseRoute, docUrl, stagingUrl, navigate } = await import('../../app/static/js/router.js');
 
 test('an empty or bare hash is the work list', () => {
   assert.deepEqual(parseRoute(''), { name: 'worklist' });
@@ -1047,11 +1069,33 @@ test('a malformed id falls back to the work list rather than crashing', () => {
 
 test('docUrl and stagingUrl build the fragment parseRoute reads back', () => {
   // Round-trip: the hash this module WRITES must be one it can also READ,
-  // or setHash(docUrl(id)) would navigate to a route parseRoute refuses.
-  const { docUrl, stagingUrl } = await import('../../app/static/js/router.js');
+  // or navigate(docUrl(id)) would navigate to a route parseRoute refuses.
   const id = 'c'.repeat(32);
   assert.deepEqual(parseRoute(docUrl(id)), { name: 'doc', id });
   assert.deepEqual(parseRoute(stagingUrl(id)), { name: 'staging', batchId: id });
+});
+
+// `navigate` is the fix for a real bug: `history.replaceState` (what B1's
+// setHash() called directly) never fires `hashchange` -- that event only
+// fires for a navigation the BROWSER performs. Without this seam, every
+// button that only changed the URL (Prev, Skip, Jump, Finish's chain-to-
+// next, the post-import redirect) was a silent no-op: the address bar
+// changed and the screen did not (decision 10). `setUrl`/`dispatch` are
+// injected so this stays testable without `window.history` or a real
+// router -- `main.js`'s `go()` (Task 13) is the only caller that passes the
+// real ones.
+test('navigate writes the url THEN dispatches, in that order', () => {
+  const calls = [];
+  navigate('#/doc/x', {
+    setUrl: (u) => calls.push(['setUrl', u]),
+    dispatch: () => calls.push(['dispatch']),
+  });
+  assert.deepEqual(calls, [['setUrl', '#/doc/x'], ['dispatch']]);
+});
+
+test('navigate tolerates missing setUrl/dispatch (never throws)', () => {
+  assert.doesNotThrow(() => navigate('#/doc/x'));
+  assert.doesNotThrow(() => navigate('#/doc/x', {}));
 });
 ```
 
@@ -1069,6 +1113,18 @@ Expected: FAIL — cannot find module `app/static/js/router.js`.
 // that write it, so a write always round-trips through a read; the dispatcher
 // that reacts to `hashchange` and swaps screens is DOM-only and lives in
 // main.js (Task 13).
+//
+// `navigate` exists because `history.replaceState` -- what B1's setHash()
+// called directly, and what parseRoute's own callers would reach for again
+// here -- never fires `hashchange`. That event is the BROWSER's own
+// notification of a navigation it performed (a link click, back/forward, a
+// `location.hash =` assignment); a script writing history silently is
+// invisible to it. So a button whose only effect was "change the URL" would
+// change the address bar and nothing else (decision 10) -- `navigate` is the
+// fix: it writes the url AND calls the dispatcher itself. `setUrl`/
+// `dispatch` are injected (defaulting to no-ops) so this is testable without
+// `window.history` or a real router; main.js's `go()` (Task 13) supplies the
+// real `history.replaceState` and `routeFromHash`.
 
 const DOC_ID_RE = /^[0-9a-f]{32}$/;
 
@@ -1091,6 +1147,11 @@ export function parseRoute(hash) {
 export const docUrl = (id) => `#/doc/${id}`;
 export const stagingUrl = (batchId) => `#/staging/${batchId}`;
 export const worklistUrl = () => '#/';
+
+export function navigate(url, { setUrl = () => {}, dispatch = () => {} } = {}) {
+  setUrl(url);
+  dispatch();
+}
 ```
 
 - [ ] **Step 4: Run to confirm pass**
@@ -1101,16 +1162,18 @@ Expected: PASS
 - [ ] **Step 5: Full suite + commit**
 
 Run: `python -m pytest -q`
-Expected: 1830 passed, 2 skipped (node count under `test_js_state.py` now 164)
+Expected: 1830 passed, 2 skipped (node count under `test_js_state.py` now 166)
 
 ```bash
 git add app/static/js/router.js tests/js/router.test.mjs
 git commit -m "$(cat <<'EOF'
-ui: add the hash router's pure route parsing
+ui: add the hash router's pure route parsing and navigate seam
 
 #/ work list, #/staging/<batch>, #/doc/<id> -- the three screens B3
 adds. A malformed or unknown route falls back to the work list instead
-of a blank screen.
+of a blank screen. navigate(url, {setUrl, dispatch}) exists because
+history.replaceState alone never fires hashchange -- a button that
+only changed the URL would otherwise be a silent no-op.
 
 Co-Authored-By: <model name> <noreply@anthropic.com>
 EOF
@@ -1233,7 +1296,7 @@ Expected: PASS
 - [ ] **Step 5: Full suite + commit**
 
 Run: `python -m pytest -q`
-Expected: 1830 passed, 2 skipped (node count now 169)
+Expected: 1830 passed, 2 skipped (node count now 172)
 
 ```bash
 git add app/static/js/worklist.js tests/js/worklist.test.mjs
@@ -1433,6 +1496,24 @@ test('initWorkList is exported and callable with no DOM work-list elements prese
   const { initWorkList } = await import('../../app/static/js/worklist.js');
   assert.equal(typeof initWorkList, 'function');
 });
+
+// A deletion is invisible to the since-cursor poll: GET /api/documents?since=
+// only ever returns rows that CHANGED, and a removed row has no updated_at
+// to be newer than anything, so it would never be noticed missing. Every
+// 20th poll (~1 minute at the 3 s cadence) reconciles the whole list instead
+// (decision 11); pure, so the cadence itself -- not the timer that drives
+// it -- is what node checks.
+test('shouldFullRefresh fires on every 20th poll, never the others', async () => {
+  const { shouldFullRefresh } = await import('../../app/static/js/worklist.js');
+  const fires = [];
+  for (let i = 1; i <= 41; i++) if (shouldFullRefresh(i)) fires.push(i);
+  assert.deepEqual(fires, [20, 40]);
+});
+
+test('shouldFullRefresh never fires on poll 0 (nothing has polled yet)', async () => {
+  const { shouldFullRefresh } = await import('../../app/static/js/worklist.js');
+  assert.equal(shouldFullRefresh(0), false);
+});
 ```
 
 - [ ] **Step 2: Run to confirm failure**
@@ -1500,6 +1581,16 @@ In `app/static/index.html`, add a new top-level screen section right after `<div
 Create `app/static/js/worklist.js`'s DOM half by appending to the file (after the pure functions from Task 8):
 
 ```javascript
+// A deletion is invisible to the since-cursor poll (GET /api/documents?since=
+// only ever returns rows that CHANGED; a removed row has no updated_at to be
+// newer than anything, so it would simply never be noticed missing). Every
+// 20th poll (~1 minute at the 3 s cadence) does a full, since-less reload
+// instead (decision 11). Pure, so the CADENCE is node-testable without a
+// timer; the counter that drives it lives in the DOM half below.
+export function shouldFullRefresh(pollCount) {
+  return pollCount > 0 && pollCount % 20 === 0;
+}
+
 // ----- DOM (checked by import only; see tests/js/worklist.test.mjs) ---
 let _docs = [];
 let _cursor = null;
@@ -1642,10 +1733,14 @@ export function initWorkList({ listDocuments, moveToFront, cancelDocument, retry
                              msg: `${skipped} selected drawing(s) are not finished yet.` });
   }
 
+  let _pollCount = 0;
   function startPolling() {
     clearTimeout(_pollTimer);
     const tick = async () => {
-      if (!document.hidden) await refresh();
+      if (!document.hidden) {
+        _pollCount++;
+        await refresh(shouldFullRefresh(_pollCount));
+      }
       _pollTimer = setTimeout(tick, 3000);
     };
     tick();
@@ -1748,7 +1843,7 @@ Expected: PASS
 - [ ] **Step 5: Full suite + commit**
 
 Run: `python -m pytest -q`
-Expected: 1830 passed, 2 skipped (node count now 180)
+Expected: 1830 passed, 2 skipped (node count now 182)
 
 ```bash
 git add app/static/index.html app/static/js/main.js app/static/js/worklist.js app/static/styles/components.css tests/js/worklist.test.mjs
@@ -1790,8 +1885,9 @@ EOF
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { navOrder, prevId, nextAfterFinish, jumpCandidates } =
+const { navOrder, prevId, nextId, nextAfterFinish, jumpCandidates, skip } =
   await import('../../app/static/js/reviewbar.js');
+const { navigate } = await import('../../app/static/js/router.js');
 
 const DOCS = [
   { id: 'a', batch_id: 'b1', state: 'ready' },
@@ -1832,6 +1928,44 @@ test('nextAfterFinish says "done" when nothing is ready and nothing is extractin
 test('jumpCandidates is every ready/in_review drawing across every batch', () => {
   assert.deepEqual(jumpCandidates(DOCS).map((d) => d.id), ['a', 'b', 'd']);
 });
+
+// skip() is the fix for decision 10: a bare hash write (what "Skip for now"
+// did before this plan's revision) never fires hashchange, so pressing it
+// changed the URL and nothing on screen. skip() takes `navigate` itself
+// (router.js's seam) rather than returning an id for the caller to
+// setHash() with -- that is exactly the shape of mistake that caused the
+// bug, and a caller cannot make it again if there is no id-only return path
+// to misuse. The real `navigate` is used here with a stubbed `dispatch` in
+// place of routeFromHash, so this test is the "a skip actually loads the
+// next drawing (stub routeFromHash)" case directly.
+test('skip navigates to the next drawing in the same batch', () => {
+  const dispatched = [];
+  const id = skip(DOCS, 'b1', 'a', {
+    navigate: (url) => navigate(url, { dispatch: () => dispatched.push(url) }),
+    docUrl: (i) => `#/doc/${i}`,
+  });
+  assert.equal(id, 'b');
+  assert.deepEqual(dispatched, ['#/doc/b']);
+});
+
+test('skip falls back to any other batch once this one is exhausted', () => {
+  const docs = [{ id: 'a', batch_id: 'b1', state: 'ready' }, ...DOCS.slice(3)];
+  const dispatched = [];
+  const id = skip(docs, 'b1', 'a', {
+    navigate: (url) => navigate(url, { dispatch: () => dispatched.push(url) }),
+    docUrl: (i) => `#/doc/${i}`,
+  });
+  assert.equal(id, 'd');
+  assert.deepEqual(dispatched, ['#/doc/d']);
+});
+
+test('skip does nothing -- and never calls navigate -- when nothing is left to skip to', () => {
+  const calls = [];
+  const id = skip([{ id: 'a', batch_id: 'b1', state: 'ready' }], 'b1', 'a',
+    { navigate: (url) => calls.push(url), docUrl: (i) => `#/doc/${i}` });
+  assert.equal(id, null);
+  assert.deepEqual(calls, []);
+});
 ```
 
 - [ ] **Step 2: Run to confirm failure**
@@ -1845,8 +1979,8 @@ Expected: FAIL — cannot find module.
 // Review-bar navigation (batch design §3). Pure: `docs` is the same array
 // the work list already polls (app/static/js/worklist.js), filtered here to
 // one batch's reviewable drawings. "List order" is the array's own order
-// (server-sorted by updated_at; see this plan's decision 8 -- staging order
-// is not available once a drawing is queued).
+// (server-sorted by rowid, the true staging order -- app/batch/repo.py's
+// list_documents; see this plan's decision 8).
 
 const REVIEWABLE = (d) => d.state === 'ready' || d.state === 'in_review';
 
@@ -1885,6 +2019,25 @@ export function nextAfterFinish(docs, batchId, finishedId) {
 export function jumpCandidates(docs) {
   return docs.filter(REVIEWABLE);
 }
+
+// "Skip for now" (design §3): the next reviewable drawing after the current
+// one in the SAME batch, falling back to any other batch's -- the same
+// fallback nextAfterFinish uses, since running out of drawings to skip to
+// in one batch is not meaningfully different from finishing it. Takes
+// `navigate` (router.js's seam) and `docUrl` as dependencies and calls
+// `navigate` itself, rather than returning an id for the caller to write
+// into the hash with a plain setHash() -- that shape of call is exactly
+// the bug decision 10 fixes (history.replaceState alone never dispatches),
+// so there is no id-only return path left for a caller to misuse the same
+// way again. Returns the id it navigated to, or null if there was nowhere
+// to go (and navigate is then never called at all).
+export function skip(docs, batchId, currentId, { navigate: nav, docUrl }) {
+  const id = nextId(docs, batchId, currentId)
+    || jumpCandidates(docs).find((d) => d.id !== currentId)?.id
+    || null;
+  if (id) nav(docUrl(id));
+  return id;
+}
 ```
 
 - [ ] **Step 4: Run to confirm pass**
@@ -1895,7 +2048,7 @@ Expected: PASS
 - [ ] **Step 5: Full suite + commit**
 
 Run: `python -m pytest -q`
-Expected: 1830 passed, 2 skipped (node count now 187)
+Expected: 1830 passed, 2 skipped (node count now 192)
 
 ```bash
 git add app/static/js/reviewbar.js tests/js/reviewbar.test.mjs
@@ -2101,7 +2254,7 @@ Expected: PASS
 - [ ] **Step 5: Full suite + commit**
 
 Run: `python -m pytest -q`
-Expected: 1830 passed, 2 skipped (node count now 190)
+Expected: 1830 passed, 2 skipped (node count now 194)
 
 ```bash
 git add app/static/js/stagingview.js app/static/index.html tests/js/stagingview.test.mjs
@@ -2164,8 +2317,8 @@ Add the two banners right after `<div id="app">`'s opening tag:
 Add imports:
 
 ```javascript
-import { parseRoute, docUrl, stagingUrl, worklistUrl } from './router.js';
-import { navOrder, prevId, nextAfterFinish, jumpCandidates } from './reviewbar.js';
+import { parseRoute, docUrl, stagingUrl, worklistUrl, navigate } from './router.js';
+import { prevId, nextAfterFinish, jumpCandidates, skip } from './reviewbar.js';
 import { initStagingView } from './stagingview.js';
 import { bannerFor } from './banner.js';   // Task 14/15
 ```
@@ -2182,33 +2335,68 @@ with:
 ```javascript
 function setHash(url) { history.replaceState(null, '', url); }
 function currentRoute() { return parseRoute(location.hash); }
+
+// history.replaceState (setHash above) never fires `hashchange` -- that
+// event is the BROWSER's own notice of a navigation it performed, and a
+// script writing history silently is invisible to it (decision 10). Every
+// router-driven entry point (Prev, Skip, Jump, Finish's chain-to-next, the
+// post-import and post-start redirects) calls go(), not setHash(), so the
+// screen actually updates instead of only the address bar. The handful of
+// EXISTING setHash() calls elsewhere in this file (showConfirm, the
+// extracting overlay, a freshly opened review) already update their own
+// screen through a direct function call and stay as plain setHash() --
+// re-dispatching for those would refetch a document already on screen.
+function go(url) {
+  navigate(url, {
+    setUrl: (u) => history.replaceState(null, '', u),
+    dispatch: () => { routeFromHash(); },
+  });
+}
 ```
 
-Every call site of `setHash(null)` becomes `setHash(worklistUrl())`; every call site of `setHash(id)` (passing a document id string) becomes `setHash(docUrl(id))`. Every call site of `hashDoc()` is replaced by reading `currentRoute()` and checking `.name === 'doc'` for its `.id`. (`resumeFromHash`'s body, for instance, becomes:)
+Every call site of `setHash(null)` (passing nothing, meaning "back to no drawing") becomes `setHash(worklistUrl())`; every call site of `setHash(id)` (passing a document id string) becomes `setHash(docUrl(id))`. Every call site of `hashDoc()` is replaced by reading `currentRoute()` and checking `.name === 'doc'` for its `.id`. (`resumeFromHash`'s body, for instance, becomes:)
 
 ```javascript
+// Re-entrancy guard lives HERE, not inside go() -- routeFromHash also runs
+// from the native `hashchange` listener (a real link click, back/forward),
+// which go()'s own dispatch does not see. Guarding only go() would still
+// let a real link click race a go()-driven dispatch still in flight; this
+// way every path that can start a route dispatch shares the same guard.
+let navigating = false;
 async function routeFromHash() {
-  const route = currentRoute();
-  showScreen(route.name);
-  if (route.name === 'doc') {
-    resuming = true;
-    try {
-      const doc = await getDocument(route.id);
-      await routeDocument(doc);
-    } catch (err) {
-      if (err?.status === 404) {
-        setHash(worklistUrl());
-        toast({ kind: 'warn', title: 'Drawing not found', msg: 'The drawing in this link was removed.' });
-        showScreen('worklist');
-      } else {
-        toast({ kind: 'error', title: 'Could not reach the drawing',
-                msg: `${String(err?.message || err)} — reload the page to try again.` });
+  if (navigating) return;
+  navigating = true;
+  try {
+    const route = currentRoute();
+    showScreen(route.name);
+    if (route.name === 'doc') {
+      resuming = true;
+      try {
+        const doc = await getDocument(route.id);
+        await routeDocument(doc);
+      } catch (err) {
+        if (err?.status === 404) {
+          setHash(worklistUrl());
+          toast({ kind: 'warn', title: 'Drawing not found', msg: 'The drawing in this link was removed.' });
+          showScreen('worklist');
+          // A deletion is invisible to the since-cursor poll (decision 11):
+          // the work list's cached copy of this (now-gone) drawing would
+          // otherwise sit there until its next scheduled full reload, up to
+          // ~1 minute away. A 404 on a drawing it had cached is the clearest
+          // possible signal that its cache is stale right now.
+          workList?.refresh(true);
+        } else {
+          toast({ kind: 'error', title: 'Could not reach the drawing',
+                  msg: `${String(err?.message || err)} — reload the page to try again.` });
+        }
+      } finally {
+        resuming = false;
       }
-    } finally {
-      resuming = false;
+    } else if (route.name === 'staging') {
+      stagingView.load(route.batchId);
     }
-  } else if (route.name === 'staging') {
-    stagingView.load(route.batchId);
+  } finally {
+    navigating = false;
   }
 }
 
@@ -2216,7 +2404,63 @@ function showScreen(name) {
   document.getElementById('screen-worklist').hidden = name !== 'worklist';
   document.getElementById('screen-staging').hidden = name !== 'staging';
   document.getElementById('shell-body').hidden = name !== 'doc';
-  document.getElementById('review-bar-nav').hidden = name !== 'doc';
+  if (name !== 'doc') setReviewBarVisible(false);
+}
+
+// The review bar (batch label, Prev/Skip/Jump) only makes sense once a
+// drawing is actually open FOR REVIEW. #/doc/<id> for a drawing that is
+// still staged, queued, extracting, failed or cancelled shows the confirm
+// panel or the extracting overlay instead (both already live inside
+// shell-body, unchanged from B1) -- there is no batch position to report
+// for those, so the bar stays hidden until routeDocument says otherwise.
+function setReviewBarVisible(visible) {
+  const el = document.getElementById('review-bar-nav');
+  if (el) el.hidden = !visible;
+}
+```
+
+Update the existing `routeDocument` function to manage the review bar's visibility per sub-state:
+
+```javascript
+async function routeDocument(doc) {
+  waitingOn = { id: doc.id, batchId: doc.batch_id, fileName: doc.file_name, pages: doc.pages };
+  if (doc.state === 'staged') {
+    setReviewBarVisible(false);
+    await showStaged(doc);
+  } else if (doc.state === 'queued' || doc.state === 'extracting') {
+    setReviewBarVisible(false);
+    showExtracting(doc.file_name);
+    pollUntilReady();
+  } else if (['ready', 'in_review', 'finished'].includes(doc.state)) {
+    await loadForReview(doc.id);
+    setReviewBarVisible(true);
+  } else {
+    setReviewBarVisible(false);
+    toast({ kind: 'error', title: `Drawing ${doc.state}`,
+            msg: doc.error_type ? `Extraction failed (${doc.error_type}).` : 'Upload it again to retry.' });
+    waitingOn = null;
+    hideExtracting();
+    backToEmptyOrCurrent();
+  }
+}
+```
+
+Rewrite `backToEmptyOrCurrent` to use the router's URL builders instead of the old `#doc=`/`#` scheme, and to land on the work list (the design's home screen, decision 9) instead of the old single-screen "upload a drawing" empty state:
+
+```javascript
+function backToEmptyOrCurrent() {
+  setHash(state.sessionId ? docUrl(state.sessionId) : worklistUrl());
+  if (state.sessionId) {
+    document.getElementById('plan-confirm').hidden = true;
+    document.getElementById('plan-extracting').hidden = true;
+  } else {
+    // backToEmpty()'s "plan-empty" drop zone is B1's single-screen home;
+    // the router's home screen is the work list now (decision 9), so this
+    // branch shows that instead. backToEmpty() and plan-empty's markup are
+    // left in index.html unused rather than deleted -- removing dead B1
+    // markup is a cleanup, not part of this fix.
+    showScreen('worklist');
+  }
 }
 ```
 
@@ -2225,7 +2469,7 @@ Add the `hashchange` listener and the staging-view instance to `init()`:
 ```javascript
   stagingView = initStagingView({
     getBatch, setIncluded, startBatch, discardBatch, deleteDocument, toast,
-    onStarted: () => setHash(worklistUrl()),
+    onStarted: () => go(worklistUrl()),
   });
   window.addEventListener('hashchange', routeFromHash);
   routeFromHash();   // replaces the old resumeFromHash() call at the end of init()
@@ -2233,22 +2477,33 @@ Add the `hashchange` listener and the staging-view instance to `init()`:
 
 (remove the old `resumeFromHash();` call at the end of `init()` and the `resumeFromHash`/`hashDoc` function definitions; `routeFromHash` and `currentRoute` replace them). Declare `let stagingView = null;` alongside the other module-level `let` declarations near the top of the file.
 
+**Also fix Task 10's post-import redirect**, which was written before `go()` existed: in `wireImport`'s `change` handler, replace
+
+```javascript
+      setHash(stagingUrl(batchId));
+```
+
+with
+
+```javascript
+      go(stagingUrl(batchId));
+```
+
+(this is the "post-import redirect" named in decision 10 -- before this task wires `routeFromHash`, that line only ever changed the address bar, since nothing in `wireImport` itself shows the staging screen).
+
 - [ ] **Step 3: Wire the review bar's buttons.** Add, called from `init()`:
 
 ```javascript
 function wireReviewBar() {
   document.getElementById('rb-prev')?.addEventListener('click', () => {
     const id = prevId(worklistDocsCache(), currentBatchId(), state.sessionId);
-    if (id) setHash(docUrl(id));
+    if (id) go(docUrl(id));
   });
   document.getElementById('rb-skip')?.addEventListener('click', () => {
-    // "Skip for now" moves forward without changing anything (design §3) --
-    // reuses nextAfterFinish's same-batch-then-any-batch fallback by asking
-    // for the NEXT entry after the current one, not after a finish.
-    const order = navOrder(worklistDocsCache(), currentBatchId());
-    const i = order.findIndex((d) => d.id === state.sessionId);
-    const next = order[i + 1] || jumpCandidates(worklistDocsCache()).find((d) => d.id !== state.sessionId);
-    if (next) setHash(docUrl(next.id));
+    // skip() calls `go` itself (reviewbar.js) -- it takes `navigate` as a
+    // dependency rather than returning an id for the caller to setHash()
+    // with, which is exactly the shape of mistake decision 10 is about.
+    skip(worklistDocsCache(), currentBatchId(), state.sessionId, { navigate: go, docUrl });
   });
   document.getElementById('rb-jump')?.addEventListener('click', openJumpPalette);
 }
@@ -2266,7 +2521,7 @@ function openJumpPalette() {
   const label = candidates.map((d, i) => `${i + 1}. ${d.file_name}`).join('\n');
   const pick = prompt(`Jump to (type a number):\n${label}`);
   const idx = parseInt(pick, 10) - 1;
-  if (candidates[idx]) setHash(docUrl(candidates[idx].id));
+  if (candidates[idx]) go(docUrl(candidates[idx].id));
 }
 ```
 
@@ -2293,9 +2548,9 @@ function worklistDocsCache() { return workList ? workList.getDocs() : []; }
       // snapshot taken at the top of finish() is what names which drawing
       // this run was for.
       const next = nextAfterFinish(worklistDocsCache(), currentBatchId(), snapshot.sessionId);
-      if (next.status === 'next') setHash(docUrl(next.id));
+      if (next.status === 'next') go(docUrl(next.id));
       else if (next.status === 'extracting') toast({ kind: 'warn', title: 'Next drawing ready in ≈ N min', msg: 'Still extracting — the work list will show it.' });
-      else setHash(worklistUrl());
+      else go(worklistUrl());
 ```
 
 (the "≈ N min" detail is intentionally not a computed number here: `nextAfterFinish`'s `'extracting'` branch only knows SOMETHING is on its way, not which drawing or its own ETA — the work list's queue header, already visible once the user lands there or glances at it, is where that number lives; this toast's copy says so rather than inventing a second estimate.)
@@ -2303,7 +2558,7 @@ function worklistDocsCache() { return workList ? workList.getDocs() : []; }
 - [ ] **Step 5: Run the full suite.**
 
 Run: `python -m pytest -q`
-Expected: 1830 passed, 2 skipped (no new automated tests in this task; the review-bar/worklist pure logic is already covered by Tasks 8 and 11, and the wiring itself is exercised by Task 16's manual browser drive)
+Expected: 1830 passed, 2 skipped (no new automated tests in this task; `go()`'s dispatch mechanism is already covered by `router.js`'s `navigate` tests and `reviewbar.js`'s `skip` tests from Tasks 7 and 11, and the end-to-end wiring itself is exercised by Task 16's manual browser drive)
 
 - [ ] **Step 6: Commit.**
 
@@ -2313,9 +2568,13 @@ git commit -m "$(cat <<'EOF'
 ui: wire the hash router, review bar and staging view into main.js
 
 The hash scheme moves from #doc=<id> to the router's #/, #/staging/<b>,
-#/doc/<id>; Finish now chains into the next ready drawing in the same
-batch, then any batch, via reviewbar.js's pure nextAfterFinish; Prev,
-Skip and Jump (Ctrl+K) reuse the same ordering.
+#/doc/<id>. go() fixes a real bug: history.replaceState alone never
+fires hashchange, so Prev/Skip/Jump/Finish's chain-to-next and the
+post-import redirect would otherwise change the address bar and
+nothing else -- go() calls routeFromHash itself, re-entrancy guarded.
+The review bar is hidden for a #/doc/<id> that is not yet ready/in
+review/finished (the confirm or extracting screen shows instead), and
+the work list does a full reload whenever a cached drawing 404s.
 
 Co-Authored-By: <model name> <noreply@anthropic.com>
 EOF
@@ -2443,7 +2702,7 @@ Add to `app/static/styles/components.css` (shared by both banners; Task 15 reuse
 - [ ] **Step 6: Full suite + commit**
 
 Run: `python -m pytest -q`
-Expected: 1830 passed, 2 skipped (node count now 193)
+Expected: 1830 passed, 2 skipped (node count now 197)
 
 ```bash
 git add app/static/js/banner.js app/static/js/main.js app/static/styles/components.css tests/js/banner.test.mjs
@@ -2591,14 +2850,23 @@ the moment `ReviewStore.has_events()` is true — it is not Retry, which only
 ever leaves `failed`/`cancelled`. The review bar's Prev/Skip/Jump and
 Finish's "next drawing" all read the SAME list the work list polls, filtered
 by `reviewbar.js`'s pure `navOrder`/`nextAfterFinish` — ordering is
-`updated_at`, a proxy for "list order" since staging order is not surfaced
-to the client once a drawing is queued (a known limitation, not silently
-wrong: every nav control is at least mutually consistent). The two-tab
-banner and the lagging-journal banner are one `banner.js` state machine;
-stale wins over lagging when both are true, since no retry can succeed once
-another tab holds the writer. **Mass export, retention and the access token
-are still B4** — "export selected" in the work list is a client-side loop,
-not the ZIP+manifest mass export the design describes.
+`list_documents`'s `ORDER BY rowid`, the true staging order, which survives
+a drawing being queued (only the since-cursor filter compares `updated_at`;
+sorting the LIST by it was considered and rejected as a bug, not an
+imprecision — decision 8). **A hash written by `history.replaceState` does
+not fire `hashchange`**, so Prev/Skip/Jump/Finish's chain-to-next and the
+post-import redirect all go through `router.js`'s `navigate(url, {setUrl,
+dispatch})` seam via `main.js`'s `go()`, which calls `routeFromHash` itself
+instead of waiting for an event that never comes (decision 10); every other
+`setHash()` call, which already updates its own screen through a direct
+function call, is unchanged. The work list does a full reload every 20th
+poll and after any 404 the review screen hits on a drawing it had cached,
+since a deletion is invisible to the since-cursor diff (decision 11). The
+two-tab banner and the lagging-journal banner are one `banner.js` state
+machine; stale wins over lagging when both are true, since no retry can
+succeed once another tab holds the writer. **Mass export, retention and the
+access token are still B4** — "export selected" in the work list is a
+client-side loop, not the ZIP+manifest mass export the design describes.
 ```
 
 - [ ] **Step 2: Run the full suite one more time** to confirm nothing regressed from the doc-only change.
