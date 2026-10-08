@@ -3,9 +3,9 @@
 Plan: `docs/plans/2026-10-08-batch-b3-ui-plan.md` (written `eecdd2c`, revised
 after a plan review `ef12d95`; one review finding carried as an execution
 requirement for Task 13, below)
-Milestone: server-list-queue-api (task 6 of 16) — next is milestone
-router-and-worklist (Tasks 7-10, already in progress), then
-staging-review-bar-banners (11-15), then docs-and-e2e (16)
+Milestone: router-and-worklist (task 10 of 16) — next is milestone
+staging-review-bar-banners (Tasks 11-15; Task 11 already done), then
+docs-and-e2e (16)
 
 ## Completed task IDs
 - Task 1 — migration 4: nullable flagged_total/flagged_open/unchecked (`153dfdc`)
@@ -14,9 +14,13 @@ staging-review-bar-banners (11-15), then docs-and-e2e (16)
 - Task 4 — worker rolling-median ETA + progress at ready (`0f5823a`, `3ea2317`)
 - Task 5 — Repo list_documents / queue_summary (`f575447`, `bb57308`)
 - Task 6 — GET /api/documents + queue-control routes (`6d5f2d8`, `2112c66`, `c9764a6`)
-- (in progress, milestone 2) Task 7 router.js (`9c78cab`, `4983212`), Task 8
-  worklist.js pure helpers (`9a68525`), Task 9 api.js/badges.js (`e628665`),
-  Task 10 work-list screen (`84168f4`, under review)
+- Task 7 — router.js incl. legacy `#doc=` links (`9c78cab`, `4983212`)
+- Task 8 — worklist.js pure helpers (`9a68525`)
+- Task 9 — api.js work-list calls + badges.workListBadges (`e628665`)
+- Task 10 — work-list screen (`84168f4`, `6c1f370`)
+- (milestone 3, done early) Task 11 — reviewbar.js pure navigation (`fd478cc`)
+
+Node tests: 197. Suite: 1850 passed, 2 skipped.
 
 ## What's done
 Server side of B3: a work-list read path (stable rowid order, inclusive
@@ -69,6 +73,16 @@ docs + E2E task.
   committed request.
 - **router.js** also maps legacy `#doc=<id>` bookmarks (B1/B2) to the doc route.
 - **Work list (Task 10):** every server string rendered via textContent (the
-  plan's sample used innerHTML); post-import navigation uses `replaceState`
-  until Task 13 provides `go()`; both screens are hidden until Task 13 wires the
+  plan's sample used innerHTML); aria-labels on search, filters and
+  checkboxes; bulk actions normalise thrown AND `{ok:false}` results
+  (`deleteDocument` never throws) and report per status, 409 → "still
+  extracting — cancel it first"; selections pruned on every render; one
+  refresh in flight at a time (a second request re-runs as a full reload);
+  folder import via a separate `webkitdirectory` picker (isImportable filter,
+  batchNameFor, relPathOf); post-import navigation uses `replaceState` until
+  Task 13 provides `go()`; both screens are hidden until Task 13 wires the
   dispatcher (a blank body in between is expected).
+- **Review bar (Task 11):** `skip()` falls back to another batch's reviewable
+  drawing when the current batch has none left (same as after Finish). Task
+  13 renders `nextAfterFinish`'s `extracting` status as "Next drawing ready in
+  ≈ N min" from the queue's per-drawing estimate.
