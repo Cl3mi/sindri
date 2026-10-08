@@ -41,6 +41,13 @@ class JournalInvalid(ReviewError):
     status = 422
 
 
+class AlreadyReviewed(ReviewError):
+    """Raised by `unless_reviewed` for a session that already carries a
+    journal event or a sealed revision: the caller's action (re-extract)
+    would otherwise discard a human's review."""
+    status = 409
+
+
 def _fsync_dir(path: Path) -> None:
     # A rename is atomic but not DURABLE until the directory entry for it is
     # fsynced too -- on a crash, the file's own data can be safely on disk
@@ -370,20 +377,53 @@ class ReviewStore:
         return {"flagged_total": len(flagged), "flagged_open": flagged_open,
                 "unchecked": len(balloons) - len(flagged)}
 
-    def has_events(self, sid: str) -> bool:
-        """True once the reviewer has acted on this session at all -- the
-        gate for re-extract (batch design §2 queue controls): a `ready`
-        drawing with no events may be re-extracted (its proposal is
-        discarded), one with even a single event may not.
+    def _reviewed_locked(self, d: Path) -> bool:
+        """The shared test behind has_events() and unless_reviewed(). Caller
+        must already hold self._lock -- it is a plain threading.Lock, not
+        reentrant, so this must never itself acquire it.
 
         `_events(d)` alone is not enough: seal() compacts events.jsonl to its
         NET form, and a session reviewed down to zero net events (an accept
         immediately undone, say) seals to an empty journal. Without the
         `_revisions` check that session would look untouched and re-extract
         would discard the fact that a human already opened and acted on it."""
+        return bool(self._events(d)) or self._revisions(d) > 0
+
+    def has_events(self, sid: str) -> bool:
+        """True once the reviewer has acted on this session at all -- the
+        gate for re-extract (batch design §2 queue controls): a `ready`
+        drawing with no events may be re-extracted (its proposal is
+        discarded), one with even a single event may not."""
         with self._lock:
             d = self._dir(sid)
-            return bool(self._events(d)) or self._revisions(d) > 0
+            return self._reviewed_locked(d)
+
+    def unless_reviewed(self, sid: str, fn):
+        """Run `fn()` and return its result, but only while still holding
+        this store's own lock and only if `has_events()` would say False --
+        the check and `fn` run as one atomic unit with respect to append()
+        and seal() (batch design §2 queue controls, re-extract). Without
+        this, a plain `if not store.has_events(id): ... do the transition
+        ...` in app.main has a window between the check and the transition
+        in which a concurrent append() could land unseen: the reviewer's new
+        event would then be silently discarded by a re-extract that believed
+        the session was still untouched. Raises AlreadyReviewed (never
+        returns) the instant the session already carries an event or a
+        sealed revision.
+
+        `fn` must never call back into this store -- the lock is a plain
+        threading.Lock, not reentrant, and re-entering it here would
+        deadlock. `fn` MAY call into the batch Repo (it takes its own,
+        separate lock): the order is always this store's lock first, then
+        the repo's, inside `fn` -- never the reverse. No code path in this
+        codebase holds the repo's lock while calling into the store, which
+        is what keeps that order free of a lock-order deadlock."""
+        with self._lock:
+            d = self._dir(sid)
+            if self._reviewed_locked(d):
+                raise AlreadyReviewed(
+                    "this drawing has review events; re-extraction would discard them")
+            return fn()
 
     def revision(self, sid: str, n: int = None) -> dict:
         """A sealed revision -- the latest when `n` is None. Exports are

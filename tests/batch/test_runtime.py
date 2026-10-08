@@ -143,6 +143,104 @@ def test_recovery_runs_only_under_the_single_worker_lock(tmp_path):
         rt.close()
 
 
+def _make_ready(repo, data, doc_id):
+    """A `ready` drawing with no actual extraction -- enough for the
+    reextract-stash recovery sweep, which only reads repo state and the
+    docs dir's files, never the review store."""
+    d = data.doc_dir(doc_id)
+    d.mkdir(parents=True)
+    repo.create_document(doc_id, "a.drawing", 1, "0" * 64)
+    repo.enqueue(doc_id)
+    repo.claim_next()
+    repo.mark_ready(doc_id)
+    return d
+
+
+def test_reextract_stash_recovery_restores_an_untouched_ready_drawing(tmp_path):
+    """Crash between app.main's rename and repo.reextract's commit: the row
+    is still `ready` and result.json never came back -- the stash must be
+    restored so the drawing is reviewable again."""
+    rt = make(tmp_path)
+    doc_id = "a" * 32
+    d = _make_ready(rt.repo, rt.data, doc_id)
+    (d / "result.reextract.json").write_text("{}", encoding="utf-8")
+    try:
+        rt._recover_reextract_stashes()
+        assert (d / "result.json").is_file()
+        assert not (d / "result.reextract.json").exists()
+    finally:
+        rt.close()
+
+
+def test_reextract_stash_recovery_deletes_a_stash_once_already_committed(tmp_path):
+    """Crash AFTER repo.reextract's commit, before app.main deleted the
+    stash: the row is `queued` -- the discard already completed, and the
+    stash is just leftover to clean up, not something to restore."""
+    rt = make(tmp_path)
+    doc_id = "a" * 32
+    d = _make_ready(rt.repo, rt.data, doc_id)
+    rt.repo.reextract(doc_id)
+    (d / "result.reextract.json").write_text("{}", encoding="utf-8")
+    try:
+        rt._recover_reextract_stashes()
+        assert not (d / "result.reextract.json").exists()
+        assert not (d / "result.json").exists()
+    finally:
+        rt.close()
+
+
+def test_reextract_stash_recovery_never_overwrites_a_result_already_back(tmp_path):
+    """The drawing was retried or re-extracted again since the crash:
+    result.json is already there, so the stash is stale leftover from the
+    earlier attempt and must not clobber the newer file."""
+    rt = make(tmp_path)
+    doc_id = "a" * 32
+    d = _make_ready(rt.repo, rt.data, doc_id)
+    (d / "result.json").write_text('{"fresh": true}', encoding="utf-8")
+    (d / "result.reextract.json").write_text('{"stale": true}', encoding="utf-8")
+    try:
+        rt._recover_reextract_stashes()
+        assert not (d / "result.reextract.json").exists()
+        assert (d / "result.json").read_text(encoding="utf-8") == '{"fresh": true}'
+    finally:
+        rt.close()
+
+
+def test_reextract_stash_recovery_deletes_an_orphan_for_a_removed_row(tmp_path):
+    """The document row itself is gone (removed mid-crash): nothing to
+    restore it to, so the stash is just swept."""
+    rt = make(tmp_path)
+    doc_id = "a" * 32
+    d = rt.data.doc_dir(doc_id)
+    d.mkdir(parents=True)
+    (d / "result.reextract.json").write_text("{}", encoding="utf-8")
+    try:
+        rt._recover_reextract_stashes()
+        assert not (d / "result.reextract.json").exists()
+    finally:
+        rt.close()
+
+
+def test_reextract_stash_recovery_runs_independently_of_upload_recovery(tmp_path, monkeypatch):
+    """REQUIRED: each sweep is guarded separately -- a fault in the upload
+    sweep must not skip the reextract-stash sweep."""
+    rt = make(tmp_path)
+    doc_id = "a" * 32
+    d = _make_ready(rt.repo, rt.data, doc_id)
+    (d / "result.reextract.json").write_text("{}", encoding="utf-8")
+
+    def boom():
+        raise OSError("disk fault")
+    monkeypatch.setattr(rt.uploads, "recover", boom)
+    try:
+        rt.start()
+        assert rt.worker.running
+        assert (d / "result.json").is_file()
+        assert not (d / "result.reextract.json").exists()
+    finally:
+        rt.close()
+
+
 def test_recovery_runs_before_interrupted_extractions_are_requeued(tmp_path, monkeypatch):
     """Inside the locked section, first: the order the plan registers."""
     rt = make(tmp_path)

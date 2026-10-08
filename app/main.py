@@ -478,17 +478,26 @@ def reextract_document(doc_id: str):
     Retry (failed/cancelled only) is the control for a drawing no one's work
     is at stake in; this one discards a proposal outright.
 
+    The has_events() check and the stash-rename-plus-transition run inside
+    ONE call to `store.unless_reviewed`, holding the review store's own lock
+    for both: a plain "if not has_events(): ... do it ..." here would leave a
+    window in which a concurrent append() lands unseen between the check and
+    the transition, and a re-extract would then silently discard an event the
+    reviewer believes was saved.
+
     The stale result is made unusable by RENAMING it out of the way, never
-    by deleting it first: if `repo.reextract` then refuses (a race lost to a
-    review event landing between the has_events() check above and here), the
-    file is renamed straight back, so a drawing is never left without a
-    result a reviewer could open. Only once the transition has actually
-    committed is the stash discarded -- the worker's `_run` only re-extracts
-    when `result.json` is missing, so leaving it in place would make a
-    'fresh' extraction silently replay the stale one. The review session
-    itself is left for the worker's own `store.create` to replace when it
-    next re-extracts this id -- `store.create` already discards an untouched,
-    unsealed session outright (app/review/store.py)."""
+    by deleting it first: if `repo.reextract` -- or anything else in the
+    inner function -- then raises for ANY reason (not only a BatchError: a
+    locked database, a disk fault, this process being killed is the one case
+    this handler cannot catch at all, which is what the startup recovery
+    sweep in Runtime is for), the file is renamed straight back, so a drawing
+    is never left without a result a reviewer could open. Only once the
+    transition has actually committed is the stash discarded -- the worker's
+    `_run` only re-extracts when `result.json` is missing, so leaving it in
+    place would make a 'fresh' extraction silently replay the stale one. The
+    review session itself is left for the worker's own `store.create` to
+    replace when it next re-extracts this id -- `store.create` already
+    discards an untouched, unsealed session outright (app/review/store.py)."""
     work = _doc_dir(doc_id)
     rt = runtime()
     doc = rt.repo.get(doc_id)
@@ -497,22 +506,27 @@ def reextract_document(doc_id: str):
             "the extraction is still stopping; re-extract once it has")
     if doc["state"] != "ready":
         raise InvalidTransition(f"document is {doc['state']}, not ready")
-    if rt.store.has_events(doc_id):
-        raise InvalidTransition(
-            "this drawing has review events; re-extraction would discard them")
     result_path = work / "result.json"
     stashed = work / "result.reextract.json"
-    try:
-        result_path.rename(stashed)
-    except OSError as e:
-        log.warning("reextract %s: result unavailable: %s", doc_id[:8], type(e).__name__)
-        raise HTTPException(status_code=409, detail="drawing files unavailable")
-    try:
-        rt.repo.reextract(doc_id)
-    except BatchError:
-        stashed.rename(result_path)
-        raise
-    stashed.unlink(missing_ok=True)
+
+    def _stash_and_requeue():
+        try:
+            result_path.rename(stashed)
+        except OSError as e:
+            log.warning("reextract %s: result unavailable: %s", doc_id[:8], type(e).__name__)
+            raise HTTPException(status_code=409, detail="drawing files unavailable")
+        try:
+            rt.repo.reextract(doc_id)
+        except BaseException:
+            # ANY failure after the rename -- not only a refusal the domain
+            # handler understands -- must put the file back. A bare except
+            # is deliberate here: a drawing must never be left without a
+            # result a reviewer could open, whatever broke.
+            stashed.rename(result_path)
+            raise
+        stashed.unlink(missing_ok=True)
+
+    rt.store.unless_reviewed(doc_id, _stash_and_requeue)
     try:
         rt.worker.wake()
     except Exception as e:
@@ -643,10 +657,11 @@ def post_events(session_id: str, req: EventsRequest):
         rt.repo.events_appended(session_id, contiguous)
         try:
             rt.repo.update_progress(session_id, rt.store.progress(session_id))
-        except ReviewError as e:
+        except (ReviewError, OSError, ValueError, KeyError, TypeError) as e:
             # The work list's counts simply stay stale until the next
             # change or the lazy backfill in list_documents() catches up --
             # never worth failing an otherwise-successful append over.
+            # TYPE only (CLAUDE.md §1).
             log.warning("progress recompute failed for %s: %s", session_id[:8], type(e).__name__)
     return {"contiguous": contiguous}
 
@@ -688,7 +703,8 @@ def seal_session(session_id: str, req: SealRequest):
     rt.repo.mark_finished(session_id, out["revision"], req.final_seq)
     try:
         rt.repo.update_progress(session_id, rt.store.progress(session_id))
-    except ReviewError as e:
+    except (ReviewError, OSError, ValueError, KeyError, TypeError) as e:
+        # Never fails an otherwise-committed seal; TYPE only (CLAUDE.md §1).
         log.warning("progress recompute failed for %s: %s", session_id[:8], type(e).__name__)
     return out
 

@@ -2,11 +2,12 @@
 incomplete or foreign log is never graded as if it were whole."""
 import json
 import threading
+import time
 
 import pytest
 
 from app.review.store import (
-    JournalGap, JournalInvalid, ReviewStore, StaleWriter, UnknownSession)
+    AlreadyReviewed, JournalGap, JournalInvalid, ReviewStore, StaleWriter, UnknownSession)
 
 SID = "a" * 32
 
@@ -506,4 +507,73 @@ def test_has_events_is_true_for_a_sealed_session_with_zero_net_events(tmp_path):
         {"seq": 2, "type": "retract", "target": 1},
     ])
     store.seal("s1", writer, 2, [r], [])
+    assert store.has_events("s1") is True
+
+
+def test_unless_reviewed_runs_fn_and_returns_its_result_for_an_untouched_session(tmp_path):
+    store = ReviewStore(tmp_path)
+    store.create("s1", {}, {"rows": []})
+    assert store.unless_reviewed("s1", lambda: "ran") == "ran"
+
+
+def test_unless_reviewed_refuses_without_calling_fn_once_there_are_events(tmp_path):
+    store = ReviewStore(tmp_path)
+    writer = store.create("s1", {}, {"rows": [{"id": "a", "needs_review": True, "suggested": False}]})
+    store.append("s1", writer, [{"seq": 1, "type": "accept", "ids": ["a"]}])
+    calls = []
+    with pytest.raises(AlreadyReviewed):
+        store.unless_reviewed("s1", lambda: calls.append(1))
+    assert calls == []
+
+
+def test_unless_reviewed_refuses_a_sealed_session_with_zero_net_events(tmp_path):
+    """Same trap has_events() exists for: a session reviewed down to zero net
+    events still counts as reviewed."""
+    store = ReviewStore(tmp_path)
+    r = row("a")
+    writer = store.create("s1", {}, {"rows": [r]})
+    store.append("s1", writer, [ev(1, "accept", ids=["a"]), ev(2, "retract", target=1)])
+    store.seal("s1", writer, 2, [r], [])
+    with pytest.raises(AlreadyReviewed):
+        store.unless_reviewed("s1", lambda: None)
+
+
+def test_unless_reviewed_blocks_a_concurrent_append_for_its_whole_duration(tmp_path):
+    """The check (no events yet) and the caller's own transition must be one
+    atomic unit: a concurrent append() must not be able to land in the
+    window between them. Proven here by holding `fn` open for a moment and
+    showing a competing append() -- which takes the SAME store lock --
+    cannot complete until `fn`, and therefore the whole unless_reviewed()
+    call, has finished."""
+    store = ReviewStore(tmp_path)
+    writer = store.create("s1", {}, {"rows": [{"id": "a", "needs_review": True, "suggested": False}]})
+    order = []
+    fn_entered = threading.Event()
+
+    def slow_fn():
+        order.append("fn-start")
+        fn_entered.set()
+        # unless_reviewed is still holding the lock here -- enough time for
+        # the append thread to reach its own lock acquisition and block on
+        # it, which is the condition this test exists to demonstrate.
+        time.sleep(0.2)
+        order.append("fn-end")
+        return "done"
+
+    def append_thread():
+        fn_entered.wait(timeout=2)
+        order.append("append-called")
+        store.append("s1", writer, [{"seq": 1, "type": "accept", "ids": ["a"]}])
+        order.append("append-returned")
+
+    t = threading.Thread(target=append_thread)
+    t.start()
+    result = store.unless_reviewed("s1", slow_fn)
+    t.join(timeout=2)
+    assert result == "done"
+    assert order[0] == "fn-start"
+    # The append can only ever be OBSERVED to finish after fn-end: it was
+    # blocked on the same lock for fn's entire duration, never slipping in
+    # between the check inside unless_reviewed and fn's own transition.
+    assert order.index("append-returned") > order.index("fn-end")
     assert store.has_events("s1") is True

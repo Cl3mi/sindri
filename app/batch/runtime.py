@@ -1,14 +1,17 @@
 """Wires a deployment together (batch design §1): data dir, index, review
 store and the extraction worker."""
+import logging
 import os
 from pathlib import Path
 
 from app.batch.db import connect, migrate
 from app.batch.paths import DataDir
-from app.batch.repo import Repo
+from app.batch.repo import Repo, UnknownDocument
 from app.batch.uploads import MIB, Uploads
 from app.batch.worker import Worker
 from app.review.store import ReviewStore
+
+log = logging.getLogger(__name__)
 
 # The free-disk reserve (batch design §2): below it, uploads and unpacking
 # answer 507 so an import can never fill the disk under a review journal.
@@ -47,10 +50,63 @@ class Runtime:
         self.uploads = Uploads(self.repo, self.data, min_free_bytes=min_free_mb * MIB)
         # Recovery runs inside Worker.start(), under the single-process lock
         # (review C1): a second process that fails to get the lock never
-        # sweeps the first one's in-flight imports. A lambda, so the bound
-        # method is looked up at start time.
+        # sweeps the first one's in-flight imports.
         self.worker = Worker(self.repo, self.data, self.store, extract_fn, header_fn,
-                             startup=lambda: self.uploads.recover())
+                             startup=self._run_startup_recovery)
+
+    def _run_startup_recovery(self) -> None:
+        """Both sweeps are guarded INDEPENDENTLY (CLAUDE.md §4): they protect
+        unrelated failure modes (an interrupted import vs. an interrupted
+        re-extract), so a fault in one must not skip the other. Worker.start()
+        itself wraps the whole call in a try/except too, but only as a
+        backstop against something neither sweep anticipated -- the real
+        isolation is here."""
+        try:
+            self.uploads.recover()
+        except Exception as e:
+            log.warning("startup recovery (uploads) failed: %s", type(e).__name__)
+        try:
+            self._recover_reextract_stashes()
+        except Exception as e:
+            log.warning("startup recovery (reextract stash) failed: %s", type(e).__name__)
+
+    def _recover_reextract_stashes(self) -> None:
+        """A crash between app.main's reextract route renaming
+        `result.json` -> `result.reextract.json` and `repo.reextract`'s
+        commit (batch design §2 queue controls) can leave a stash on disk
+        that disagrees with what the row says:
+
+        * the commit never landed (the row is still `ready`/`in_review`/
+          `finished`) and `result.json` is missing -- put the stash straight
+          back, exactly as app.main's own failure path would have, so the
+          drawing is reviewable again;
+        * the commit DID land (the row is `queued`/`extracting`/`failed`/
+          `cancelled`) or the row is gone entirely -- the discard already
+          completed before the crash, and the stash is simply an orphan of
+          that discard. Deleted.
+
+        Never touches a row whose `result.json` is already back in place:
+        that means the drawing was retried or re-extracted again since the
+        crash, and the stash is stale leftover from the earlier attempt, not
+        this one's to restore."""
+        if not self.data.docs.is_dir():
+            return
+        for d in self.data.docs.iterdir():
+            if not d.is_dir():
+                continue
+            stash = d / "result.reextract.json"
+            if not stash.is_file():
+                continue
+            try:
+                row = self.repo.get(d.name)
+            except UnknownDocument:
+                stash.unlink(missing_ok=True)
+                continue
+            result_path = d / "result.json"
+            if row["state"] in ("ready", "in_review", "finished") and not result_path.is_file():
+                stash.rename(result_path)
+            else:
+                stash.unlink(missing_ok=True)
 
     @classmethod
     def from_env(cls, extract_fn, header_fn) -> "Runtime":
