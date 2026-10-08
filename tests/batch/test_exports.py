@@ -17,6 +17,14 @@ from app.batch.uploads import Uploads
 from app.review.store import ReviewStore
 
 
+def _sync(fn, *args):
+    """Injected as `spawn` so a job built by `start()` is finished before
+    `start()` returns -- tests then only ever call `start()`, the same
+    public entry point production uses, instead of also reaching for the
+    private `_run` to force determinism."""
+    fn(*args)
+
+
 @pytest.fixture
 def rig(tmp_path):
     conn = db.connect(tmp_path / "s.db")
@@ -29,7 +37,7 @@ def rig(tmp_path):
     # the disk-guard tests below build their OWN Uploads with a patched
     # free_bytes instead of reusing this one.
     uploads = Uploads(repo, data, min_free_bytes=0)
-    return repo, data, store, Exports(repo, data, store, uploads)
+    return repo, data, store, Exports(repo, data, store, uploads, spawn=_sync)
 
 
 def _finished_document(repo, data, store, doc_id, *, rows, batch_name="Flansch"):
@@ -59,7 +67,6 @@ def test_mass_export_builds_a_zip_with_a_manifest(rig, monkeypatch):
     row = {"id": "a", "pos": 1, "nominal": "20", "suggested": False}
     _finished_document(repo, data, store, "a" * 32, rows=[row])
     job = exports.start(["a" * 32])
-    exports._run(job["id"], ["a" * 32])   # synchronous for the test
     status = repo.get_export(job["id"])
     assert status["state"] == "done"
     assert status["done"] == status["total"] == 1
@@ -86,7 +93,6 @@ def test_mass_export_skips_an_unfinished_drawing_without_failing_the_job(rig, mo
     repo.create_document("b" * 32, "w2.pdf", pages=1, sha256=None)   # left `staged`
 
     job = exports.start(["a" * 32, "b" * 32])
-    exports._run(job["id"], ["a" * 32, "b" * 32])
     assert repo.get_export(job["id"])["state"] == "done"
     with zipfile.ZipFile(data.export_zip_path(job["id"])) as zf:
         rows_out = {r["file"] or r["skip_reason"]: r
@@ -110,7 +116,6 @@ def test_a_drawing_that_fails_to_render_lands_in_the_manifest_not_the_job(rig, m
     _finished_document(repo, data, store, "a" * 32, rows=[row])
 
     job = exports.start(["a" * 32])
-    exports._run(job["id"], ["a" * 32])
     assert repo.get_export(job["id"])["state"] == "done"
     with zipfile.ZipFile(data.export_zip_path(job["id"])) as zf:
         (manifest_row,) = list(csv.DictReader(io.StringIO(zf.read("manifest.csv").decode())))
@@ -129,7 +134,6 @@ def test_a_reopened_drawing_exports_its_last_sealed_revision_with_a_note(rig, mo
     repo.events_appended("a" * 32, 1)   # a new reviewer event reopens it: finished -> in_review
 
     job = exports.start(["a" * 32])
-    exports._run(job["id"], ["a" * 32])
     with zipfile.ZipFile(data.export_zip_path(job["id"])) as zf:
         (manifest_row,) = list(csv.DictReader(io.StringIO(zf.read("manifest.csv").decode())))
     assert manifest_row["skip_reason"] == "reopened — later changes not included"
@@ -153,11 +157,36 @@ def test_single_export_and_mass_export_are_byte_identical(rig, monkeypatch, tmp_
         "a" * 32, data.doc_dir("a" * 32), 1, "xlsx", sealed).read_bytes()
 
     job = exports.start(["a" * 32])
-    exports._run(job["id"], ["a" * 32])
     with zipfile.ZipFile(data.export_zip_path(job["id"])) as zf:
         names = [n for n in zf.namelist() if n.endswith(".xlsx")]
         zipped = zf.read(names[0])
     assert zipped == direct
+
+
+def test_manifest_cells_that_look_like_formulas_get_a_leading_quote(rig, monkeypatch):
+    """Formula-injection guard: batch/folder/file names are client-controlled
+    and an operator opens manifest.csv in a spreadsheet program. Any string
+    cell starting with =, +, -, @, tab or CR must be defused with a leading
+    single quote before it reaches the CSV, or a crafted batch name becomes a
+    live formula (e.g. =HYPERLINK(...)) the moment the sheet opens."""
+    repo, data, store, exports = rig
+    import app.batch.export_render as export_render
+    monkeypatch.setattr(export_render, "write_workbook",
+                        lambda rows, out, **kw: out.write_bytes(b"XLSX"))
+    monkeypatch.setattr(export_render, "render_ballooned_pdf",
+                        lambda src, rows, dpi, out_path: out_path.write_bytes(b"%PDF"))
+    row = {"id": "a", "pos": 1, "nominal": "20", "suggested": False}
+    _finished_document(repo, data, store, "a" * 32, rows=[row],
+                       batch_name="=HYPERLINK(\"http://evil\", \"click\")")
+    repo.create_document("b" * 32, "@startup.pdf", pages=1, sha256=None)
+
+    job = exports.start(["a" * 32, "b" * 32])
+    with zipfile.ZipFile(data.export_zip_path(job["id"])) as zf:
+        rows_out = list(csv.DictReader(io.StringIO(zf.read("manifest.csv").decode())))
+    hyperlink_row = next(r for r in rows_out if r["batch"].startswith("'="))
+    assert hyperlink_row["batch"] == "'=HYPERLINK(\"http://evil\", \"click\")"
+    skipped_row = next(r for r in rows_out if r["skip_reason"] == "not_finished")
+    assert skipped_row["folder"].startswith("'@")
 
 
 def test_delete_expired_zips_removes_only_old_ones(rig):
@@ -175,6 +204,26 @@ def test_delete_expired_zips_removes_only_old_ones(rig):
     assert removed == 1
     assert not p.is_file()
     assert data.export_zip_path(fresh_job["id"]).is_file()
+
+
+def test_delete_expired_zips_never_touches_an_in_progress_temp_zip(rig):
+    """*.zip alone also matches "<id>.<rand>.tmp.zip" -- an in-progress
+    build's temp file, which can be hours old for a genuinely large export.
+    The sweep must only ever remove a FINAL "<32 hex>.zip" name; a stale temp
+    file is fail_interrupted's job, at startup, not this periodic sweep's."""
+    import os
+    import time
+    repo, data, store, exports = rig
+    job = repo.create_export(["a" * 32])
+    tmp = data.exports / f"{job['id']}.abcd1234.tmp.zip"
+    tmp.write_bytes(b"partial")
+    old = time.time() - 25 * 3600
+    os.utime(tmp, (old, old))
+
+    removed = exports.delete_expired_zips()
+
+    assert removed == 0
+    assert tmp.is_file()
 
 
 def test_fail_interrupted_marks_a_running_job_failed_and_removes_its_temp_zip(rig):
@@ -220,12 +269,11 @@ def test_mass_export_fails_early_when_the_disk_reserve_is_already_breached(rig, 
     # reserve is breached.
     guarded_uploads = Uploads(repo, data, min_free_bytes=1,
                               free_bytes=lambda path: 0)
-    exports = ExportsClass(repo, data, store, guarded_uploads)
+    exports = ExportsClass(repo, data, store, guarded_uploads, spawn=_sync)
     row = {"id": "a", "pos": 1, "nominal": "20", "suggested": False}
     _finished_document(repo, data, store, "a" * 32, rows=[row])
 
     job = exports.start(["a" * 32])
-    exports._run(job["id"], ["a" * 32])
 
     got = repo.get_export(job["id"])
     assert (got["state"], got["error_type"]) == ("failed", "OutOfDisk")
@@ -258,15 +306,35 @@ def test_mass_export_fails_between_drawings_when_the_reserve_runs_out(rig, monke
 
     guarded_uploads = Uploads(repo, data, min_free_bytes=1 * uploads_mod.MIB,
                               free_bytes=shrinking_free)
-    exports = ExportsClass(repo, data, store, guarded_uploads)
+    exports = ExportsClass(repo, data, store, guarded_uploads, spawn=_sync)
     monkeypatch.setattr(export_render, "write_workbook",
                         lambda rows, out, **kw: out.write_bytes(b"XLSX"))
     monkeypatch.setattr(export_render, "render_ballooned_pdf",
                         lambda src, rows, dpi, out_path: out_path.write_bytes(b"%PDF"))
 
     job = exports.start(["a" * 32, "b" * 32])
-    exports._run(job["id"], ["a" * 32, "b" * 32])
 
     got = repo.get_export(job["id"])
     assert (got["state"], got["error_type"]) == ("failed", "OutOfDisk")
+    assert not data.export_zip_path(job["id"]).is_file()
+
+
+def test_mkstemp_failure_fails_the_job_instead_of_leaving_it_running(rig, monkeypatch):
+    """mkstemp sat before the try: if it raised, the job stayed `running`
+    forever, with no temp file and no thread left to finish it. It must be
+    inside the try so every exception path -- including this one -- reaches
+    `_finish(..., "failed", ...)`."""
+    repo, data, store, exports = rig
+    import tempfile as tempfile_mod
+    row = {"id": "a", "pos": 1, "nominal": "20", "suggested": False}
+    _finished_document(repo, data, store, "a" * 32, rows=[row])
+
+    def broken_mkstemp(*a, **kw):
+        raise OSError("no space left on device")
+    monkeypatch.setattr(tempfile_mod, "mkstemp", broken_mkstemp)
+
+    job = exports.start(["a" * 32])
+
+    got = repo.get_export(job["id"])
+    assert (got["state"], got["error_type"]) == ("failed", "OSError")
     assert not data.export_zip_path(job["id"]).is_file()

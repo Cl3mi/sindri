@@ -10,6 +10,7 @@ import csv
 import io
 import logging
 import os
+import re
 import tempfile
 import threading
 import time
@@ -33,18 +34,54 @@ MANIFEST_FIELDS = ["file", "folder", "batch", "state", "revision_exported",
 # clean up by hand.
 ZIP_TTL_SECONDS = 24 * 3600
 
+# A FINAL export ZIP's name -- never an in-progress build's own
+# "<id>.<rand>.tmp.zip" (produced by _run's tempfile.mkstemp), which a plain
+# "*.zip" glob would also match. delete_expired_zips must never remove a
+# live temp file out from under a long-running build just because it is
+# older than the TTL; fail_interrupted, not this periodic sweep, owns
+# cleaning up a temp file whose job has actually ended.
+_FINAL_ZIP_RE = re.compile(r"\A[0-9a-f]{32}\.zip\Z")
+
+# Spreadsheet formula injection (CSV, not CWE-1236's HTML-escaping cousin):
+# batch names, rel_path folders and file stems all come from a client's
+# title block or an uploaded filename, and manifest.csv is opened in a
+# spreadsheet program by an operator. Any of these leading characters make
+# the cell a live formula the instant the sheet opens -- defused with a
+# leading single quote, which every major spreadsheet treats as "this cell
+# is text", exactly as it already does for a user-typed leading apostrophe.
+_FORMULA_LEAD = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_safe(value):
+    if isinstance(value, str) and value.startswith(_FORMULA_LEAD):
+        return "'" + value
+    return value
+
 
 def _manifest_csv(rows: list) -> bytes:
     buf = io.StringIO()
     w = csv.DictWriter(buf, fieldnames=MANIFEST_FIELDS, extrasaction="ignore")
     w.writeheader()
     for r in rows:
-        w.writerow(r)
+        w.writerow({k: _csv_safe(v) for k, v in r.items()})
     return buf.getvalue().encode("utf-8")
 
 
+def _spawn_thread(fn, *args) -> None:
+    """Default `spawn`: a plain daemon thread, exactly what every production
+    caller gets. Tests inject `spawn=lambda fn, *a: fn(*a)` to run a job
+    synchronously -- the double _run-for-one-job race that used to need a
+    per-export-id lock here only ever came from a test calling `_run`
+    directly on top of `start`'s own thread; production never does that
+    (every `start()` mints a fresh export id), so the lock was pure
+    unbounded-growth overhead with no corresponding real risk."""
+    export_id = args[0] if args else None
+    name = f"sindri-export-{export_id[:8]}" if export_id else "sindri-export"
+    threading.Thread(target=fn, args=args, name=name, daemon=True).start()
+
+
 class Exports:
-    def __init__(self, repo, data, store, uploads):
+    def __init__(self, repo, data, store, uploads, spawn=None):
         self.repo = repo
         self.data = data
         self.store = store
@@ -53,29 +90,16 @@ class Exports:
         # exists for, and a second, independent threshold would just be a
         # second number to keep in sync with SINDRI_MIN_FREE_MB.
         self.uploads = uploads
-        # One lock per export id: `start` launches a real background thread,
-        # and a caller (production: a retried click; this module's own
-        # tests: a direct `_run` call made right after `start` for
-        # determinism) can end up invoking `_run` a second time for a job
-        # already being built. Without this, both would mkstemp their own
-        # temp ZIP, both would finish rendering, and the SLOWER one's temp
-        # file could still be sitting in exports/ at the exact moment a
-        # caller checks for it -- a real race, not a test artefact, since
-        # both threads are doing genuine work concurrently. The second
-        # caller to acquire the lock sees the job already left `running`
-        # and returns without creating anything.
-        self._run_locks: dict = {}
-        self._run_locks_guard = threading.Lock()
-
-    def _run_lock(self, export_id) -> threading.Lock:
-        with self._run_locks_guard:
-            return self._run_locks.setdefault(export_id, threading.Lock())
+        # How `_run` actually gets executed: a daemon thread in production
+        # (`_spawn_thread`), or a direct synchronous call in tests (`spawn=
+        # lambda fn, *a: fn(*a)`), so a test's `start()` call returns only
+        # once the job has actually finished -- no sleeping, no polling, no
+        # need to also reach for the private `_run` method.
+        self._spawn = spawn or _spawn_thread
 
     def start(self, document_ids: list) -> dict:
         job = self.repo.create_export(document_ids)
-        t = threading.Thread(target=self._run, args=(job["id"], list(document_ids)),
-                             name=f"sindri-export-{job['id'][:8]}", daemon=True)
-        t.start()
+        self._spawn(self._run, job["id"], list(document_ids))
         return job
 
     def status(self, export_id) -> dict:
@@ -107,20 +131,18 @@ class Exports:
             log.warning("export %s already finished elsewhere", export_id[:8])
 
     def _run(self, export_id, document_ids) -> None:
-        with self._run_lock(export_id):
-            if self.repo.get_export(export_id)["state"] != "running":
-                # A concurrent call already built (or failed) this exact
-                # job while we waited for the lock -- nothing left to do.
-                return
-            self._run_locked(export_id, document_ids)
-
-    def _run_locked(self, export_id, document_ids) -> None:
         zip_path = self.data.export_zip_path(export_id)
-        fd, tmp_name = tempfile.mkstemp(
-            dir=self.data.exports, prefix=f"{export_id}.", suffix=".tmp.zip")
-        os.close(fd)
-        tmp = Path(tmp_name)
+        tmp = None
         try:
+            # mkstemp itself can raise (e.g. ENOSPC) -- it must be INSIDE
+            # the try, or that exception would propagate out of the thread
+            # with nothing ever marking the job `failed`: a `running` row
+            # with no worker left to finish it, frozen forever, the same
+            # failure mode decision 2 exists to prevent.
+            fd, tmp_name = tempfile.mkstemp(
+                dir=self.data.exports, prefix=f"{export_id}.", suffix=".tmp.zip")
+            os.close(fd)
+            tmp = Path(tmp_name)
             self.uploads.guard_disk()
             used_paths = set()
             rows = []
@@ -143,14 +165,15 @@ class Exports:
             log.warning("mass export %s failed: disk reserve reached", export_id[:8])
             self._finish(export_id, "failed", error_type="OutOfDisk")
         except Exception as e:
-            # A fault building the ZIP ITSELF (a permissions error, a bug) --
-            # not a single drawing's render fault, which _export_one already
-            # turned into a manifest row instead of raising. TYPE only
-            # (CLAUDE.md §1).
+            # A fault building the ZIP ITSELF (a permissions error, a bug,
+            # or mkstemp failing before `tmp` even exists) -- not a single
+            # drawing's render fault, which _export_one already turned into
+            # a manifest row instead of raising. TYPE only (CLAUDE.md §1).
             log.warning("mass export %s failed: %s", export_id[:8], type(e).__name__)
             self._finish(export_id, "failed", error_type=type(e).__name__)
         finally:
-            tmp.unlink(missing_ok=True)
+            if tmp is not None:
+                tmp.unlink(missing_ok=True)
 
     def _export_one(self, zf, doc_id, used_paths) -> dict:
         """One manifest row. Never raises: a fault here must not fail the
@@ -215,7 +238,11 @@ class Exports:
     def delete_expired_zips(self) -> int:
         cutoff = time.time() - ZIP_TTL_SECONDS
         n = 0
-        for p in self.data.exports.glob("*.zip"):
+        for p in self.data.exports.iterdir():
+            # "*.zip" would also match a live "<id>.<rand>.tmp.zip" build --
+            # only a FINAL "<32 hex>.zip" name is ever a candidate here.
+            if not _FINAL_ZIP_RE.fullmatch(p.name):
+                continue
             try:
                 if p.stat().st_mtime < cutoff:
                     p.unlink(missing_ok=True)
