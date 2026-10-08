@@ -375,6 +375,7 @@ function wireHeader() {
     }
     clearSession();
     hideStaleBanner();
+    hideLaggingBanner();
     setHash(worklistUrl());
     // A drawing was waiting for this one's changes to save. Closing is the
     // reviewer leaving anyway (the beacon above was the last try), so open
@@ -808,6 +809,7 @@ async function openForReview(id, { skipFlush = false } = {}) {
   // may be opening a NEW drawing while still shown read-only for the one it
   // just left (the read-only state is per screen, not per drawing).
   hideStaleBanner();
+  hideLaggingBanner();
   // Defense-in-depth (the primary fix is jumpCandidates' excludeId, which
   // never OFFERS the open drawing as a target): a stale link, a hash
   // edited by hand, or a queued navigation could still ask to open the
@@ -983,6 +985,7 @@ function wireJournal() {
   window.addEventListener('pagehide', () => {
     if (journal.active) beaconEvents(journal.sessionId, journal.writer, journal.pending);
   });
+  document.getElementById('banner-lagging-retry')?.addEventListener('click', () => scheduleFlush(0));
 }
 
 // The losing side of a two-tab takeover (StaleWriter; design §3): persistent,
@@ -1006,6 +1009,31 @@ function showStaleBanner(unsavedCount) {
 function hideStaleBanner() {
   state.readOnly = false;
   const el = document.getElementById('banner-stale');
+  if (el) el.hidden = true;
+}
+
+// The journal's own retry/backoff (journal.js) was silent before except for
+// whatever toast happened to be on screen; this makes the 'retry' state
+// visible with a live countdown to the next scheduled flush, plus a manual
+// retry button that jumps the backoff.
+let laggingTimer = null;
+
+function showLaggingBanner(retryAt) {
+  const el = document.getElementById('banner-lagging');
+  if (!el) return;
+  el.hidden = false;
+  clearInterval(laggingTimer);
+  const tick = () => {
+    const el2 = document.getElementById('banner-lagging-countdown');
+    if (el2) el2.textContent = String(Math.max(0, Math.ceil((retryAt - Date.now()) / 1000)));
+  };
+  tick();
+  laggingTimer = setInterval(tick, 250);
+}
+
+function hideLaggingBanner() {
+  clearInterval(laggingTimer);
+  const el = document.getElementById('banner-lagging');
   if (el) el.hidden = true;
 }
 
@@ -1045,10 +1073,11 @@ function scheduleFlush(delay) {
         // Keep everything pending and retry, backing off to 10 s; Finish
         // refuses until the server holds every event, so nothing is lost.
         flushBackoff = Math.min(flushBackoff * 2, 10000);
+        showLaggingBanner(Date.now() + flushBackoff);
         scheduleFlush(flushBackoff);
         break;
       default:   // idle: the next edit schedules the next flush
-        if (ok) flushBackoff = 500;
+        if (ok) { flushBackoff = 500; hideLaggingBanner(); }
         break;
     }
   }, delay);
