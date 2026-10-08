@@ -305,3 +305,49 @@ def test_concurrent_claims_hand_each_document_to_exactly_one_thread(repo):
     assert not errors
     assert sorted(got) == docs
     assert {repo.get(d)["attempts"] for d in docs} == {1}
+
+
+def test_update_progress_persists_the_three_counts(repo):
+    (a,) = ids(1)
+    queued(repo, a)
+    repo.claim_next()
+    repo.mark_ready(a)
+    repo.update_progress(a, {"flagged_total": 3, "flagged_open": 2, "unchecked": 5})
+    row = repo.get(a)
+    assert (row["flagged_total"], row["flagged_open"], row["unchecked"]) == (3, 2, 5)
+
+
+def test_move_to_front_outranks_every_queued_priority(repo):
+    a, b, c = ids(3)
+    for d in (a, b, c):
+        queued(repo, d)
+    repo._conn.execute("UPDATE document SET priority = 5 WHERE id = ?", (b,))
+    repo.move_to_front(a)
+    assert repo.claim_next()["id"] == a
+
+
+def test_move_to_front_refuses_a_drawing_that_is_not_queued(repo):
+    (a,) = ids(1)
+    staged(repo, a)
+    with pytest.raises(InvalidTransition):
+        repo.move_to_front(a)
+
+
+def test_reextract_sends_a_ready_drawing_back_to_queued_and_clears_progress(repo):
+    (a,) = ids(1)
+    queued(repo, a)
+    repo.claim_next()
+    repo.mark_ready(a)
+    repo.update_progress(a, {"flagged_total": 1, "flagged_open": 1, "unchecked": 0})
+    repo.reextract(a)
+    row = repo.get(a)
+    assert row["state"] == "queued"
+    assert row["attempts"] == 0
+    assert (row["flagged_total"], row["flagged_open"], row["unchecked"]) == (None, None, None)
+
+
+def test_reextract_refuses_anything_but_ready(repo):
+    (a,) = ids(1)
+    staged(repo, a)
+    with pytest.raises(InvalidTransition):
+        repo.reextract(a)

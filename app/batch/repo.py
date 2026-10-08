@@ -695,6 +695,47 @@ class Repo:
             c.execute("UPDATE document SET exported_at = ?, exported_revision = ? "
                       "WHERE id = ?", (self._clock(), revision, doc_id))
 
+    def update_progress(self, doc_id, counts: dict) -> None:
+        """Flagged/open/unchecked counts for the work list, computed by
+        ReviewStore.progress() and persisted so GET /api/documents never
+        replays a journal for every drawing on every 3 s poll (batch design
+        §3). Silent on an unknown id on purpose: the caller already looked
+        the row up to get its counts, so a race with a delete here is a
+        lost update to a row that is gone anyway, not a bug to surface."""
+        with self._tx() as c:
+            c.execute("UPDATE document SET flagged_total = ?, flagged_open = ?,"
+                      " unchecked = ? WHERE id = ?",
+                      (counts["flagged_total"], counts["flagged_open"],
+                       counts["unchecked"], doc_id))
+
+    def move_to_front(self, doc_id) -> None:
+        """priority = current max + 1 (batch design §2 queue controls):
+        claims next regardless of how long anything else has waited.
+        Refused off any state but `queued` -- "move to the front" has no
+        meaning for a drawing already running, finished, or not yet
+        started."""
+        with self._tx() as c:
+            row = c.execute("SELECT state FROM document WHERE id = ?", (doc_id,)).fetchone()
+            if row is None:
+                raise UnknownDocument(f"no document {str(doc_id)[:8]}")
+            if row["state"] != "queued":
+                raise InvalidTransition("only a queued drawing can move to the front")
+            top = c.execute("SELECT COALESCE(MAX(priority), 0) FROM document").fetchone()[0]
+            c.execute("UPDATE document SET priority = ?, updated_at = ? WHERE id = ?",
+                      (top + 1, self._clock(), doc_id))
+
+    def reextract(self, doc_id) -> None:
+        """Back to `queued`, discarding the old proposal (batch design §2
+        queue controls): refused off any state but `ready` -- `in_review`
+        or `finished` means a human has already acted, which is exactly
+        what ReviewStore.has_events() (checked by the caller, app.main)
+        exists to protect. Progress counts go back to NULL: the old ones
+        described a proposal that no longer exists."""
+        with self._tx() as c:
+            self._move(c, doc_id, ("ready",), "queued", attempts=0, error_type=None,
+                       queued_at=self._clock(), flagged_total=None,
+                       flagged_open=None, unchecked=None)
+
     def delete(self, doc_id) -> bool:
         """Remove a drawing and, if it was the last, its batch. An unknown id
         returns False on purpose: removing is idempotent, so a repeated
