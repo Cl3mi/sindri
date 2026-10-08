@@ -426,3 +426,65 @@ def test_a_proposal_that_is_not_json_is_a_journal_error(store, writer, op):
             store.open(SID)
         else:
             store.seal(SID, writer, 0, [], [])
+
+
+def test_progress_counts_flagged_open_and_unchecked(tmp_path):
+    """Mirrors state.js's progress(): flagged = non-suggested rows with
+    needs_review; open = flagged not yet reviewed; unchecked = non-suggested,
+    non-flagged rows. A fresh session has every flagged row open and no
+    accepts yet."""
+    store = ReviewStore(tmp_path)
+    writer = store.create("s1", {}, {"rows": [
+        {"id": "a", "needs_review": True, "suggested": False},
+        {"id": "b", "needs_review": True, "suggested": False},
+        {"id": "c", "needs_review": False, "suggested": False},
+        {"id": "d", "needs_review": False, "suggested": True},
+    ]})
+    assert store.progress("s1") == {"flagged_total": 2, "flagged_open": 2, "unchecked": 1}
+    store.append("s1", writer, [{"seq": 1, "type": "accept", "ids": ["a"]}])
+    assert store.progress("s1") == {"flagged_total": 2, "flagged_open": 1, "unchecked": 1}
+
+
+def test_progress_counts_a_confirmed_suggestion_by_its_own_needs_review_flag(tmp_path):
+    """confirm_suggestions turns a suggestion into a normal balloon
+    (suggestion-tray design) -- but mirrors state.js's progress() EXACTLY
+    (no new semantics): whether it lands in `flagged` or `unchecked`
+    depends on the row's OWN needs_review, not on having just been
+    confirmed. Confirming is not itself a reason to flag a row -- and every
+    suggestion in practice already has needs_review False (it was dropped
+    for LOW CONFIDENCE, a drop-stage reason, not a review-flag reason; see
+    app/pipeline/policy_rules.py's stage-2 drops)."""
+    store = ReviewStore(tmp_path)
+    writer = store.create("s1", {}, {"rows": [
+        {"id": "a", "needs_review": False, "suggested": True},
+    ]})
+    assert store.progress("s1") == {"flagged_total": 0, "flagged_open": 0, "unchecked": 0}
+    store.append("s1", writer, [{"seq": 1, "type": "confirm_suggestions", "ids": ["a"]}])
+    # Still not flagged: needs_review on this row was False before AND after
+    # confirming. It simply moves from "not a balloon yet" (a suggestion) to
+    # an unchecked balloon -- exactly what state.js's progress() would count.
+    assert store.progress("s1") == {"flagged_total": 0, "flagged_open": 0, "unchecked": 1}
+
+
+def test_progress_does_not_rotate_the_writer_or_touch_the_journal(tmp_path):
+    """Called every poll cycle (GET /api/documents): it must be safe to call
+    from a tab that does not hold the writer, and must not trim an
+    unacknowledged event the way open() does."""
+    store = ReviewStore(tmp_path)
+    writer = store.create("s1", {}, {"rows": [{"id": "a", "needs_review": True, "suggested": False}]})
+    store.progress("s1")
+    # The original writer still works -- progress() did not rotate it.
+    store.append("s1", writer, [{"seq": 1, "type": "accept", "ids": ["a"]}])
+
+
+def test_has_events_is_false_for_an_untouched_session(tmp_path):
+    store = ReviewStore(tmp_path)
+    store.create("s1", {}, {"rows": []})
+    assert store.has_events("s1") is False
+
+
+def test_has_events_is_true_once_the_reviewer_has_acted(tmp_path):
+    store = ReviewStore(tmp_path)
+    writer = store.create("s1", {}, {"rows": [{"id": "a", "needs_review": True, "suggested": False}]})
+    store.append("s1", writer, [{"seq": 1, "type": "accept", "ids": ["a"]}])
+    assert store.has_events("s1") is True

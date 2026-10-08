@@ -341,6 +341,44 @@ class ReviewStore:
             _atomic_write(d / "writer", writer)
             return {"writer": writer, "proposal": proposal, "events": net, "last_seq": top}
 
+    def progress(self, sid: str) -> dict:
+        """Flagged/open/unchecked counts for the work list (batch design
+        §3), computed exactly the way state.js's progress() computes them
+        client-side -- if the two ever disagree about the same drawing, one
+        of them has drifted from the other's definition. Read-only: unlike
+        open(), it never rotates the writer, trims the journal, or touches
+        disk at all, so it is safe to call from a poll that holds no writer
+        and holds no lock on the reviewer's own tab."""
+        with self._lock:
+            d = self._dir(sid)
+            events = self._events(d)
+            through = self._sealed_through(d)
+            top = contiguous_seq({e["seq"] for e in events}, start=through)
+            kept = [e for e in events if e["seq"] <= top]
+            try:
+                net = net_events(kept)
+                proposal = json.loads(
+                    (d / "proposal.json").read_text(encoding="utf-8"))["rows"]
+                rows = replay(proposal, net)
+            except JournalError as exc:
+                raise JournalInvalid(str(exc)) from exc
+            except (KeyError, TypeError, json.JSONDecodeError) as exc:
+                raise JournalInvalid(f"corrupt review record: {exc}") from exc
+        balloons = [r for r in rows.values() if not r.get("suggested")]
+        flagged = [r for r in balloons if r.get("needs_review")]
+        flagged_open = sum(1 for r in flagged if not r["reviewed"])
+        return {"flagged_total": len(flagged), "flagged_open": flagged_open,
+                "unchecked": len(balloons) - len(flagged)}
+
+    def has_events(self, sid: str) -> bool:
+        """True once the reviewer has acted on this session at all -- the
+        gate for re-extract (batch design §2 queue controls): a `ready`
+        drawing with no events may be re-extracted (its proposal is
+        discarded), one with even a single event may not."""
+        with self._lock:
+            d = self._dir(sid)
+            return bool(self._events(d))
+
     def revision(self, sid: str, n: int = None) -> dict:
         """A sealed revision -- the latest when `n` is None. Exports are
         rendered from this, never from rows a browser sends (batch design §4)."""
