@@ -20,6 +20,9 @@ def _isolated_runtime(tmp_path, monkeypatch):
     # than the deployment default (2048 MB), and every upload test would then
     # fail with 507. The reserve itself is tested with injected free space.
     monkeypatch.setenv("SINDRI_MIN_FREE_MB", "0")
+    # Auth is opt-in; an ambient SINDRI_ACCESS_TOKEN in a developer's shell
+    # must not gate the ~1940 existing tests that never set it themselves.
+    monkeypatch.delenv("SINDRI_ACCESS_TOKEN", raising=False)
     mod = sys.modules.get("app.main")
     if mod is not None:
         monkeypatch.setattr(mod, "_RUNTIME", None)

@@ -893,3 +893,30 @@ def test_posting_events_to_a_purged_drawing_is_409(sample_pdf, stub_backend):
     r = client.post(f"/api/session/{sid}/events", json={"writer": writer, "events": [
         {"seq": 1, "type": "accept", "ids": []}]})
     assert r.status_code == 409
+
+
+def test_a_configured_token_gates_api_routes(monkeypatch):
+    monkeypatch.setenv("SINDRI_ACCESS_TOKEN", "secret123")
+    assert client.get("/api/batches").status_code == 401
+    r = client.get("/api/batches", headers={"x-sindri-token": "secret123"})
+    assert r.status_code == 200
+
+
+def test_health_and_login_stay_open_when_a_token_is_configured(monkeypatch):
+    monkeypatch.setenv("SINDRI_ACCESS_TOKEN", "secret123")
+    assert client.get("/api/health").status_code == 200
+    assert client.post("/api/auth", json={"token": "wrong"}).status_code == 401
+
+
+def test_logging_in_sets_a_cookie_that_then_authenticates(monkeypatch):
+    monkeypatch.setenv("SINDRI_ACCESS_TOKEN", "secret123")
+    r = client.post("/api/auth", json={"token": "secret123"})
+    assert r.status_code == 200
+    assert "sindri_token" in r.cookies
+    r2 = client.get("/api/batches")   # TestClient carries cookies across calls
+    assert r2.status_code == 200
+
+
+def test_no_token_configured_means_open_as_today(monkeypatch):
+    monkeypatch.delenv("SINDRI_ACCESS_TOKEN", raising=False)
+    assert client.get("/api/batches").status_code == 200

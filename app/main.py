@@ -20,6 +20,7 @@ from starlette.requests import ClientDisconnect
 from starlette.types import Scope
 from starlette.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StringConstraints
+from app import auth
 from app.models import Characteristic
 from app.pipeline.extract import extract
 from app.pipeline.ocr import get_backend, backend_status
@@ -109,6 +110,40 @@ async def lifespan(app):
 
 
 app = FastAPI(title="Sindri", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def _token_gate(request: Request, call_next):
+    """Checked fresh per request (auth.configured_token reads the env var
+    live), so a deployment can be gated or ungated without a restart in
+    tests, and so a real deployment's single source of truth is the
+    environment it actually runs with."""
+    token = auth.configured_token()
+    if token is not None and auth.requires_token(request.url.path):
+        if not auth.token_matches(auth.extract_token(request), token):
+            return JSONResponse({"detail": "token required"}, status_code=401)
+    return await call_next(request)
+
+
+class AuthRequest(BaseModel):
+    token: str
+
+
+@app.post("/api/auth")
+def authenticate(req: AuthRequest, response: Response):
+    """Set the cookie once; every later /api/* call from this browser then
+    authenticates by cookie, with no header to manage client-side. No
+    `secure` flag (decision 10): a deployment reachable only over plain HTTP
+    on a LAN -- already a supported shape, see B2's real-browser drive --
+    would otherwise never actually send the cookie, silently worse than the
+    (already-accepted) risk of a token readable on that same LAN's wire."""
+    token = auth.configured_token()
+    if token is None or not auth.token_matches(req.token, token):
+        # Never say which: that would tell an attacker whether a token is
+        # even configured, and the body never echoes the guess (CLAUDE.md §1).
+        raise HTTPException(status_code=401, detail="incorrect token")
+    response.set_cookie(auth.TOKEN_COOKIE, req.token, httponly=True, samesite="strict")
+    return {"ok": True}
 
 
 @app.exception_handler(BatchError)
