@@ -27,6 +27,7 @@ import {
   initThemeAndDensity, initDragDrop,
 } from './ui.js';
 import { initShortcuts } from './shortcuts.js';
+import { installAuthGate, submitToken } from './auth.js';
 
 // The drawing this tab is waiting on (staged or extracting). Extraction runs
 // on the server; closing the tab no longer stops it (batch design §1).
@@ -86,6 +87,47 @@ const finisher = createFinisher({
   // failed PDF does not download the spreadsheet a second time.
   exportAll: createExporter((sid, kind, revision) => downloadExport(sid, kind, revision)),
 });
+
+// Optional shared access token (batch design §1, decision 23). Installed at
+// module load, before DOMContentLoaded/init() ever runs a fetch, so the very
+// first request this tab makes (pingHealth, or a resumed #/doc link) is
+// already covered -- there is no window where an early 401 slips past the
+// gate because it fired before installAuthGate() ran. The token itself is
+// never read back out of the DOM except as the FormData value handed
+// straight to submitToken -- never logged, stored, or put in a URL.
+function promptForToken() {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'token-prompt-overlay';
+    overlay.innerHTML = `
+      <form class="token-prompt">
+        <label>Access token<input type="password" name="token" autocomplete="current-password" autofocus></label>
+        <button type="submit">Continue</button>
+        <p class="token-prompt-error" hidden>Incorrect token.</p>
+      </form>`;
+    document.body.appendChild(overlay);
+    const form = overlay.querySelector('form');
+    const input = overlay.querySelector('input[name="token"]');
+    const error = overlay.querySelector('.token-prompt-error');
+    input.focus();
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      error.hidden = true;
+      const token = new FormData(form).get('token');
+      const ok = await submitToken(token);
+      if (ok) {
+        overlay.remove();
+        resolve(true);
+      } else {
+        error.hidden = false;
+        input.value = '';
+        input.focus();
+      }
+    });
+  });
+}
+
+installAuthGate(promptForToken);
 
 function init() {
   initThemeAndDensity();
