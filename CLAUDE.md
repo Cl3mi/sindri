@@ -145,8 +145,8 @@ bundle) each get their own plan.
 `app/batch/` (product code; the boundary test forbids `app.eval` imports)
 holds a SQLite index under `SINDRI_DATA_DIR` (default `/data`), one
 extraction worker thread (single process, enforced by a lock file), and the
-`Runtime` that `app.main.runtime()` builds lazily. Upload stages a drawing,
-`/api/documents/{id}/enqueue` queues it, the browser polls, and
+`Runtime` that `app.main.runtime()` builds lazily. A drawing is imported into
+a draft batch and queued by starting it (B2, below); the browser polls, and
 `/api/documents/{id}/open` rebuilds the review from the server's journal with
 a fresh writer token (latest tab wins). **The review journal is mandatory
 now** — the "logging off" mode is gone and an unwritable review dir fails the
@@ -156,6 +156,29 @@ every test its own data and review dir. **Local dev must set
 usually not writable outside the container and the app fails loudly on first
 use. B2 (import), B3 (work list), B4 (mass export, retention, token) follow,
 each with its own plan.
+
+**BATCH B2: IMPORT** (`docs/plans/2026-10-07-batch-b2-import-plan.md`).
+Files arrive through a chunked, resumable protocol — `POST /api/uploads`
+(an unfinished upload of the same file in the same draft is resumed),
+`PUT /api/uploads/{id}?offset=N` (≤ 64 MiB per request; accepted only at the
+server's offset, fsynced before the index moves; a mismatch is 409 with the
+true offset), `POST …/complete` (idempotent) — into a DRAFT batch
+(`/api/batches`). Completion hashes the whole file and stages one document
+per PDF; a ZIP is unpacked server-side (PDFs only; unsafe paths, symlinks
+and non-PDFs listed as ignored, never written by name). Staging rows carry
+`pages`, `oversized` (`render.effective_dpi` at `pdf_facts.EXTRACT_DPI`,
+the probe's rule), `unreadable` and a live `duplicate_of` (same SHA-256 in
+any batch). Include starts off for out-of-scope files and duplicates and can
+never be ticked for an unreadable PDF; including an out-of-scope file stores
+`allowed_out_of_scope`. **`POST /api/batches/{id}/start` is the only way a
+staged drawing is queued** — `/api/upload` and `/enqueue` are gone.
+`SINDRI_MIN_FREE_MB` (default 2048, `0` in tests) answers 507 below the
+reserve. **Recovery runs inside `Worker.start()`, under the single-process
+lock**, and removes only drawing dirs marked `.importing` that have no row
+(plus week-old unfinished uploads and empty drafts). The interim UI uploads
+one PDF as a batch of one through `app/static/js/upload.js` and remembers
+the draft per file, so re-selecting an interrupted file resumes it; B3 adds
+the staging view, folders and ZIPs in the UI.
 
 **`read-lora-v1` IS NOW HARMFUL UNDER THE SHIPPED POLICY — deployment CLOSED**
 (2026-10-05, `docs/plans/2026-10-05-read-adapter-repricing-result.md`;
@@ -207,7 +230,7 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **1483 passed, 2 skipped** (the 2
+Branch `worktree-eval-harness`, PR #2. Suite: **1802 passed, 2 skipped** (the 2
 skips need `RUN_GPU_TESTS=1` on a GPU host). **`tesseract` is a device
 prerequisite** — without the binary six tests fail as `TesseractNotFoundError`
 and read as broken code. `SCHEMA_VERSION` = 1 — do not bump it. Split frozen
@@ -947,7 +970,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 1483 passed, 2 skipped
+python -m pytest -q                          # 1802 passed, 2 skipped
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```
