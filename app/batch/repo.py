@@ -291,7 +291,17 @@ class Repo:
         reorder the whole list out from under the reviewer on every single
         edit. `since` still filters on `updated_at` (that is genuinely when
         a row last changed; `rowid` says nothing about it) -- callers diff
-        by it, they do not sort by it. `search` is a case-insensitive
+        by it, they do not sort by it. The cursor is INCLUSIVE (`>=`, not
+        `>`): a row stamped in the same microsecond as the cursor, or one
+        whose write committed after the previous poll's query started but
+        was stamped before it, must never be skipped. The caller (the
+        `/api/documents` route) is expected to hand back a cursor taken
+        BEFORE its own query ran, with a small safety margin subtracted, so
+        the next poll's `since` never lands strictly after a row it should
+        still see -- and because of that margin a poll will commonly
+        re-receive a row it already has. That is harmless: the client
+        merges incoming rows by id rather than only appending. `search` is
+        a case-insensitive
         substring match on `file_name`; SQLite's default LIKE is
         ASCII-only case-insensitive, which is a known, honest gap for a
         single-operator local tool (a non-ASCII query simply finds fewer
@@ -309,7 +319,7 @@ class Repo:
             clauses.append("d.file_name LIKE ? ESCAPE '\\'")
             params.append(f"%{esc}%")
         if since is not None:
-            clauses.append("d.updated_at > ?"); params.append(since)
+            clauses.append("d.updated_at >= ?"); params.append(since)
         where = " AND ".join(clauses) if clauses else "1=1"
         with self._lock:
             rows = self._conn.execute(

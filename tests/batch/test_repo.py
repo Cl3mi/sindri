@@ -375,12 +375,17 @@ def test_list_documents_needs_me_is_ready_or_in_review(repo):
     assert {r["id"] for r in repo.list_documents(needs_me=True)} == {a, b}
 
 
-def test_list_documents_since_only_returns_rows_touched_after_the_cursor(repo):
+def test_list_documents_since_is_inclusive_of_the_cursor(repo):
+    """`>=`, not `>`: a row stamped exactly at the cursor must still come
+    back, or a poll whose cursor lands on a row's own updated_at -- the
+    route's margin is meant to make this common, not rare -- would drop it
+    silently. The client is expected to merge by id, so re-seeing `a` here
+    is harmless."""
     a, b = ids(2)
     staged(repo, a)
     cursor = repo.get(a)["updated_at"]
     staged(repo, b)
-    assert [r["id"] for r in repo.list_documents(since=cursor)] == [b]
+    assert [r["id"] for r in repo.list_documents(since=cursor)] == [a, b]
 
 
 def test_list_documents_joins_the_batch_name(repo):
