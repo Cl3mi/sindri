@@ -864,3 +864,13 @@ input[type="file"].sr {
   border: 2px solid var(--bg-panel);
 }
 .scroll-thin::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+
+/* ===== Work list (batch design §3) ================================= */
+.wl-toolbar { display: flex; gap: 8px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.wl-toolbar .spacer { flex: 1; min-width: 0; }
+.wl-queue-header { color: var(--fg-muted); font-size: var(--fs-xs); }
+.wl-table { width: 100%; border-collapse: collapse; }
+.wl-table th, .wl-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; font-size: var(--fs-sm); }
+.wl-bulk { display: flex; gap: 8px; align-items: center; padding: 8px 14px; border-top: 1px solid var(--border); }
+.state-chip { padding: 1px 8px; border-radius: 10px; background: var(--bg-hover); font-size: var(--fs-xs); }
+.muted { color: var(--fg-muted); font-size: var(--fs-xs); }

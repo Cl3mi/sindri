@@ -49,3 +49,32 @@ test('formatQueueHeader covers idle, paused, and extracting with an estimate', (
   assert.equal(formatQueueHeader({ queued: 4, extracting: 1, paused: false, eta_seconds: 600 }),
     'Extracting · 4 queued · ~10m left');
 });
+
+test('initWorkList is exported and callable with no DOM work-list elements present (no-op, no throw)', async () => {
+  // A node import/smoke check, not a DOM test (the codebase has none): this
+  // fails loudly if the export is renamed or dropped, and passes once the
+  // module loads and the function exists and tolerates being called before
+  // index.html's elements exist (e.g. from a future screen that imports it
+  // eagerly). Guards against exactly the "renamed export, nobody noticed"
+  // class of bug this plan's brief calls out.
+  const { initWorkList } = await import('../../app/static/js/worklist.js');
+  assert.equal(typeof initWorkList, 'function');
+});
+
+// A deletion is invisible to the since-cursor poll: GET /api/documents?since=
+// only ever returns rows that CHANGED, and a removed row has no updated_at
+// to be newer than anything, so it would never be noticed missing. Every
+// 20th poll (~1 minute at the 3 s cadence) reconciles the whole list instead
+// (decision 11); pure, so the cadence itself -- not the timer that drives
+// it -- is what node checks.
+test('shouldFullRefresh fires on every 20th poll, never the others', async () => {
+  const { shouldFullRefresh } = await import('../../app/static/js/worklist.js');
+  const fires = [];
+  for (let i = 1; i <= 41; i++) if (shouldFullRefresh(i)) fires.push(i);
+  assert.deepEqual(fires, [20, 40]);
+});
+
+test('shouldFullRefresh never fires on poll 0 (nothing has polled yet)', async () => {
+  const { shouldFullRefresh } = await import('../../app/static/js/worklist.js');
+  assert.equal(shouldFullRefresh(0), false);
+});

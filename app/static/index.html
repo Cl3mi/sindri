@@ -68,8 +68,54 @@
     </span>
   </header>
 
-  <!-- ===== BODY (split layout) ================================= -->
-  <main id="shell-body">
+  <!-- ===== WORK LIST (batch design §3) ========================= -->
+  <section id="screen-worklist" hidden>
+    <div class="wl-toolbar">
+      <button class="btn primary" id="wl-import"><svg class="icon" width="14" height="14"><use href="#i-plus"/></svg> Import</button>
+      <div class="search" id="wl-search-wrap">
+        <svg width="13" height="13"><use href="#i-search"/></svg>
+        <input type="search" id="wl-search" placeholder="Search by file name…" autocomplete="off" />
+      </div>
+      <input type="file" id="wl-import-input" multiple accept=".pdf,.zip" class="sr" />
+      <select id="wl-batch-filter"><option value="">All batches</option></select>
+      <select id="wl-state-filter">
+        <option value="">All states</option>
+        <option value="staged">Staged</option>
+        <option value="queued">Queued</option>
+        <option value="extracting">Extracting</option>
+        <option value="ready">Ready</option>
+        <option value="in_review">In review</option>
+        <option value="finished">Finished</option>
+        <option value="failed">Failed</option>
+        <option value="cancelled">Cancelled</option>
+      </select>
+      <button class="btn ghost" id="wl-needs-me">Needs me</button>
+      <div class="spacer"></div>
+      <span id="wl-queue-header" class="wl-queue-header">Queue idle</span>
+      <button class="btn ghost" id="wl-pause-resume">Pause</button>
+    </div>
+    <table class="wl-table">
+      <thead>
+        <tr>
+          <th class="check"><input type="checkbox" id="wl-select-all" /></th>
+          <th>File</th><th>Batch</th><th>State</th><th>Flagged</th><th>Unchecked</th>
+          <th>Last change</th><th>Badges</th>
+        </tr>
+      </thead>
+      <tbody id="wl-body"></tbody>
+    </table>
+    <div class="wl-bulk" id="wl-bulk" hidden>
+      <span id="wl-bulk-count">0 selected</span>
+      <button class="btn ghost" id="wl-bulk-front">Move to front</button>
+      <button class="btn ghost" id="wl-bulk-cancel">Cancel</button>
+      <button class="btn ghost" id="wl-bulk-retry">Retry</button>
+      <button class="btn ghost" id="wl-bulk-remove">Remove</button>
+      <button class="btn ghost" id="wl-bulk-export">Export selected</button>
+    </div>
+  </section>
+
+  <!-- ===== BODY (split layout) -- the review screen ============= -->
+  <main id="shell-body" hidden>
 
     <!-- LEFT: plan ----------------------------------------------- -->
     <section id="left-pane">

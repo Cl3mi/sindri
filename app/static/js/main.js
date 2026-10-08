@@ -5,16 +5,19 @@ import { state, on, restoreSession, clearSession, undo, redo,
          canUndo, canRedo, progress, canFinish } from './state.js';
 import { getDocument, cancelDocument, openDocument, deleteDocument, downloadExport,
          health, postEvents, beaconEvents, sealSession, createBatch, getBatch,
-         startBatch, discardBatch, setIncluded } from './api.js';
-import { uploadFile, UploadError, forgetDraft, forgetDraftsOf } from './upload.js';
+         startBatch, discardBatch, setIncluded, listDocuments, moveToFront,
+         reextractDocument, retryDocument, pauseQueue, resumeQueue } from './api.js';
+import { uploadFile, UploadError, forgetDraft, forgetDraftsOf, importFiles } from './upload.js';
 import { importSingle, stagesOnly } from './importone.js';
-import { badgesFor } from './badges.js';
+import { badgesFor, workListBadges } from './badges.js';
 import { createJournal } from './journal.js';
 import { createFinisher, createExporter } from './finish.js';
 import { restoreReview, flushBeforeLeaving, afterFlush } from './reopen.js';
 import { nextStopStep } from './stop.js';
 import { initViewer } from './viewer.js';
 import { initTable } from './table.js';
+import { initWorkList } from './worklist.js';
+import { stagingUrl } from './router.js';
 import {
   toast, initModal, openHelp, initSplitter,
   initThemeAndDensity, initDragDrop,
@@ -40,6 +43,7 @@ let staleShown = false;   // "opened in another tab" already said for this drawi
 // (afterFlush); until then it is the one drawing this tab is waiting on.
 let pendingOpen = null;   // id
 let closePendingToast = null;
+let workList = null;      // initWorkList()'s handle; Task 13 reads it back via workList.getDocs()
 
 // The review journal: every state operation, numbered and flushed to the
 // server (docs/plans/2026-10-07-hitl-review-grading-design.md §2). It is
@@ -77,6 +81,11 @@ function init() {
   wireJournal();
   wireUndoRedo();
   pingHealth();
+  workList = initWorkList({
+    listDocuments, moveToFront, cancelDocument, retryDocument, deleteDocument,
+    downloadExport, pauseQueue, resumeQueue, toast, badgesFor: workListBadges,
+  });
+  wireImport();
   resumeFromHash();
 }
 
@@ -288,6 +297,53 @@ async function handleFile(file) {
     uploading = false;
     setIdle();
   }
+}
+
+// ===== Work list: the `+ Import` entry point ========================
+// ZIP + folder (webkitdirectory, a cheap follow-on the input also accepts
+// via its own attribute set elsewhere) + plain files all land here as a
+// multi-file select, imported in parallel into one new draft batch, then
+// routed to its staging view. `stagingUrl` + a plain `setHash` is used
+// rather than the router's `go()`/`navigate()` seam: Task 13 owns the
+// hashchange-driven dispatch and is expected to land after this task in a
+// strict reading of the plan's order, so wiring `go()` here would mean
+// using a function this task does not define. Task 13 can replace this
+// `setHash(stagingUrl(batchId))` with `go(stagingUrl(batchId))` once it
+// exists, with no other change needed here.
+function wireImport() {
+  document.getElementById('wl-import')?.addEventListener('click', () => {
+    document.getElementById('wl-import-input')?.click();
+  });
+  document.getElementById('wl-import-input')?.addEventListener('change', async (e) => {
+    const files = [...e.target.files];
+    e.target.value = '';   // a picker holding the same files fires no 'change' on a re-pick otherwise
+    if (!files.length) return;
+    setBusy('Importing…');
+    try {
+      const name = files.length === 1 ? files[0].name
+        : new Date().toLocaleString();   // createBatch's own UTC fallback is used if this is omitted entirely
+      const { id: batchId } = await createBatch(name);
+      const results = await importFiles(files, { batchId });
+      const failed = results.filter((r) => !r.ok).length;
+      if (failed) {
+        // A disk-full (507) or any other fatal failure lands here too --
+        // the staging view's own Discard button (Task 12) is the recovery
+        // for a draft that can never complete, so this points at it rather
+        // than retrying forever itself.
+        toast({ kind: 'warn', title: 'Some files did not import',
+                msg: `${failed} of ${files.length} failed. Open the import to retry or discard it.` });
+      }
+      // Not setHash(): that helper still writes B1's `#doc=<id>` shape
+      // (Task 13 replaces it with the router's `go()`). The staging URL is
+      // the new `#/staging/<batch>` scheme straight from router.js, written
+      // directly so this task does not depend on a function it does not own.
+      history.replaceState(null, '', stagingUrl(batchId));
+    } catch (err) {
+      toast({ kind: 'error', title: 'Could not start the import', msg: String(err?.message || err) });
+    } finally {
+      setIdle();
+    }
+  });
 }
 
 // ===== Confirm → Queue → Wait → Open ================================
