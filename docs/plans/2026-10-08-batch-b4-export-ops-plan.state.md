@@ -3,8 +3,8 @@
 Plan: `docs/plans/2026-10-08-batch-b4-export-ops-plan.md` (written `48b358e`,
 revised after a plan review `3a2fc84`; one re-check finding carried as an
 execution requirement for Tasks 6/8, below)
-Milestone: retention (task 9 of 15) — next is Task 10 (`app/auth.py`),
-milestone access-token after Task 11
+Milestone: access-token (task 11 of 15) — next is Task 12 (token prompt
+UI), then the final milestone (UI, compose, docs, real-browser drive)
 
 ## Completed task IDs
 - Task 1 — migration 5: the `export` job table (`e359edc`)
@@ -19,8 +19,10 @@ milestone access-token after Task 11
 - Task 8 — `app/batch/housekeeping.py` retention + export-ZIP sweep thread
   (`d020fb9`)
 - Task 9 — purged drawings answer 410 on open/export (`7eec43c`)
+- Task 10 — `app/auth.py` constant-time token gate (`8cbd3da`)
+- Task 11 — token middleware + `POST /api/auth` (`8bc8e55`)
 
-Suite: 1929 passed, 2 skipped. Node tests: 249. Guard 32/0.
+Suite: 1946 passed, 2 skipped. Node tests: 249. Guard 32/0.
 
 ## What's done
 A selection of drawings exports server-side as one ZIP plus a manifest, on
@@ -37,9 +39,17 @@ record (a separate tree) is never touched. The sweep runs once at start and
 hourly, on its own thread, started only after the worker has the
 single-process lock.
 
+Access token: `SINDRI_ACCESS_TOKEN` unset (or blank) = open as before; set =
+every `/api/*` except `/api/auth` and `/api/health` answers 401 `token
+required` unless the `x-sindri-token` header or the `sindri_token` cookie
+matches. `POST /api/auth` sets that cookie (HttpOnly, SameSite=Strict, no
+Secure — LAN plain HTTP, decision 10, session cookie) only on a match.
+
 ## What's next
-The access token (10-11), then the UI, compose and docs, and the
-real-browser drive (12-15). **Task 13 must also:** show a 410 on open as
+The token prompt UI, mass-export UI, compose and docs, and the real-browser
+drive (12-15). The UI should treat ANY 401 from `/api/*` as "show the token
+prompt" (the gate is middleware), and a 401 from `/api/auth` as "wrong
+token". **Task 13 must also:** show a 410 on open as
 "deleted by retention" with no retry (409 stays "try again"), and give the
 `purged` state a work-list badge/label (none exists in `app/static/js`).
 
@@ -90,5 +100,14 @@ real-browser drive (12-15). **Task 13 must also:** show a 410 on open as
     first);
   - re-extract/retry/move-to-front already refuse a tombstone (409), and
     DELETE still removes it.
+- **Access token (Tasks 10-11):**
+  - the comparison hashes both sides (sha256) before `compare_digest`, so it
+    never raises on a non-ASCII guess and leaks no length;
+  - a whitespace-only token reads as unset;
+  - with a token set, a trailing-slash, URL-encoded, HEAD or OPTIONS variant
+    still gets 401, and `/` plus static files stay open;
+  - `POST /api/auth` answers 401 even when auth is off, so it never reveals
+    whether a token is configured;
+  - `tests/conftest.py` unsets `SINDRI_ACCESS_TOKEN` per test.
 - **Commit-message hook:** it also rejects a bare `.xlsx` / `.csv` in commit
   prose, like `.pdf` in commands — word messages generically.
