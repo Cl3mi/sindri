@@ -19,7 +19,17 @@
 
 const DOC_ID_RE = /^[0-9a-f]{32}$/;
 
+const LEGACY_DOC_RE = /^#doc=([0-9a-f]{32})$/;
+
 export function parseRoute(hash) {
+  // B1/B2 wrote `#doc=<id>` directly via setHash(); a bookmark or saved
+  // link from before B3 still carries that shape, and it would otherwise
+  // never match the new `#/...` grammar below and fall back to the work
+  // list, silently breaking every pre-B3 link. Checked before the `#/?`
+  // strip below, since that strip assumes the new scheme's leading slash.
+  const legacy = LEGACY_DOC_RE.exec(hash || '');
+  if (legacy) return { name: 'doc', id: legacy[1] };
+
   const h = (hash || '').replace(/^#\/?/, '');
   if (!h) return { name: 'worklist' };
   const parts = h.split('/').filter(Boolean);

@@ -28,6 +28,16 @@ test('a malformed id falls back to the work list rather than crashing', () => {
   assert.deepEqual(parseRoute('#/bogus'), { name: 'worklist' });
 });
 
+test('legacy #doc=<id> bookmarks (B1/B2) still open their drawing', () => {
+  const id = 'd'.repeat(32);
+  assert.deepEqual(parseRoute(`#doc=${id}`), { name: 'doc', id });
+});
+
+test('a legacy #doc= bookmark with an invalid id still falls back to the work list', () => {
+  assert.deepEqual(parseRoute('#doc=not-an-id'), { name: 'worklist' });
+  assert.deepEqual(parseRoute('#doc='), { name: 'worklist' });
+});
+
 test('docUrl and stagingUrl build the fragment parseRoute reads back', () => {
   // Round-trip: the hash this module WRITES must be one it can also READ,
   // or navigate(docUrl(id)) would navigate to a route parseRoute refuses.
