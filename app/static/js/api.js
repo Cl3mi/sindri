@@ -143,6 +143,20 @@ export async function deleteDocument(id) {
   }
 }
 
+// Best-effort removal of an upload that cannot finish (still receiving, or
+// stuck answering 507 on every /complete retry -- CLAUDE.md §1). Never
+// throws; resolves { ok, status } (status 0 = no response), same convention
+// as deleteDocument/discardBatch above.
+export async function deleteUpload(id) {
+  if (!id) return { ok: false, status: 0 };
+  try {
+    const res = await fetch(`/api/uploads/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    return { ok: res.ok, status: res.status };
+  } catch {
+    return { ok: false, status: 0 };
+  }
+}
+
 // The server always sends both forms (app/main.py _content_disposition):
 // `filename="<ascii-sanitised>"; filename*=UTF-8''<percent-encoded>`. Prefer
 // the UTF-8 form so a non-ASCII name (umlauts, etc.) downloads under its real

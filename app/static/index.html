@@ -126,10 +126,21 @@
       <span id="sv-counts" class="wl-queue-header"></span>
       <div class="spacer"></div>
       <span id="sv-uploads" class="muted"></span>
+      <button class="btn ghost" id="sv-add-files"><svg class="icon" width="14" height="14"><use href="#i-plus"/></svg> Add files</button>
+      <button class="btn ghost" id="sv-add-folder"><svg class="icon" width="14" height="14"><use href="#i-plus"/></svg> Add folder</button>
+      <input type="file" id="sv-add-files-input" multiple accept=".pdf,.zip" class="sr" />
+      <input type="file" id="sv-add-folder-input" webkitdirectory multiple class="sr" />
       <button class="btn ghost" id="sv-discard">Discard</button>
       <button class="btn primary" id="sv-start">Start batch</button>
+      <span id="sv-start-reason" class="muted"></span>
     </div>
-    <p id="sv-empty" class="muted" hidden>This import holds no readable PDF — every file was ignored or none was a PDF.</p>
+    <!-- Uploads this draft still holds that have not completed (receiving/
+         completing), or that failed to complete (e.g. a zip bomb's 507 on
+         every retry -- CLAUDE.md §1, B2 carry-note): each gets its own
+         Remove-upload control (DELETE /api/uploads/{id}) so a draft that can
+         never finish is not stuck forever. -->
+    <div id="sv-pending"></div>
+    <p id="sv-empty" class="muted" hidden></p>
     <table class="wl-table">
       <thead><tr><th>Include</th><th>File</th><th>Pages</th><th>Size</th><th>Notes</th><th></th></tr></thead>
       <tbody id="sv-body"></tbody>

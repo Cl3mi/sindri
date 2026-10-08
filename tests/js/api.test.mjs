@@ -192,3 +192,21 @@ test('discardBatch is best effort: it reports, never throws', async () => {
     globalThis.fetch = saved;
   }
 });
+
+test('deleteUpload is best effort: it reports, never throws', async () => {
+  const { deleteUpload } = await import('../../app/static/js/api.js');
+  const saved = globalThis.fetch;
+  try {
+    const urls = [];
+    globalThis.fetch = async (url, init) => { urls.push([url, init.method]); return { ok: true, status: 200 }; };
+    assert.deepEqual(await deleteUpload('u1'), { ok: true, status: 200 });
+    assert.deepEqual(urls, [['/api/uploads/u1', 'DELETE']]);
+    globalThis.fetch = async () => ({ ok: false, status: 507 });
+    assert.deepEqual(await deleteUpload('u1'), { ok: false, status: 507 });
+    globalThis.fetch = async () => { throw new TypeError('offline'); };
+    assert.deepEqual(await deleteUpload('u1'), { ok: false, status: 0 });
+    assert.deepEqual(await deleteUpload(''), { ok: false, status: 0 });
+  } finally {
+    globalThis.fetch = saved;
+  }
+});
