@@ -6,6 +6,7 @@ from pathlib import Path
 
 from app.batch.db import connect, migrate
 from app.batch.exports import Exports
+from app.batch.housekeeping import Housekeeping
 from app.batch.paths import DataDir
 from app.batch.repo import Repo, UnknownDocument
 from app.batch.uploads import MIB, Uploads
@@ -17,6 +18,10 @@ log = logging.getLogger(__name__)
 # The free-disk reserve (batch design §2): below it, uploads and unpacking
 # answer 507 so an import can never fill the disk under a review journal.
 DEFAULT_MIN_FREE_MB = 2048
+
+# How long a finished, exported drawing's files are kept before retention
+# deletes them (decision 7); 0 turns retention off.
+DEFAULT_RETENTION_DAYS = 30
 
 
 def _probe_writable(root: Path) -> None:
@@ -30,12 +35,15 @@ def _probe_writable(root: Path) -> None:
 
 class Runtime:
     def __init__(self, data_dir, review_dir, extract_fn, header_fn,
-                 min_free_mb: int = DEFAULT_MIN_FREE_MB):
+                 min_free_mb: int = DEFAULT_MIN_FREE_MB,
+                 retention_days: int = DEFAULT_RETENTION_DAYS):
         # Checked first, before anything is opened or created. A negative
         # reserve would let uploads overdraw the disk -- silently worse than
         # no reserve at all.
         if min_free_mb < 0:
             raise ValueError("the free-disk reserve cannot be negative")
+        if retention_days < 0:
+            raise ValueError("the retention window cannot be negative")
         self.data = DataDir(data_dir)
         # The review dir is checked BEFORE the index is opened, so a boot
         # refused for an unwritable journal leaves no connection behind.
@@ -53,6 +61,11 @@ class Runtime:
         # the disk guard it shares with imports (self.uploads) must already
         # exist too.
         self.exports = Exports(self.repo, self.data, self.store, self.uploads)
+        # A second always-on thread (decision 7), unrelated to the GPU
+        # queue -- started only once Worker.start() below has won the
+        # single-process lock (see start()).
+        self.housekeeping = Housekeeping(self.repo, self.data, self.exports,
+                                         retention_days=retention_days)
         # Recovery runs inside Worker.start(), under the single-process lock
         # (review C1): a second process that fails to get the lock never
         # sweeps the first one's in-flight imports.
@@ -125,12 +138,19 @@ class Runtime:
         # running with no reserve. "0" turns the guard off (the test suite
         # does).
         min_free = int(os.environ.get("SINDRI_MIN_FREE_MB") or DEFAULT_MIN_FREE_MB)
-        return cls(data, reviews, extract_fn, header_fn, min_free_mb=min_free)
+        retention_days = int(os.environ.get("SINDRI_RETENTION_DAYS") or DEFAULT_RETENTION_DAYS)
+        return cls(data, reviews, extract_fn, header_fn,
+                  min_free_mb=min_free, retention_days=retention_days)
 
     def start(self) -> None:
         self.worker.start()
+        # Only after the worker holds its single-process lock: a second
+        # uvicorn worker that failed to get it never starts housekeeping
+        # either, so two processes can never purge the same drawing twice.
+        self.housekeeping.start()
 
     def close(self) -> None:
+        self.housekeeping.stop()
         self.worker.stop()
         # A stop() that timed out leaves the loop finishing its drawing on
         # this connection; closing it under that thread would turn a clean

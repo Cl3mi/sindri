@@ -332,3 +332,20 @@ def test_export_recovery_runs_only_under_the_single_worker_lock(tmp_path):
     finally:
         holder.close()
         rt.close()
+
+
+def test_runtime_rejects_a_negative_retention_window(tmp_path):
+    with pytest.raises(ValueError):
+        Runtime(tmp_path / "data", tmp_path / "reviews", lambda *a, **k: None,
+               lambda *a: None, retention_days=-1)
+
+
+def test_runtime_starts_and_stops_housekeeping_with_the_worker(tmp_path):
+    rt = Runtime(tmp_path / "data", tmp_path / "reviews", lambda *a, **k: None,
+                lambda *a: None, retention_days=0)
+    rt.start()
+    try:
+        assert rt.housekeeping._thread is not None
+    finally:
+        rt.close()
+    assert rt.housekeeping._thread is None
