@@ -417,6 +417,58 @@ def test_mass_export_request_rejects_a_malformed_id():
     assert r.status_code == 422
 
 
+def test_mass_export_request_rejects_an_empty_list():
+    r = client.post("/api/exports", json={"document_ids": []})
+    assert r.status_code == 422
+
+
+def test_mass_export_request_rejects_more_ids_than_the_cap():
+    import app.main as main
+    over = [f"{i:032x}" for i in range(main.MAX_EXPORT_IDS + 1)]
+    r = client.post("/api/exports", json={"document_ids": over})
+    assert r.status_code == 422
+
+
+def test_mass_export_deduplicates_ids_preserving_order(sample_pdf, stub_backend):
+    import app.main as main
+    import time
+    sid = finished(client, sample_pdf)
+    r = client.post("/api/exports", json={"document_ids": [sid, sid]})
+    assert r.status_code == 200, r.text
+    job_id = r.json()["id"]
+    job = main.runtime().exports.repo.get_export(job_id)
+    assert job["total"] == 1
+    # Wait for the job's own thread to finish before the test ends: the
+    # per-test teardown closes the DB connection out from under it otherwise
+    # (the same wait test_mass_export_builds_a_zip_and_reports_progress does).
+    for _ in range(50):
+        if main.runtime().exports.repo.get_export(job_id)["state"] != "running":
+            break
+        time.sleep(0.05)
+
+
+def test_downloading_a_failed_export_is_409_not_500():
+    """The server did not fault on THIS request -- the job's own outcome is
+    a state conflict (already visible as `error_type` in the status), not a
+    server error on the download call itself."""
+    import app.main as main
+    job = main.runtime().exports.repo.create_export(["x" * 32])
+    main.runtime().exports.repo.finish_export(job["id"], "failed", error_type="boom")
+    r = client.get(f"/api/exports/{job['id']}/download")
+    assert r.status_code == 409
+    assert r.json() == {"detail": "export failed — start it again"}
+
+
+def test_downloading_a_done_export_whose_zip_was_swept_is_410():
+    import app.main as main
+    rt = main.runtime()
+    job = rt.exports.repo.create_export(["x" * 32])
+    rt.exports.repo.finish_export(job["id"], "done")
+    rt.data.export_zip_path(job["id"]).unlink(missing_ok=True)
+    r = client.get(f"/api/exports/{job['id']}/download")
+    assert r.status_code == 410
+
+
 def test_render_export_renders_once_under_concurrent_first_calls(
         sample_pdf, stub_backend, monkeypatch):
     """Two callers racing the FIRST export of a revision must not share a

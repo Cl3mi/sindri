@@ -19,7 +19,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect
 from starlette.types import Scope
 from starlette.responses import Response
-from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StringConstraints
 from app.models import Characteristic
 from app.pipeline.extract import extract
 from app.pipeline.ocr import get_backend, backend_status
@@ -226,8 +226,16 @@ class StartRequest(BaseModel):
     expected_ids: Optional[List[DocId]] = None
 
 
+# A mass export walks every id in its own thread, opening files and holding
+# ZIP state the whole time; a request with no practical bound could be used
+# to pin a thread on an arbitrarily large selection. 10000 is comfortably
+# above any real batch (the UI selects from one drawing list) and a module
+# constant so the cap is visible and adjustable in one place.
+MAX_EXPORT_IDS = 10000
+
+
 class ExportRequest(BaseModel):
-    document_ids: List[DocId]
+    document_ids: List[DocId] = Field(min_length=1, max_length=MAX_EXPORT_IDS)
 
 
 @app.get("/api/health")
@@ -792,8 +800,12 @@ def export_document(doc_id: str, kind: str, rev: Optional[int] = None):
 @app.post("/api/exports")
 def create_export(req: ExportRequest):
     """Mass export (batch design §4): its own thread, started and returned
-    immediately -- the browser polls GET /api/exports/{id} for progress."""
-    return runtime().exports.start(req.document_ids)
+    immediately -- the browser polls GET /api/exports/{id} for progress.
+    De-duplicated here, preserving order: a repeated id would otherwise
+    render twice inside the same ZIP, costing two manifest rows and a
+    " (2)" copy of a file that is really just the one drawing."""
+    ids = list(dict.fromkeys(req.document_ids))
+    return runtime().exports.start(ids)
 
 
 @app.get("/api/exports/{export_id}")
@@ -808,7 +820,10 @@ def download_export(export_id: str):
     if job["state"] == "running":
         raise HTTPException(status_code=409, detail="export still building")
     if job["state"] == "failed":
-        raise HTTPException(status_code=500, detail="export failed")
+        # Not a 500: the server did not fault answering THIS request -- the
+        # job's own outcome is a state conflict, and its error_type is
+        # already visible in the status the client already polled.
+        raise HTTPException(status_code=409, detail="export failed — start it again")
     path = rt.data.export_zip_path(export_id)
     if not path.is_file():
         # Deleted by the 24h cleanup (Task 7): rebuildable from the same
