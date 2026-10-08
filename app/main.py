@@ -615,6 +615,11 @@ def open_document(doc_id: str):
     work = _doc_dir(doc_id)
     rt = runtime()
     doc = rt.repo.get(doc_id)
+    if doc["state"] == "purged":
+        # A tombstone (batch design §4, decision 8): permanently gone, not
+        # merely "not ready yet" -- a different HTTP status so the UI's
+        # retry logic for the two cases does not conflate them.
+        raise HTTPException(status_code=410, detail="drawing was purged after retention")
     if doc["state"] not in ("ready", "in_review", "finished"):
         raise HTTPException(status_code=409,
                             detail=f"drawing is {doc['state']}, not ready for review")
@@ -656,7 +661,16 @@ def post_events(session_id: str, req: EventsRequest):
     go through and nothing would ever say so."""
     _doc_dir(session_id)             # rejects a malformed id before any path is built
     rt = runtime()
-    rt.repo.get(session_id)          # 404s via UnknownDocument if the row is gone
+    doc = rt.repo.get(session_id)    # 404s via UnknownDocument if the row is gone
+    if doc["state"] == "purged":
+        # A stale tab can still hold a writer token minted before retention
+        # ran (open() -- not reachable for a tombstone any more -- is the
+        # only other place one is issued). The review record survives a
+        # purge untouched (batch design §4, decision 6), and this is the
+        # route that would touch it: refused with the same 409 any other
+        # non-reviewable state gets, since decision 8 reserves 410 for
+        # /open and /export alone.
+        raise InvalidTransition(f"document is {doc['state']}, not ready for review")
     contiguous = rt.store.append(session_id, req.writer, req.events)
     if contiguous > 0:
         # Only what the store actually ACKNOWLEDGED moves the drawing --
@@ -771,6 +785,8 @@ def export_document(doc_id: str, kind: str, rev: Optional[int] = None):
         raise HTTPException(status_code=404, detail="unknown export kind")
     rt = runtime()
     doc = rt.repo.get(doc_id)
+    if doc["state"] == "purged":
+        raise HTTPException(status_code=410, detail="drawing was purged after retention")
     if rev is None:
         rev = doc["final_revision"]
     if rev is None:

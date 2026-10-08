@@ -102,6 +102,32 @@ def test_mass_export_skips_an_unfinished_drawing_without_failing_the_job(rig, mo
     assert sum(1 for r in reasons if r == "") == 1
 
 
+def test_mass_export_skips_a_purged_drawing_with_that_reason(rig, monkeypatch):
+    """A tombstone (Task 9, decision 8) has no files left to export, and is
+    distinguished in the manifest from `not_finished` -- that drawing may
+    still become exportable; a purged one never will."""
+    repo, data, store, exports = rig
+    import app.batch.export_render as export_render
+    monkeypatch.setattr(export_render, "write_workbook",
+                        lambda rows, out, **kw: out.write_bytes(b"XLSX"))
+    monkeypatch.setattr(export_render, "render_ballooned_pdf",
+                        lambda src, rows, dpi, out_path: out_path.write_bytes(b"%PDF"))
+    row = {"id": "a", "pos": 1, "nominal": "20", "suggested": False}
+    _finished_document(repo, data, store, "a" * 32, rows=[row])
+    repo.mark_exported("a" * 32, 1)
+    repo._conn.execute(
+        "UPDATE document SET exported_at = '2020-01-01T00:00:00.000000+00:00' WHERE id = ?",
+        ("a" * 32,))
+    assert repo.purge("a" * 32, "2099-01-01") is True
+
+    job = exports.start(["a" * 32])
+    assert repo.get_export(job["id"])["state"] == "done"
+    with zipfile.ZipFile(data.export_zip_path(job["id"])) as zf:
+        (manifest_row,) = list(csv.DictReader(io.StringIO(zf.read("manifest.csv").decode())))
+    assert manifest_row["skip_reason"] == "purged"
+    assert manifest_row["file"] == ""
+
+
 def test_a_drawing_that_fails_to_render_lands_in_the_manifest_not_the_job(rig, monkeypatch):
     """One drawing's failure must not fail the whole job (batch design §5)."""
     repo, data, store, exports = rig

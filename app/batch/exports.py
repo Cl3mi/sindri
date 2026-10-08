@@ -194,6 +194,14 @@ class Exports:
         base = {**base, "folder": "/".join(folder_parts), "batch": batch["name"],
                 "state": doc["state"], "allowed_out_of_scope": bool(doc["allowed_out_of_scope"]),
                 "skip_reason": ""}
+        if doc["state"] == "purged":
+            # A tombstone ALWAYS carries a `final_revision` (it was
+            # `finished` and exported before retention touched it, decision
+            # 6), so the `final_revision is None` check below would never
+            # see it and would instead try to render files retention may
+            # already have deleted. Checked first and unconditionally, so a
+            # purged drawing is never mistaken for a reopened one.
+            return {**base, "skip_reason": "purged"}
         if doc["final_revision"] is None:
             # Never sealed: eligibility is "has a final_revision", exactly
             # the rule the single-document export route already applies,

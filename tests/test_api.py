@@ -850,3 +850,46 @@ def test_a_failed_worker_start_leaves_no_runtime_behind(monkeypatch):
         with TestClient(main.app):
             pass
     assert main._RUNTIME is None
+
+
+def test_opening_a_purged_drawing_is_410(sample_pdf, stub_backend):
+    import app.main as main
+    sid = finished(client, sample_pdf)
+    rt = main.runtime()
+    rt.repo._conn.execute(
+        "UPDATE document SET exported_at = '2020-01-01T00:00:00.000000+00:00' WHERE id = ?",
+        (sid,))
+    assert rt.repo.purge(sid, "2099-01-01") is True
+    r = client.post(f"/api/documents/{sid}/open")
+    assert r.status_code == 410
+
+
+def test_exporting_a_purged_drawing_is_410(sample_pdf, stub_backend):
+    import app.main as main
+    sid = finished(client, sample_pdf)
+    rt = main.runtime()
+    rt.repo._conn.execute(
+        "UPDATE document SET exported_at = '2020-01-01T00:00:00.000000+00:00' WHERE id = ?",
+        (sid,))
+    assert rt.repo.purge(sid, "2099-01-01") is True
+    r = client.get(f"/api/documents/{sid}/export/xlsx")
+    assert r.status_code == 410
+
+
+def test_posting_events_to_a_purged_drawing_is_409(sample_pdf, stub_backend):
+    """A stale tab's writer token (minted before retention ran) must not be
+    able to append to a tombstone's review journal -- the record survives a
+    purge untouched, and this is the route that would touch it. 410 is
+    reserved for /open and /export (decision 8); every other route keeps
+    its existing refusal."""
+    import app.main as main
+    sid = finished(client, sample_pdf)
+    writer = client.post(f"/api/documents/{sid}/open").json()["writer"]
+    rt = main.runtime()
+    rt.repo._conn.execute(
+        "UPDATE document SET exported_at = '2020-01-01T00:00:00.000000+00:00' WHERE id = ?",
+        (sid,))
+    assert rt.repo.purge(sid, "2099-01-01") is True
+    r = client.post(f"/api/session/{sid}/events", json={"writer": writer, "events": [
+        {"seq": 1, "type": "accept", "ids": []}]})
+    assert r.status_code == 409
