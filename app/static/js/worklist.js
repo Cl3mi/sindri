@@ -7,7 +7,7 @@ import { docUrl } from './router.js';
 import { stateLabel } from './badges.js';
 import { requestExport, getExport } from './api.js';
 import { exportStatusText, pollIntervalMs, downloadUrl, exportFailureMessage,
-         downloadFailureMessage } from './massexport.js';
+         shouldContinuePolling } from './massexport.js';
 
 export function filterDocuments(docs, { batchId, state, search, needsMe } = {}) {
   let out = docs;
@@ -345,56 +345,55 @@ export function initWorkList({ listDocuments, moveToFront, cancelDocument, retry
     try {
       job = await requestExport(ids);
     } catch (err) {
+      // A thrown POST (a network error, or a refusal like 422/507) must
+      // not leave the button stuck disabled -- there is no job to poll,
+      // so this is a terminal failure of the whole action, not a tick that
+      // might still resolve.
       toastFn?.({ kind: 'error', title: 'Could not start the export', msg: String(err?.message || err) });
       resetButton();
       return;
     }
+    // One try/catch/finally per tick, not one per branch: `finally` is the
+    // single place that decides "poll again" vs "stop and reset", so an
+    // exception from ANYWHERE in the tick (a thrown getExport, a thrown
+    // DOM call) can never leave `continuePolling` true by accident --
+    // `shouldContinuePolling` only returns true for an actually-read
+    // `running` job, so a thrown poll always resets the button rather than
+    // leaving it disabled until reload.
     const poll = async () => {
       // The button is gone if the screen that held it was torn down (or
       // replaced) while this poll was in flight -- stop rather than write
       // into a DOM node, or schedule another tick, nobody will ever see.
       if (!document.getElementById('wl-bulk-export')) { _exportRunning = false; return; }
-      let current;
+      let current = null;
       try {
         current = await getExport(job.id);
-      } catch (err) {
-        toastFn?.({ kind: 'error', title: 'Could not check the export', msg: String(err?.message || err) });
-        resetButton();
-        return;
-      }
-      if (btn) btn.textContent = exportStatusText(current);
-      if (current.state === 'running') {
-        setTimeout(poll, pollIntervalMs());
-        return;
-      }
-      if (current.state === 'failed') {
-        toastFn?.({ kind: 'error', title: 'Export failed', msg: exportFailureMessage(current.error_type) });
-        resetButton();
-        return;
-      }
-      // current.state === 'done': fetch the ZIP ourselves (rather than a
-      // bare `<a href>` click) so a 410 from the 24h cleanup sweep racing
-      // this exact moment gets its own sentence instead of silently
-      // downloading as an opaque error file. The manifest inside the ZIP
-      // (not a toast) says which of `ids` were actually included.
-      try {
-        const res = await fetch(downloadUrl(job.id));
-        if (!res.ok) {
-          toastFn?.({ kind: 'error', title: 'Could not download the export', msg: downloadFailureMessage(res.status) });
+        if (btn) btn.textContent = exportStatusText(current);
+        if (current.state === 'running') return;
+        if (current.state === 'failed') {
+          toastFn?.({ kind: 'error', title: 'Export failed', msg: exportFailureMessage(current.error_type) });
           return;
         }
-        const blob = await res.blob();
+        // current.state === 'done': trigger a plain same-origin navigation
+        // (an `<a download>` click), not fetch+blob -- a mass export can be
+        // gigabytes, and buffering the whole ZIP into the tab's memory
+        // risks crashing it. The 410 the download route can answer (the
+        // 24h cleanup sweep) is not reachable here: this click fires the
+        // moment the job itself reports done, long before any sweep runs.
+        // The HttpOnly auth cookie, if the access-token gate is
+        // configured, travels with a plain navigation the same as with
+        // fetch, so the token gate is still satisfied.
         const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
+        a.href = downloadUrl(job.id);
         a.download = 'sindri-export.zip';
         document.body.appendChild(a);
         a.click();
         a.remove();
-        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
       } catch (err) {
-        toastFn?.({ kind: 'error', title: 'Could not download the export', msg: String(err?.message || err) });
+        toastFn?.({ kind: 'error', title: 'Could not check the export', msg: String(err?.message || err) });
       } finally {
-        resetButton();
+        if (shouldContinuePolling(current)) setTimeout(poll, pollIntervalMs());
+        else resetButton();
       }
     };
     poll();

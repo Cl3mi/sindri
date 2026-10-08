@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { exportStatusText, pollIntervalMs, downloadUrl, exportFailureMessage,
-         downloadFailureMessage } from '../../app/static/js/massexport.js';
+         downloadFailureMessage, shouldContinuePolling } from '../../app/static/js/massexport.js';
 
 test('exportStatusText describes each job state', () => {
   assert.equal(exportStatusText({ state: 'running', done: 2, total: 5 }), 'Exporting 2 / 5…');
@@ -40,4 +40,16 @@ test('downloadFailureMessage names expiry; anything else is generic', () => {
   assert.equal(downloadFailureMessage(410), 'export expired — export again');
   assert.equal(downloadFailureMessage(409), 'Export failed — try again.');
   assert.equal(downloadFailureMessage(500), 'Export failed — try again.');
+});
+
+// The bulk-export button must never stay disabled forever: a poll that
+// throws (network error, a malformed reply) passes no job at all, and that
+// must read the same as a terminal state, not as "still running, keep
+// trying silently".
+test('shouldContinuePolling keeps going only for a running job; a thrown poll (no job) re-enables', () => {
+  assert.equal(shouldContinuePolling({ state: 'running', done: 1, total: 5 }), true);
+  assert.equal(shouldContinuePolling({ state: 'done' }), false);
+  assert.equal(shouldContinuePolling({ state: 'failed' }), false);
+  assert.equal(shouldContinuePolling(null), false);
+  assert.equal(shouldContinuePolling(undefined), false);
 });
