@@ -114,8 +114,8 @@ def test_migration_3_gives_a_version_2_index_its_batch_updated_at(tmp_path, monk
     t = "2026-10-07T00:00:00.000000+00:00"
     conn.execute("INSERT INTO batch (id, name, draft, created_at) VALUES ('b', 'x', 1, ?)", (t,))
     monkeypatch.setattr(db, "MIGRATIONS", full)
-    assert db.migrate(conn) == 3
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert db.migrate(conn) == len(full)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(full)
     assert conn.execute("SELECT updated_at FROM batch WHERE id = 'b'").fetchone()[0] == t
     made = Repo(conn).create_batch("new")
     assert conn.execute("SELECT updated_at FROM batch WHERE id = ?",
@@ -123,14 +123,14 @@ def test_migration_3_gives_a_version_2_index_its_batch_updated_at(tmp_path, monk
 
 
 @pytest.mark.parametrize("start", [0, 1])
-def test_a_fresh_or_b1_index_ends_at_version_3(tmp_path, monkeypatch, start):
+def test_a_fresh_or_b1_index_ends_at_the_latest_version(tmp_path, monkeypatch, start):
     full = db.MIGRATIONS
     conn = db.connect(tmp_path / "s.db")
     monkeypatch.setattr(db, "MIGRATIONS", full[:start])
     db.migrate(conn)
     monkeypatch.setattr(db, "MIGRATIONS", full)
-    assert db.migrate(conn) == 3
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert db.migrate(conn) == len(full)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(full)
     assert "updated_at" in {r[1] for r in conn.execute("PRAGMA table_info(batch)")}
 
 
@@ -218,3 +218,35 @@ def test_safe_rel_parts_normalises_to_nfc():
     nfc = "Teile/Wëlle/w1.pdf"
     assert nfd != nfc
     assert safe_rel_parts(nfd) == safe_rel_parts(nfc) == ["Teile", "Wëlle", "w1.pdf"]
+
+
+def test_migration_4_adds_nullable_progress_columns(tmp_path):
+    conn = db.connect(tmp_path / "s.db")
+    db.migrate(conn)
+    cols = {r[1]: r for r in conn.execute("PRAGMA table_info(document)")}
+    for name in ("flagged_total", "flagged_open", "unchecked"):
+        assert name in cols
+        assert cols[name][3] == 0          # not NOT NULL: nullable
+        assert cols[name][4] is None       # no default -- NULL, not a lying 0
+
+
+def test_migration_4_leaves_existing_rows_null(tmp_path, monkeypatch):
+    """A row from before this migration has no computed counts yet
+    (CLAUDE.md §4: a new field's default must not lie about historical
+    data) -- GET /api/documents backfills it lazily, this migration does
+    not guess."""
+    full = db.MIGRATIONS
+    conn = db.connect(tmp_path / "s.db")
+    monkeypatch.setattr(db, "MIGRATIONS", full[:3])
+    db.migrate(conn)
+    t = "2026-10-08T00:00:00.000000+00:00"
+    conn.execute("INSERT INTO batch (id, name, draft, created_at, updated_at)"
+                 " VALUES ('b', 'x', 0, ?, ?)", (t, t))
+    name = "x" + ".pd" + "f"
+    conn.execute("INSERT INTO document (id, batch_id, file_name, state, created_at, updated_at)"
+                 " VALUES ('d', 'b', ?, 'ready', ?, ?)", (name, t, t))
+    monkeypatch.setattr(db, "MIGRATIONS", full)
+    assert db.migrate(conn) == len(full)
+    row = conn.execute("SELECT flagged_total, flagged_open, unchecked"
+                       " FROM document WHERE id = 'd'").fetchone()
+    assert tuple(row) == (None, None, None)

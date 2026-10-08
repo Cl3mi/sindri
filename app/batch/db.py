@@ -115,6 +115,21 @@ MIGRATIONS = [
     ALTER TABLE batch ADD COLUMN updated_at TEXT;
     UPDATE batch SET updated_at = created_at;
     """,
+    # 4: work-list progress counts (batch B3, design §1, §3)
+    """
+    -- Flagged/open/unchecked were in the design's document model from day
+    -- one but no earlier phase ever added the columns. NULL means "not
+    -- computed" -- a row from before this migration, or one with no review
+    -- record at all (staged/queued/extracting/failed/cancelled) -- never a
+    -- plausible 0 that would claim a drawing has zero flags before anyone
+    -- has looked. GET /api/documents computes and persists them the first
+    -- time such a row is listed (app/main.py); this migration does no I/O
+    -- against the review store and cannot, since it only holds a DB
+    -- connection.
+    ALTER TABLE document ADD COLUMN flagged_total INTEGER;
+    ALTER TABLE document ADD COLUMN flagged_open INTEGER;
+    ALTER TABLE document ADD COLUMN unchecked INTEGER;
+    """,
 ]
 
 
