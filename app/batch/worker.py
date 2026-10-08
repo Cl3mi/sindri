@@ -10,11 +10,13 @@ after the row already says `cancelled` -- and a cancelled row may be
 deleted. A drawing can therefore be REMOVED while its extraction is still
 physically running. A vanished row is treated as a cancel, and nothing of
 that drawing is written back: no result.json, no review record."""
+import collections
 import fcntl
 import json
 import logging
 import shutil
 import threading
+import time
 from typing import Callable, Optional
 
 from app.batch.repo import InvalidTransition, UnknownDocument
@@ -58,6 +60,12 @@ class Worker:
         self._recovered = False
         self._progress = {}              # doc_id -> latest report (UI only, never logged)
         self._current = None
+        # Rolling median of the last 20 SUCCESSFUL extraction wall times,
+        # this process's own history only (a restart loses it -- the UI
+        # shows "estimating..." rather than a number with no basis,
+        # CLAUDE.md §4). A median, not a mean: one very slow multi-page
+        # drawing must not drag every later ETA with it.
+        self._durations = collections.deque(maxlen=20)
         self._wake = threading.Event()
         # Replaced per loop by start(): each loop watches its OWN event, so a
         # later start() can never clear the stop request of a loop that is
@@ -83,6 +91,17 @@ class Worker:
         p = self._progress.get(doc_id)
         return dict(p) if p is not None else None
 
+    def eta_seconds(self, queued: int):
+        """Rolling-median estimate of time left for `queued` drawings still
+        ahead. None with no history yet -- CLAUDE.md §4: no field may imply
+        a precision it does not have, and zero samples have none."""
+        if not self._durations:
+            return None
+        d = sorted(self._durations)
+        n = len(d)
+        median = d[n // 2] if n % 2 else (d[n // 2 - 1] + d[n // 2]) / 2
+        return median * max(queued, 0)
+
     def wake(self) -> None:
         self._wake.set()
 
@@ -105,6 +124,7 @@ class Worker:
             raise Cancelled() from None
 
     def _run(self, doc_id: str) -> None:
+        started = time.monotonic()
         d = self.data.doc_dir(doc_id)
         result_path = d / "result.json"
 
@@ -163,6 +183,16 @@ class Worker:
             log.warning("review record failed for %s: %s", doc_id[:8], type(e).__name__)
             self._settle(doc_id, self.repo.mark_failed, f"review_store:{type(e).__name__}")
             return
+        self._durations.append(time.monotonic() - started)
+        try:
+            self.repo.update_progress(doc_id, self.store.progress(doc_id))
+        except Exception as e:
+            # A progress-compute fault must not fail a drawing that
+            # extracted and journaled fine -- the counts simply stay NULL
+            # until the next GET /api/documents backfills them (app.main).
+            # TYPE only: a replay mismatch could in principle carry a field
+            # name but never a client value (CLAUDE.md §1).
+            log.warning("progress compute failed for %s: %s", doc_id[:8], type(e).__name__)
         self._settle(doc_id, self.repo.mark_ready)
 
     def _settle(self, doc_id, transition, *args) -> None:

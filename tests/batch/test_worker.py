@@ -399,3 +399,43 @@ def test_the_background_loop_survives_an_exception(h):
 
 def test_cancelled_is_an_exception_the_pipeline_can_raise_through():
     assert issubclass(Cancelled, Exception)
+
+
+def test_eta_seconds_is_none_with_no_history(tmp_path):
+    h = Harness(tmp_path)
+    assert h.worker.eta_seconds(5) is None
+
+
+def test_eta_seconds_is_the_rolling_median_times_queued(tmp_path, monkeypatch):
+    h = Harness(tmp_path)
+    times = iter([0.0, 1.0,   # drawing A: 1.0 s
+                  10.0, 13.0,  # drawing B: 3.0 s
+                  20.0, 22.0])  # drawing C: 2.0 s
+    monkeypatch.setattr("app.batch.worker.time.monotonic", lambda: next(times))
+    for doc_id in (A, B, "c" * 32):
+        h.queue(doc_id)
+        h.worker.run_once()
+    # median of [1.0, 3.0, 2.0] = 2.0
+    assert h.worker.eta_seconds(4) == pytest.approx(8.0)
+
+
+def test_eta_history_only_counts_successful_extractions(tmp_path, monkeypatch):
+    h = Harness(tmp_path)
+    h.on_extract = lambda progress: (_ for _ in ()).throw(RuntimeError("boom"))
+    times = iter([0.0, 5.0])
+    monkeypatch.setattr("app.batch.worker.time.monotonic", lambda: next(times))
+    h.queue(A)
+    h.worker.run_once()
+    assert h.repo.get(A)["state"] == "failed"
+    assert h.worker.eta_seconds(1) is None
+
+
+def test_progress_is_computed_and_persisted_once_a_drawing_is_ready(tmp_path):
+    h = Harness(tmp_path)
+    h.queue(A)
+    h.worker.run_once()
+    row = h.repo.get(A)
+    assert row["state"] == "ready"
+    # The stub extraction (Harness._extract) returns one Characteristic with
+    # needs_review defaulting False -- so it is unchecked, not flagged.
+    assert (row["flagged_total"], row["flagged_open"], row["unchecked"]) == (0, 0, 1)
