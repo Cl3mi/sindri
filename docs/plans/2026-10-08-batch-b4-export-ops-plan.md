@@ -41,10 +41,12 @@
 5. **Eligibility for export is `final_revision is not None`, matching the already-shipped single-document route exactly** — not "current state is `finished`". This is what makes a reopened drawing's last sealed revision exportable as the design asks, with no special case: the row's `final_revision` already means "the last Finish", and `in_review` due to a reopen does not clear it.
 6. **Retention purges by writing `state = 'purged'` and `purged_at` in one guarded `UPDATE … WHERE state = 'finished' AND exported_at IS NOT NULL AND exported_at <= cutoff`, and only deletes the drawing's files after that UPDATE's rowcount confirms it won.** Order matters: marking first means a concurrent `/open` or `/export` request that lands in between sees `purged` (410) the instant the row says so, never a request that passed the state check and then found its files gone underneath it. A rowcount of 0 (reopened, re-exported, already purged, or deleted in the meantime) purges nothing — no files are touched.
 7. **Retention and the export-ZIP cleanup run from one extra background thread (`Housekeeping`), owned by `Runtime`, started only after `Worker.start()` returns successfully.** That is the same single-process guarantee B2's import recovery leans on (`Worker.start()` holds `worker.lock` for the life of the process), reused without touching `Worker` itself: `Housekeeping` has nothing to do with the GPU queue and does not need to be `Worker`'s `startup` hook, which already has a narrower, one-shot job (`uploads.recover()`). It sweeps once immediately (satisfying "one at startup") and then on a fixed interval, short enough that a day-old drawing does not wait long after the configured retention window, without needing any "has a day passed" bookkeeping of its own — a sweep that finds nothing to do is cheap.
-8. **A purged or never-finished drawing's `/open` and `/export` routes answer `410 Gone`**, a new, more specific reply than the `409` those routes already give for "not ready yet" — chosen over reusing 409 because a tombstone is a *permanent*, not a transient, refusal, and the UI's retry logic for the two must differ (409 says "try again shortly"; 410 says "this is gone for good").
+8. **Only a purged drawing's `/open` and `/export` routes answer `410 Gone`** — a never-finished drawing (staged, queued, extracting, failed, cancelled, or `ready`/`in_review` with no `final_revision` yet) keeps the existing `409` those routes already give, because that refusal is *transient*: the drawing may still become ready or get finished. `410` is reserved for the one case that can never change: a tombstone. The UI's retry logic for the two must differ (409 says "try again shortly"; 410 says "this is gone for good").
 9. **The access-token gate exempts `/api/auth` (how a token is ever supplied) and `/api/health`** (operational monitoring must work identically with or without a token configured; its body already carries only counts and type names under CLAUDE.md §1, so publishing it needs no secret) **and nothing else under `/api/`.** Static files (`/`, everything the SPA serves) stay open regardless: they are application code, not client data, and gating them would only break the token-prompt UI's own ability to load.
 10. **The token cookie has no `Secure` flag.** B2's real-browser drive already exercises "plain HTTP over the LAN" as a supported deployment shape (no `crypto.subtle`, falls back to pure-JS SHA-256); a `Secure` cookie would silently never be sent on that exact path, which is worse than the (already-accepted, LAN-only) risk of a token readable by anyone who can already read the LAN's HTTP traffic. `HttpOnly` and `SameSite=Strict` are set regardless — the token is still inaccessible to any script and never sent cross-site.
 11. **`windows_safe_component` rewrites a name rather than refusing it.** A mass export must account for every drawing it was asked to export (the manifest, decision 4); refusing an entire drawing because a title block's filename happens to collide with an NTFS-reserved device name would be a worse failure than quietly suffixing it.
+12. **An interrupted mass-export job is recovered through the SAME startup path as B2's upload recovery** (`Worker`'s `startup` hook, run once, under the single-process lock) rather than a second mechanism: `Exports.fail_interrupted()` marks every job still `running` as `failed` (`error_type` "interrupted") and removes its half-written temp ZIP, because the thread that was building it died with the process — there is nothing to resume a ZIP build from, unlike a GPU extraction (which keeps `result.json` for a cheap Retry). Each recovery step (`uploads.recover()`, `exports.fail_interrupted()`) is guarded separately, so a fault in one does not skip the other.
+13. **Mass export checks the free-disk reserve (`SINDRI_MIN_FREE_MB`) before building the ZIP and again before each drawing**, reusing `Uploads.guard_disk()` rather than a second disk check — the reserve exists so an import can never fill the disk under a review journal (batch design §2), and a multi-gigabyte mass export is exactly the kind of write that reserve was built for. A breach fails the job with `error_type` "OutOfDisk" (the 507-equivalent outcome for a background job, which has no HTTP response to answer 507 on) and removes the temp ZIP, rather than leaving a job "running" forever or a half-written ZIP on disk.
 
 ---
 
@@ -55,13 +57,13 @@
 | `app/batch/db.py` | + migration (confirm the number at implementation time — see Task 1): `export` table (mass-export jobs) |
 | `app/batch/export_render.py` (new) | `render_export`, `InputUnavailable`, `exportable` — moved from `app/main.py`, unchanged behaviour |
 | `app/batch/names.py` (new) | `windows_safe_component`, `unique_export_path` |
-| `app/batch/repo.py` | + `create_export`, `update_export_progress`, `finish_export`, `get_export`, `UnknownExport`; `purge_candidates`, `purge` |
-| `app/batch/exports.py` (new) | `Exports`: `start`, `status`, `_run` (thread body), `_export_one` (one manifest row, never raises), `delete_expired_zips` |
+| `app/batch/repo.py` | + `create_export`, `update_export_progress`, `finish_export`, `get_export`, `running_exports`, `UnknownExport`; `purge_candidates`, `purge` |
+| `app/batch/exports.py` (new) | `Exports`: `start`, `status`, `_run` (thread body, disk-guarded), `_export_one` (one manifest row, never raises), `fail_interrupted` (startup recovery), `delete_expired_zips` |
 | `app/batch/housekeeping.py` (new) | `Housekeeping`: `sweep_retention`, `purge_one`, `sweep_export_zips`, `start`/`stop` (its own daemon thread) |
 | `app/batch/paths.py` | + `DataDir.exports`, `DataDir.export_zip_path` |
-| `app/batch/runtime.py` | + `Exports`, `Housekeeping`, `SINDRI_RETENTION_DAYS` |
+| `app/batch/runtime.py` | + `Exports` (now takes `uploads` too, for the disk guard), `Housekeeping`, `SINDRI_RETENTION_DAYS`, `_recover_on_startup` (wires `uploads.recover()` + `exports.fail_interrupted()` into the Worker's existing `startup` hook, each guarded separately) |
 | `app/auth.py` (new) | `configured_token`, `token_matches`, `extract_token`, `requires_token`, cookie/header constants |
-| `app/main.py` | `_render_export` alias; `POST /api/exports`, `GET /api/exports/{id}`, `GET /api/exports/{id}/download`; 410 for a purged/never-finished drawing in `/open` and `/export`; token middleware + `POST /api/auth` |
+| `app/main.py` | `_render_export` alias; `POST /api/exports`, `GET /api/exports/{id}`, `GET /api/exports/{id}/download`; 410 for a purged drawing (tombstone only) in `/open` and `/export`; token middleware + `POST /api/auth` |
 | `app/static/js/auth.js` (new) | `isApiPath`, `needsToken`, `submitToken`, `installAuthGate` (pure, injected `fetch`) + DOM prompt |
 | `app/static/js/massexport.js` (new) | `exportStatusText`, `pollIntervalMs`, `downloadUrl` (pure) + the work list's "Export selected" wiring |
 | `app/static/js/api.js` | + `requestExport`, `getExport` |
@@ -563,7 +565,7 @@ Expected: PASS
 - [ ] **Step 5: Full suite + commit**
 
 Run: `python -m pytest -q`
-Expected: baseline + 4 + 11 passed, 2 skipped
+Expected: baseline + 4 + 18 passed, 2 skipped
 
 ```bash
 git add app/batch/names.py tests/batch/test_names.py
@@ -617,6 +619,15 @@ def test_finish_export_records_state_and_error_type(repo):
 def test_get_export_of_an_unknown_id_is_404(repo):
     with pytest.raises(UnknownExport):
         repo.get_export("f" * 32)
+
+
+def test_running_exports_lists_only_running_jobs(repo):
+    """The query Task 5's startup recovery reads: a job already `done` or
+    `failed` is someone else's finished business, not a crash leftover."""
+    a = repo.create_export(["a"])
+    b = repo.create_export(["b"])
+    repo.finish_export(b["id"], "done")
+    assert repo.running_exports() == [a["id"]]
 ```
 
 - [ ] **Step 2: Run to confirm failure**
@@ -689,7 +700,7 @@ Expected: PASS
 - [ ] **Step 5: Full suite + commit**
 
 Run: `python -m pytest -q`
-Expected: baseline + 4 + 11 + 5 passed, 2 skipped
+Expected: baseline + 4 + 18 + 5 passed, 2 skipped
 
 ```bash
 git add app/batch/repo.py tests/batch/test_repo.py
@@ -742,6 +753,7 @@ from app.batch import db
 from app.batch.exports import Exports
 from app.batch.paths import DataDir
 from app.batch.repo import Repo
+from app.batch.uploads import Uploads
 from app.review.store import ReviewStore
 
 
@@ -752,7 +764,12 @@ def rig(tmp_path):
     repo = Repo(conn)
     data = DataDir(tmp_path / "data")
     store = ReviewStore(tmp_path / "reviews")
-    return repo, data, store, Exports(repo, data, store)
+    # min_free_bytes=0: the disk guard is OFF by default here, the same
+    # convention tests/conftest.py uses for uploads (SINDRI_MIN_FREE_MB=0) --
+    # the disk-guard tests below build their OWN Uploads with a patched
+    # free_bytes instead of reusing this one.
+    uploads = Uploads(repo, data, min_free_bytes=0)
+    return repo, data, store, Exports(repo, data, store, uploads)
 
 
 def _finished_document(repo, data, store, doc_id, *, rows, batch_name="Flansch"):
@@ -898,6 +915,101 @@ def test_delete_expired_zips_removes_only_old_ones(rig):
     assert removed == 1
     assert not p.is_file()
     assert data.export_zip_path(fresh_job["id"]).is_file()
+
+
+def test_fail_interrupted_marks_a_running_job_failed_and_removes_its_temp_zip(rig):
+    """At startup: a job still `running` was cut off by a crash or restart.
+    The thread that was building it is gone -- there is nothing to resume a
+    ZIP build from (unlike a GPU extraction, which keeps result.json for a
+    cheap Retry) -- so it is simply marked failed, and its half-written
+    temp ZIP (the exact name _run's own tempfile.mkstemp produces) is
+    cleaned up rather than left behind forever in exports/."""
+    repo, data, store, exports = rig
+    job = repo.create_export(["a" * 32])
+    stray = data.exports / f"{job['id']}.somejunk.tmp.zip"
+    stray.write_bytes(b"partial")
+    unrelated = data.exports / "not-a-temp-zip.zip"
+    unrelated.write_bytes(b"keep me")
+
+    exports.fail_interrupted()
+
+    got = repo.get_export(job["id"])
+    assert (got["state"], got["error_type"]) == ("failed", "interrupted")
+    assert not stray.exists()
+    assert unrelated.is_file()   # only THIS job's temp zip is removed
+
+
+def test_fail_interrupted_leaves_a_done_job_alone(rig):
+    repo, data, store, exports = rig
+    job = repo.create_export(["a" * 32])
+    repo.finish_export(job["id"], "done")
+    exports.fail_interrupted()
+    assert repo.get_export(job["id"])["state"] == "done"
+
+
+def test_mass_export_fails_early_when_the_disk_reserve_is_already_breached(rig, tmp_path):
+    """The disk guard (batch design §4, decision 13) is checked before any
+    byte of the ZIP is written -- a multi-gigabyte export must not start at
+    all if the reserve is already gone."""
+    repo, data, store, _unused_exports = rig
+    from app.batch.exports import Exports as ExportsClass
+    from app.batch.uploads import Uploads
+
+    # A min_free_bytes no real free-space reading can satisfy: guard_disk
+    # always raises DiskFull, exactly as it does in production when the
+    # reserve is breached.
+    guarded_uploads = Uploads(repo, data, min_free_bytes=1,
+                              free_bytes=lambda path: 0)
+    exports = ExportsClass(repo, data, store, guarded_uploads)
+    row = {"id": "a", "pos": 1, "nominal": "20", "suggested": False}
+    _finished_document(repo, data, store, "a" * 32, rows=[row])
+
+    job = exports.start(["a" * 32])
+    exports._run(job["id"], ["a" * 32])
+
+    got = repo.get_export(job["id"])
+    assert (got["state"], got["error_type"]) == ("failed", "OutOfDisk")
+    assert not data.export_zip_path(job["id"]).is_file()
+    assert not list(data.exports.glob(f"{job['id']}.*.tmp.zip"))   # temp zip cleaned up
+
+
+def test_mass_export_fails_between_drawings_when_the_reserve_runs_out(rig, monkeypatch):
+    """Checked between drawings too, not only once at the start: a long job
+    exporting many large drawings must not be allowed to fill the disk one
+    drawing at a time."""
+    import app.batch.export_render as export_render
+    import app.batch.uploads as uploads_mod
+    from app.batch.exports import Exports as ExportsClass
+    from app.batch.uploads import Uploads
+    repo, data, store, _unused_exports = rig
+
+    row = {"id": "a", "pos": 1, "nominal": "20", "suggested": False}
+    _finished_document(repo, data, store, "a" * 32, rows=[row])
+    _finished_document(repo, data, store, "b" * 32, rows=[row])
+
+    # Free space enough for the FIRST guard_disk() call (before the loop),
+    # gone by the second (before the second drawing) -- real behaviour under
+    # a disk genuinely filling up during a long export.
+    calls = {"n": 0}
+
+    def shrinking_free(path):
+        calls["n"] += 1
+        return 10 * uploads_mod.MIB if calls["n"] == 1 else 0
+
+    guarded_uploads = Uploads(repo, data, min_free_bytes=1 * uploads_mod.MIB,
+                              free_bytes=shrinking_free)
+    exports = ExportsClass(repo, data, store, guarded_uploads)
+    monkeypatch.setattr(export_render, "write_workbook",
+                        lambda rows, out, **kw: out.write_bytes(b"XLSX"))
+    monkeypatch.setattr(export_render, "render_ballooned_pdf",
+                        lambda src, rows, dpi, out_path: out_path.write_bytes(b"%PDF"))
+
+    job = exports.start(["a" * 32, "b" * 32])
+    exports._run(job["id"], ["a" * 32, "b" * 32])
+
+    got = repo.get_export(job["id"])
+    assert (got["state"], got["error_type"]) == ("failed", "OutOfDisk")
+    assert not data.export_zip_path(job["id"]).is_file()
 ```
 
 - [ ] **Step 2: Run to confirm failure**
@@ -953,6 +1065,7 @@ from pathlib import Path
 from app.batch.export_render import InputUnavailable, exportable, render_export
 from app.batch.names import unique_export_path, windows_safe_component
 from app.batch.repo import UnknownDocument
+from app.batch.uploads import DiskFull
 from app.models import Characteristic
 
 log = logging.getLogger(__name__)
@@ -977,10 +1090,15 @@ def _manifest_csv(rows: list) -> bytes:
 
 
 class Exports:
-    def __init__(self, repo, data, store):
+    def __init__(self, repo, data, store, uploads):
         self.repo = repo
         self.data = data
         self.store = store
+        # The SAME disk reserve imports are guarded by (batch design §2):
+        # a multi-gigabyte mass export is exactly the write that reserve
+        # exists for, and a second, independent threshold would just be a
+        # second number to keep in sync with SINDRI_MIN_FREE_MB.
+        self.uploads = uploads
 
     def start(self, document_ids: list) -> dict:
         job = self.repo.create_export(document_ids)
@@ -992,6 +1110,19 @@ class Exports:
     def status(self, export_id) -> dict:
         return self.repo.get_export(export_id)
 
+    def fail_interrupted(self) -> None:
+        """At startup (wired into the Worker's startup hook, Task 6): a job
+        still `running` was cut off by a crash or restart. Unlike a GPU
+        extraction, there is no result.json equivalent to resume from -- the
+        thread that was building the ZIP is simply gone -- so each is marked
+        `failed` and its half-written temp ZIP (the exact name `_run`'s own
+        tempfile.mkstemp produces: "<id>.<random>.tmp.zip") is removed, so a
+        stale .tmp.zip never lingers in exports/ forever."""
+        for export_id in self.repo.running_exports():
+            self.repo.finish_export(export_id, "failed", error_type="interrupted")
+            for tmp in self.data.exports.glob(f"{export_id}.*.tmp.zip"):
+                tmp.unlink(missing_ok=True)
+
     def _run(self, export_id, document_ids) -> None:
         zip_path = self.data.export_zip_path(export_id)
         fd, tmp_name = tempfile.mkstemp(
@@ -999,20 +1130,32 @@ class Exports:
         os.close(fd)
         tmp = Path(tmp_name)
         try:
+            self.uploads.guard_disk()
             used_paths = set()
             rows = []
             with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
                 for i, doc_id in enumerate(document_ids):
+                    # Checked between drawings too, not only once at the
+                    # start: a long job exporting many large drawings must
+                    # not be allowed to fill the disk one drawing at a time.
+                    self.uploads.guard_disk()
                     rows.append(self._export_one(zf, doc_id, used_paths))
                     self.repo.update_export_progress(export_id, i + 1)
                 zf.writestr("manifest.csv", _manifest_csv(rows))
             tmp.replace(zip_path)       # atomic: no reader ever sees a partial ZIP
             self.repo.finish_export(export_id, "done")
+        except DiskFull:
+            # The 507-equivalent outcome for a background job, which has no
+            # HTTP response to answer 507 on -- a fixed error_type string
+            # rather than the exception's own class name, so a future rename
+            # of DiskFull can never silently change what the manifest/DB say.
+            log.warning("mass export %s failed: disk reserve reached", export_id[:8])
+            self.repo.finish_export(export_id, "failed", error_type="OutOfDisk")
         except Exception as e:
-            # A fault building the ZIP ITSELF (disk full, a permissions
-            # error) -- not a single drawing's render fault, which
-            # _export_one already turned into a manifest row instead of
-            # raising. TYPE only (CLAUDE.md §1).
+            # A fault building the ZIP ITSELF (a permissions error, a bug) --
+            # not a single drawing's render fault, which _export_one already
+            # turned into a manifest row instead of raising. TYPE only
+            # (CLAUDE.md §1).
             log.warning("mass export %s failed: %s", export_id[:8], type(e).__name__)
             self.repo.finish_export(export_id, "failed", error_type=type(e).__name__)
         finally:
@@ -1054,6 +1197,11 @@ class Exports:
             pdf_path = render_export(doc_id, work, doc["final_revision"], "pdf", sealed)
             zf.write(xlsx_path, arcname=xlsx_name)
             zf.write(pdf_path, arcname=pdf_name)
+            # Harmless if retention's purge() races this between the render
+            # above and this call: it only bumps exported_at/exported_revision
+            # on a row that is about to become (or already is) a tombstone,
+            # and purge_candidates/purge only ever read `finished` rows, so a
+            # stray bump on a `purged` one is simply never looked at again.
             self.repo.mark_exported(doc_id, doc["final_revision"])
             # A row still `finished` was exported cleanly; any other state
             # with a final_revision got here only by being reopened after a
@@ -1094,7 +1242,7 @@ Expected: PASS
 - [ ] **Step 5: Full suite + commit**
 
 Run: `python -m pytest -q`
-Expected: baseline + 4 + 11 + 5 + 7 passed, 2 skipped
+Expected: baseline + 4 + 18 + 5 + 11 passed, 2 skipped
 
 ```bash
 git add app/batch/exports.py app/batch/paths.py tests/batch/test_exports.py tests/batch/test_db.py
@@ -1118,9 +1266,9 @@ EOF
 
 **Files:**
 - Modify: `app/main.py`, `app/batch/runtime.py`
-- Test: `tests/test_api.py`
+- Test: `tests/test_api.py`, `tests/batch/test_runtime.py`
 
-- [ ] **Step 1: Write the failing tests** — append to `tests/test_api.py`:
+- [ ] **Step 1: Write the failing tests.** Append to `tests/test_api.py`:
 
 ```python
 def test_mass_export_builds_a_zip_and_reports_progress(sample_pdf, stub_backend):
@@ -1158,19 +1306,93 @@ def test_mass_export_request_rejects_a_malformed_id():
     assert r.status_code == 422
 ```
 
+Then append to `tests/batch/test_runtime.py` (it already has a `make(tmp_path, **kw)` helper and imports `fcntl` — see `test_recovery_runs_only_under_the_single_worker_lock` for the pattern these two mirror):
+
+```python
+def test_an_interrupted_export_is_marked_failed_at_startup(tmp_path):
+    """A mass-export job still `running` when the process died is NOT
+    resumed -- the thread that was building it is gone, so there is nothing
+    to continue a ZIP from (batch design §4, decision 12). Wired into the
+    same startup path as upload recovery, under the single-process lock."""
+    rt = make(tmp_path)
+    job = rt.repo.create_export(["a" * 32])
+    stray = rt.data.exports / f"{job['id']}.abc123.tmp.zip"
+    stray.write_bytes(b"partial")
+    try:
+        rt.start()
+        got = rt.repo.get_export(job["id"])
+        assert (got["state"], got["error_type"]) == ("failed", "interrupted")
+        assert not stray.exists()
+    finally:
+        rt.close()
+
+
+def test_export_recovery_runs_only_under_the_single_worker_lock(tmp_path):
+    """Mirrors test_recovery_runs_only_under_the_single_worker_lock above: a
+    second process that cannot take the worker lock must not touch another
+    process's in-flight export either -- it never runs fail_interrupted at
+    all, so the job it would otherwise have marked `failed` stays `running`
+    until a process that DOES hold the lock restarts."""
+    rt = make(tmp_path)
+    job = rt.repo.create_export(["a" * 32])
+    holder = open(rt.data.root / "worker.lock", "w")      # the other process
+    fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        with pytest.raises(RuntimeError, match="another process"):
+            rt.start()
+        assert rt.repo.get_export(job["id"])["state"] == "running"
+    finally:
+        holder.close()
+        rt.close()
+```
+
 - [ ] **Step 2: Run to confirm failure**
 
 Run: `python -m pytest tests/test_api.py -k mass_export -q`
 Expected: FAIL — `404 Not Found` for `POST /api/exports` (route does not exist yet)
 
-- [ ] **Step 3: Implement.** In `app/batch/runtime.py`, wire `Exports` in (shown fully in Task 7, which also adds `Housekeeping`; for this task alone, add just the `Exports` line):
+Run: `python -m pytest tests/batch/test_runtime.py -k export -q`
+Expected: FAIL — `AttributeError: 'Runtime' object has no attribute 'exports'`
+
+- [ ] **Step 3: Implement.** In `app/batch/runtime.py`, wire `Exports` in and recover an interrupted job the same way B2 recovers an interrupted upload — through the Worker's existing `startup` hook, which today reads `startup=lambda: self.uploads.recover()`. Replace that single step with a small module-level function so each recovery step is guarded on its own (decision 12: a fault in one must not skip the other):
 
 ```python
+import logging
+...
 from app.batch.exports import Exports
 ...
-        self.uploads = Uploads(self.repo, self.data, min_free_bytes=min_free_mb * MIB)
-        self.exports = Exports(self.repo, self.data, self.store)
+
+log = logging.getLogger(__name__)
+
+
+def _recover_on_startup(uploads, exports) -> None:
+    """Run once, under the worker's single-process lock, right after it is
+    taken (Worker.start()) -- the same guarantee B2's import recovery relies
+    on. Each step is independent: a fault in the upload sweep must not skip
+    export recovery, and vice versa. (Worker.start() also wraps the WHOLE
+    `startup()` call in its own try/except as a second, redundant safety
+    net; with both steps already guarded here, that outer catch should never
+    actually fire -- it stays as defense in depth, not as the real guard.)"""
+    try:
+        uploads.recover()
+    except Exception as e:
+        log.warning("upload recovery failed: %s", type(e).__name__)
+    try:
+        exports.fail_interrupted()
+    except Exception as e:
+        log.warning("export recovery failed: %s", type(e).__name__)
 ```
+
+and in `Runtime.__init__`, change:
+
+```python
+        self.uploads = Uploads(self.repo, self.data, min_free_bytes=min_free_mb * MIB)
+        self.exports = Exports(self.repo, self.data, self.store, self.uploads)
+        self.worker = Worker(self.repo, self.data, self.store, extract_fn, header_fn,
+                             startup=lambda: _recover_on_startup(self.uploads, self.exports))
+```
+
+(the `Exports(...)` line now takes `self.uploads` too, for the disk guard Task 5 built; the `Worker(...)` line replaces whatever the existing `startup=lambda: self.uploads.recover()` argument looks like today — keep every other argument the real code already passes it unchanged).
 
 In `app/main.py`, add near the other request models:
 
@@ -1219,19 +1441,24 @@ def download_export(export_id: str):
 Run: `python -m pytest tests/test_api.py -k mass_export -q`
 Expected: PASS
 
+Run: `python -m pytest tests/batch/test_runtime.py -k export -q`
+Expected: PASS
+
 - [ ] **Step 5: Full suite + commit**
 
 Run: `python -m pytest -q`
-Expected: baseline + 4 + 11 + 5 + 7 + 4 passed, 2 skipped
+Expected: baseline + 4 + 18 + 5 + 11 + 6 passed, 2 skipped
 
 ```bash
-git add app/main.py app/batch/runtime.py tests/test_api.py
+git add app/main.py app/batch/runtime.py tests/test_api.py tests/batch/test_runtime.py
 git commit -m "$(cat <<'EOF'
-batch: expose mass export over HTTP
+batch: expose mass export over HTTP and recover an interrupted job
 
 POST /api/exports starts a job on its own thread and returns immediately;
 GET .../download refuses a still-building job (409) or an expired one
 (410, rebuildable from the same selection) rather than serving nothing.
+A job still `running` after a crash is marked failed (not resumed) at
+the same startup point B2's upload recovery already runs at.
 
 Co-Authored-By: <model name> <noreply@anthropic.com>
 EOF
@@ -1343,7 +1570,7 @@ Expected: PASS
 - [ ] **Step 5: Full suite + commit**
 
 Run: `python -m pytest -q`
-Expected: baseline + 4 + 11 + 5 + 7 + 4 + 4 passed, 2 skipped
+Expected: baseline + 4 + 18 + 5 + 11 + 6 + 4 passed, 2 skipped
 
 ```bash
 git add app/batch/repo.py tests/batch/test_repo.py
@@ -1590,10 +1817,14 @@ class Runtime:
             raise ValueError("the retention window cannot be negative")
         ...
         self.uploads = Uploads(self.repo, self.data, min_free_bytes=min_free_mb * MIB)
-        self.exports = Exports(self.repo, self.data, self.store)
+        self.exports = Exports(self.repo, self.data, self.store, self.uploads)
         self.housekeeping = Housekeeping(self.repo, self.data, self.exports,
                                          retention_days=retention_days)
-        self.worker = Worker(...)   # unchanged
+        # As wired in Task 6: both of the worker's startup-recovery steps
+        # (upload sweep, export recovery), guarded independently. Nothing
+        # else about the Worker(...) call changes here.
+        self.worker = Worker(self.repo, self.data, self.store, extract_fn, header_fn,
+                             startup=lambda: _recover_on_startup(self.uploads, self.exports))
 
     @classmethod
     def from_env(cls, extract_fn, header_fn) -> "Runtime":
@@ -1646,7 +1877,7 @@ Expected: PASS
 - [ ] **Step 7: Full suite + commit**
 
 Run: `python -m pytest -q`
-Expected: baseline + 4+11+5+7+4+4+6+2 passed, 2 skipped
+Expected: baseline + 4+18+5+11+6+4+5+2 passed, 2 skipped
 
 ```bash
 git add app/batch/housekeeping.py app/batch/runtime.py tests/batch/test_housekeeping.py tests/batch/test_runtime.py
@@ -1664,7 +1895,7 @@ EOF
 
 ---
 
-### Task 9: API — 410 for a purged (or never-finished) drawing
+### Task 9: API — 410 for a purged drawing (tombstone only)
 
 **Data-integrity: yes** (the user-visible half of the tombstone guarantee: no reopen, no export).
 
@@ -1738,7 +1969,7 @@ Expected: PASS
 - [ ] **Step 5: Full suite + commit**
 
 Run: `python -m pytest -q`
-Expected: baseline + 4+11+5+7+4+4+6+2+2 passed, 2 skipped
+Expected: baseline + 4+18+5+11+6+4+5+2+2 passed, 2 skipped
 
 ```bash
 git add app/main.py tests/test_api.py
@@ -1900,7 +2131,7 @@ Expected: PASS
 - [ ] **Step 5: Full suite + commit**
 
 Run: `python -m pytest -q`
-Expected: baseline + … + 10 passed, 2 skipped
+Expected: baseline + … + 9 passed, 2 skipped
 
 ```bash
 git add app/auth.py tests/test_auth.py
@@ -2255,7 +2486,13 @@ EOF
 
 **Data-integrity: no** (client-side only; the server-side guarantees are Tasks 1-9).
 
-This task wires B3's work-list bulk "Export selected" action to the real endpoint. **B3 is concurrent with this plan — before writing code, read `docs/plans/2026-10-08-batch-b3-ui-plan.state.md`** (written once B3 ships) and confirm the actual names of: the work-list module (planned as `app/static/js/worklist.js`), its bulk-export handler (B3's own decision 4 describes it as a client-side loop calling the existing per-document export routes — find that function), and `api.js`'s existing export helpers. Adjust the snippets below to match whatever B3 actually shipped; the behaviour they must produce does not change.
+This task wires B3's work-list bulk "Export selected" action to the real endpoint. **B3 is concurrent with this plan — before writing code, read `docs/plans/2026-10-08-batch-b3-ui-plan.state.md`** (written once B3 ships) and confirm the actual shape of what landed. As DRAFTED in B3's plan (`docs/plans/2026-10-08-batch-b3-ui-plan.md`, not yet built as of this writing), the relevant code is a closure named `runExport(downloadFn, toastFn)` defined *inside* `initWorkList({ listDocuments, moveToFront, cancelDocument, retryDocument, deleteDocument, downloadExport, pauseQueue, resumeQueue, toast, badgesFor, onOpenDoc })`, reading the module-level `_selected` (a `Set` of checked document ids) and `_docs` (the work list's own cached array, from `getDocs()`), and wired up with:
+
+```js
+document.getElementById('wl-bulk-export')?.addEventListener('click', () => runExport(downloadExport, toast));
+```
+
+Its current (B3-interim) body filters `_selected` down to drawings whose `state === 'finished'`, calls the injected `downloadExport(id, 'xlsx', final_revision)` and `downloadExport(id, 'pdf', final_revision)` once per surviving id, and toasts how many were skipped — exactly B3's own decision 4 ("a client-side loop over the existing per-document export routes ... skipping any selected drawing that is not finished"). **If what B3 actually shipped differs from this** (a different closure name, a different module-level state variable, a different injected-dependency shape), adapt every snippet below to match the real code — the behaviour this task must produce does not change, only how it is wired in.
 
 **Files:**
 - Create: `app/static/js/massexport.js`
@@ -2341,37 +2578,76 @@ export async function getExport(exportId) {
 Run: `node --test tests/js/massexport.test.mjs`
 Expected: PASS, 3 tests
 
-- [ ] **Step 5: Replace B3's interim bulk-export handler.** In `app/static/js/worklist.js`, find the function B3's own plan describes (decision 4: "a client-side loop over the existing per-document export routes, skipping any selected drawing that is not `finished` with a toast naming how many were skipped"). Replace its body with:
+- [ ] **Step 5: Replace B3's interim `runExport`.** Add the two imports near the top of `app/static/js/worklist.js`, alongside its existing imports:
 
 ```js
 import { requestExport, getExport } from './api.js';
 import { exportStatusText, pollIntervalMs, downloadUrl } from './massexport.js';
+```
 
-async function exportSelected(selectedIds) {
-  if (!selectedIds.length) return;
-  const job = await requestExport(selectedIds);
-  const statusEl = showExportProgress(exportStatusText(job));   // reuses the work list's existing toast/banner element
-  const poll = async () => {
-    const current = await getExport(job.id);
-    statusEl.textContent = exportStatusText(current);
-    if (current.state === 'running') {
-      setTimeout(poll, pollIntervalMs());
+Then replace `runExport`'s entire body (not its call site's arguments yet — that is the next edit) with:
+
+```js
+  // Replaces the per-file download loop: B3's interim version pre-filtered
+  // _selected to `state === 'finished'` and downloaded each file itself.
+  // Now every selected id is sent AS IS -- the server's own manifest.csv
+  // reports which ones were skipped and why (not_finished / failed /
+  // purged / export_error, batch design §4, decision 15: scope is decided
+  // server-side, not duplicated into a second client-side rule that could
+  // drift from it) -- so there is nothing left for this function to
+  // pre-filter or to toast a skip count for itself.
+  async function runExport(toastFn) {
+    const ids = [..._selected];
+    if (!ids.length) return;
+    let job;
+    try {
+      job = await requestExport(ids);
+    } catch (err) {
+      toastFn?.({ kind: 'error', title: 'Could not start the export', msg: String(err?.message || err) });
       return;
     }
-    if (current.state === 'done') {
+    const poll = async () => {
+      let current;
+      try {
+        current = await getExport(job.id);
+      } catch (err) {
+        toastFn?.({ kind: 'error', title: 'Could not check the export', msg: String(err?.message || err) });
+        return;
+      }
+      if (current.state === 'running') {
+        setTimeout(poll, pollIntervalMs());
+        return;
+      }
+      if (current.state === 'failed') {
+        toastFn?.({ kind: 'error', title: exportStatusText(current) });
+        return;
+      }
+      // current.state === 'done': download, then let the manifest inside
+      // the ZIP (not a toast) say which of `ids` were actually included.
       const a = document.createElement('a');
       a.href = downloadUrl(job.id);
       a.download = '';
       document.body.appendChild(a);
       a.click();
       a.remove();
-    }
-  };
-  poll();
-}
+    };
+    poll();
+  }
 ```
 
-(`showExportProgress` is assumed to be an existing small helper in `worklist.js`'s own toast/status plumbing from B3; if B3 shipped no such helper, add a two-line one that sets `textContent` on a status element already in `index.html`'s work-list header — do not introduce a new UI surface for this, reuse whatever B3 built for "Extracting · N queued" so the screen has one place progress text appears, not two.)
+and update its one call site from
+
+```js
+  document.getElementById('wl-bulk-export')?.addEventListener('click', () => runExport(downloadExport, toast));
+```
+
+to
+
+```js
+  document.getElementById('wl-bulk-export')?.addEventListener('click', () => runExport(toast));
+```
+
+(`downloadExport` — the injected per-document download function `runExport` no longer calls — may now be unused inside `initWorkList`'s destructured parameters; check whether anything else in the real shipped file still calls it before removing it from the destructuring, and leave it alone if it does or if removing it is not a clean one-line change. The `kind: 'error'` toast values above are illustrative: match whatever `kind` vocabulary the real `toast()` function and its CSS actually support — grep for existing `kind:` toast calls in `worklist.js`/`main.js` first rather than inventing a new one.)
 
 - [ ] **Step 6: Full suite + node count + commit**
 
@@ -2388,7 +2664,8 @@ ui: wire the work list's bulk export to the real mass-export job
 
 Replaces B3's interim client-side per-document loop with POST
 /api/exports, a 3 s poll matching the work list's own cadence, and a
-download once the ZIP is ready.
+download once the ZIP is ready. Skip reasons are now the server
+manifest's job, not a second client-side "finished only" filter.
 
 Co-Authored-By: <model name> <noreply@anthropic.com>
 EOF
@@ -2432,7 +2709,7 @@ services:
       # - SINDRI_ACCESS_TOKEN=
 ```
 
-- [ ] **Step 3: Add the B4 paragraph to `CLAUDE.md`**, in §2, immediately after the existing "BATCH B2: IMPORT" paragraph:
+- [ ] **Step 3: Add the B4 paragraph to `CLAUDE.md`**, in §2, immediately after the batch B3 paragraph (confirm its heading once B3 has landed — B3 lands before this plan starts, so by the time this task runs CLAUDE.md should already have a "BATCH B3: …" paragraph right after "BATCH B2: IMPORT"; put B4's paragraph directly after THAT one, not after B2's):
 
 ```markdown
 **BATCH B4: EXPORT & OPS** (`docs/plans/2026-10-08-batch-b4-export-ops-plan.md`).
