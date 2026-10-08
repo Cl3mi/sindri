@@ -249,7 +249,7 @@ except `/api/auth` (how a token is supplied) and `/api/health`;
 shape and a `Secure` cookie would silently never be sent on it. This closes
 the batch/async-review project (B1-B4); HITL phase 2 (forcing, grading, dev
 validation, return bundle) is next. Suite at close: **1946 passed, 2
-skipped**; node 249; guard 32/0.
+skipped**; node 269; guard 32/0.
 
 **`read-lora-v1` IS NOW HARMFUL UNDER THE SHIPPED POLICY — deployment CLOSED**
 (2026-10-05, `docs/plans/2026-10-05-read-adapter-repricing-result.md`;
