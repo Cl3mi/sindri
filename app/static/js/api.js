@@ -198,6 +198,22 @@ export const pauseQueue = async () =>
 export const resumeQueue = async () =>
   jsonOrThrow(await fetch('/api/queue/resume', { method: 'POST' }), 'Could not resume the queue');
 
+// Mass export (batch design §4): start a job over a set of document ids
+// and poll its progress. Both throw via jsonOrThrow -- a failed POST never
+// starts a phantom job the UI then polls forever.
+export async function requestExport(documentIds) {
+  return jsonOrThrow(await fetch('/api/exports', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ document_ids: documentIds }),
+  }), 'Could not start the export');
+}
+
+export async function getExport(exportId) {
+  return jsonOrThrow(await fetch(`/api/exports/${encodeURIComponent(exportId)}`),
+                     'Could not check the export');
+}
+
 // Download a sealed revision's file; the server names it after the drawing.
 export async function downloadExport(id, kind, revision) {
   const res = await fetch(docUrl(id, `/export/${kind}?rev=${revision}`));

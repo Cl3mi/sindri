@@ -918,6 +918,10 @@ input[type="file"].sr {
 .wl-table th, .wl-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; font-size: var(--fs-sm); }
 .wl-bulk { display: flex; gap: 8px; align-items: center; padding: 8px 14px; border-top: 1px solid var(--border); }
 .state-chip { padding: 1px 8px; border-radius: 10px; background: var(--bg-hover); font-size: var(--fs-xs); }
+/* A purged row is a tombstone, not an active state -- it reads as inert
+   (muted text, no background fill) rather than drawing the eye like a live
+   state chip would (batch design §4 decision 6/8). */
+.state-chip-muted { background: transparent; color: var(--fg-muted); border: 1px solid var(--border); }
 .muted { color: var(--fg-muted); font-size: var(--fs-xs); }
 
 /* ===== Banners (banner.js, batch design §3/§5) ====================== */

@@ -26,6 +26,14 @@ test('filterDocuments needsMe keeps only ready and in_review', () => {
   assert.deepEqual(filterDocuments(DOCS, { needsMe: true }).map((d) => d.id), ['a', 'b']);
 });
 
+// A purged row (retention's tombstone, batch design §4) is reviewable by
+// nobody ever again -- needsMe must not resurface it just because it once
+// held real work.
+test('filterDocuments needsMe excludes a purged drawing', () => {
+  const docs = [...DOCS, { id: 'd', file_name: 'Deckel.pdf', batch_id: 'b1', state: 'purged' }];
+  assert.deepEqual(filterDocuments(docs, { needsMe: true }).map((d) => d.id), ['a', 'b']);
+});
+
 test('filterDocuments with no filters returns everything, unchanged order', () => {
   assert.deepEqual(filterDocuments(DOCS, {}), DOCS);
 });
@@ -139,6 +147,18 @@ test('summarizeBulkFailures gives reextractDocument its own 409 message (already
   ], 'reextractDocument');
   assert.equal(summary.count, 1);
   assert.match(summary.text, /already reviewed — re-extract only works on untouched drawings/);
+  assert.doesNotMatch(summary.text, /still extracting/);
+});
+
+// retryDocument's 409 covers more than "still stopping" now that a purged
+// (retention-deleted) row answers the same InvalidTransition status --
+// the shared 'default'/deleteDocument wording ("still extracting") would be
+// actively wrong for that case, so retryDocument gets its own, broader text.
+test('summarizeBulkFailures gives retryDocument its own 409 message covering retention deletion', async () => {
+  const { summarizeBulkFailures } = await import('../../app/static/js/worklist.js');
+  const summary = summarizeBulkFailures([{ ok: false, status: 409 }], 'retryDocument');
+  assert.equal(summary.count, 1);
+  assert.match(summary.text, /not retryable/);
   assert.doesNotMatch(summary.text, /still extracting/);
 });
 

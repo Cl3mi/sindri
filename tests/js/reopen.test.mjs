@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { restoreReview, flushBeforeLeaving, shouldReopen } = await import('../../app/static/js/reopen.js');
+const { restoreReview, flushBeforeLeaving, shouldReopen, openFailureCopy } = await import('../../app/static/js/reopen.js');
 const { createJournal } = await import('../../app/static/js/journal.js');
 
 function fakes({ restoreThrows = false } = {}) {
@@ -193,4 +193,23 @@ test('shouldReopen is true for any other drawing, or when nothing is open yet', 
   assert.equal(shouldReopen(journal, 'anything'), true);   // journal.active is false
   journal.start('open-id', 'w1');
   assert.equal(shouldReopen(journal, 'other-id'), true);
+});
+
+// ---- openFailureCopy: carried from B4 Task 9 (decision 8) -----------------
+// /open answers 410 only for a tombstone (a drawing retention has purged) --
+// permanent, unlike the transient 409s/404s the route already gave, which
+// stay "try again". A 410 must route the reviewer back to the work list
+// with no retry offered, since retrying can never succeed.
+test('openFailureCopy marks a 410 as purged, with the fixed sentence and no retry', () => {
+  const copy = openFailureCopy({ status: 410, message: 'drawing was purged after retention' });
+  assert.equal(copy.purged, true);
+  assert.equal(copy.message, "This drawing's files were deleted by retention (its review record is kept).");
+});
+
+test('openFailureCopy leaves every other failure (409, 404, a network hiccup) as "try again"', () => {
+  for (const err of [{ status: 409 }, { status: 404 }, { status: 0 }, new Error('offline')]) {
+    const copy = openFailureCopy(err);
+    assert.equal(copy.purged, false);
+    assert.equal(copy.message, null);
+  }
 });

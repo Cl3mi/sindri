@@ -60,6 +60,21 @@ export function shouldReopen(journal, id) {
   return !(journal.active && journal.sessionId === id);
 }
 
+// What an /open failure means to the reviewer (carried from B4 Task 9,
+// batch design decision 8): a 410 means retention has already deleted this
+// drawing's files -- permanent, unlike the route's existing 409s and 404s,
+// which stay transient ("try again"). Pure, so main.js's catch block reads
+// one answer instead of re-deriving "is this the tombstone case" from a raw
+// status code inline, and so the exact sentence is node-testable without a
+// DOM or a fetch mock.
+export function openFailureCopy(err) {
+  if (err?.status === 410) {
+    return { purged: true,
+             message: "This drawing's files were deleted by retention (its review record is kept)." };
+  }
+  return { purged: false, message: null };
+}
+
 // Before leaving the drawing the journal is on (opening another, or
 // reopening this one): journal.start()/resume() discard unflushed events
 // and /open rotates the writer, so flush first. Resolves true to go ahead.

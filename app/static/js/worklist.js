@@ -4,6 +4,10 @@
 // is what a typed search or a clicked pill applies instantly, between polls.
 
 import { docUrl } from './router.js';
+import { stateLabel } from './badges.js';
+import { requestExport, getExport } from './api.js';
+import { exportStatusText, pollIntervalMs, downloadUrl, exportFailureMessage,
+         downloadFailureMessage } from './massexport.js';
 
 export function filterDocuments(docs, { batchId, state, search, needsMe } = {}) {
   let out = docs;
@@ -94,6 +98,11 @@ const BULK_FAIL_MESSAGES = {
   default: { 409: 'still extracting — cancel it first' },
   deleteDocument: { 409: 'still extracting — cancel it first' },
   reextractDocument: { 409: 'already reviewed — re-extract only works on untouched drawings' },
+  // retryDocument's 409 now covers two different refusals under one status
+  // (InvalidTransition, app/main.py): the extraction still stopping, or the
+  // row being a purged (retention-deleted) tombstone that can never retry
+  // again -- "still extracting" would be flatly wrong for the second case.
+  retryDocument: { 409: 'not retryable right now (still stopping, or deleted by retention)' },
 };
 
 export function summarizeBulkFailures(results, action = 'default') {
@@ -115,6 +124,7 @@ let _pollTimer = null;
 let _selected = new Set();
 let _refreshing = false;   // an in-flight GET /api/documents
 let _refreshAgain = false; // a refresh was asked for while one was already running
+let _exportRunning = false; // a mass-export job is polling; only one per tab
 
 function row(d) {
   const tr = document.createElement('tr');
@@ -128,7 +138,7 @@ function row(d) {
     <td class="check"><input type="checkbox" class="wl-row-check" ${checked} /></td>
     <td class="wl-file"></td>
     <td class="wl-batch"></td>
-    <td><span class="state-chip state-${d.state}">${d.state.replaceAll('_', ' ')}</span></td>
+    <td><span class="state-chip state-${d.state}${d.state === 'purged' ? ' state-chip-muted' : ''}">${stateLabel(d.state)}</span></td>
     <td>${d.flagged_open ?? '—'}/${d.flagged_total ?? '—'}</td>
     <td>${d.unchecked ?? '—'}</td>
     <td class="wl-updated"></td>
@@ -198,7 +208,7 @@ function updateBulkBar() {
 }
 
 export function initWorkList({ listDocuments, moveToFront, cancelDocument, retryDocument,
-                               deleteDocument, reextractDocument, downloadExport, pauseQueue,
+                               deleteDocument, reextractDocument, pauseQueue,
                                resumeQueue, toast, badgesFor: workListBadgesFn, onOpenDoc } = {}) {
   // Every dependency is injected and every DOM lookup is guarded with `?.`:
   // this function is called from main.js at init() time, but the node
@@ -272,7 +282,7 @@ export function initWorkList({ listDocuments, moveToFront, cancelDocument, retry
   });
   document.getElementById('wl-bulk-front')?.addEventListener('click', () => runBulk(moveToFront, toast));
   document.getElementById('wl-bulk-cancel')?.addEventListener('click', () => runBulk(cancelDocument, toast));
-  document.getElementById('wl-bulk-retry')?.addEventListener('click', () => runBulk(retryDocument, toast));
+  document.getElementById('wl-bulk-retry')?.addEventListener('click', () => runBulk(retryDocument, toast, 'retryDocument'));
   document.getElementById('wl-bulk-remove')?.addEventListener('click', () => runBulk(deleteDocument, toast, 'deleteDocument'));
   document.getElementById('wl-bulk-reextract')?.addEventListener('click', () => {
     // Design §2: re-extract discards the drawing's current proposal, so a
@@ -283,7 +293,7 @@ export function initWorkList({ listDocuments, moveToFront, cancelDocument, retry
     if (!confirm(`Re-extract ${n} drawing${n === 1 ? '' : 's'}? Their current proposals are discarded.`)) return;
     runBulk(reextractDocument, toast, 'reextractDocument');
   });
-  document.getElementById('wl-bulk-export')?.addEventListener('click', () => runExport(downloadExport, toast));
+  document.getElementById('wl-bulk-export')?.addEventListener('click', () => runExport(toast));
 
   async function runBulk(fn, toastFn, action = 'default') {
     if (!fn) return;
@@ -311,16 +321,83 @@ export function initWorkList({ listDocuments, moveToFront, cancelDocument, retry
     }
   }
 
-  async function runExport(downloadFn, toastFn) {
-    if (!downloadFn) return;
-    const ids = [..._selected].filter((id) => _docs.find((d) => d.id === id)?.state === 'finished');
-    const skipped = _selected.size - ids.length;
-    for (const id of ids) {
-      try { await downloadFn(id, 'xlsx', _docs.find((d) => d.id === id).final_revision); } catch { /* per-file failure; continue */ }
-      try { await downloadFn(id, 'pdf', _docs.find((d) => d.id === id).final_revision); } catch { /* per-file failure; continue */ }
+  // Replaces the per-file download loop: the old version pre-filtered
+  // `_selected` to `state === 'finished'` and downloaded each file itself.
+  // Now every selected id is sent AS IS -- the real mass-export job
+  // (POST /api/exports) decides scope server-side and its manifest.csv
+  // reports which ones were skipped and why (not_finished / failed /
+  // purged / export_error), so there is nothing left for this function to
+  // pre-filter or to toast a skip count for itself. Only one export runs
+  // per tab at a time: the bulk button is disabled (and shows progress)
+  // for the life of the job.
+  async function runExport(toastFn) {
+    if (_exportRunning) return;
+    const ids = [..._selected];
+    if (!ids.length) return;
+    const btn = document.getElementById('wl-bulk-export');
+    _exportRunning = true;
+    if (btn) { btn.disabled = true; btn.textContent = 'Starting export…'; }
+    const resetButton = () => {
+      _exportRunning = false;
+      if (btn) { btn.disabled = false; btn.textContent = 'Export selected'; }
+    };
+    let job;
+    try {
+      job = await requestExport(ids);
+    } catch (err) {
+      toastFn?.({ kind: 'error', title: 'Could not start the export', msg: String(err?.message || err) });
+      resetButton();
+      return;
     }
-    if (skipped) toastFn?.({ kind: 'warn', title: 'Some drawings were skipped',
-                             msg: `${skipped} selected drawing(s) are not finished yet.` });
+    const poll = async () => {
+      // The button is gone if the screen that held it was torn down (or
+      // replaced) while this poll was in flight -- stop rather than write
+      // into a DOM node, or schedule another tick, nobody will ever see.
+      if (!document.getElementById('wl-bulk-export')) { _exportRunning = false; return; }
+      let current;
+      try {
+        current = await getExport(job.id);
+      } catch (err) {
+        toastFn?.({ kind: 'error', title: 'Could not check the export', msg: String(err?.message || err) });
+        resetButton();
+        return;
+      }
+      if (btn) btn.textContent = exportStatusText(current);
+      if (current.state === 'running') {
+        setTimeout(poll, pollIntervalMs());
+        return;
+      }
+      if (current.state === 'failed') {
+        toastFn?.({ kind: 'error', title: 'Export failed', msg: exportFailureMessage(current.error_type) });
+        resetButton();
+        return;
+      }
+      // current.state === 'done': fetch the ZIP ourselves (rather than a
+      // bare `<a href>` click) so a 410 from the 24h cleanup sweep racing
+      // this exact moment gets its own sentence instead of silently
+      // downloading as an opaque error file. The manifest inside the ZIP
+      // (not a toast) says which of `ids` were actually included.
+      try {
+        const res = await fetch(downloadUrl(job.id));
+        if (!res.ok) {
+          toastFn?.({ kind: 'error', title: 'Could not download the export', msg: downloadFailureMessage(res.status) });
+          return;
+        }
+        const blob = await res.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'sindri-export.zip';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      } catch (err) {
+        toastFn?.({ kind: 'error', title: 'Could not download the export', msg: String(err?.message || err) });
+      } finally {
+        resetButton();
+      }
+    };
+    poll();
   }
 
   let _pollCount = 0;

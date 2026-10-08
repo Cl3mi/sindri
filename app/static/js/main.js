@@ -13,7 +13,7 @@ import { importSingle, stagesOnly } from './importone.js';
 import { badgesFor, workListBadges } from './badges.js';
 import { createJournal } from './journal.js';
 import { createFinisher, createExporter } from './finish.js';
-import { restoreReview, flushBeforeLeaving, afterFlush, shouldReopen } from './reopen.js';
+import { restoreReview, flushBeforeLeaving, afterFlush, shouldReopen, openFailureCopy } from './reopen.js';
 import { nextStopStep } from './stop.js';
 import { initViewer } from './viewer.js';
 import { initTable } from './table.js';
@@ -147,7 +147,7 @@ function init() {
   pingHealth();
   workList = initWorkList({
     listDocuments, moveToFront, cancelDocument, retryDocument, deleteDocument,
-    reextractDocument, downloadExport, pauseQueue, resumeQueue, toast,
+    reextractDocument, pauseQueue, resumeQueue, toast,
     badgesFor: workListBadges,
   });
   stagingView = initStagingView({
@@ -936,6 +936,24 @@ async function openForReview(id, { skipFlush = false } = {}) {
   } catch (err) {
     if (waitingOn?.id === id) waitingOn = null;   // never another drawing's
     hideExtracting();
+    // Carried from B4 Task 9 (decision 8): a 410 means retention already
+    // deleted this drawing's files, permanently -- unlike every other
+    // failure here (a transient 409, a 404, a network hiccup), which still
+    // stays "try again" and keeps the link so a reload retries it. A
+    // tombstone offers no retry at all and always routes back to the work
+    // list, even if this tab had another drawing open before trying to
+    // reach this one.
+    const { purged, message } = openFailureCopy(err);
+    if (purged) {
+      // backToEmptyOrCurrent() alone is enough: unlike the generic branch
+      // below, this never falls through to the "keep the dead link so a
+      // reload retries it" case -- there is deliberately no retry for a
+      // tombstone, so the hash either stays on another drawing this tab
+      // still has open, or goes to the work list; never back to `id`.
+      toast({ kind: 'error', title: 'This drawing is gone', msg: message });
+      backToEmptyOrCurrent();
+      return;
+    }
     toast({ kind: 'error', title: 'Could not open the drawing',
             msg: state.sessionId && state.sessionId !== id
               ? `${String(err.message || err)} — its link: ${location.origin}${location.pathname}${docUrl(id)}`

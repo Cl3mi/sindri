@@ -63,3 +63,23 @@ test('workListBadges is empty for an ordinary in-progress drawing', () => {
   assert.deepEqual(workListBadges({ final_revision: null, exported_revision: null, out_of_scope: false,
                                     allowed_out_of_scope: false, state: 'queued', error_type: null }), []);
 });
+
+// Retention's tombstone (batch design §4, decision 6/8) had no label at all
+// before this (Task 9/13 follow-up): a purged row looked like any other
+// finished drawing except for its bare state chip reading "purged".
+test('workListBadges names a purged (retention-deleted) drawing', () => {
+  const b = workListBadges({ final_revision: 2, exported_revision: 2, out_of_scope: false,
+                             allowed_out_of_scope: false, state: 'purged', error_type: null });
+  assert.deepEqual(b, [{ kind: 'exported', text: 'exported r2' }, { kind: 'purged', text: 'deleted by retention' }]);
+});
+
+const { stateLabel } = await import('../../app/static/js/badges.js');
+
+test('stateLabel reads a purged drawing as a tombstone, not the raw state word', () => {
+  assert.equal(stateLabel('purged'), 'Deleted (retention)');
+});
+
+test('stateLabel falls back to the state word with underscores spaced out', () => {
+  assert.equal(stateLabel('in_review'), 'in review');
+  assert.equal(stateLabel('finished'), 'finished');
+});

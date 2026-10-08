@@ -46,5 +46,22 @@ export function workListBadges(doc) {
   if (doc.out_of_scope && doc.allowed_out_of_scope) {
     out.push({ kind: 'out_of_scope', text: 'out of scope (included)' });
   }
+  // Retention's tombstone (batch design §4, decision 6/8): files gone,
+  // review record kept. Appended last, after an export badge the row may
+  // still carry from before it was purged -- what was exported and that it
+  // is now gone are both true and both worth saying.
+  if (doc.state === 'purged') {
+    out.push({ kind: 'purged', text: 'deleted by retention' });
+  }
   return out;
+}
+
+// The work-list state chip's own text (batch design §3): every other state
+// reads fine as the raw word with underscores spaced out, but "purged" on
+// its own reads like an error rather than the permanent, intentional
+// tombstone it is -- a reviewer seeing it needs "this is gone for good and
+// that is expected", not a state name.
+export function stateLabel(state) {
+  if (state === 'purged') return 'Deleted (retention)';
+  return state.replaceAll('_', ' ');
 }
