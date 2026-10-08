@@ -2,7 +2,6 @@
 incomplete or foreign log is never graded as if it were whole."""
 import json
 import threading
-import time
 
 import pytest
 
@@ -541,39 +540,52 @@ def test_unless_reviewed_refuses_a_sealed_session_with_zero_net_events(tmp_path)
 def test_unless_reviewed_blocks_a_concurrent_append_for_its_whole_duration(tmp_path):
     """The check (no events yet) and the caller's own transition must be one
     atomic unit: a concurrent append() must not be able to land in the
-    window between them. Proven here by holding `fn` open for a moment and
-    showing a competing append() -- which takes the SAME store lock --
-    cannot complete until `fn`, and therefore the whole unless_reviewed()
-    call, has finished."""
+    window between them.
+
+    Proven with an Event handshake, never a sleep whose length decides the
+    result: `fn` runs on its own thread (unless_reviewed() blocks its caller
+    for fn's whole duration, so it cannot also be the thread driving the
+    append), signals `fn_entered` the moment it is running -- which only
+    happens once the store's lock is actually held -- and then parks on
+    `release_fn`. A second thread's append() is only started after that
+    signal, and `append_done.wait(timeout=...)` returning False is a fact
+    about the Lock enforcing mutual exclusion, not a guess about timing: the
+    append CANNOT acquire a lock `fn` is holding, for any wait length, until
+    `release_fn` lets `fn` finish and unless_reviewed releases the lock."""
     store = ReviewStore(tmp_path)
     writer = store.create("s1", {}, {"rows": [{"id": "a", "needs_review": True, "suggested": False}]})
-    order = []
     fn_entered = threading.Event()
+    release_fn = threading.Event()
+    append_done = threading.Event()
+    result = {}
 
     def slow_fn():
-        order.append("fn-start")
         fn_entered.set()
-        # unless_reviewed is still holding the lock here -- enough time for
-        # the append thread to reach its own lock acquisition and block on
-        # it, which is the condition this test exists to demonstrate.
-        time.sleep(0.2)
-        order.append("fn-end")
+        release_fn.wait()
         return "done"
 
-    def append_thread():
-        fn_entered.wait(timeout=2)
-        order.append("append-called")
-        store.append("s1", writer, [{"seq": 1, "type": "accept", "ids": ["a"]}])
-        order.append("append-returned")
+    def locker_thread():
+        result["value"] = store.unless_reviewed("s1", slow_fn)
 
-    t = threading.Thread(target=append_thread)
-    t.start()
-    result = store.unless_reviewed("s1", slow_fn)
-    t.join(timeout=2)
-    assert result == "done"
-    assert order[0] == "fn-start"
-    # The append can only ever be OBSERVED to finish after fn-end: it was
-    # blocked on the same lock for fn's entire duration, never slipping in
-    # between the check inside unless_reviewed and fn's own transition.
-    assert order.index("append-returned") > order.index("fn-end")
+    def append_thread():
+        store.append("s1", writer, [{"seq": 1, "type": "accept", "ids": ["a"]}])
+        append_done.set()
+
+    locker = threading.Thread(target=locker_thread)
+    locker.start()
+    assert fn_entered.wait(timeout=5), "fn never started"
+
+    appender = threading.Thread(target=append_thread)
+    appender.start()
+    # Not a race: the append is blocked on the exact lock fn is holding
+    # inside unless_reviewed, so it cannot complete regardless of how long
+    # we wait here.
+    assert not append_done.wait(timeout=1), \
+        "append completed while unless_reviewed's fn still held the lock"
+
+    release_fn.set()
+    locker.join(timeout=5)
+    appender.join(timeout=5)
+    assert result["value"] == "done"
+    assert append_done.is_set()
     assert store.has_events("s1") is True
