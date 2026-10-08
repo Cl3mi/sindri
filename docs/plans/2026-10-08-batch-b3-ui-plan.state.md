@@ -3,9 +3,8 @@
 Plan: `docs/plans/2026-10-08-batch-b3-ui-plan.md` (written `eecdd2c`, revised
 after a plan review `ef12d95`; one review finding carried as an execution
 requirement for Task 13, below)
-Milestone: router-and-worklist (task 10 of 16) — next is milestone
-staging-review-bar-banners (Tasks 11-15; Task 11 already done), then
-docs-and-e2e (16)
+Milestone: staging-review-bar-banners (task 15 of 16) — next is Task 16
+(CLAUDE.md + real-browser drive), milestone docs-and-e2e
 
 ## Completed task IDs
 - Task 1 — migration 4: nullable flagged_total/flagged_open/unchecked (`153dfdc`)
@@ -18,9 +17,13 @@ docs-and-e2e (16)
 - Task 8 — worklist.js pure helpers (`9a68525`)
 - Task 9 — api.js work-list calls + badges.workListBadges (`e628665`)
 - Task 10 — work-list screen (`84168f4`, `6c1f370`)
-- (milestone 3, done early) Task 11 — reviewbar.js pure navigation (`fd478cc`)
+- Task 11 — reviewbar.js pure navigation (`fd478cc`)
+- Task 12 — staging view (`30ec03a`, `96c69d8`, `2c94ada`)
+- Task 13 — router wiring, review bar DOM, jump palette (`6bad1bf`, `d4a0b5d`, `db72339`)
+- Task 14 — two-tab read-only banner (`9bbaba0`)
+- Task 15 — lagging-journal banner with retry countdown (`d5ee9b3`)
 
-Node tests: 197. Suite: 1850 passed, 2 skipped.
+Node tests: 240. Suite: 1850 passed, 2 skipped. Guard 32/0.
 
 ## What's done
 Server side of B3: a work-list read path (stable rowid order, inclusive
@@ -82,6 +85,32 @@ docs + E2E task.
   batchNameFor, relPathOf); post-import navigation uses `replaceState` until
   Task 13 provides `go()`; both screens are hidden until Task 13 wires the
   dispatcher (a blank body in between is expected).
+- **Staging view (Task 12):** rows built with textContent (the first version
+  interpolated names into innerHTML — fixed); unfinished uploads listed with
+  Remove upload; `startBlocker` mirrors the server's start refusals; Start is
+  disabled before its await and sends `expected_ids`; 409 → reload with
+  "already started" vs "import changed" copy; refused removals are toasted
+  (`removalMessage` — the api's delete calls never throw); Add files / Add
+  folder into the open draft with live progress and a run-wide Cancel
+  (`importFiles` has one signal per run) that deletes the cancelled uploads
+  (matched by name+size — narrow risk: another tab's identical file in the same
+  draft); empty-archive message; aria-labels.
+- **Router wiring (Task 13):** `go()` dispatches; routing serialised by the
+  tested `createSerialRunner` (queues the latest, never overlaps, releases on
+  error); leaving a drawing awaits `flushBeforeLeaving` ("stay" restores the
+  hash without re-opening); re-selecting the drawing already open is a no-op
+  (`shouldReopen`) and the Jump palette excludes it — a re-open would rotate
+  the writer and drop unflushed events; Prev/Skip/Jump and any doc navigation
+  are blocked while a Finish is sealing; after Finish: next drawing, or "Next
+  drawing ready in ≈ N min" (per-drawing estimate, `nextReadyCopy`), or "Batch
+  complete"; in-page Jump palette (Ctrl+K); batch-of-one auto-open re-checks
+  before navigating.
+- **Banners (Tasks 14-15):** a persistent stale banner (with the unsaved count)
+  replaces B1's toast and makes the tab read-only via `state.readOnly`, gated
+  in `apply`/`undo`/`redo` (every edit path incl. keyboard shortcuts); a
+  lagging banner counts down to the real scheduled retry, has Retry now, and
+  hides when the journal catches up; both are cleared when another drawing
+  opens or the drawing closes.
 - **Review bar (Task 11):** `skip()` falls back to another batch's reviewable
   drawing when the current batch has none left (same as after Finish). Task
   13 renders `nextAfterFinish`'s `extracting` status as "Next drawing ready in
