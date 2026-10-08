@@ -3,8 +3,8 @@
 Plan: `docs/plans/2026-10-08-batch-b3-ui-plan.md` (written `eecdd2c`, revised
 after a plan review `ef12d95`; one review finding carried as an execution
 requirement for Task 13, below)
-Milestone: staging-review-bar-banners (task 15 of 16) — next is Task 16
-(CLAUDE.md + real-browser drive), milestone docs-and-e2e
+Milestone: docs-and-e2e (task 16 of 16) — **B3 COMPLETE**; next is the B4
+plan (`docs/plans/2026-10-08-batch-b4-export-ops-plan.md`)
 
 ## Completed task IDs
 - Task 1 — migration 4: nullable flagged_total/flagged_open/unchecked (`153dfdc`)
@@ -22,8 +22,22 @@ Milestone: staging-review-bar-banners (task 15 of 16) — next is Task 16
 - Task 13 — router wiring, review bar DOM, jump palette (`6bad1bf`, `d4a0b5d`, `db72339`)
 - Task 14 — two-tab read-only banner (`9bbaba0`)
 - Task 15 — lagging-journal banner with retry countdown (`d5ee9b3`)
+- Task 16 — CLAUDE.md B3 paragraph (`8bfdb6b`) + real-browser drive; fixes
+  the drive found: Skip right after Finish (`804767b`), Re-extract bulk
+  action in the work list (`b44b6b1`), Pause button label (`c82b53f`)
 
-Node tests: 240. Suite: 1850 passed, 2 skipped. Guard 32/0.
+Node tests: 249. Suite at B3 end: 1850 passed, 2 skipped (B4 Task 1 onward
+adds to it). Guard 32/0.
+
+## Real-browser drive (Playwright, scratchpad, synthetic drawings only)
+All PASS on the final run: import ZIP → staging → Start; queue line; ready;
+open + edit + accept; reload resumes; Finish → next drawing; Skip immediately
+after Finish never re-enters the finished drawing; Ctrl+K jump; two-tab stale
+banner (read-only); lagging banner with countdown, Retry now, clears on
+catch-up; Re-extract on an untouched drawing (re-queued → ready) and refused
+on a reviewed one ("already reviewed" toast, state unchanged); Pause (label
+"Resume", header "Paused", a newly started drawing stays queued) / Resume;
+folder import with relative-path badges; per-row Remove in staging.
 
 ## What's done
 Server side of B3: a work-list read path (stable rowid order, inclusive
@@ -35,8 +49,10 @@ guard 32/0. Opus subagents are on a weekly limit until 2026-10-13, so B3 runs
 on Sonnet implementers and reviewers.
 
 ## What's next
-Finish milestone router-and-worklist (Task 10 review), then Tasks 11-15 and the
-docs + E2E task.
+B4: mass export (ZIP + manifest), retention/purge, access token, compose and
+docs. B4 must add its interrupted-export recovery as a third guarded step in
+`Runtime._run_startup_recovery()` (see below), and rewire the work list's
+client-side "export selected" loop to the server-side mass export.
 
 ## Decisions / deviations since the plan was written
 - **Plan review fixes (before execution):** programmatic navigation must call
@@ -111,6 +127,14 @@ docs + E2E task.
   lagging banner counts down to the real scheduled retry, has Retry now, and
   hides when the journal catches up; both are cleared when another drawing
   opens or the drawing closes.
+- **Found by the drive (Task 16), each with a regression test:** Skip right
+  after Finish could re-enter the just-finished drawing from the stale poll
+  cache — Finish now marks it finished locally, awaits a full refresh before
+  choosing the next drawing, and every navigation excludes a
+  `recentlyFinished` set until the server confirms; the plan had no
+  Re-extract control in the UI, so a bulk "Re-extract" action was added
+  (confirm dialog, its own "already reviewed" message on 409); the Pause
+  button never switched its label to "Resume" (`pauseButtonLabel`).
 - **Review bar (Task 11):** `skip()` falls back to another batch's reviewable
   drawing when the current batch has none left (same as after Finish). Task
   13 renders `nextAfterFinish`'s `extracting` status as "Next drawing ready in
