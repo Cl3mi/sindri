@@ -13,7 +13,7 @@ import { importSingle, stagesOnly } from './importone.js';
 import { badgesFor, workListBadges } from './badges.js';
 import { createJournal } from './journal.js';
 import { createFinisher, createExporter } from './finish.js';
-import { restoreReview, flushBeforeLeaving, afterFlush, shouldReopen, openFailureCopy } from './reopen.js';
+import { restoreReview, flushBeforeLeaving, afterFlush, shouldReopen, openFailureCopy, unopenableDocCopy } from './reopen.js';
 import { nextStopStep } from './stop.js';
 import { initViewer } from './viewer.js';
 import { initTable } from './table.js';
@@ -369,9 +369,14 @@ async function routeDocument(doc) {
     await loadForReview(doc.id);
     setReviewBarVisible(true);
   } else {
+    // failed, cancelled, or purged -- none of these are worth a POST /open:
+    // a purged drawing in particular has no rows left to review, so routing
+    // it through loadForReview would show the review bar just to collect
+    // the 410 openFailureCopy already knows how to word. unopenableDocCopy
+    // shares that exact retention sentence instead of a second copy of it.
     setReviewBarVisible(false);
-    toast({ kind: 'error', title: `Drawing ${doc.state}`,
-            msg: doc.error_type ? `Extraction failed (${doc.error_type}).` : 'Upload it again to retry.' });
+    const { title, msg } = unopenableDocCopy(doc);
+    toast({ kind: 'error', title, msg });
     waitingOn = null;
     hideExtracting();
     backToEmptyOrCurrent();

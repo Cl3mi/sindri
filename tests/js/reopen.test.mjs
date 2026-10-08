@@ -5,7 +5,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { restoreReview, flushBeforeLeaving, shouldReopen, openFailureCopy } = await import('../../app/static/js/reopen.js');
+const { restoreReview, flushBeforeLeaving, shouldReopen, openFailureCopy, unopenableDocCopy } =
+  await import('../../app/static/js/reopen.js');
 const { createJournal } = await import('../../app/static/js/journal.js');
 
 function fakes({ restoreThrows = false } = {}) {
@@ -212,4 +213,30 @@ test('openFailureCopy leaves every other failure (409, 404, a network hiccup) as
     assert.equal(copy.purged, false);
     assert.equal(copy.message, null);
   }
+});
+
+// ---- unopenableDocCopy: routeDocument's else-branch, without an /open -----
+// A drawing whose doc.state is none of staged/queued/extracting/ready/
+// in_review/finished never reaches loadForReview (that route must not POST
+// /open just to collect a 410 and show a review bar for a tombstone with no
+// rows to show) -- this is what main.js's else-branch shows instead, and it
+// must say the SAME retention sentence openFailureCopy's 410 path says, not
+// a second, drifting copy of it.
+test('unopenableDocCopy: a purged drawing gets the retention sentence, no retry implied', () => {
+  const copy = unopenableDocCopy({ state: 'purged' });
+  assert.equal(copy.title, 'Drawing purged');
+  assert.equal(copy.msg, "This drawing's files were deleted by retention (its review record is kept).");
+});
+
+test('unopenableDocCopy: a failed drawing with an error_type names it', () => {
+  const copy = unopenableDocCopy({ state: 'failed', error_type: 'OutOfMemory' });
+  assert.equal(copy.title, 'Drawing failed');
+  assert.equal(copy.msg, 'Extraction failed (OutOfMemory).');
+});
+
+test('unopenableDocCopy: a failed drawing with no error_type, or any other state, keeps the generic retry copy', () => {
+  assert.deepEqual(unopenableDocCopy({ state: 'failed' }),
+    { title: 'Drawing failed', msg: 'Upload it again to retry.' });
+  assert.deepEqual(unopenableDocCopy({ state: 'cancelled' }),
+    { title: 'Drawing cancelled', msg: 'Upload it again to retry.' });
 });

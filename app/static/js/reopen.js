@@ -60,6 +60,16 @@ export function shouldReopen(journal, id) {
   return !(journal.active && journal.sessionId === id);
 }
 
+// The one retention sentence, shared by every path that has to tell a
+// reviewer their drawing is gone for good: openFailureCopy below (a race
+// where /open's 410 lands while the drawing was already open) and
+// unopenableDocCopy (routeDocument's else-branch, reached for a drawing
+// that was ALREADY purged by the time its row was fetched -- see there for
+// why that path never calls /open at all). One constant so the two can
+// never drift into two different sentences for the same fact.
+export const RETENTION_MESSAGE =
+  "This drawing's files were deleted by retention (its review record is kept).";
+
 // What an /open failure means to the reviewer (carried from B4 Task 9,
 // batch design decision 8): a 410 means retention has already deleted this
 // drawing's files -- permanent, unlike the route's existing 409s and 404s,
@@ -69,10 +79,27 @@ export function shouldReopen(journal, id) {
 // DOM or a fetch mock.
 export function openFailureCopy(err) {
   if (err?.status === 410) {
-    return { purged: true,
-             message: "This drawing's files were deleted by retention (its review record is kept)." };
+    return { purged: true, message: RETENTION_MESSAGE };
   }
   return { purged: false, message: null };
+}
+
+// routeDocument's else-branch (main.js): a doc.state that is none of
+// staged/queued/extracting/ready/in_review/finished -- failed, cancelled,
+// or purged. This is reached from the document's LISTED state, fetched
+// before any /open call, so a purged drawing must NOT be routed through
+// loadForReview just to collect the 410 openFailureCopy already knows how
+// to word: that would call POST /open for a tombstone with nothing to
+// review, and flash the review bar open for it. Pure and node-testable, so
+// the retention sentence (RETENTION_MESSAGE, shared with openFailureCopy)
+// can never drift into a second, different copy of itself here.
+export function unopenableDocCopy(doc) {
+  const title = `Drawing ${doc.state}`;
+  if (doc.state === 'purged') {
+    return { title, msg: RETENTION_MESSAGE };
+  }
+  const msg = doc.error_type ? `Extraction failed (${doc.error_type}).` : 'Upload it again to retry.';
+  return { title, msg };
 }
 
 // Before leaving the drawing the journal is on (opening another, or
