@@ -488,3 +488,22 @@ def test_has_events_is_true_once_the_reviewer_has_acted(tmp_path):
     writer = store.create("s1", {}, {"rows": [{"id": "a", "needs_review": True, "suggested": False}]})
     store.append("s1", writer, [{"seq": 1, "type": "accept", "ids": ["a"]}])
     assert store.has_events("s1") is True
+
+
+def test_has_events_is_true_for_a_sealed_session_with_zero_net_events(tmp_path):
+    """Accept then retract nets to nothing -- seal() compacts events.jsonl to
+    that empty net form. A re-extract gate built only on _events() would see
+    an empty journal and call this session untouched, discarding the fact
+    that a human already reviewed (and undid) a row here. has_events() must
+    also look at whether anything was ever sealed."""
+    store = ReviewStore(tmp_path)
+    r = {"id": "a", "char_type": "Distance", "nominal": "10", "upper_tol": "",
+         "lower_tol": "", "balloon_xy": [5.0, 5.0], "suggested": False,
+         "needs_review": True}
+    writer = store.create("s1", {}, {"rows": [r]})
+    store.append("s1", writer, [
+        {"seq": 1, "type": "accept", "ids": ["a"]},
+        {"seq": 2, "type": "retract", "target": 1},
+    ])
+    store.seal("s1", writer, 2, [r], [])
+    assert store.has_events("s1") is True

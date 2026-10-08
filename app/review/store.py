@@ -374,10 +374,16 @@ class ReviewStore:
         """True once the reviewer has acted on this session at all -- the
         gate for re-extract (batch design §2 queue controls): a `ready`
         drawing with no events may be re-extracted (its proposal is
-        discarded), one with even a single event may not."""
+        discarded), one with even a single event may not.
+
+        `_events(d)` alone is not enough: seal() compacts events.jsonl to its
+        NET form, and a session reviewed down to zero net events (an accept
+        immediately undone, say) seals to an empty journal. Without the
+        `_revisions` check that session would look untouched and re-extract
+        would discard the fact that a human already opened and acted on it."""
         with self._lock:
             d = self._dir(sid)
-            return bool(self._events(d))
+            return bool(self._events(d)) or self._revisions(d) > 0
 
     def revision(self, sid: str, n: int = None) -> dict:
         """A sealed revision -- the latest when `n` is None. Exports are
