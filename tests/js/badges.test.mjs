@@ -32,3 +32,34 @@ test('an unreadable PDF says only that', () => {
 test('a sheet never measured (staged before B2) is not called oversized', () => {
   assert.deepEqual(badgesFor(row({ oversized: null })), []);
 });
+
+const { workListBadges } = await import('../../app/static/js/badges.js');
+
+test('workListBadges shows an exported revision', () => {
+  const b = workListBadges({ final_revision: 2, exported_revision: 2, out_of_scope: false,
+                             allowed_out_of_scope: false, state: 'finished', error_type: null });
+  assert.deepEqual(b, [{ kind: 'exported', text: 'exported r2' }]);
+});
+
+test('workListBadges flags a newer revision than what was exported', () => {
+  const b = workListBadges({ final_revision: 3, exported_revision: 2, out_of_scope: false,
+                             allowed_out_of_scope: false, state: 'finished', error_type: null });
+  assert.deepEqual(b, [{ kind: 'exported_stale', text: 'exported r2 (newer revision r3 not exported)' }]);
+});
+
+test('workListBadges names a failed drawing\'s error type', () => {
+  const b = workListBadges({ final_revision: null, exported_revision: null, out_of_scope: false,
+                             allowed_out_of_scope: false, state: 'failed', error_type: 'RuntimeError' });
+  assert.deepEqual(b, [{ kind: 'failed', text: 'failed (RuntimeError)' }]);
+});
+
+test('workListBadges marks an out-of-scope drawing included by permission', () => {
+  const b = workListBadges({ final_revision: null, exported_revision: null, out_of_scope: true,
+                             allowed_out_of_scope: true, state: 'ready', error_type: null });
+  assert.deepEqual(b, [{ kind: 'out_of_scope', text: 'out of scope (included)' }]);
+});
+
+test('workListBadges is empty for an ordinary in-progress drawing', () => {
+  assert.deepEqual(workListBadges({ final_revision: null, exported_revision: null, out_of_scope: false,
+                                    allowed_out_of_scope: false, state: 'queued', error_type: null }), []);
+});

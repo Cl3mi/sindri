@@ -160,6 +160,30 @@ export function contentDispositionFilename(header, fallback) {
   return quoted ? quoted[1] : fallback;
 }
 
+// ----- Work list (batch design §3) -----------------------------------
+export async function listDocuments(filters = {}) {
+  const params = new URLSearchParams();
+  if (filters.batchId) params.set('batch_id', filters.batchId);
+  if (filters.state) params.set('state', filters.state);
+  if (filters.search) params.set('search', filters.search);
+  if (filters.needsMe) params.set('needs_me', 'true');
+  if (filters.since) params.set('since', filters.since);
+  const qs = params.toString();
+  return jsonOrThrow(await fetch(qs ? `/api/documents?${qs}` : '/api/documents'),
+                     'Could not load the work list');
+}
+
+export const moveToFront = async (id) =>
+  jsonOrThrow(await fetch(docUrl(id, '/move_to_front'), { method: 'POST' }),
+             'Could not move the drawing to the front');
+export const reextractDocument = async (id) =>
+  jsonOrThrow(await fetch(docUrl(id, '/reextract'), { method: 'POST' }),
+             'Could not re-extract the drawing');
+export const pauseQueue = async () =>
+  jsonOrThrow(await fetch('/api/queue/pause', { method: 'POST' }), 'Could not pause the queue');
+export const resumeQueue = async () =>
+  jsonOrThrow(await fetch('/api/queue/resume', { method: 'POST' }), 'Could not resume the queue');
+
 // Download a sealed revision's file; the server names it after the drawing.
 export async function downloadExport(id, kind, revision) {
   const res = await fetch(docUrl(id, `/export/${kind}?rev=${revision}`));

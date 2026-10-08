@@ -25,3 +25,26 @@ export function badgesFor(row) {
   }
   return out;
 }
+
+// Work-list badges (batch design §3): exported rN / a newer unexported
+// revision / failed + error type / out-of-scope-but-included. Separate from
+// badgesFor() above: that one describes a STAGED row's warnings, this one a
+// row already past staging, and the two never apply to the same row.
+export function workListBadges(doc) {
+  const out = [];
+  if (doc.final_revision) {
+    if (doc.exported_revision === doc.final_revision) {
+      out.push({ kind: 'exported', text: `exported r${doc.exported_revision}` });
+    } else if (doc.exported_revision) {
+      out.push({ kind: 'exported_stale',
+                 text: `exported r${doc.exported_revision} (newer revision r${doc.final_revision} not exported)` });
+    }
+  }
+  if (doc.state === 'failed') {
+    out.push({ kind: 'failed', text: `failed${doc.error_type ? ` (${doc.error_type})` : ''}` });
+  }
+  if (doc.out_of_scope && doc.allowed_out_of_scope) {
+    out.push({ kind: 'out_of_scope', text: 'out of scope (included)' });
+  }
+  return out;
+}

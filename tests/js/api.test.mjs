@@ -148,6 +148,33 @@ test('startBatch sends the ids the caller expects the draft to hold', async () =
   }
 });
 
+const { listDocuments, moveToFront, reextractDocument, pauseQueue, resumeQueue } =
+  await import('../../app/static/js/api.js');
+
+test('listDocuments builds the query string from only the filters given', async () => {
+  const calls = [];
+  globalThis.fetch = async (url) => { calls.push(url); return fakeRes(200, { documents: [], cursor: 'x', queue: {} }); };
+  await listDocuments({ batchId: 'b1', needsMe: true });
+  assert.equal(calls[0], '/api/documents?batch_id=b1&needs_me=true');
+  await listDocuments({});
+  assert.equal(calls[1], '/api/documents');
+});
+
+test('moveToFront, reextractDocument, pauseQueue, resumeQueue post to the right routes', async () => {
+  const calls = [];
+  globalThis.fetch = async (url, opts) => { calls.push([url, opts?.method]); return fakeRes(200, {}); };
+  await moveToFront('a'.repeat(32));
+  await reextractDocument('a'.repeat(32));
+  await pauseQueue();
+  await resumeQueue();
+  assert.deepEqual(calls, [
+    [`/api/documents/${'a'.repeat(32)}/move_to_front`, 'POST'],
+    [`/api/documents/${'a'.repeat(32)}/reextract`, 'POST'],
+    ['/api/queue/pause', 'POST'],
+    ['/api/queue/resume', 'POST'],
+  ]);
+});
+
 test('discardBatch is best effort: it reports, never throws', async () => {
   const { discardBatch } = await import('../../app/static/js/api.js');
   const saved = globalThis.fetch;
