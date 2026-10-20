@@ -50,6 +50,11 @@ def active_review_policy() -> dict:
         out["flag_rules"] = list(pr.ACTIVE_FLAG_RULES)
     if pr.active_drop_rules():
         out["drop_rules"] = list(pr.active_drop_rules())
+    # Detection-time filter, recorded for the same reason as the rules above: a
+    # dump taken with it must never be mistaken for one without.
+    from app.pipeline.extract import drop_plain_rectangles_enabled
+    if drop_plain_rectangles_enabled():
+        out["detect_filters"] = ["plain_rect"]
     return out
 
 

@@ -160,5 +160,6 @@ def test_active_review_policy_reports_the_threshold_for_run_config_extra():
         "review_low_conf": LOW_CONF,
         "flag_rules": list(pr.ACTIVE_FLAG_RULES),
         "drop_rules": list(pr.active_drop_rules()),
+        "detect_filters": ["plain_rect"],      # on by default since 2026-10-20
     }
     assert active_review_policy()["review_low_conf"] == 0.8

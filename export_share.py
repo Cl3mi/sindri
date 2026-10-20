@@ -15,6 +15,17 @@ Or by hand, one run at a time:
 
     python export_share.py --run r4-control --hashes 8e5fb4d8 f1639571 --out ~/client-share
 
+Or single drawings by real part number, without naming the run (the shipped-policy
+controls are searched, dev first):
+
+    python export_share.py --ids IPB_21-0010 IPB_22-1463 --out ~/client-share
+
+Every export re-applies the plain-rectangle filter to the stored rows (boxed note
+numbers / datum letters / basic dimensions are dropped, rounded boxes and GD&T
+frames kept), renumbers, and re-places every balloon in blank space on the page --
+so dumps taken before those existed come out as a fresh run would. --keep-boxed
+turns the filter off (balloons are still re-placed).
+
 --run is a run directory name under <root>/runs, or a path. Hashes are the ids
 `runner summary` prints; they resolve here against the dumps, so no real part
 number is needed (--ids takes real ids instead). The output folder must be
@@ -24,21 +35,56 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
+
+from PIL import Image
 
 from app.eval.anon import Anonymizer
 from app.eval.dump import load_dump
 from app.excel import write_workbook
+from app.pipeline import boxes as bx
 from app.pipeline.ballooned_pdf import render_ballooned_pdf
+from app.pipeline.place import InkMap, number_characteristics, place_balloons
+from app.pipeline.render import render_page
 
 _PRED = ".pred.json"
+# Searched, in order, when --ids/--hashes come without --run.
+DEFAULT_RUNS = ("r4-control", "r4-controltest")
 
 
-def export_one(dump_path: Path, pdf_path: Path, out_dir: Path) -> tuple:
+def refresh_rows(rows, pdf_path, scale: float, drop_boxed: bool = True):
+    """(rows, n_dropped): the stored rows as a fresh run would deliver them --
+    minus those inside a plain rectangle (when `drop_boxed`), renumbered, and
+    with every balloon re-placed in blank space on the page.
+
+    The page is rendered at the dump's own scale, because the stored boxes are
+    pixels at that scale; a mismatch (budget clamp changed) leaves the rows
+    untouched rather than compare boxes in the wrong frame."""
+    with tempfile.TemporaryDirectory() as tmp:
+        render = render_page(pdf_path, dpi=int(round(scale * 72.0)), out_dir=tmp)
+        if abs(render.scale - scale) > 1e-3 * scale:
+            print(f"WARN render scale {render.scale:.4f} != dump scale {scale:.4f}: "
+                  f"rows left as stored", file=sys.stderr)
+            return rows, 0
+        with Image.open(render.png_path) as im:
+            im = im.convert("RGB")
+            rects = bx.find_plain_rectangles(im) if drop_boxed else []
+            ink = InkMap.from_image(im)
+    kept = [c for c in rows
+            if not (c.target_region and bx.in_plain_rectangle(c.target_region, rects))]
+    kept = number_characteristics(kept)
+    place_balloons(kept, dpi=scale * 72.0, ink=ink)
+    return kept, len(rows) - len(kept)
+
+
+def export_one(dump_path: Path, pdf_path: Path, out_dir: Path,
+               keep_boxed: bool = False) -> tuple:
     dump = load_dump(dump_path)
     res = dump.result
     rows = [c for c in res.characteristics if not c.suggested]
     scale = res.render_scale or dump.scale
+    rows, _ = refresh_rows(rows, pdf_path, scale, drop_boxed=not keep_boxed)
     stem = dump.doc_id
     xlsx = out_dir / f"{stem}.xlsx"
     pdf = out_dir / f"{stem}_ballooned.pdf"
@@ -50,7 +96,8 @@ def export_one(dump_path: Path, pdf_path: Path, out_dir: Path) -> tuple:
     return xlsx, pdf, len(rows)
 
 
-def export_run(run_dir: Path, pdfs: Path, out_dir: Path, ids=(), hashes=()) -> int:
+def export_run(run_dir: Path, pdfs: Path, out_dir: Path, ids=(), hashes=(),
+               keep_boxed: bool = False) -> int:
     """Export ids/hashes from one run dir; returns the number that failed."""
     anon = Anonymizer()
     run_dir = Path(run_dir)
@@ -74,7 +121,7 @@ def export_run(run_dir: Path, pdfs: Path, out_dir: Path, ids=(), hashes=()) -> i
                   f"{'dump' if not dump_path.is_file() else 'drawing'}", file=sys.stderr)
             failed += 1
             continue
-        _, _, n = export_one(dump_path, pdf_path, out_dir)
+        _, _, n = export_one(dump_path, pdf_path, out_dir, keep_boxed)
         print(f"ok   {anon(doc_id)}: {n} rows")
     return failed
 
@@ -86,7 +133,11 @@ def main(argv=None) -> int:
     ap.add_argument("--pdfs", help="clean drawings dir (default <root>/corpus/originals)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--manifest", help="json from share_select: {runs:[{run,hashes}]}")
-    ap.add_argument("--run", help="run dir name under <root>/runs, or a path")
+    ap.add_argument("--run", action="append",
+                    help="run dir name under <root>/runs, or a path; repeat to search "
+                         f"several (default for --ids/--hashes: {', '.join(DEFAULT_RUNS)})")
+    ap.add_argument("--keep-boxed", action="store_true",
+                    help="do not drop rows inside plain rectangles")
     ap.add_argument("--ids", nargs="+", default=[], help="real doc ids")
     ap.add_argument("--hashes", nargs="+", default=[], help="salted ids")
     args = ap.parse_args(argv)
@@ -97,18 +148,27 @@ def main(argv=None) -> int:
     if args.manifest:
         for entry in json.loads(Path(args.manifest).read_text(encoding="utf-8"))["runs"]:
             jobs.append((root / "runs" / entry["run"], [], entry["hashes"]))
-    if args.run:
-        run = Path(args.run)
-        jobs.append((run if run.is_dir() else root / "runs" / args.run,
-                     args.ids, args.hashes))
+    if args.ids or args.hashes:
+        runs = [Path(r) if Path(r).is_dir() else root / "runs" / r
+                for r in (args.run or DEFAULT_RUNS)]
+        # The first run holding a dump for the doc wins; a doc lives in one split.
+        for doc_id in args.ids:
+            run = next((r for r in runs if (r / f"{doc_id}{_PRED}").is_file()), runs[0])
+            jobs.append((run, [doc_id], []))
+        anon = Anonymizer()
+        for h in args.hashes:
+            run = next((r for r in runs if any(anon(p.name[:-len(_PRED)]) == h
+                                               for p in r.glob(f"*{_PRED}"))), runs[0])
+            jobs.append((run, [], [h]))
     if not jobs or not any(i or h for _, i, h in jobs):
-        print("nothing to export: give --manifest, or --run with --ids/--hashes",
-              file=sys.stderr)
+        print("nothing to export: give --manifest, or --ids/--hashes (optionally "
+              "with --run)", file=sys.stderr)
         return 1
 
     out_dir = Path(args.out).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
-    failed = sum(export_run(r, pdfs, out_dir, ids, hashes) for r, ids, hashes in jobs)
+    failed = sum(export_run(r, pdfs, out_dir, ids, hashes, args.keep_boxed)
+                 for r, ids, hashes in jobs)
     print(f"\n{len(list(out_dir.glob('*.xlsx')))} drawing/Excel pairs in {out_dir}"
           + (f"  ({failed} FAILED -- see above)" if failed else ""))
     return 1 if failed else 0

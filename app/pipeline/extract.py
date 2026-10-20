@@ -8,7 +8,7 @@ from app.models import Characteristic, ExtractionResult, NoteBlock
 from app.pipeline.render import render_page
 from app.pipeline.detect import detect_characteristics
 from app.pipeline import boxes as bx
-from app.pipeline.place import number_characteristics, place_balloons
+from app.pipeline.place import InkMap, number_characteristics, place_balloons
 from app.pipeline.parser import parse_value
 from app.pipeline.ocr import get_backend
 from app.pipeline.review import review_flags
@@ -146,6 +146,25 @@ def resolve_crop_knobs(env=None):
     """(pad, min_h, max_upscale) in effect for this run."""
     return tuple(_crop_knob(env, name, key, default, cast, lo, hi)
                  for name, key, default, cast, lo, hi in _CROP_KNOBS)
+
+
+def drop_plain_rectangles_enabled(env=None) -> bool:
+    """Boxed callouts in a square-cornered single-cell rectangle (note numbers,
+    datum letters, basic dimensions) are not ballooned -- the client's call,
+    2026-10-20. `SINDRI_DROP_PLAIN_RECTS=0` restores them, which a like-for-like
+    comparison against dumps taken before this existed needs."""
+    env = os.environ if env is None else env
+    return env.get("SINDRI_DROP_PLAIN_RECTS", "1") != "0"
+
+
+def drop_plain_rectangle_detections(image, detections):
+    """`detections` minus those that are the content of a plain rectangle.
+    Done before the reads, so the dropped boxes cost no VLM call either.
+    Rounded rectangles and multi-cell GD&T frames are kept."""
+    if not drop_plain_rectangles_enabled():
+        return detections
+    rects = bx.find_plain_rectangles(image)
+    return [d for d in detections if not bx.in_plain_rectangle(d.box, rects)]
 
 
 def resolve_tall_pad(env=None):
@@ -350,6 +369,7 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
 
     emit("detect", "Detecting characteristics")
     detections = detect_characteristics(image_for_detect, backend)
+    detections = drop_plain_rectangle_detections(image, detections)
 
     # detect_only exists to price the train-split crop pass. Reads are ~41-80
     # generates per document against detection's ~12, so skipping them MAY be
@@ -452,10 +472,11 @@ def extract(pdf_path, work_dir, dpi: int = 300, backend=None,
     # render.dpi, not the requested dpi: the gap is specified in PDF points and
     # converted to pixels, so a clamped render must use the resolution it was
     # actually drawn at or every balloon drifts away from its callout.
-    place_balloons(results, dpi=render.dpi)
+    ink = InkMap.from_image(image)
+    place_balloons(results, dpi=render.dpi, ink=ink)
     # Suggestions are placed AFTER the real balloons, in their own pass, so
     # they can never push a real balloon away from its callout.
-    place_balloons(suggestions, dpi=render.dpi)
+    place_balloons(suggestions, dpi=render.dpi, ink=ink)
     # Free text outside the structured blocks (e.g. margin notes). Exclude the
     # notes/marks/title regions AND every region the main detector already
     # captured, so loose_text only adds text nothing else picked up

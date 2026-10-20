@@ -42,6 +42,7 @@ def test_run_config_records_the_active_rules(monkeypatch):
 def test_no_active_rules_leaves_run_config_as_it_was(monkeypatch):
     monkeypatch.setattr(pr, "ACTIVE_FLAG_RULES", ())
     monkeypatch.setattr(pr, "ACTIVE_DROP_STAGES", ())
+    monkeypatch.setenv("SINDRI_DROP_PLAIN_RECTS", "0")   # the detect filter is on by default
     assert active_review_policy() == {"review_low_conf": 0.8}
 
 

@@ -201,8 +201,16 @@ def test_balloon_gap_stays_physically_constant_when_the_render_is_clamped(
                                  backend=InkBackend())
     assert result.render_scale < 300 / 72.0     # the render really was clamped
     c = result.characteristics[0]
-    gap_px = c.target_region[0] - c.balloon_xy[0]
-    assert gap_px / result.render_scale == pytest.approx(14.0, abs=1.0)
+    # Balloons are placed in blank space near the callout, not at a fixed
+    # offset, so the invariant is the PHYSICAL distance: centre-to-callout in
+    # points stays about one radius + leader (9 + ~7 pt), where the requested-dpi
+    # bug made it several times larger.
+    x0, y0, x1, y1 = c.target_region
+    bx, by = c.balloon_xy
+    dx = max(x0 - bx, 0, bx - x1)
+    dy = max(y0 - by, 0, by - y1)
+    dist_pt = (dx * dx + dy * dy) ** 0.5 / result.render_scale
+    assert 9.0 <= dist_pt <= 30.0
 
 
 def test_best_read_not_ambiguous_when_one_rotation_clearly_wins():
