@@ -32,7 +32,7 @@ from app.eval.excel_gold import dump_headers, sheet_vocabulary
 from app.eval.ingest import build_gold_doc
 from app.eval.models import (GoldDoc, MatchParams, PredictionDump,
                              ReviewCostWeights, RunConfig, RunReport)
-from app.eval.report import aggregate, compare_runs, summarize
+from app.eval.report import aggregate, compare_runs, per_doc_rows, summarize
 from app.eval.score import score_doc
 from app.eval.splits import load_splits, make_splits, save_splits, splits_hash
 
@@ -971,7 +971,10 @@ def _cmd_summary(args):
     no client values. Safe to show an AI agent, commit, or paste in a ticket."""
     report = RunReport.model_validate_json(
         Path(args.report).read_text(encoding="utf-8"))
-    digest = summarize(report, _anon(args))
+    anon = _anon(args)
+    digest = summarize(report, anon)
+    if args.per_doc:
+        digest["per_doc"] = per_doc_rows(report, anon)
     out = json.dumps(digest, indent=1, ensure_ascii=False)
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
@@ -1014,6 +1017,8 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("summary", parents=[common])
     p.add_argument("report"); p.add_argument("--out", default=None)
+    p.add_argument("--per-doc", action="store_true",
+                   help="add one counts-only row per drawing (hashed ids)")
     p.set_defaults(fn=_cmd_summary)
 
     p = sub.add_parser("ingest", parents=[common])

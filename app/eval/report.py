@@ -690,6 +690,27 @@ def _auto_accept(report: RunReport) -> Dict:
                                     if n_delivered else None)}
 
 
+def per_doc_rows(report: RunReport, anonymizer) -> List[Dict]:
+    """One row per drawing -- hashed id and counts only, no client values.
+
+    For picking which drawings to show the client: `worst_docs` ranks by cost
+    alone, which cannot tell a clean drawing from a small one."""
+    rows = []
+    for d in report.doc_scores:
+        c = d.counts
+        correct = c.get("correct", 0) + c.get("flagged_correct", 0)
+        rows.append({
+            "doc": anonymizer(d.doc_id),
+            "n_gold": d.n_gold, "n_pred": d.n_pred,
+            "review_cost": d.review_cost,
+            "effective_dpi": d.effective_dpi,
+            "recall": round(correct / d.n_gold, 3) if d.n_gold else None,
+            "precision": round(correct / d.n_pred, 3) if d.n_pred else None,
+            "counts": dict(c),
+        })
+    return sorted(rows, key=lambda r: r["doc"])
+
+
 def summarize(report: RunReport, anonymizer, top: int = 10) -> Dict:
     """Privacy-safe digest of a run: aggregate metrics only, doc ids hashed.
 

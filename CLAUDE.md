@@ -40,6 +40,47 @@ advisory, and it has been right every single time it fired.
 * **Never widen the guard.** Re-verify after any change:
   `bash ~/.claude/hooks/test-sindri-guard.sh` → `32 passed, 0 failed`.
 
+### Showing the client some drawings
+
+Request shape: "export a few good and a few problematic drawing/Excel pairs".
+Full procedure also in the `share-pack` skill (`.claude/skills/share-pack/SKILL.md`),
+but a session not started from this tree will not load it, so it is here too.
+
+**You select; the operator exports.** The export opens client PDFs, which the
+guard blocks for agents, so never try to run `export_share.py` or copy files.
+You hand the operator ONE command. Each step is its own unchained Bash call:
+
+1. Digests (counts + salted ids only; dev and test, never train; never
+   `--show-ids`). Shipped-policy controls: `r4-control-scoped` (dev),
+   `r4-controltest-scoped` (test); newer runs are in `docs/eval/*-summary.json`:
+   `python -m app.eval.runner summary ~/sindri-client-data/reports/<run>.report.json --per-doc --out <scratchpad>/dev.json`
+2. Select, mapping each digest to its predict RUN DIR (report name minus
+   `-scoped`), writing the manifest outside the repo so it survives the session:
+   `python -m app.eval.share_select --digest r4-control=<scratchpad>/dev.json --digest r4-controltest=<scratchpad>/test.json --great 3 --problem 2 --out ~/client-share-manifest.json`
+3. Give the operator, for their own terminal:
+   `cd <this worktree> && python export_share.py --manifest ~/client-share-manifest.json --out ~/client-share`
+   It writes `<part>.xlsx` + `<part>_ballooned.pdf` per pick and prints hashes
+   only, so the operator can paste the output back for a check.
+
+Selection defaults (`app/eval/share_select.py`; every one is a flag): at least
+15 gold rows; **great** = recall >= 0.55 with escaped_error <= 10% of gold, best
+recall first; **problem** = same escaped ceiling, recall in [0.3, 0.55), one
+over-detection flavour then one misses flavour. The escaped ceiling is the
+client's precision-over-recall rule: never show a wrong value delivered
+unflagged. If it warns it is short, loosen a flag, not that ceiling. For criteria
+the flags cannot say, read `per_doc` from the digest and write the same manifest
+shape (`{"runs": [{"run": "<run dir>", "hashes": [...]}]}`).
+
+Things that cost time or trust: the export is OUR prediction (confirmed rows
+only, tray suggestions excluded) rendered onto the clean drawing -- never the
+client's stamped drawings or Excel gold, which must not be passed off as ours.
+Run dir names (`r4-control`, ...) are inferred from `run_gpu_queue.sh`; a wrong
+one prints `SKIP <hash>: no dump` and exits nonzero. Hashes resolve against
+`~/.claude/sindri-doc-salt`, so the operator's machine must hold the same salt.
+Tell the operator to eyeball the "problem" pairs before sending: counts cannot
+show whether extra balloons are dimensions the client chose not to balloon.
+The export folder and the manifest stay out of git and out of the repo.
+
 ## 2. Where things stand
 
 **Read `docs/plans/2026-10-07-session-handoff.md` first — it is the current
