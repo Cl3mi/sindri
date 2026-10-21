@@ -941,3 +941,14 @@ input[type="file"].sr {
 .token-prompt { background: var(--bg-panel, #fff); padding: 1.5rem; border-radius: 6px; display: flex; flex-direction: column; gap: 10px; min-width: 260px; }
 .token-prompt label { display: flex; flex-direction: column; gap: 6px; font-size: var(--fs-sm); }
 .token-prompt-error { color: var(--err, #c0392b); font-size: var(--fs-xs); margin: 0; }
+
+/* Reason chips after an edit/delete (campaign plan C1 Task 10) */
+.reason-popover { z-index: 50; display: flex; flex-direction: column; gap: 4px;
+  padding: 8px; background: var(--bg-elevated); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-pop); max-width: 320px; }
+.reason-popover .reason-title { font-size: var(--fs-xs); color: var(--fg-muted); margin-bottom: 2px; }
+.reason-popover .chip { text-align: left; font-size: var(--fs-sm); color: var(--fg);
+  background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius-md);
+  padding: 4px 8px; cursor: pointer; }
+.reason-popover .chip:hover, .reason-popover .chip:focus-visible { background: var(--bg-hover);
+  border-color: var(--accent); outline: none; }
