@@ -185,7 +185,16 @@ class Worker:
             self._settle(doc_id, self.repo.mark_failed, f"review_store:{type(e).__name__}")
             return
         try:
-            self.store.create(doc_id, self.header_fn(d / "input.pdf"), {"rows": rows})
+            header = self.header_fn(d / "input.pdf")
+            # A campaign drawing (campaign design §2) carries its facts --
+            # campaign, group, source run, doc hash -- next to its input;
+            # grading reads them from the header. Inside this try: a broken
+            # campaign.json fails the drawing like any review-record fault.
+            campaign_path = d / "campaign.json"
+            if campaign_path.is_file():
+                header = {**header,
+                          "campaign": json.loads(campaign_path.read_text(encoding="utf-8"))}
+            self.store.create(doc_id, header, {"rows": rows})
         except Exception as e:
             # The journal is mandatory (decision 30): a drawing that cannot be
             # reviewed durably is never shown as ready.

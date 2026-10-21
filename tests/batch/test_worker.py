@@ -474,3 +474,33 @@ def test_eta_history_is_safe_to_read_while_the_worker_writes_it(tmp_path):
     reader_thread.join(5)
     stop.set()
     assert errors == []
+
+
+def test_a_campaign_drawing_skips_extraction_and_records_its_campaign(h):
+    """Campaign design §2: the loader leaves result.json and campaign.json in
+    the drawing's dir. The worker must not spend the GPU (the file is
+    already there), and the header must say which campaign, group and
+    source run the proposal came from -- grading reads them there."""
+    d = h.data.doc_dir(A)
+    d.mkdir(parents=True)
+    (d / "input.pdf").write_bytes(b"%PDF-1.4")
+    rows = [Characteristic(pos=1, id="r1", nominal="20").model_dump(mode="json")]
+    (d / "result.json").write_text(json.dumps(
+        {"rows": rows, "notes": None, "marks": None, "title_block": []}))
+    facts = {"campaign": "pilot-1", "group": "great", "source_run": "r5-control",
+             "doc_hash": "8e5fb4d8"}
+    (d / "campaign.json").write_text(json.dumps(facts))
+    h.repo.create_campaign_document(A, "pilot-1", "a.pdf", 1, "1" * 64)
+    h.repo.enqueue(A)
+    h.worker.run_once()
+    assert h.extract_calls == 0
+    assert h.repo.get(A)["state"] == "ready"
+    header = json.loads((h.store.root / A / "header.json").read_text())
+    assert header["campaign"] == facts and header["h"] == 1
+
+
+def test_an_ordinary_drawing_has_no_campaign_key(h):
+    h.queue()
+    h.worker.run_once()
+    header = json.loads((h.store.root / A / "header.json").read_text())
+    assert "campaign" not in header
