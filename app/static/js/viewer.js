@@ -16,7 +16,7 @@ import {
   apply, opAddRow, opDeleteRow, opMoveRow, opMoveTarget,
 } from './state.js';
 import { readRegion } from './api.js';
-import { dragBox, settleBox } from './anchor.js';
+import { dragBox, settleBox, beyondDeadZone } from './anchor.js';
 import { commitWithReason, askReason } from './reasons.js';
 import { toast } from './ui.js';
 
@@ -29,8 +29,8 @@ let zoom = 1, tx = 0, ty = 0;
 let panning = false, spaceDown = false, altDown = false, panStart = null;
 let addMode = false, panMode = false;
 let drawing = null;        // { startView }
-let dragging = null;       // { id, lastView }
-let anchorDrag = null;     // { id, handle, startPlan, origin, box }
+let dragging = null;       // { id, lastView, startClient, moved }
+let anchorDrag = null;     // { id, handle, startClient, startPlan, origin, box, active }
 
 export function initViewer() {
   viewport     = document.getElementById('plan-viewport');
@@ -185,12 +185,15 @@ function bindMouse() {
     // top of it; before the marker, though the marker sits above the box in
     // the layer anyway, so a bubble inside its own anchor still drags itself.
     const handleEl = !onMarker && e.target.closest('.anchor-box, .anchor-handle');
-    if (handleEl && e.button === 0 && state.selectedId) {
+    // Read-only (another tab holds the writer): apply() would drop the edit,
+    // so a drag would only show a box that snaps back.
+    if (handleEl && e.button === 0 && state.selectedId && !state.readOnly) {
       const row = state.rows.find((x) => x.id === state.selectedId);
       if (row && row.target_region && !row.suggested) {
         const v = viewportPoint(e.clientX, e.clientY);
         anchorDrag = { id: row.id, handle: handleEl.dataset.handle,
-                       startPlan: viewToPlan(v.x, v.y),
+                       startClient: { x: e.clientX, y: e.clientY },
+                       startPlan: viewToPlan(v.x, v.y), active: false,
                        origin: [...row.target_region], box: [...row.target_region] };
         e.preventDefault();
         e.stopPropagation();
@@ -202,7 +205,8 @@ function bindMouse() {
     if (onMarker && e.button === 0) {
       const id = onMarker.dataset.id;
       const v = viewportPoint(e.clientX, e.clientY);
-      dragging = { id, lastView: v, moved: false };
+      dragging = { id, lastView: v, moved: false,
+                   startClient: { x: e.clientX, y: e.clientY } };
       state.selectedId = id;
       onMarker.classList.add('selected');
       emit('select', id);
@@ -231,6 +235,15 @@ function bindMouse() {
       return;
     }
     if (anchorDrag) {
+      // The mouseup was lost (released outside the window, a context menu):
+      // drop the drag and snap back rather than follow a button not held.
+      if (!(e.buttons & 1)) { anchorDrag = null; syncAnchorBox(); return; }
+      // Nothing moves until the pointer leaves the dead zone, so a click on
+      // the anchor never journals a move (see DRAG_DEAD_ZONE_PX).
+      if (!anchorDrag.active) {
+        if (!beyondDeadZone(anchorDrag.startClient, { x: e.clientX, y: e.clientY })) return;
+        anchorDrag.active = true;
+      }
       // Always from the box at mousedown, so the clamp in dragBox is never
       // compounded across moves and dragging back restores the original.
       const v = viewportPoint(e.clientX, e.clientY);
@@ -241,6 +254,12 @@ function bindMouse() {
       return;
     }
     if (dragging) {
+      // Same lost-mouseup guard as the anchor: put the balloon back.
+      if (!(e.buttons & 1)) { dragging = null; renderMarkers(); return; }
+      // Same dead zone too: the campaign counts "balloon moved", and a
+      // trembling click on a balloon must not journal a move_row.
+      if (!dragging.moved
+          && !beyondDeadZone(dragging.startClient, { x: e.clientX, y: e.clientY })) return;
       const v = viewportPoint(e.clientX, e.clientY);
       dragging.moved = true;
       // live update the marker DOM (commit to state on mouseup)
@@ -270,18 +289,22 @@ function bindMouse() {
       }
     }
     if (anchorDrag) {
-      const { id, box, origin } = anchorDrag;
+      const { id, box, origin, active } = anchorDrag;
       anchorDrag = null;
-      // One move_target per drag, and none for a click: a sub-pixel jitter
-      // on mousedown would otherwise journal a no-op edit the grading reads
-      // as the reviewer correcting the anchor.
-      const moved = box.some((v, i) => Math.abs(v - origin[i]) >= 1);
+      // One move_target per drag, and none for a click: only a drag that
+      // left the dead zone AND changed the box is a correction worth
+      // journalling (the grading reads every move_target as one).
+      const moved = active && box.some((v, i) => v !== origin[i]);
       const settled = moved ? settleBox(box) : null;
-      if (settled && state.rows.some((r) => r.id === id)) {
+      // At high zoom a drag past the dead zone can round back onto the
+      // original box; that is still no correction.
+      const changed = settled && settled.some((v, i) => v !== origin[i]);
+      if (changed && state.rows.some((r) => r.id === id)) {
         apply(opMoveTarget(id, settled));
-      } else {
-        syncAnchorBox();
       }
+      // Regardless: a refused or read-only apply emits no 'change', and the
+      // box must not stay where the drag left it.
+      syncAnchorBox();
     }
     if (dragging) {
       if (dragging.moved) {
@@ -376,6 +399,10 @@ function bindKeys() {
   window.addEventListener('blur', () => {
     spaceDown = false; altDown = false;
     viewport.classList.remove('space-down', 'alt-down');
+    // A drag in progress loses its mouseup to the other window: abandon it
+    // unjournalled and snap the box / balloon back.
+    if (anchorDrag) { anchorDrag = null; syncAnchorBox(); }
+    if (dragging)   { dragging = null; renderMarkers(); }
   });
 }
 function isEditingText(el) {

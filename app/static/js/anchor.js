@@ -4,12 +4,26 @@
 // flush, so the drag can never emit one.
 export const MIN_SIDE = 4;
 
+// How far, in SCREEN pixels, the pointer must travel before a press becomes a
+// drag. At fit-page zoom one screen pixel is ~5 plan pixels, so without this a
+// trembling click journals a move_target/move_row, which the campaign grades
+// as the reviewer correcting the anchor or moving the balloon.
+export const DRAG_DEAD_ZONE_PX = 3;
+
+export function beyondDeadZone(start, now, px = DRAG_DEAD_ZONE_PX) {
+  return Math.hypot(now.x - start.x, now.y - start.y) >= px;
+}
+
 export function dragBox([x0, y0, x1, y1], handle, dx, dy) {
   if (handle === 'body') return [x0 + dx, y0 + dy, x1 + dx, y1 + dy];
-  if (handle.includes('w')) x0 = Math.min(x0 + dx, x1 - MIN_SIDE);
-  if (handle.includes('e')) x1 = Math.max(x1 + dx, x0 + MIN_SIDE);
-  if (handle.includes('n')) y0 = Math.min(y0 + dy, y1 - MIN_SIDE);
-  if (handle.includes('s')) y1 = Math.max(y1 + dy, y0 + MIN_SIDE);
+  // The floor is MIN_SIDE, or the box's own side if the detector already
+  // drew it thinner, so a corner drag never widens the axis it left alone.
+  const minW = Math.min(MIN_SIDE, x1 - x0);
+  const minH = Math.min(MIN_SIDE, y1 - y0);
+  if (handle.includes('w')) x0 = Math.min(x0 + dx, x1 - minW);
+  if (handle.includes('e')) x1 = Math.max(x1 + dx, x0 + minW);
+  if (handle.includes('n')) y0 = Math.min(y0 + dy, y1 - minH);
+  if (handle.includes('s')) y1 = Math.max(y1 + dy, y0 + minH);
   return [x0, y0, x1, y1];
 }
 
