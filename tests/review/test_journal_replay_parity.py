@@ -116,6 +116,7 @@ def test_a_review_rebuilt_from_the_server_matches_and_keeps_replaying():
         rebuilt = mismatches(replay(c["proposal"], held),
                              c["restored_rows"], c["restored_reviewed"])
         assert rebuilt == [], (c["case"], "rebuild", rebuilt, c["log"])
+        assert note_of(held) == c["restored_note"], (c["case"], "restored note", c["log"])
         # 2. edits after the reload (undos of restored ops included) still replay
         final = mismatches(replay(c["proposal"], net_events(c["events"])),
                            c["rows"], c["reviewed_ids"])
@@ -124,3 +125,6 @@ def test_a_review_rebuilt_from_the_server_matches_and_keeps_replaying():
     # the fuzz must exercise the cases this test exists for, not just pass
     assert gapped > 0, "no case with last_seq above every net event (post-seal reopen)"
     assert reached_back > 0, "no case undid a restored operation after the reload"
+    types = {e["type"] for c in cases for e in c["events"]}
+    assert {"move_target", "set_note"} <= types, types
+    assert any("reason" in e for c in cases for e in c["events"]), "no reason was fuzzed"

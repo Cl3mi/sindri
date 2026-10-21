@@ -103,6 +103,7 @@ for (let c = 0; c < N; c++) {
   let lastSeq = j.lastSeq;
   let restoredRows = null;
   let restoredReviewed = null;
+  let restoredNote = null;
   if (RESUME) {
     // Simulated reload: rebuild from what the server holds, then keep going
     // -- including undos that reach back into restored operations. lastSeq
@@ -113,6 +114,7 @@ for (let c = 0; c < N; c++) {
       netEvents(before));
     restoredRows = JSON.parse(JSON.stringify(S.state.rows));
     restoredReviewed = S.state.rows.filter((r) => r.reviewed).map((r) => r.id);
+    restoredNote = S.state.note;
     const j2 = createJournal({ send: async () => ({ contiguous: 0 }), now: () => 0, wallNow: () => '' });
     j2.resume('s' + c, 'w', lastSeq, pairs);
     const off2 = S.on('op', (e) => j2.record(e));
@@ -124,7 +126,7 @@ for (let c = 0; c < N; c++) {
   cases.push({
     case: c, log, proposal, events,
     events_before_reload: before, last_seq: lastSeq,
-    restored_rows: restoredRows, restored_reviewed: restoredReviewed,
+    restored_rows: restoredRows, restored_reviewed: restoredReviewed, restored_note: restoredNote,
     rows: JSON.parse(JSON.stringify(S.state.rows)),
     note: S.state.note,
     reviewed_ids: S.state.rows.filter((r) => r.reviewed).map((r) => r.id),
