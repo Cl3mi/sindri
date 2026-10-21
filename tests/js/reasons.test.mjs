@@ -31,3 +31,34 @@ test('a failing prompt still applies the op: the edit is never lost', async () =
                          async () => { throw new Error('no DOM'); }, (op) => applied.push(op));
   assert.deepEqual(applied, [{ reason: undefined }]);
 });
+
+import { classifyKey } from '../../app/static/js/reasons.js';
+
+const key = (k, extra = {}) => ({ key: k, target: { tagName: 'DIV', isContentEditable: false }, ...extra });
+const editing = { tagName: 'TD', isContentEditable: true };
+
+test('classifyKey: a digit outside an editor picks that chip', () => {
+  assert.deepEqual(classifyKey(key('3'), 5), { reason: 2 });
+});
+
+test('classifyKey: a digit typed into an editor dismisses and passes through', () => {
+  // Tab-ing to the next cell and typing "12.5" must not be eaten by the popover.
+  assert.equal(classifyKey(key('1', { target: editing }), 5), 'dismiss');
+  assert.equal(classifyKey(key('1', { target: { tagName: 'INPUT' } }), 5), 'dismiss');
+});
+
+test('classifyKey: out-of-range digit, modifiers and other keys dismiss', () => {
+  assert.equal(classifyKey(key('6'), 5), 'dismiss');
+  assert.equal(classifyKey(key('1', { ctrlKey: true }), 5), 'dismiss');
+  assert.equal(classifyKey(key('z', { ctrlKey: true }), 5), 'dismiss');
+  assert.equal(classifyKey(key('Tab'), 5), 'dismiss');
+});
+
+test('classifyKey: modifier-only keys and IME composition keep it open', () => {
+  for (const k of ['Shift', 'Control', 'Alt', 'Meta']) assert.equal(classifyKey(key(k), 5), 'ignore');
+  assert.equal(classifyKey(key('a', { isComposing: true }), 5), 'ignore');
+});
+
+test('classifyKey: Escape is swallowed and dismisses', () => {
+  assert.equal(classifyKey(key('Escape'), 5), 'swallow-dismiss');
+});

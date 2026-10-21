@@ -46,13 +46,43 @@ export async function commitWithReason(kind, makeOp, ask, apply) {
   apply(makeOp(vocab.has(reason) ? reason : undefined));
 }
 
-// The popover itself (DOM). Keys 1-5 pick a chip while it is open and are
-// swallowed so the global filter-pill shortcuts never see them; any other
-// key or an outside click dismisses with no reason.
+// Pure key policy for the open popover. The popover must never steal a
+// keystroke meant for the next cell: after an edit the reviewer Tabs on and
+// types "12.5", and swallowing that "1" would record a reason nobody chose
+// and corrupt the cell. So a digit only picks a chip when focus is NOT in an
+// editor; every other key dismisses reasonless and proceeds untouched (Ctrl+Z
+// then undoes the edit just applied). Escape alone is swallowed.
+// Returns 'ignore' | 'dismiss' | 'swallow-dismiss' | { reason: index }.
+export function classifyKey(e, n) {
+  if (e.isComposing || ['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) return 'ignore';
+  if (e.key === 'Escape') return 'swallow-dismiss';
+  const t = e.target;
+  const editing = !!t && (t.isContentEditable
+    || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName));
+  const d = /^[1-9]$/.test(e.key) ? Number(e.key) : 0;
+  if (d >= 1 && d <= n && !e.ctrlKey && !e.metaKey && !e.altKey && !editing) {
+    return { reason: d - 1 };
+  }
+  return 'dismiss';
+}
+
+// At most one prompt is open. A second askReason resolves the older one
+// reasonless first (its op applies first, preserving order).
+let current = null;
+
+// Callers about to navigate away or seal call this so no edit is held
+// hostage by an open popover.
+export function settleReasonPrompt() { current?.(undefined); }
+
+// The popover itself (DOM). Digits pick a chip (see classifyKey); an outside
+// click, navigation, page hide or tab hide resolve with no reason.
 export function askReason(kind, anchorEl) {
+  if (current) current(undefined);
   return new Promise((resolve) => {
     const el = document.createElement('div');
     el.className = 'reason-popover';
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-label', kind === 'edit' ? 'Reason for edit' : 'Reason for delete');
     const title = document.createElement('div');
     title.className = 'reason-title';
     title.textContent = kind === 'edit' ? 'Why was it wrong? (optional)' : 'Why delete it? (optional)';
@@ -70,22 +100,43 @@ export function askReason(kind, anchorEl) {
     Object.assign(el.style, { position: 'fixed',
       left: `${Math.max(8, r ? r.left : 40)}px`, top: `${r ? r.bottom + 4 : 40}px` });
     document.body.appendChild(el);
+    // Measure after insertion: flip above the anchor when it would overflow
+    // the bottom, and keep it inside the right edge.
+    const box = el.getBoundingClientRect();
+    if (r && box.bottom > window.innerHeight - 8) {
+      el.style.top = `${Math.max(8, r.top - box.height - 4)}px`;
+    }
+    if (box.right > window.innerWidth - 8) {
+      el.style.left = `${Math.max(8, window.innerWidth - box.width - 8)}px`;
+    }
 
     function onKey(e) {
-      e.stopPropagation(); e.preventDefault();
-      const n = Number(e.key);
-      done(n >= 1 && n <= entries.length ? entries[n - 1][0] : undefined);
+      const c = classifyKey(e, entries.length);
+      if (c === 'ignore') return;
+      if (c === 'dismiss') return done(undefined); // keystroke proceeds
+      e.preventDefault(); e.stopImmediatePropagation();
+      done(c === 'swallow-dismiss' ? undefined : entries[c.reason][0]);
     }
     function onClick(e) { if (!el.contains(e.target)) done(undefined); }
+    function onHide() { if (document.visibilityState === 'hidden') done(undefined); }
+    const settle = () => done(undefined);
     function done(reason) {
       document.removeEventListener('keydown', onKey, true);
       document.removeEventListener('mousedown', onClick, true);
+      document.removeEventListener('visibilitychange', onHide);
+      window.removeEventListener('hashchange', settle);
+      window.removeEventListener('pagehide', settle);
       el.remove();
+      if (current === done) current = null;
       resolve(reason);
     }
+    current = done;
     // capture phase on document: runs before shortcuts.js / viewer.js, whose
     // keydown listeners are on window in the bubble phase.
     document.addEventListener('keydown', onKey, true);
     document.addEventListener('mousedown', onClick, true);
+    document.addEventListener('visibilitychange', onHide);
+    window.addEventListener('hashchange', settle);
+    window.addEventListener('pagehide', settle);
   });
 }
