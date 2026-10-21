@@ -13,9 +13,10 @@
 
 import {
   state, on, emit,
-  apply, opAddRow, opDeleteRow, opMoveRow,
+  apply, opAddRow, opDeleteRow, opMoveRow, opMoveTarget,
 } from './state.js';
 import { readRegion } from './api.js';
+import { dragBox, settleBox } from './anchor.js';
 import { commitWithReason, askReason } from './reasons.js';
 import { toast } from './ui.js';
 
@@ -29,6 +30,7 @@ let panning = false, spaceDown = false, altDown = false, panStart = null;
 let addMode = false, panMode = false;
 let drawing = null;        // { startView }
 let dragging = null;       // { id, lastView }
+let anchorDrag = null;     // { id, handle, startPlan, origin, box }
 
 export function initViewer() {
   viewport     = document.getElementById('plan-viewport');
@@ -39,6 +41,10 @@ export function initViewer() {
 
   on('session', onSession);
   on('change', renderMarkers);
+  // A marker mousedown selects without a 'change' (that only follows on
+  // click or a moved drag), so the anchor box would otherwise lag a
+  // selection until the next unrelated re-render.
+  on('select', () => renderMarkers());
 
   bindZoomControls();
   bindMouse();
@@ -174,6 +180,24 @@ function bindMouse() {
       return;
     }
 
+    // ANCHOR drag: body or corner of the selected row's anchor box. After
+    // pan and add, so alt/space-pan and the add rubber band still start on
+    // top of it; before the marker, though the marker sits above the box in
+    // the layer anyway, so a bubble inside its own anchor still drags itself.
+    const handleEl = !onMarker && e.target.closest('.anchor-box, .anchor-handle');
+    if (handleEl && e.button === 0 && state.selectedId) {
+      const row = state.rows.find((x) => x.id === state.selectedId);
+      if (row && row.target_region && !row.suggested) {
+        const v = viewportPoint(e.clientX, e.clientY);
+        anchorDrag = { id: row.id, handle: handleEl.dataset.handle,
+                       startPlan: viewToPlan(v.x, v.y),
+                       origin: [...row.target_region], box: [...row.target_region] };
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+    }
+
     // MARKER drag
     if (onMarker && e.button === 0) {
       const id = onMarker.dataset.id;
@@ -206,6 +230,16 @@ function bindMouse() {
       });
       return;
     }
+    if (anchorDrag) {
+      // Always from the box at mousedown, so the clamp in dragBox is never
+      // compounded across moves and dragging back restores the original.
+      const v = viewportPoint(e.clientX, e.clientY);
+      const p = viewToPlan(v.x, v.y);
+      anchorDrag.box = dragBox(anchorDrag.origin, anchorDrag.handle,
+                               p.x - anchorDrag.startPlan.x, p.y - anchorDrag.startPlan.y);
+      syncAnchorBox();
+      return;
+    }
     if (dragging) {
       const v = viewportPoint(e.clientX, e.clientY);
       dragging.moved = true;
@@ -233,6 +267,20 @@ function bindMouse() {
       drawing = null;
       if ((p1.x - p0.x) >= 4 && (p1.y - p0.y) >= 4) {
         await runReadRegion([p0.x, p0.y, p1.x, p1.y]);
+      }
+    }
+    if (anchorDrag) {
+      const { id, box, origin } = anchorDrag;
+      anchorDrag = null;
+      // One move_target per drag, and none for a click: a sub-pixel jitter
+      // on mousedown would otherwise journal a no-op edit the grading reads
+      // as the reviewer correcting the anchor.
+      const moved = box.some((v, i) => Math.abs(v - origin[i]) >= 1);
+      const settled = moved ? settleBox(box) : null;
+      if (settled && state.rows.some((r) => r.id === id)) {
+        apply(opMoveTarget(id, settled));
+      } else {
+        syncAnchorBox();
       }
     }
     if (dragging) {
@@ -419,6 +467,7 @@ function renderMarkers() {
     const r = state.rows.find((x) => x.id === b.dataset.id);
     if (!r || !r.suggested) b.remove();
   });
+  syncAnchorBox();
 }
 
 function syncSuggestBox(r) {
@@ -436,6 +485,42 @@ function syncSuggestBox(r) {
   box.style.top = a.y + 'px';
   box.style.width = (b.x - a.x) + 'px';
   box.style.height = (b.y - a.y) + 'px';
+}
+
+// The selected balloon's anchor -- the feature it points at -- drawn with a
+// body and four corner handles (campaign design §3). Separate from the
+// bubble: dragging the marker moves the bubble (move_row), dragging this
+// moves the anchor (move_target). Not for a suggestion, which already has
+// its dashed suggest-box and is confirmed, not re-anchored, in the tray.
+function syncAnchorBox() {
+  let box = markerLayer.querySelector('.anchor-box');
+  const r = state.rows.find((x) => x.id === state.selectedId);
+  if (!r || !r.target_region || r.suggested) {
+    if (box) box.remove();
+    // The row went away mid-drag (undo, a delete): drop the drag rather
+    // than journal a move for a row the reviewer can no longer see.
+    if (anchorDrag && (!r || anchorDrag.id !== r.id)) anchorDrag = null;
+    return;
+  }
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'anchor-box';
+    box.dataset.handle = 'body';
+    for (const h of ['nw', 'ne', 'sw', 'se']) {
+      const k = document.createElement('div');
+      k.className = `anchor-handle ${h}`;
+      k.dataset.handle = h;
+      box.appendChild(k);
+    }
+    // Prepended so every marker paints above it: a bubble sitting inside its
+    // own anchor stays grabbable as the bubble.
+    markerLayer.prepend(box);
+  }
+  const reg = anchorDrag && anchorDrag.id === r.id ? anchorDrag.box : r.target_region;
+  const a = planToView(reg[0], reg[1]);
+  const b = planToView(reg[2], reg[3]);
+  Object.assign(box.style, { left: a.x + 'px', top: a.y + 'px',
+    width: (b.x - a.x) + 'px', height: (b.y - a.y) + 'px' });
 }
 
 // ----- exported helpers used by table.js ------------------------------
