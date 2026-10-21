@@ -377,9 +377,13 @@ function syncCampaignChrome() {
     // Never overwrite what the reviewer is typing -- unless the drawing
     // changed under a focused box (Back/Forward), when the text on screen
     // is the previous drawing's and must not be shown as this one's.
+    // Drop focus rather than re-bind: restoreSession emits 'session'/'change'
+    // with state.note '' BEFORE replaying the new drawing's set_note, so a
+    // re-bound focused box would hold '' and its next blur erase that note.
+    // This blur's commitNote() is a no-op (noteSid is still the old drawing).
     if (document.activeElement !== note || state.sessionId !== noteSid) {
       note.value = state.note || '';
-      if (document.activeElement === note) noteSid = state.sessionId;
+      if (document.activeElement === note) note.blur();
     }
   }
   const appr = document.getElementById('rb-approved');
