@@ -22,6 +22,11 @@ export const state = {
   fileName: null,
   rows: [],          // each row gets a transient `reviewed: bool` client-side
   notes: null,
+  // The REVIEWER's free-text note on this drawing (set_note; campaign design
+  // §3) -- not `notes` above, which is the drawing's own notes from the
+  // proposal. '' rather than null: replay's note_of() also reads "no note"
+  // as an empty string.
+  note: '',
   marks: null,
   title_block: [],
   selectedId: null,  // selected marker / row id
@@ -43,6 +48,9 @@ export function setSession(payload) {
   state.imageUrl  = payload.image_url;
   state.rows      = payload.rows.map((r) => ({ ...r, reviewed: false }));
   state.notes     = payload.notes;
+  // A restore rebuilds the note from the journal's set_note events, so a
+  // fresh session always starts from none.
+  state.note      = '';
   state.marks     = payload.marks ?? null;
   state.title_block = payload.title_block ?? [];
   state.fileName  = payload.fileName ?? state.fileName;
@@ -61,6 +69,7 @@ export function clearSession() {
   state.fileName  = null;
   state.rows      = [];
   state.notes     = null;
+  state.note      = '';
   state.marks     = null;
   state.title_block = [];
   state.selectedId = null;
@@ -149,7 +158,7 @@ export function opAddRow(row) {
   };
 }
 
-export function opDeleteRow(id) {
+export function opDeleteRow(id, reason) {
   let removed = null;
   return {
     label: 'delete balloon',
@@ -165,7 +174,9 @@ export function opDeleteRow(id) {
         renumber();
       }
     },
-    event: () => ({ type: 'delete_row', id }),
+    // `reason` is omitted, never sent as undefined/null, so the server's
+    // e.get("reason") and this agree on "absent" (journal.py).
+    event: () => (reason ? { type: 'delete_row', id, reason } : { type: 'delete_row', id }),
   };
 }
 
@@ -187,7 +198,42 @@ export function opMoveRow(id, newXY) {
   };
 }
 
-export function opEditCell(id, field, newValue) {
+// The anchor: which feature the balloon points at (campaign design §3),
+// separate from where the bubble sits (opMoveRow). It renumbers because
+// target_region drives reading order; replay.py need not, since `pos` is
+// derived and replay.mismatches never compares it.
+export function opMoveTarget(id, newBox) {
+  let oldBox = null;
+  return {
+    label: 'move anchor',
+    do() {
+      const r = state.rows.find((x) => x.id === id);
+      if (!r) return;
+      oldBox = r.target_region ? [...r.target_region] : null;
+      r.target_region = [...newBox];
+      renumber();
+    },
+    undo() {
+      const r = state.rows.find((x) => x.id === id);
+      if (r) { r.target_region = oldBox; renumber(); }
+    },
+    event: () => ({ type: 'move_target', id, box: [...newBox] }),
+  };
+}
+
+// The drawing's free-text note (campaign design §3). Not a row: replay
+// reads it with note_of(), latest net set_note wins.
+export function opSetNote(text) {
+  let oldText = '';
+  return {
+    label: 'edit note',
+    do() { oldText = state.note; state.note = text; },
+    undo() { state.note = oldText; },
+    event: () => ({ type: 'set_note', text }),
+  };
+}
+
+export function opEditCell(id, field, newValue, reason) {
   let oldValue = null;
   return {
     label: `edit ${field}`,
@@ -201,8 +247,13 @@ export function opEditCell(id, field, newValue) {
       const r = state.rows.find((x) => x.id === id);
       if (r) r[field] = oldValue;
     },
-    // evaluated after do(), so oldValue is the captured one
-    event: () => ({ type: 'edit_cell', id, field, old: oldValue ?? '', new: newValue }),
+    // evaluated after do(), so oldValue is the captured one; `reason` only
+    // when given, as in opDeleteRow
+    event: () => {
+      const e = { type: 'edit_cell', id, field, old: oldValue ?? '', new: newValue };
+      if (reason) e.reason = reason;
+      return e;
+    },
   };
 }
 
@@ -271,9 +322,11 @@ export function opBulkReview(ids, target /* true|false */) {
 export function opFromEvent(e) {
   switch (e.type) {
     case 'add_row': return opAddRow(JSON.parse(JSON.stringify(e.row)));
-    case 'delete_row': return opDeleteRow(e.id);
+    case 'delete_row': return opDeleteRow(e.id, e.reason);
     case 'move_row': return opMoveRow(e.id, e.xy);
-    case 'edit_cell': return opEditCell(e.id, e.field, e.new);
+    case 'move_target': return opMoveTarget(e.id, e.box);
+    case 'edit_cell': return opEditCell(e.id, e.field, e.new, e.reason);
+    case 'set_note': return opSetNote(e.text);
     case 'accept': return opBulkReview(e.ids, true);
     case 'unaccept': return opBulkReview(e.ids, false);
     case 'confirm_suggestions': return opConfirmSuggestions(e.ids);
