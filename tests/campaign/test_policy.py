@@ -30,3 +30,44 @@ def test_what_a_reviewer_needs_is_allowed(method, path):
 ])
 def test_everything_else_is_closed(method, path):
     assert not allowed(method, path)
+
+
+@pytest.mark.parametrize("method,path", [
+    ("HEAD", f"/api/documents/{D}/export/xlsx"), ("GET", f"/api/exports/{D}"),
+    ("POST", f"/api/documents/{D}/open/"), ("GET", "/api/some_future_route"),
+    ("GET", f"/api/batches/{D}/extra"),
+])
+def test_near_misses_are_closed(method, path):
+    assert not allowed(method, path)
+
+
+def test_every_registered_route_is_classified():
+    """Walks the real route table, so a NEW /api route fails here until
+    someone decides whether a reviewer on the public host needs it (and adds
+    it to the policy and to this set)."""
+    import re
+    from fastapi.routing import APIRoute
+    from app.main import app
+
+    admitted = set()
+    for r in app.routes:
+        if not isinstance(r, APIRoute) or not r.path.startswith("/api/"):
+            continue
+        concrete = re.sub(r"\{kind\}", "xlsx", r.path)
+        concrete = re.sub(r"\{[^}]+\}", D, concrete)
+        for m in r.methods:
+            if allowed(m, concrete):
+                admitted.add((m, r.path))
+    assert admitted == {
+        ("POST", "/api/auth"),
+        ("GET", "/api/health"),
+        ("GET", "/api/batches"),
+        ("GET", "/api/batches/{batch_id}"),
+        ("GET", "/api/documents"),
+        ("GET", "/api/documents/{doc_id}"),
+        ("GET", "/api/image/{session_id}"),
+        ("POST", "/api/documents/{doc_id}/open"),
+        ("POST", "/api/session/{session_id}/events"),
+        ("POST", "/api/session/{session_id}/seal"),
+        ("POST", "/api/read_region"),
+    }
