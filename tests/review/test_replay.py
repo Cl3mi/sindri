@@ -80,3 +80,12 @@ def test_set_note_changes_no_row_and_the_latest_note_wins():
     assert replay([_row()], events)["r1"]["nominal"] == "1"
     assert note_of(events) == "b"
     assert note_of([]) == ""
+
+
+def test_note_of_refuses_a_raw_journal_like_replay_does():
+    """A retract in the list means the caller skipped net_events(); returning
+    the note the reviewer undid would grade an operation that never stood."""
+    events = [{"seq": 1, "type": "set_note", "text": "a"},
+              {"seq": 2, "type": "retract", "target_seq": 1}]
+    with pytest.raises(JournalError):
+        note_of(events)

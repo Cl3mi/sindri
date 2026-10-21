@@ -242,3 +242,22 @@ def test_open_reports_the_sealed_revision_and_the_seq_it_sealed(sample_pdf, stub
     reopened = client.post(f"/api/documents/{sid}/open").json()
     assert (reopened["final_revision"], reopened["sealed_seq"]) == (1, 1)
     assert reopened["last_seq"] == 1
+
+
+def test_seal_with_an_int_anchor_still_replays_ok(sample_pdf, stub_backend):
+    """/api/read_region yields INT target_regions; the server's stored/validated
+    form round-trips through pydantic (tuple/float). mismatches() compares
+    target_region now, so this pins that the round trip does not read as drift."""
+    result = extract(sample_pdf)
+    sid, writer, rows = result["session_id"], result["writer"], result["rows"]
+    added = {**rows[0], "id": "manual-1", "pos": len(rows) + 1, "balloon_xy": [60, 40],
+             "target_region": [40, 40, 120, 70], "suggested": False,
+             "needs_review": False, "reviewed": True}
+    r = client.post(f"/api/session/{sid}/events", json={"writer": writer, "events": [
+        {"seq": 1, "type": "add_row", "row": added}]})
+    assert r.status_code == 200
+    r = client.post(f"/api/session/{sid}/seal", json={
+        "writer": writer, "final_seq": 1, "rows": [*rows, added],
+        "reviewed_ids": ["manual-1"]})
+    assert r.status_code == 200
+    assert r.json() == {"revision": 1, "replay_ok": True}

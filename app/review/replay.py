@@ -65,6 +65,10 @@ def note_of(events: Iterable[dict]) -> str:
     """The drawing's note after NET events (latest set_note wins; "" if none)."""
     note = ""
     for e in events:
+        if e["type"] == "retract":
+            # Same refusal as replay(): the caller skipped net_events(), and
+            # the note it would return may be one the reviewer undid.
+            raise JournalError("cannot read a note from a raw journal: retract present")
         if e["type"] == "set_note":
             note = e["text"]
     return note
