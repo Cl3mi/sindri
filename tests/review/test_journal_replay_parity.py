@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from app.review.journal import net_events, validate_event
-from app.review.replay import mismatches, replay
+from app.review.replay import mismatches, note_of, replay
 
 ROOT = Path(__file__).resolve().parents[2]
 SEED = 12345
@@ -35,6 +35,8 @@ _TYPE_KEYS = {
     "unaccept": {"ids"},
     "confirm_suggestions": {"ids"},
     "retract": {"target"},
+    "move_target": {"id", "box"},
+    "set_note": {"text"},
 }
 
 
@@ -66,6 +68,11 @@ def test_journal_replay_parity_across_js_and_python():
         net = net_events(c["events"])
         bad = mismatches(replay(c["proposal"], net), c["rows"], c["reviewed_ids"])
         assert bad == [], (c["case"], bad, c["log"])
+        assert note_of(net) == c["note"], (c["case"], "note", c["log"])
+    types = {e["type"] for c in cases for e in c["events"]}
+    # the fuzz must actually exercise the new vocabulary, not just pass
+    assert {"move_target", "set_note"} <= types, types
+    assert any("reason" in e for c in cases for e in c["events"]), "no reason was fuzzed"
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
@@ -113,6 +120,7 @@ def test_a_review_rebuilt_from_the_server_matches_and_keeps_replaying():
         final = mismatches(replay(c["proposal"], net_events(c["events"])),
                            c["rows"], c["reviewed_ids"])
         assert final == [], (c["case"], "after reload", final, c["log"])
+        assert note_of(net_events(c["events"])) == c["note"], (c["case"], "note", c["log"])
     # the fuzz must exercise the cases this test exists for, not just pass
     assert gapped > 0, "no case with last_seq above every net event (post-seal reopen)"
     assert reached_back > 0, "no case undid a restored operation after the reload"
