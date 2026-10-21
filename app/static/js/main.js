@@ -878,11 +878,6 @@ async function loadForReview(id, opts) {
 }
 
 async function openForReview(id, { skipFlush = false } = {}) {
-  // Reached without routeOnce too (scheduleFlush's 'open'/'open_stale', the
-  // file-close handler's pendingOpen), and journal.resume() below wipes
-  // whatever is unflushed -- so a held reason-prompt op is applied (and
-  // thereby flushed or confirmed-away) before anything decides to leave.
-  await settleReasonPrompt();
   // A freshly opened drawing never keeps yesterday's stale banner: this tab
   // may be opening a NEW drawing while still shown read-only for the one it
   // just left (the read-only state is per screen, not per drawing).
@@ -903,8 +898,17 @@ async function openForReview(id, { skipFlush = false } = {}) {
     setReviewBarVisible(true);
     return;
   }
-  // Taken synchronously, before any await, so a second flush tick cannot
-  // start a second open of the same waiting drawing. "Stay" re-sets it.
+  // Reached without routeOnce too (scheduleFlush's 'open'/'open_stale', the
+  // file-close handler's pendingOpen), and journal.resume() below wipes
+  // whatever is unflushed -- so a held reason-prompt op is applied (and
+  // thereby flushed or confirmed-away) before anything decides to leave.
+  // Below the no-op return above: re-asserting the drawing already open
+  // must not dismiss a prompt the reviewer is still reading.
+  await settleReasonPrompt();
+  // Taken before any await that yields to a TASK (settleReasonPrompt above
+  // is microtask-only, so no flush tick can run in between), so a second
+  // flush tick cannot start a second open of the same waiting drawing.
+  // "Stay" re-sets it.
   if (pendingOpen === id) {
     pendingOpen = null;
     closePendingToast?.();
@@ -1083,12 +1087,12 @@ function wireJournal() {
     const { sessionId, writer } = journal;
     const sent = journal.pending.length;
     beaconEvents(sessionId, writer, journal.pending);
-    // A pagehide listener cannot await, and this one runs BEFORE askReason's
-    // own pagehide handler releases a held op (registered at boot, earlier).
-    // Beaconing first keeps the common case unchanged; the settle chain is
-    // pure microtasks, which drain before the page goes, so a held op that
-    // lands goes out in a second beacon. Append is by seq server-side, so the
-    // overlap double-sends at worst, never drops.
+    // A pagehide listener cannot await. Beaconing first keeps the common
+    // case unchanged; the settleReasonPrompt() call below resolves any held
+    // prompt synchronously, its op is applied in the microtask checkpoint
+    // right after this listener returns (before the page goes), and the
+    // `.then` sends that op in a second beacon. Append is by seq server-side,
+    // so the overlap double-sends at worst, never drops.
     settleReasonPrompt().then(() => {
       if (journal.pending.length > sent) beaconEvents(sessionId, writer, journal.pending);
     });

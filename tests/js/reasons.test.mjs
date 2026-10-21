@@ -114,3 +114,13 @@ test('settleReasonPrompt resolves only after the held op has been applied', with
 test('settleReasonPrompt with nothing open resolves at once', async () => {
   await settleReasonPrompt();
 });
+
+test('settleReasonPrompt still resolves when the held op throws on apply', withFakeDom(async () => {
+  // A failing apply is the commit's own failure; it must not also wedge
+  // navigation or Finish, which await this settle before doing anything.
+  const done = commitWithReason('edit', (reason) => ({ reason }),
+                                (kind) => askReason(kind, null),
+                                () => { throw new Error('apply failed'); });
+  await settleReasonPrompt();
+  await assert.rejects(done, /apply failed/);
+}));
