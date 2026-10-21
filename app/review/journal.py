@@ -5,6 +5,7 @@ self-contained enough to replay without the browser. An undo is not a deletion
 but a `retract` of the event it undid, so the server can stay append-only and
 a crashed tab loses nothing; only at seal are retracted pairs compacted away,
 which is the "net operations only" retention the operator chose."""
+import math
 from typing import Iterable, List, Set
 
 EVENT_TYPES = frozenset({
@@ -49,7 +50,10 @@ def _is_str(v) -> bool:
 
 def _is_number(v) -> bool:
     # bool is an int subclass; a coordinate must never silently accept one.
-    return isinstance(v, (int, float)) and not isinstance(v, bool)
+    # Non-finite values must be refused here: a stored Infinity/NaN makes the
+    # drawing's /open response unserialisable (allow_nan=False) for good.
+    return (isinstance(v, (int, float)) and not isinstance(v, bool)
+            and math.isfinite(v))
 
 
 def validate_event(e) -> None:

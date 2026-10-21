@@ -155,3 +155,16 @@ def test_reasons_are_closed_vocabularies_and_optional():
                             "wrong_sign_or_unit", "other"}
     assert DELETE_REASONS == {"duplicate", "not_a_characteristic",
                               "unballooned_real_dimension", "wrong_region", "other"}
+
+
+def test_coordinates_must_be_finite():
+    """A non-finite coordinate is written to events.jsonl and then makes the
+    JSON response of /open unserialisable (allow_nan=False), bricking the
+    drawing, so the gate must refuse it before it reaches disk."""
+    inf, nan = float("inf"), float("nan")
+    for box in ([0, 0, inf, inf], [-inf, 0, 1, 1], [0, 0, nan, 5]):
+        with pytest.raises(JournalError):
+            validate_event({"seq": 1, "type": "move_target", "id": "r1", "box": box})
+    for xy in ([inf, 1], [nan, 1]):
+        with pytest.raises(JournalError):
+            validate_event({"seq": 1, "type": "move_row", "id": "r1", "xy": xy})
