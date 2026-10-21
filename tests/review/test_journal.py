@@ -13,10 +13,11 @@ def ev(seq, type_, **kw):
     return {"seq": seq, "type": type_, **kw}
 
 
-def test_vocabulary_is_exactly_phase_one_operations():
+def test_vocabulary_is_exactly_the_known_operations():
     assert EVENT_TYPES == {
         "add_row", "delete_row", "move_row", "edit_cell",
-        "accept", "unaccept", "confirm_suggestions", "retract"}
+        "accept", "unaccept", "confirm_suggestions", "retract",
+        "move_target", "set_note"}
 
 
 @pytest.mark.parametrize("bad", [
@@ -119,3 +120,38 @@ def test_redo_after_undo_survives_as_a_fresh_event():
 def test_net_events_refuses_an_inconsistent_journal(events):
     with pytest.raises(JournalError):
         net_events(events)
+
+
+from app.review.journal import DELETE_REASONS, EDIT_REASONS, NOTE_MAX
+
+
+def test_move_target_needs_an_id_and_an_ordered_four_number_box():
+    validate_event({"seq": 1, "type": "move_target", "id": "r1", "box": [1, 2, 30, 40]})
+    for box in ([1, 2, 3], [5, 2, 3, 40], [1, 40, 30, 2], [1, 2, 30, True], "x"):
+        with pytest.raises(JournalError):
+            validate_event({"seq": 1, "type": "move_target", "id": "r1", "box": box})
+
+
+def test_set_note_takes_a_bounded_string():
+    validate_event({"seq": 1, "type": "set_note", "text": ""})
+    validate_event({"seq": 1, "type": "set_note", "text": "x" * NOTE_MAX})
+    for text in (None, 3, "x" * (NOTE_MAX + 1)):
+        with pytest.raises(JournalError):
+            validate_event({"seq": 1, "type": "set_note", "text": text})
+
+
+def test_reasons_are_closed_vocabularies_and_optional():
+    edit = {"seq": 1, "type": "edit_cell", "id": "r", "field": "nominal", "old": "1", "new": "2"}
+    validate_event(edit)
+    validate_event({**edit, "reason": "misread_digit"})
+    with pytest.raises(JournalError):
+        validate_event({**edit, "reason": "because"})
+    delete = {"seq": 1, "type": "delete_row", "id": "r"}
+    validate_event({**delete, "reason": "unballooned_real_dimension"})
+    with pytest.raises(JournalError):
+        validate_event({**delete, "reason": "misread_digit"})
+    # identical to the phase-2 plan's lists (plan C1 decision 6)
+    assert EDIT_REASONS == {"misread_digit", "wrong_tolerance", "wrong_char_type",
+                            "wrong_sign_or_unit", "other"}
+    assert DELETE_REASONS == {"duplicate", "not_a_characteristic",
+                              "unballooned_real_dimension", "wrong_region", "other"}
