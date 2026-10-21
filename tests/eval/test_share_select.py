@@ -55,8 +55,8 @@ def test_short_pool_returns_fewer_without_crashing():
 
 def test_manifest_groups_hashes_by_run():
     picks = select([_row("a", .9, run="dev"), _row("b", .8, run="test")], 2, 0)
-    assert manifest(picks) == {"runs": [{"run": "dev", "hashes": ["a"]},
-                                        {"run": "test", "hashes": ["b"]}]}
+    assert manifest(picks)["runs"] == [{"run": "dev", "hashes": ["a"]},
+                                       {"run": "test", "hashes": ["b"]}]
 
 
 def test_train_digest_is_refused(tmp_path):
@@ -103,3 +103,15 @@ def test_unknown_hash_fails_loudly(tmp_path, monkeypatch):
     man.write_text(json.dumps({"runs": [{"run": "r1", "hashes": ["deadbeef"]}]}))
     assert export_share.main(["--root", str(tmp_path), "--manifest", str(man),
                               "--out", str(tmp_path / "o")]) == 1
+
+
+def test_manifest_records_each_picks_role():
+    """The review campaign stores great/problem per drawing, so its report
+    can reweight the 60/40 pick (campaign design §5). Picks carry the drawing
+    id under "doc" (what `take()` writes); the manifest calls it a hash."""
+    from app.eval.share_select import manifest
+    picks = [{"run": "r5-control", "doc": "aa", "role": "great"},
+             {"run": "r3-trainpredict", "doc": "bb", "role": "problem"}]
+    m = manifest(picks)
+    assert m["roles"] == {"aa": "great", "bb": "problem"}
+    assert {r["run"] for r in m["runs"]} == {"r5-control", "r3-trainpredict"}

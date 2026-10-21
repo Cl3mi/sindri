@@ -75,11 +75,15 @@ def select(rows: List[Dict], great: int = 3, problem: int = 2, min_gold: int = 1
 
 
 def manifest(picks: List[Dict]) -> Dict:
-    """Group picks by run: {"runs": [{"run": ..., "hashes": [...]}]}."""
+    """Group picks by run: {"runs": [{"run": ..., "hashes": [...]}],
+    "roles": {hash: "great"|"problem"}}. `export_share.py` reads only "runs";
+    "roles" lets the review campaign record each drawing's group so its report
+    can reweight the great/problem mix."""
     by_run: Dict[str, List[str]] = {}
     for p in picks:
         by_run.setdefault(p["run"], []).append(p["doc"])
-    return {"runs": [{"run": r, "hashes": h} for r, h in by_run.items()]}
+    return {"runs": [{"run": r, "hashes": h} for r, h in by_run.items()],
+            "roles": {p["doc"]: p["role"] for p in picks}}
 
 
 def load_rows(specs: List[str]) -> List[Dict]:
