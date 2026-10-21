@@ -6,6 +6,7 @@ import {
   apply, opEditCell, opBulkReview, opConfirmSuggestions, isVisibleRow, counts, progress,
 } from './state.js';
 import { flashAndCenter } from './viewer.js';
+import { commitWithReason, askReason } from './reasons.js';
 
 const COLS = ['char_type', 'nominal', 'upper_tol', 'lower_tol'];
 const NUMERIC = new Set(['nominal', 'upper_tol', 'lower_tol']);
@@ -199,7 +200,10 @@ function renderRows() {
       td.addEventListener('blur', () => {
         const newVal = td.textContent.trim();
         if (newVal === td.dataset._orig) return;
-        apply(opEditCell(r.id, k, newVal));
+        // The op is built only once the optional reason prompt resolves, so
+        // the reason rides on the very event the journal sends (decision 7).
+        commitWithReason('edit', (reason) => opEditCell(r.id, k, newVal, reason),
+                         (kind) => askReason(kind, td), apply);
       });
       td.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') { e.preventDefault(); td.blur(); }

@@ -16,6 +16,7 @@ import {
   apply, opAddRow, opDeleteRow, opMoveRow,
 } from './state.js';
 import { readRegion } from './api.js';
+import { commitWithReason, askReason } from './reasons.js';
 import { toast } from './ui.js';
 
 const ZOOM_MIN = 0.1;
@@ -263,7 +264,8 @@ function bindMouse() {
     if (del) {
       const m = del.closest('.marker');
       const id = m?.dataset.id;
-      if (id) apply(opDeleteRow(id));
+      if (id) commitWithReason('delete', (reason) => opDeleteRow(id, reason),
+                               (kind) => askReason(kind, del), apply);
       e.stopPropagation();
       return;
     }
@@ -294,7 +296,16 @@ function bindKeys() {
     if (e.key.toLowerCase() === 'a') { toggleAdd(); }
     if (e.key.toLowerCase() === 'h') { togglePan(); }
     if (e.key === 'Delete' || e.key === 'Backspace') {
-      if (state.selectedId) { apply(opDeleteRow(state.selectedId)); e.preventDefault(); }
+      if (state.selectedId) {
+        // Captured now: the selection can move while the prompt is open.
+        const id = state.selectedId;
+        // Anchored on the balloon being deleted, so the prompt sits next to
+        // what it asks about rather than in a corner of the window.
+        const marker = markerLayer.querySelector(`.marker[data-id="${cssEsc(id)}"]`);
+        commitWithReason('delete', (reason) => opDeleteRow(id, reason),
+                         (kind) => askReason(kind, marker), apply);
+        e.preventDefault();
+      }
     }
     // nudge selected
     if (state.selectedId && ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)) {
