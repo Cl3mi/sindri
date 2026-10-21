@@ -2,8 +2,8 @@
 
 - Plan: `docs/plans/2026-10-21-campaign-c1-review-plan.md`
 - Branch / worktree: `feature/review-campaign-c1` at `.worktrees/review-campaign-c1`
-- Current milestone: **A — campaign mode on the server: DONE** (task 5 of 18)
-- Completed tasks: 1, 2, 3, 4, 5
+- Current milestone: **B — journal vocabulary: DONE** (task 9 of 18)
+- Completed tasks: 1, 2, 3, 4, 5, 6, 7, 8, 9
 - Baseline before Task 1: 1968 passed, 2 skipped, **2 pre-existing failures** in
   `tests/test_title_block.py` (they need a `sample` drawing at the repo root that
   this machine does not have; they fail on main too, and are unrelated).
@@ -18,8 +18,31 @@
 - Task 5 `9f923a0` + `e4fd248`: `SINDRI_CAMPAIGN_ONLY` allowlist (app/campaign/policy.py),
   middleware, `health.campaign_only`.
 
+- Task 6 `7505317` + `1f6e492`: journal `move_target`, `set_note`, closed reasons,
+  `NOTE_MAX`; **all coordinates must be finite** (review: an `Infinity` written to
+  `events.jsonl` would make `/open` answer 500 forever).
+- Task 7 `320dd27` + `db3746b`: replay `move_target`, `note_of` (raises on a raw
+  journal that still has a retract), `mismatches` compares `target_region`; an
+  API test pins an int anchor through seal (`replay_ok: True`).
+- Task 8 `6aed2df`: state.js `opMoveTarget`, `opSetNote`, reasons, `state.note`
+  (also reset in `clearSession`).
+- Task 9 `4c40233` + `3c14483`: the parity fuzz drives anchors, notes and reasons,
+  and checks that the note survives a reload.
+
 ## What's next
-Milestone B: Task 6 (journal vocabulary), at plan line 591.
+Milestone C: Task 10 (`reasons.js`), at plan line 1067.
+
+## Requirements carried into the UI tasks (from reviews)
+- Only pass reasons from the mirrored vocabulary. A reason outside it is
+  refused server-side, which fails the flush and stalls the journal.
+- `opMoveTarget` must get a normalised, finite box (x0<x1, y0<y1). `anchor.js`
+  guarantees this, and the viewer must round as planned.
+- The note box must clamp to 2000 characters (`maxlength` plus `slice` on blur).
+  A longer note fails the whole event batch at append.
+- `state.note` (the reviewer's note) is not `state.notes` (the drawing's notes
+  block). Don't mix them up.
+- Accepted minor: a huge integer literal in a box gives a 500 instead of a 422,
+  and nothing is written.
 
 ## Deviations and decisions made during execution
 - Task 2: `app/batch/staging.py` `batch_view` also returns `"campaign"`. This was
