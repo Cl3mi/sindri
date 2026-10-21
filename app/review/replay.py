@@ -11,7 +11,7 @@ from typing import Dict, Iterable, List
 # replay.VALUE_FIELDS keep working unchanged.
 from app.review.journal import JournalError, VALUE_FIELDS
 
-__all__ = ["replay", "mismatches", "VALUE_FIELDS"]
+__all__ = ["replay", "mismatches", "note_of", "VALUE_FIELDS"]
 
 
 def replay(proposal_rows: Iterable[dict], events: Iterable[dict]) -> Dict[str, dict]:
@@ -39,6 +39,11 @@ def replay(proposal_rows: Iterable[dict], events: Iterable[dict]) -> Dict[str, d
                 if r is not None and r.get("suggested"):
                     r["suggested"] = False
                     r["reviewed"] = True
+        elif t == "move_target":
+            if e["id"] in rows:
+                rows[e["id"]]["target_region"] = list(e["box"])
+        elif t == "set_note":
+            pass   # a drawing-level fact, not a row's: read with note_of()
         else:
             # A retract here means the caller skipped net_events(): replaying
             # it would grade an operation the reviewer undid.
@@ -49,6 +54,20 @@ def replay(proposal_rows: Iterable[dict], events: Iterable[dict]) -> Dict[str, d
 def _xy(r):
     xy = r.get("balloon_xy")
     return None if xy is None else tuple(round(float(v), 3) for v in xy)
+
+
+def _box(r):
+    b = r.get("target_region")
+    return None if b is None else tuple(round(float(v), 3) for v in b)
+
+
+def note_of(events: Iterable[dict]) -> str:
+    """The drawing's note after NET events (latest set_note wins; "" if none)."""
+    note = ""
+    for e in events:
+        if e["type"] == "set_note":
+            note = e["text"]
+    return note
 
 
 def mismatches(replayed: Dict[str, dict], final_rows: Iterable[dict],
@@ -63,6 +82,7 @@ def mismatches(replayed: Dict[str, dict], final_rows: Iterable[dict],
         if (any((a.get(f) or "") != (b.get(f) or "") for f in VALUE_FIELDS)
                 or bool(a.get("suggested")) != bool(b.get("suggested"))
                 or _xy(a) != _xy(b)
+                or _box(a) != _box(b)
                 or a["reviewed"] != (i in reviewed)):
             bad.add(i)
     return sorted(bad)
