@@ -277,3 +277,14 @@ def test_data_dir_has_an_exports_subdirectory(tmp_path):
     data = DataDir(tmp_path)
     assert data.exports.is_dir()
     assert data.export_zip_path("a" * 32) == data.exports / ("a" * 32 + ".zip")
+
+
+def test_migration_6_adds_a_nullable_campaign_to_batches(tmp_path):
+    """A campaign is a batch the client reviews (campaign design §2). NULL
+    is every ordinary batch, including all from before the column existed --
+    never an empty string that would read as 'a campaign with no name'."""
+    conn = db.connect(tmp_path / "s.db")
+    db.migrate(conn)
+    conn.execute("INSERT INTO batch (id, name, draft, created_at) VALUES ('b', 'n', 0, 't')")
+    assert conn.execute("SELECT campaign FROM batch WHERE id = 'b'").fetchone()[0] is None
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS) >= 6

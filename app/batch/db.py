@@ -148,6 +148,14 @@ MIGRATIONS = [
         updated_at TEXT NOT NULL
     );
     """,
+    # 6: review campaigns (docs/plans/2026-10-21-client-review-campaign-design.md
+    # §2). A campaign batch holds drawings loaded from stored predictions for
+    # the client to grade; NULL is an ordinary batch -- every batch from
+    # before this column, and every import.
+    """
+    ALTER TABLE batch ADD COLUMN campaign TEXT;
+    CREATE INDEX batch_campaign ON batch(campaign);
+    """,
 ]
 
 
