@@ -35,16 +35,31 @@ export const REASON_LABELS = {
 // event the journal sends. `ask(kind)` resolves to a reason key or
 // undefined; it may throw (no DOM, popover torn down) and the edit still
 // lands, reasonless -- a reviewer's change is never lost to a chip.
-export async function commitWithReason(kind, makeOp, ask, apply) {
+export function commitWithReason(kind, makeOp, ask, apply) {
   const vocab = kind === 'edit' ? EDIT_REASONS : DELETE_REASONS;
-  let reason;
-  try {
-    reason = await ask(kind);
-  } catch {
-    reason = undefined;
-  }
-  apply(makeOp(vocab.has(reason) ? reason : undefined));
+  const p = (async () => {
+    let reason;
+    try {
+      reason = await ask(kind);
+    } catch {
+      reason = undefined;
+    }
+    apply(makeOp(vocab.has(reason) ? reason : undefined));
+  })();
+  // Tracked until APPLIED, so settleReasonPrompt can wait for the op itself
+  // rather than only for the popover to close (see there).
+  inflight.add(p);
+  const forget = () => inflight.delete(p);
+  p.then(forget, forget);
+  return p;
 }
+
+// Commits whose op is not applied yet. Usually 0 or 1 (one popover at a
+// time), briefly 2 when a second prompt displaces the first. Production
+// `ask`s call askReason synchronously, so every entry here already owns
+// `current` (or has resolved); an `ask` that deferred opening its popover
+// past a settle would open one nobody resolves, and the settle would wait.
+const inflight = new Set();
 
 // Pure key policy for the open popover. The popover must never steal a
 // keystroke meant for the next cell: after an edit the reviewer Tabs on and
@@ -70,9 +85,18 @@ export function classifyKey(e, n) {
 // reasonless first (its op applies first, preserving order).
 let current = null;
 
-// Callers about to navigate away or seal call this so no edit is held
-// hostage by an open popover.
-export function settleReasonPrompt() { current?.(undefined); }
+// Callers about to navigate away, seal or swap the drawing call this so no
+// edit is held hostage by an open popover -- and AWAIT it. Resolving the
+// popover only queues commitWithReason's continuation; the op lands a
+// microtask (or more, if `ask` wraps askReason) later. A caller that read
+// the journal before then would seal the revision without that edit, or let
+// journal.resume() wipe it. So this resolves once every in-flight commit has
+// applied its op. Never rejects: a throwing apply is the commit's own
+// failure, and must not also block navigation or Finish.
+export function settleReasonPrompt() {
+  current?.(undefined);
+  return Promise.allSettled([...inflight]).then(() => {});
+}
 
 // The popover itself (DOM). Digits pick a chip (see classifyKey); an outside
 // click, navigation, page hide or tab hide resolve with no reason.

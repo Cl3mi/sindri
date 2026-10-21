@@ -27,6 +27,7 @@ import {
   initThemeAndDensity, initDragDrop,
 } from './ui.js';
 import { initShortcuts } from './shortcuts.js';
+import { settleReasonPrompt } from './reasons.js';
 import { installAuthGate, submitToken } from './auth.js';
 
 // The drawing this tab is waiting on (staged or extracting). Extraction runs
@@ -215,6 +216,16 @@ const router = createSerialRunner(routeOnce);
 function routeFromHash() { return router.run(); }
 
 async function routeOnce() {
+  // An open reason prompt holds an edit or delete that is not applied yet
+  // (apply-on-resolution, reasons.js). Every guard below reads journal state
+  // -- flushBeforeLeaving's pending count, and openForReview's resume, which
+  // DISCARDS unflushed events -- so the held op must be in the journal
+  // first. Awaited, not just called: resolving the popover only queues
+  // commitWithReason's continuation, and settleReasonPrompt's promise is
+  // what resolves once the op has actually been applied. (askReason's own
+  // hashchange listener also dismisses it, but go() writes the hash with
+  // replaceState, which fires no hashchange -- decision 10.)
+  await settleReasonPrompt();
   const route = currentRoute();
   // A Finish in flight is mid-seal: finisher.run() reads journal.writer at
   // the top and again when it posts the seal, and opening ANOTHER drawing
@@ -421,7 +432,11 @@ function backToEmptyOrCurrent() {
 
 // ===== Header / file chip ============================================
 function wireHeader() {
-  document.getElementById('file-close').addEventListener('click', () => {
+  document.getElementById('file-close').addEventListener('click', async () => {
+    // The beacon below sends journal.pending and clearSession() then ends
+    // the drawing: an op the reason prompt still holds must be applied
+    // first, or it is never journaled at all.
+    await settleReasonPrompt();
     if (!confirm('Close this drawing? Your review is saved and reopens from its link.')) return;
     // clearSession() below wipes sessionId/writer out of the journal's
     // reach (start() on the NEXT drawing resets it anyway) -- so any event
@@ -863,6 +878,11 @@ async function loadForReview(id, opts) {
 }
 
 async function openForReview(id, { skipFlush = false } = {}) {
+  // Reached without routeOnce too (scheduleFlush's 'open'/'open_stale', the
+  // file-close handler's pendingOpen), and journal.resume() below wipes
+  // whatever is unflushed -- so a held reason-prompt op is applied (and
+  // thereby flushed or confirmed-away) before anything decides to leave.
+  await settleReasonPrompt();
   // A freshly opened drawing never keeps yesterday's stale banner: this tab
   // may be opening a NEW drawing while still shown read-only for the one it
   // just left (the read-only state is per screen, not per drawing).
@@ -1059,7 +1079,19 @@ function wireJournal() {
   });
   // pagehide, not beforeunload: it also fires on mobile tab discards.
   window.addEventListener('pagehide', () => {
-    if (journal.active) beaconEvents(journal.sessionId, journal.writer, journal.pending);
+    if (!journal.active) return;
+    const { sessionId, writer } = journal;
+    const sent = journal.pending.length;
+    beaconEvents(sessionId, writer, journal.pending);
+    // A pagehide listener cannot await, and this one runs BEFORE askReason's
+    // own pagehide handler releases a held op (registered at boot, earlier).
+    // Beaconing first keeps the common case unchanged; the settle chain is
+    // pure microtasks, which drain before the page goes, so a held op that
+    // lands goes out in a second beacon. Append is by seq server-side, so the
+    // overlap double-sends at worst, never drops.
+    settleReasonPrompt().then(() => {
+      if (journal.pending.length > sent) beaconEvents(sessionId, writer, journal.pending);
+    });
   });
   document.getElementById('banner-lagging-retry')?.addEventListener('click', () => scheduleFlush(0));
 }
@@ -1174,6 +1206,11 @@ function wireFinish() {
 }
 
 async function finish() {
+  // Before the snapshot: an edit still held by the reason prompt must be in
+  // the sealed revision, not applied a microtask after it was copied. Only
+  // microtasks pass here, so a second click (its own task) cannot slip in
+  // before `finishing` and btn.disabled are set below.
+  await settleReasonPrompt();
   const btn = document.getElementById('finish-btn');
   // A copy, so the sealed rows and the exported files describe one moment
   // even if an op lands while the run is awaiting the server.

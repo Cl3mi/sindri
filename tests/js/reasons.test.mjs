@@ -62,3 +62,55 @@ test('classifyKey: modifier-only keys and IME composition keep it open', () => {
 test('classifyKey: Escape is swallowed and dismisses', () => {
   assert.equal(classifyKey(key('Escape'), 5), 'swallow-dismiss');
 });
+
+// ---- settleReasonPrompt must be awaitable --------------------------------
+// main.js settles any open prompt before it routes away, seals (Finish) or
+// swaps the open drawing, and then reads journal state (pending events,
+// the Finish snapshot). Resolving the popover is not enough: commitWithReason
+// applies the op only after its own `await ask()` continuation runs, so a
+// caller that read the journal straight after settling would miss the very
+// edit the popover was holding -- it would be sealed out of the revision or
+// wiped by journal.resume(). The returned promise resolves only once every
+// in-flight commit has APPLIED its op, however many async hops the `ask`
+// wrapper adds between askReason and commitWithReason.
+
+import { askReason, settleReasonPrompt } from '../../app/static/js/reasons.js';
+
+function fakeEl() {
+  return {
+    style: {}, children: [],
+    setAttribute() {}, addEventListener() {}, remove() {},
+    appendChild(c) { this.children.push(c); },
+    contains() { return false; },
+    getBoundingClientRect() { return { left: 0, top: 0, bottom: 0, right: 0, height: 0, width: 0 }; },
+  };
+}
+
+function withFakeDom(fn) {
+  return async () => {
+    globalThis.document = {
+      createElement: fakeEl, body: fakeEl(), visibilityState: 'visible',
+      addEventListener() {}, removeEventListener() {},
+    };
+    globalThis.window = { innerHeight: 1000, innerWidth: 1000,
+                          addEventListener() {}, removeEventListener() {} };
+    try { await fn(); } finally { delete globalThis.document; delete globalThis.window; }
+  };
+}
+
+test('settleReasonPrompt resolves only after the held op has been applied', withFakeDom(async () => {
+  const applied = [];
+  // Extra async hops on purpose: a caller-side `await Promise.resolve()`
+  // would race these and lose; the settle promise must not.
+  const ask = async (kind) => { await null; return askReason(kind, null); };
+  const done = commitWithReason('delete', (reason) => ({ reason }), ask, (op) => applied.push(op));
+  await new Promise((r) => setTimeout(r, 0));   // the popover is now open
+  assert.deepEqual(applied, []);
+  await settleReasonPrompt();
+  assert.deepEqual(applied, [{ reason: undefined }]);
+  await done;
+}));
+
+test('settleReasonPrompt with nothing open resolves at once', async () => {
+  await settleReasonPrompt();
+});
