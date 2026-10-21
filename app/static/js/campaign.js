@@ -16,6 +16,21 @@ export function approvedCount(docs, batchId) {
            total: inBatch.length };
 }
 
+// journal.py's NOTE_MAX: the server refuses a longer set_note, and one
+// refused event fails its whole flush batch and stalls the journal.
+export const NOTE_MAX = 2000;
+
+// The text to journal as set_note, or null for nothing. The note box is one
+// textarea shared by every drawing, so the text in it belongs to the drawing
+// that was open when it took focus (sidAtFocus) -- after Back/Forward with
+// the box still focused, committing it to the NEW session would put A's note
+// on B and lose A's. Unchanged text is not re-journaled.
+export function noteToCommit(sidAtFocus, sid, text, current) {
+  if (!sid || sidAtFocus !== sid) return null;
+  const cut = String(text ?? '').slice(0, NOTE_MAX);
+  return cut === (current || '') ? null : cut;
+}
+
 // Approve is the same seal as Finish; only the promise differs. The campaign
 // copy says out loud that untouched rows count as confirmed, because that is
 // what the grading (plan C2) will read an untouched row as.
