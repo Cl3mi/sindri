@@ -2,8 +2,8 @@
 
 - Plan: `docs/plans/2026-10-21-campaign-c1-review-plan.md`
 - Branch / worktree: `feature/review-campaign-c1` at `.worktrees/review-campaign-c1`
-- Current milestone: **B — journal vocabulary: DONE** (task 9 of 18)
-- Completed tasks: 1, 2, 3, 4, 5, 6, 7, 8, 9
+- Current milestone: **C — client review screen: DONE** (task 13 of 18)
+- Completed tasks: 1-13
 - Baseline before Task 1: 1968 passed, 2 skipped, **2 pre-existing failures** in
   `tests/test_title_block.py` (they need a `sample` drawing at the repo root that
   this machine does not have; they fail on main too, and are unrelated).
@@ -29,8 +29,48 @@
 - Task 9 `4c40233` + `3c14483`: the parity fuzz drives anchors, notes and reasons,
   and checks that the note survives a reload.
 
+- Task 10 `8e8c6cb` + `b5c80db`: reasons.js. Review hardening:
+  - `classifyKey`: a digit picks a reason only outside an editor, other keys
+    pass through, Escape is swallowed;
+  - only one popover can be open;
+  - it settles on hashchange, pagehide and the tab going hidden;
+  - `settleReasonPrompt()`.
+- Task 11 `87ba562` + `bb71d60` + `6308dd3`: edits and deletes go through the
+  prompt. `await settleReasonPrompt()` runs first in routeOnce and finish(), at
+  openForReview (below the same-drawing early return), in the file-close
+  handler, and in pagehide (second beacon). settleReasonPrompt is awaitable,
+  using in-flight tracking and allSettled.
+- Task 12 `c51e0d2` + `6b0436a`: anchor.js (`dragBox`, `settleBox`, `beyondDeadZone`,
+  `DRAG_DEAD_ZONE_PX`=3) and the viewer's anchor box with handles. **Both the
+  anchor drag and the balloon drag now need 3 screen px of movement before
+  anything is journaled**, so tremor clicks don't inflate the
+  moved-balloon/anchor metrics. Lost-mouseup and read-only guards added.
+- Task 13 `7cc05b7` + `40dae14` + `6f44b42`: campaign.js (`approvedCount`,
+  `finishCopy`, `noteToCommit`, `NOTE_MAX`), Approve with no export (decided
+  from the snapshot's drawing), the counter, the note box, and campaign-only
+  chrome:
+  - **Server fix:** `GET /api/documents` rows now include `campaign`. The
+    plan missed this; without it, Approve mode never switched on.
+  - **Note handling:** the note is bound to the drawing it was focused on, and
+    commitNote runs on blur, routeOnce, finish, file-close and pagehide. A
+    focused box blurs, rather than re-binding, when the drawing changes.
+  - **Hidden on campaign-only:** import, bulk bar, selection column,
+    pause/resume and the empty-state upload prompt; handleFile refuses drops.
+
 ## What's next
-Milestone C: Task 10 (`reasons.js`), at plan line 1067.
+Milestone D: Task 14 (share_select roles), at plan line 1639.
+
+## Task 18 browser check must also exercise (from reviews)
+- Edit a cell, press Tab and type a digit: the digit lands in the cell and no
+  reason is recorded.
+- Edit, then click a balloon's ×: one popover only.
+- A popover near the bottom of the viewport flips up.
+- Edit, then press Back: the edit is applied.
+- A click on a balloon or anchor without movement journals nothing.
+- Note typed on A, then Back to B with the box focused: A keeps its note, and
+  B's existing note is not erased.
+- Known, accepted: wheel-zooming during a balloon drag and releasing without
+  moving places the balloon slightly off (pre-existing).
 
 ## Requirements carried into the UI tasks (from reviews)
 - Only pass reasons from the mirrored vocabulary. A reason outside it is
