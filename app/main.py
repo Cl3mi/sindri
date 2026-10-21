@@ -205,7 +205,16 @@ def _doc_view(doc_id: str) -> dict:
             "final_revision": doc["final_revision"],
             "exported_revision": doc["exported_revision"],
             "queue_position": rt.repo.queue_position(doc_id),
-            "progress": rt.worker.progress_of(doc_id)}
+            "progress": rt.worker.progress_of(doc_id),
+            "campaign": rt.repo.campaign_of(doc_id)}
+
+
+def _refuse_campaign(rt, doc_id: str, action: str) -> None:
+    """Campaign drawings are the client's to grade, never ours to change or
+    ship (plan C1 decision 11): refused on every instance, campaign-only or
+    not, so the operator's own instance cannot export or discard one either."""
+    if rt.repo.campaign_of(doc_id) is not None:
+        raise InvalidTransition(f"campaign drawings cannot be {action}")
 
 
 class ReadRegionRequest(BaseModel):
@@ -544,6 +553,7 @@ def reextract_document(doc_id: str):
     discards an untouched, unsealed session outright (app/review/store.py)."""
     work = _doc_dir(doc_id)
     rt = runtime()
+    _refuse_campaign(rt, doc_id, "re-extracted")
     doc = rt.repo.get(doc_id)
     if rt.worker.current == doc_id:
         raise InvalidTransition(
@@ -634,6 +644,10 @@ def delete_document(doc_id: str):
     the files from being pulled out from under it.)"""
     work = _doc_dir(doc_id)
     rt = runtime()
+    # DELETE is idempotent: a second delete of a gone row must still answer
+    # 200, and campaign_of raises on a missing row, so guard only live rows.
+    if rt.repo.has_document(doc_id):
+        _refuse_campaign(rt, doc_id, "removed")
     if rt.worker.current == doc_id:
         raise InvalidTransition(
             "the extraction is still stopping; remove the drawing once it has")
@@ -820,6 +834,7 @@ def export_document(doc_id: str, kind: str, rev: Optional[int] = None):
         raise HTTPException(status_code=404, detail="unknown export kind")
     rt = runtime()
     doc = rt.repo.get(doc_id)
+    _refuse_campaign(rt, doc_id, "exported")
     if doc["state"] == "purged":
         raise HTTPException(status_code=410, detail="drawing was purged after retention")
     if rev is None:
