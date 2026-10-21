@@ -21,6 +21,7 @@ from starlette.types import Scope
 from starlette.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StringConstraints
 from app import auth
+from app.campaign import policy as campaign_policy
 from app.models import Characteristic
 from app.pipeline.extract import extract
 from app.pipeline.ocr import get_backend, backend_status
@@ -122,6 +123,17 @@ async def _token_gate(request: Request, call_next):
     if token is not None and auth.requires_token(request.url.path):
         if not auth.token_matches(auth.extract_token(request), token):
             return JSONResponse({"detail": "token required"}, status_code=401)
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def _campaign_only_gate(request: Request, call_next):
+    """The public campaign instance serves the review and nothing else
+    (plan C1 decision 10) -- no upload, export or queue control, whatever
+    the UI shows."""
+    if campaign_policy.campaign_only() and not campaign_policy.allowed(
+            request.method, request.url.path):
+        return JSONResponse({"detail": "not available on this instance"}, status_code=403)
     return await call_next(request)
 
 
@@ -298,6 +310,7 @@ def health():
         log.warning("health: free disk space unavailable: %s", type(e).__name__)
         status["disk_free_mb"] = None
     status["min_free_mb"] = rt.uploads.min_free_bytes // batch_uploads.MIB
+    status["campaign_only"] = campaign_policy.campaign_only()
     return status
 
 

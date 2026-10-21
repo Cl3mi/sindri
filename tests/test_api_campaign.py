@@ -65,3 +65,15 @@ def test_mass_export_skips_a_campaign_drawing(sample_pdf):
     approve(DOC)
     row = main.runtime().exports._export_one(None, DOC, set())
     assert row["skip_reason"] == "campaign"
+
+
+def test_campaign_only_closes_uploads_and_reports_itself(monkeypatch):
+    monkeypatch.setenv("SINDRI_CAMPAIGN_ONLY", "1")
+    assert client.post("/api/batches", json={}).status_code == 403
+    assert client.get("/api/health").json()["campaign_only"] is True
+
+
+def test_campaign_only_still_serves_the_review(sample_pdf, monkeypatch):
+    load_campaign_doc(sample_pdf)
+    monkeypatch.setenv("SINDRI_CAMPAIGN_ONLY", "1")
+    assert approve(DOC)["revision"] == 1
