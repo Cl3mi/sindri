@@ -512,3 +512,33 @@ def test_purge_never_touches_an_unexported_drawing(repo):
     # never exported
     assert repo.purge_candidates("2099-01-01") == []
     assert repo.purge(a, "2099-01-01") is False
+
+
+def test_campaign_documents_share_one_non_draft_batch_per_campaign(repo):
+    a, b = ids(2)
+    da = repo.create_campaign_document(a, "pilot-1", "x.pdf", pages=1, sha256="1" * 64)
+    db_ = repo.create_campaign_document(b, "pilot-1", "y.pdf", pages=1, sha256="2" * 64)
+    assert da["batch_id"] == db_["batch_id"]
+    batch = repo.get_batch(da["batch_id"])
+    assert (batch["campaign"], batch["name"], batch["draft"]) == ("pilot-1", "pilot-1", 0)
+    assert da["state"] == "staged" and da["included"] == 1
+    repo.enqueue(a)   # a campaign batch is not a draft, so its drawings queue one by one
+    assert repo.get(a)["state"] == "queued"
+
+
+def test_campaign_document_by_sha_finds_only_that_campaigns_copy(repo):
+    a, b = ids(2)
+    repo.create_campaign_document(a, "pilot-1", "x.pdf", pages=1, sha256="1" * 64)
+    assert repo.campaign_document_by_sha("pilot-1", "1" * 64) == a
+    assert repo.campaign_document_by_sha("pilot-2", "1" * 64) is None
+    staged(repo, b)   # an ordinary batch holding the same bytes is not a campaign copy
+    assert repo.campaign_document_by_sha("pilot-1", "0" * 64) is None
+
+
+def test_campaign_of_and_the_work_list_name_the_campaign(repo):
+    a, b = ids(2)
+    repo.create_campaign_document(a, "pilot-1", "x.pdf", pages=1, sha256="1" * 64)
+    staged(repo, b)
+    assert repo.campaign_of(a) == "pilot-1" and repo.campaign_of(b) is None
+    by_id = {d["id"]: d["campaign"] for d in repo.list_documents()}
+    assert by_id == {a: "pilot-1", b: None}

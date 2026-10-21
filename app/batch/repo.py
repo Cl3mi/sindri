@@ -327,7 +327,7 @@ class Repo:
         where = " AND ".join(clauses) if clauses else "1=1"
         with self._lock:
             rows = self._conn.execute(
-                f"SELECT d.*, b.name AS batch_name FROM document d"
+                f"SELECT d.*, b.name AS batch_name, b.campaign AS campaign FROM document d"
                 f" JOIN batch b ON b.id = d.batch_id WHERE {where}"
                 f" ORDER BY d.rowid", tuple(params)).fetchall()
         return [dict(r) for r in rows]
@@ -678,6 +678,46 @@ class Repo:
                 " created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'staged', ?, ?)",
                 (doc_id, batch_id, file_name, sha256, pages, now, now))
             return self._row(c, doc_id)
+
+    def create_campaign_document(self, doc_id, campaign: str, file_name, pages, sha256) -> dict:
+        """A drawing of a review campaign (campaign design §2), staged in that
+        campaign's ONE batch, created on first use. The batch is not a draft:
+        the loader queues each drawing itself with enqueue(), and the worker
+        then finds result.json already in place and skips extraction."""
+        now = self._clock()
+        with self._tx() as c:
+            row = c.execute("SELECT id FROM batch WHERE campaign = ?", (campaign,)).fetchone()
+            if row is None:
+                batch_id = uuid.uuid4().hex
+                c.execute("INSERT INTO batch (id, name, draft, created_at, updated_at, campaign)"
+                          " VALUES (?, ?, 0, ?, ?, ?)", (batch_id, campaign, now, now, campaign))
+            else:
+                batch_id = row["id"]
+                self._touch(c, batch_id)
+            c.execute(
+                "INSERT INTO document (id, batch_id, file_name, sha256, pages, state, included,"
+                " created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'staged', 1, ?, ?)",
+                (doc_id, batch_id, file_name, sha256, pages, now, now))
+            return self._row(c, doc_id)
+
+    def campaign_document_by_sha(self, campaign: str, sha256: str) -> Optional[str]:
+        """The id of this campaign's drawing with these bytes, or None: what
+        makes loading a bundle twice a no-op (campaign design §2)."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT d.id FROM document d JOIN batch b ON b.id = d.batch_id"
+                " WHERE b.campaign = ? AND d.sha256 = ? ORDER BY d.rowid LIMIT 1",
+                (campaign, sha256)).fetchone()
+        return row["id"] if row else None
+
+    def campaign_of(self, doc_id) -> Optional[str]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT b.campaign FROM document d JOIN batch b ON b.id = d.batch_id"
+                " WHERE d.id = ?", (doc_id,)).fetchone()
+        if row is None:
+            raise UnknownDocument(f"no document {str(doc_id)[:8]}")
+        return row["campaign"]
 
     def enqueue(self, doc_id) -> None:
         """Queue one staged drawing of a batch that is NOT a draft (the

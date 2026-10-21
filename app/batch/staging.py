@@ -49,8 +49,9 @@ def clean_batch_name(name):
 
 
 def batch_view(b) -> dict:
+    # campaign is None for every ordinary batch (migration 6).
     return {"id": b["id"], "name": b["name"], "draft": bool(b["draft"]),
-            "created_at": b["created_at"]}
+            "created_at": b["created_at"], "campaign": b["campaign"]}
 
 
 def upload_view(u) -> dict:
