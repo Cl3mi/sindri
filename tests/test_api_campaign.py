@@ -46,6 +46,16 @@ def test_the_doc_view_names_the_campaign(sample_pdf):
     assert client.get(f"/api/documents/{DOC}").json()["campaign"] == "pilot-1"
 
 
+def test_the_work_list_rows_name_the_campaign(sample_pdf):
+    """The review screen decides Approve vs Finish & Export from the SAME
+    list the work list polls (main.js currentDocIsCampaign), so the row must
+    carry the campaign; without it every campaign drawing would offer an
+    export the server then refuses."""
+    load_campaign_doc(sample_pdf)
+    rows = client.get("/api/documents").json()["documents"]
+    assert [r["campaign"] for r in rows if r["id"] == DOC] == ["pilot-1"]
+
+
 def test_a_campaign_drawing_can_be_approved_but_not_exported(sample_pdf):
     load_campaign_doc(sample_pdf)
     assert approve(DOC)["revision"] == 1

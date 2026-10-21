@@ -965,3 +965,16 @@ input[type="file"].sr {
 #marker-layer .anchor-handle.se { right: -6px; bottom: -6px; cursor: nwse-resize; }
 #marker-layer .anchor-handle.ne { right: -6px; top: -6px; cursor: nesw-resize; }
 #marker-layer .anchor-handle.sw { left: -6px; bottom: -6px; cursor: nesw-resize; }
+
+/* Campaign mode (campaign plan C1 Task 13). !important because several of
+   these controls toggle their own `hidden`/display from JS (the bulk bar
+   shows on selection); a campaign-only instance must win over that. */
+body.campaign-only [data-campaign-hide] { display: none !important; }
+#doc-note {
+  width: 280px; resize: vertical; font: inherit; font-size: var(--fs-sm);
+  color: var(--fg); background: var(--bg-input);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 4px 6px;
+}
+#doc-note:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-ring); }
+#rb-approved { color: var(--ok); font-size: var(--fs-sm); }

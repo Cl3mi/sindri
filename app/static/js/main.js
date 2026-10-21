@@ -2,7 +2,8 @@
 // reopening a drawing from its link, and Finish & Export.
 
 import { state, on, restoreSession, clearSession, undo, redo,
-         canUndo, canRedo, progress, canFinish } from './state.js';
+         canUndo, canRedo, progress, canFinish, apply, opSetNote } from './state.js';
+import { approvedCount, finishCopy, isCampaignDoc } from './campaign.js';
 import { getDocument, cancelDocument, openDocument, deleteDocument, downloadExport,
          health, postEvents, beaconEvents, sealSession, createBatch, getBatch,
          startBatch, discardBatch, setIncluded, listDocuments, moveToFront,
@@ -49,6 +50,7 @@ let finishing = false;    // a Finish is running: never switch drawings under it
 let pendingOpen = null;   // id
 let closePendingToast = null;
 let workList = null;      // initWorkList()'s handle; Task 13 reads it back via workList.getDocs()
+let routedDoc = null;     // { id, campaign } of the last GET /api/documents/{id} routed (currentDocIsCampaign)
 let stagingView = null;   // initStagingView()'s handle (this task)
 // A single-drawing import's id, once started, while it is still on its way
 // (design §3 "batch of one"): if the reviewer stays on the work list and
@@ -86,7 +88,13 @@ const finisher = createFinisher({
   seal: (sid, body) => sealSession(sid, body),
   // Remembers which file of a revision already arrived, so a retry after a
   // failed PDF does not download the spreadsheet a second time.
-  exportAll: createExporter((sid, kind, revision) => downloadExport(sid, kind, revision)),
+  // A campaign drawing is approved, never exported (campaign design §3):
+  // the seal is the whole act, and the server refuses its export anyway.
+  // Ordinary drawings keep both downloads.
+  exportAll: (() => {
+    const exporter = createExporter((sid, kind, revision) => downloadExport(sid, kind, revision));
+    return (snapshot, revision) => (currentDocIsCampaign() ? Promise.resolve() : exporter(snapshot, revision));
+  })(),
 });
 
 // Optional shared access token (batch design §1, decision 23). Installed at
@@ -143,6 +151,16 @@ function init() {
   wireFileInputs();
   wireExtractionControls();
   wireFinish();
+  // The reviewer's per-drawing note (campaign design §3), journaled as
+  // set_note on blur rather than per keystroke: the server keeps only the
+  // latest net text anyway, and one event per pause is all grading reads.
+  // Sliced as well as maxlength'd -- a pasted note over the journal's 2000
+  // limit would fail the whole flush batch and stall the journal.
+  const note = document.getElementById('doc-note');
+  note?.addEventListener('blur', () => {
+    const text = note.value.slice(0, 2000);
+    if (state.sessionId && text !== (state.note || '')) apply(opSetNote(text));
+  });
   wireJournal();
   wireUndoRedo();
   pingHealth();
@@ -320,6 +338,36 @@ function updateReviewBarInfo() {
   const posEl = document.getElementById('rb-position');
   if (batchEl) batchEl.textContent = `Batch "${batchName}"`;
   if (posEl) posEl.textContent = idx >= 0 ? `${idx + 1} of ${order.length}` : '';
+  syncCampaignChrome();
+}
+
+// Approve vs Finish & Export, the note box and the "N / M approved" counter
+// all follow ONE question -- is the open drawing a campaign drawing -- so
+// they are set together, from every place that question's answer can change
+// (a new session, any review change, the review bar being shown).
+function syncCampaignChrome() {
+  const campaign = currentDocIsCampaign();
+  const copy = finishCopy(campaign);
+  const label = document.getElementById('finish-label');
+  if (label && label.textContent !== copy.label) label.textContent = copy.label;
+  const btn = document.getElementById('finish-btn');
+  // A blocked button's title names the outstanding rows (wireFinish); only
+  // a finishable one carries the promise of what Finish/Approve does.
+  if (btn && canFinish()) btn.title = copy.title;
+  const note = document.getElementById('doc-note');
+  if (note) {
+    note.hidden = !campaign || !state.sessionId;
+    // Never overwrite what the reviewer is typing; blur journals it first.
+    if (document.activeElement !== note) note.value = state.note || '';
+  }
+  const appr = document.getElementById('rb-approved');
+  if (appr) {
+    appr.hidden = !campaign;
+    if (campaign) {
+      const { approved, total } = approvedCount(worklistDocsCache(), currentBatchId());
+      appr.textContent = `${approved} / ${total} approved`;
+    }
+  }
 }
 
 // Batch-of-one auto-open (design §3, decision 17 -- one drawing is still a
@@ -368,7 +416,8 @@ function watchAutoOpen() {
 }
 
 async function routeDocument(doc) {
-  waitingOn = { id: doc.id, batchId: doc.batch_id, fileName: doc.file_name, pages: doc.pages };
+  routedDoc = { id: doc.id, campaign: doc.campaign ?? null };
+  waitingOn ={ id: doc.id, batchId: doc.batch_id, fileName: doc.file_name, pages: doc.pages };
   if (doc.state === 'staged') {
     setReviewBarVisible(false);
     await showStaged(doc);
@@ -463,6 +512,7 @@ function wireHeader() {
       chip.hidden = false;
       name.textContent = state.fileName || 'drawing.pdf';
       document.getElementById('finish-btn').disabled = false;
+      syncCampaignChrome();
     } else {
       chip.hidden = true;
       const fin = document.getElementById('finish-btn');
@@ -497,6 +547,13 @@ function wireFileInputs() {
 
 async function handleFile(file) {
   if (!file) return;
+  // Drag-and-drop listens on the whole window, so no [data-campaign-hide]
+  // can remove it; say plainly why nothing happens instead of uploading
+  // into a guaranteed 403 (plan C1 decision 10).
+  if (document.body.classList.contains('campaign-only')) {
+    toast({ kind: 'warn', title: 'Uploads are off here', msg: 'This instance is for reviewing the drawings already in the list.' });
+    return;
+  }
   // One waiting drawing per tab: a second upload would orphan the first,
   // which only its link could ever reach again (B3 adds a list). Each
   // refusal names a control the reviewer actually has on screen.
@@ -1203,8 +1260,9 @@ function wireFinish() {
     const p = progress();
     btn.classList.toggle('blocked', !canFinish());
     btn.title = canFinish()
-      ? 'Seal the review and export Excel + ballooned PDF'
+      ? finishCopy(currentDocIsCampaign()).title
       : `${p.outstanding} flagged row${p.outstanding === 1 ? '' : 's'} still to resolve`;
+    syncCampaignChrome();
   });
   btn.addEventListener('click', finish);
 }
@@ -1245,7 +1303,10 @@ async function finish() {
               msg: `${n} flagged row${n === 1 ? '' : 's'} still to resolve — showing them now.` });
       document.querySelector('#filter-pills button[data-filter="review"]')?.click();
     } else if (res.status === 'done') {
-      toast({ kind: 'ok', title: 'Finished', msg: `Review sealed as revision r${res.revision}` });
+      // Read now: go() below moves state.sessionId to the next drawing.
+      const campaign = currentDocIsCampaign();
+      toast({ kind: 'ok', title: campaign ? 'Approved' : 'Finished',
+              msg: `Review sealed as revision r${res.revision}` });
       // The browser drive's finding: the work list's own 3 s poll window
       // can still list THIS drawing as ready/in_review right here -- the
       // server has just sealed it, but nothing has told the client cache
@@ -1276,7 +1337,12 @@ async function finish() {
       } else {
         // B4 builds mass export; until then the work list's per-drawing
         // export buttons (already shipped) are what "Export batch" means.
-        toast({ kind: 'ok', title: 'Batch complete', msg: 'Export batch from the work list.' });
+        // A campaign has nothing to export (campaign design §3), so its end
+        // says what the reviewer can still do instead.
+        toast({ kind: 'ok',
+                title: campaign ? 'All drawings approved — thank you' : 'Batch complete',
+                msg: campaign ? 'You can still reopen any drawing from the list.'
+                              : 'Export batch from the work list.' });
         go(worklistUrl());
       }
     }
@@ -1341,6 +1407,16 @@ function setReviewBarButtonsDisabled(disabled) {
 
 function currentBatchId() {
   return worklistDocsCache().find((d) => d.id === state.sessionId)?.batch_id || null;
+}
+
+// The work-list row is the source of truth (same list as the review bar);
+// routeDocument's own GET is the fallback for a #/doc link opened before
+// the work list's first poll has landed -- without it that drawing would
+// offer "Finish & Export" and try an export the server refuses.
+function currentDocIsCampaign() {
+  const cached = worklistDocsCache().find((d) => d.id === state.sessionId);
+  if (cached) return isCampaignDoc(cached);
+  return !!state.sessionId && routedDoc?.id === state.sessionId && isCampaignDoc(routedDoc);
 }
 
 // A minimal in-page combobox: a text input filtered by filterJump
@@ -1491,6 +1567,10 @@ async function pingHealth() {
     label.textContent = 'API unreachable';
     return;
   }
+  // A campaign-only instance 403s every upload, bulk and export route
+  // (plan C1 decision 10); hide their controls rather than show buttons
+  // that can only fail ([data-campaign-hide], components.css).
+  document.body.classList.toggle('campaign-only', !!data.campaign_only);
   pill.classList.add('ok');
   const backend = data.ocr_backend_active || data.backend || 'OCR';
   const short = String(backend).replace('Backend','');

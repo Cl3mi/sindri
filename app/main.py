@@ -519,6 +519,9 @@ def list_documents(batch_id: Optional[str] = None, state: Optional[str] = None,
             "allowed_out_of_scope": bool(r["allowed_out_of_scope"]),
             "final_revision": r["final_revision"], "exported_revision": r["exported_revision"],
             "updated_at": r["updated_at"],
+            # The review screen picks Approve vs Finish & Export from this
+            # list (main.js currentDocIsCampaign), not from a second fetch.
+            "campaign": r["campaign"],
         })
     summary = rt.repo.queue_summary()
     summary["eta_seconds"] = rt.worker.eta_seconds(summary["queued"])
