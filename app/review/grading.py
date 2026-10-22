@@ -88,26 +88,40 @@ def _ungradable(proposal_rows: List[dict], sealed: dict) -> Optional[str]:
     reproduced from its own journal is reported and never graded (design
     §Reconciliation). Only an error TYPE is ever reported, as a fixed word:
     exception text can quote a client value."""
-    if sealed.get("replay_mismatch_ids"):
-        return "replay_mismatch"
+    stored = bool(sealed.get("replay_mismatch_ids"))
+    # Replayed even when a mismatch is already recorded: the recorded cause
+    # stays the reported one, but a malformed journal must still be known so
+    # later steps do not trip over it.
     try:
         bad = mismatches(replay(proposal_rows, sealed.get("net_events", [])),
                          sealed.get("rows", []), sealed.get("reviewed_ids", []))
     except (JournalError, KeyError, TypeError, ValueError):
         # Sealed net_events are already net, so a retract or a keyless event
         # means a malformed session; one bad drawing must not crash the grade.
-        return "replay_error"
+        return "replay_mismatch" if stored else "replay_error"
+    if stored:
+        return "replay_mismatch"
     return "replay_disagrees" if bad else None
 
 
 def grade_session(proposal_rows: List[dict], sealed: dict) -> dict:
+    """`missed` is meaningless when `ungradable` is set (the sealed rows could
+    not be trusted or even read); callers exclude such sessions. `rows` always
+    has exactly one record per proposal row so counts reconcile. A corrupt
+    PROPOSAL is the server's own file and is not handled here."""
     ungradable = _ungradable(proposal_rows, sealed)
-    final = {r["id"]: r for r in sealed.get("rows", [])}
-    # Reasons come from the same events replay just refused: skip them rather
-    # than crash. The rows are still listed (callers exclude ungradable ones),
-    # so per-drawing counts reconcile.
-    reasons = ({} if ungradable == "replay_error"
-               else _last_reasons(sealed.get("net_events", [])))
+    # The same events/rows replay may have refused can also break these two
+    # extractions (a reason without seq, a field-less edit on an id replay
+    # skips, a row without id): degrade to empty rather than crash, keeping a
+    # stored replay_mismatch as the reported cause.
+    try:
+        final = {r["id"]: r for r in sealed.get("rows", [])}
+    except (KeyError, TypeError):
+        final, ungradable = {}, ungradable or "replay_error"
+    try:
+        reasons = _last_reasons(sealed.get("net_events", []))
+    except (KeyError, TypeError):
+        reasons, ungradable = {}, ungradable or "replay_error"
     reviewed = set(sealed.get("reviewed_ids", []))
     graded = []
     for p in proposal_rows:

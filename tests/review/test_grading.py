@@ -225,3 +225,34 @@ def test_a_malformed_journal_is_reported_not_raised():
         g = grade_session([row("a")], sealed([row("a")], ev))
         assert g["ungradable"] == "replay_error"
         assert len(g["rows"]) == 1
+
+
+def test_a_stored_mismatch_stays_the_reason_even_when_the_journal_is_malformed():
+    """The recorded cause wins over the one we would find ourselves, and
+    reason extraction on the same bad events must not raise."""
+    bad = [{"seq": 1, "type": "edit_cell", "id": "a"}]
+    g = grade_session([row("a")], sealed([row("a")], bad, mismatch=["a"]))
+    assert g["ungradable"] == "replay_mismatch"
+    assert len(g["rows"]) == 1
+
+
+def test_an_edit_with_a_reason_but_no_seq_is_reported_not_raised():
+    ev = [{"type": "edit_cell", "id": "a", "field": "nominal",
+           "old": "10", "new": "12", "reason": "misread_digit"}]
+    g = grade_session([row("a")], sealed([row("a", nominal="12")], ev))
+    assert g["ungradable"] == "replay_error"
+    assert len(g["rows"]) == 1
+
+
+def test_a_fieldless_edit_on_an_unknown_id_is_reported_not_raised():
+    """replay skips an id it does not hold, so only reason extraction sees it."""
+    ev = [{"seq": 1, "type": "edit_cell", "id": "zz"}]
+    g = grade_session([row("a")], sealed([row("a")], ev))
+    assert g["ungradable"] == "replay_error"
+    assert len(g["rows"]) == 1
+
+
+def test_sealed_rows_without_an_id_are_reported_not_raised():
+    g = grade_session([row("a"), row("b")], sealed([{"nominal": "10"}], []))
+    assert g["ungradable"] == "replay_error"
+    assert [r["id"] for r in g["rows"]] == ["a", "b"]
