@@ -20,11 +20,11 @@ def proposal_row(id, **kw):
     return {**base, **kw}
 
 
-def event(seq, op="edit", t_ms=None, **kw):
+def event(seq, type="accept", t_ms=None, **kw):
     """A journal line as app/static/js/journal.js writes it: seq plus the
     wall-clock and monotonic stamps review time is computed from."""
     return {"seq": seq, "t_wall": 1_700_000_000_000 + 1000 * seq,
-            "t_ms": 1000 * seq if t_ms is None else t_ms, "op": op, **kw}
+            "t_ms": 1000 * seq if t_ms is None else t_ms, "type": type, **kw}
 
 
 def campaign_facts(doc_hash, group="great", render_scale=300 / 72.0, **kw):
@@ -38,7 +38,11 @@ def drawing(doc_hash, proposal, final, net_events, *, group="great",
             events_lines=None, approved=True, mismatch=(), dir=None,
             header=True, **facts):
     """`doc_hash=None` models a drawing whose header names none (packed under
-    `nohash-...`); pass `dir` for it or for a collision name."""
+    `nohash-...`). `dir` is the archive dir inside the tar (defaults to the
+    hash); pass it for that case or a collision name (`<hash>-<id8>`).
+    `header=False` leaves header.json out of the tar (a damaged record).
+    `events_lines` are the raw events.jsonl lines, default the JSON of
+    `net_events`; pass your own to model a torn tail."""
     return {"doc_hash": doc_hash, "group": group, "approved": approved,
             "dir": dir or doc_hash,
             "header": ({"review_schema_version": 1,
@@ -50,6 +54,22 @@ def drawing(doc_hash, proposal, final, net_events, *, group="great",
                        "final_seq": len(net_events), "sealed_at": "t"},
             "events_lines": events_lines if events_lines is not None else
                             [json.dumps(e) for e in net_events]}
+
+
+def rewrite_tar(src, dst, edit):
+    """Copy a tar, letting `edit(name, bytes) -> bytes | None` change or drop
+    members (None drops): how tests damage one file of an otherwise real pull."""
+    with tarfile.open(src) as t:
+        items = [(m.name, t.extractfile(m).read()) for m in t.getmembers()]
+    with tarfile.open(dst, "w") as t:
+        for n, b in items:
+            b = edit(n, b)
+            if b is None:
+                continue
+            i = tarfile.TarInfo(n)
+            i.size = len(b)
+            t.addfile(i, io.BytesIO(b))
+    return dst
 
 
 def write_tar(path, drawings, skipped=(), campaign="pilot-1"):
@@ -64,7 +84,8 @@ def write_tar(path, drawings, skipped=(), campaign="pilot-1"):
             if d["header"] is not None:
                 add(f"{base}/header.json", json.dumps(d["header"]).encode())
             add(f"{base}/proposal.json", json.dumps(d["proposal"]).encode())
-            add(f"{base}/events.jsonl", "\n".join(d["events_lines"]).encode())
+            add(f"{base}/events.jsonl", b"\n".join(
+                l if isinstance(l, bytes) else l.encode() for l in d["events_lines"]))
             if d["approved"]:
                 add(f"{base}/sealed/r1.json", json.dumps(d["sealed"]).encode())
             docs.append({"doc_hash": d["doc_hash"], "dir": base, "group": d["group"],
