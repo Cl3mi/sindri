@@ -21,9 +21,20 @@ from app.eval.review import (ProtectedRootsError, _carries_marker,
                              _protected_roots, inside_protected)
 
 # What a check may raise that must become a fixed refusal: a filesystem
-# error, or a roots file that cannot be trusted (which fails CLOSED -- it is
-# never read as "no roots").
-_CHECK_ERRORS = (OSError, ProtectedRootsError)
+# error, a path the OS rejects outright (ValueError: an embedded NUL byte),
+# or a roots file that cannot be trusted (which fails CLOSED -- it is never
+# read as "no roots").
+_CHECK_ERRORS = (OSError, ValueError, ProtectedRootsError)
+
+# Client values (class B/C) are readable by their owner only; a digest is
+# counts-only and meant to be shared, so it keeps the usual mode.
+CLIENT_FILE_MODE = 0o600
+DIGEST_FILE_MODE = 0o644
+
+# Path components a digest may never be written under, wherever they sit:
+# what lands there is not a measurement but code or configuration that
+# tools then act on (git hooks and config, Claude Code settings and hooks).
+_FORBIDDEN_COMPONENTS = frozenset({".git", ".claude"})
 
 # Announced once per process, so a machine that should have roots but has
 # none (a missing or misnamed file) is visible rather than silently laxer.
@@ -46,10 +57,15 @@ def _same(a: Path, b) -> bool:
     a link in a parent) or as a hardlink, which no path comparison sees."""
     try:
         b = Path(b)
-        if a.resolve() == b.resolve():
+        rb = b.resolve()
+        if a.resolve() == rb:
+            return True
+        # An input DIRECTORY (`--run`, `--gold`) is read, often globbed:
+        # a new file inside it is as bad as replacing one of its files.
+        if rb.is_dir() and a.resolve().is_relative_to(rb):
             return True
         return a.exists() and b.exists() and os.path.samefile(a, b)
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         return True      # cannot tell: refuse rather than guess "different"
 
 
@@ -66,9 +82,10 @@ def _target(path, what: str, avoid: Iterable) -> Path:
         if p.is_symlink():
             raise OutputRefused(f"the {what} path is a symbolic link")
         target = p.resolve()
-    except (OSError, RuntimeError):
-        # RuntimeError: a symlink loop on Python < 3.13.
-        raise OutputRefused(f"the {what} path cannot be resolved")
+    except (OSError, RuntimeError, ValueError):
+        # RuntimeError: a symlink loop on Python < 3.13. ValueError: a NUL
+        # byte, which would otherwise escape as a traceback with the path.
+        raise OutputRefused(f"the {what} path cannot be resolved") from None
     if any(a and _same(target, a) for a in avoid):
         raise OutputRefused(f"the {what} path is one of the run's inputs")
     return target
@@ -84,6 +101,11 @@ def check_digest_out(path, kind: str, avoid: Sequence = ()) -> Path:
     target = _target(path, "digest", avoid)
     if target.suffix != ".json" or target.name == ".json":
         raise OutputRefused("the digest file name must end in .json")
+    # Judged on the RESOLVED path, so a link named anything else that points
+    # into a repository's .git still counts.
+    if _FORBIDDEN_COMPONENTS.intersection(target.parts):
+        raise OutputRefused("a digest may not be written inside a .git or "
+                            ".claude directory")
     try:
         if inside_protected(target):
             raise OutputRefused("a digest is the agent's output; it may not be "
@@ -176,46 +198,90 @@ def claim_dir(target: Path) -> None:
     """Create the directory and mark it ours, so a later run (or a resume)
     recognises it. Idempotent. Call it on a path a class-C check returned,
     BEFORE the first file is written: a crash that leaves a `.partial` in an
-    unmarked legacy dir would otherwise make it fail the legacy rule."""
+    unmarked legacy dir would otherwise make it fail the legacy rule.
+    `target` must be the checker's (resolved) return value: its parent is
+    re-checked here, since the directory may have been swapped for a link
+    since the check."""
     try:
+        if _ancestor_moved(target):
+            raise OutputRefused("the output location changed after it was "
+                                "checked; refusing to write")
         target.mkdir(parents=True, exist_ok=True)
         marked = _carries_marker(target / DIR_MARKER, DIR_KIND)
-    except OSError:
-        raise OutputRefused("could not create the output directory")
+    except (OSError, ValueError):
+        raise OutputRefused("could not create the output directory") from None
     if not marked:
-        write_atomic(target / DIR_MARKER, json.dumps({"kind": DIR_KIND}))
+        write_atomic(target / DIR_MARKER, json.dumps({"kind": DIR_KIND}),
+                     mode=CLIENT_FILE_MODE, expect_parent=target)
 
 
-def write_atomic(path, data) -> None:
+def _ancestor_moved(target: Path) -> bool:
+    """`target` was resolved by a checker, so every ancestor was a real
+    directory (or absent) then. True if the nearest one that exists now
+    resolves somewhere else, i.e. it, or something above it, became a
+    link since the check."""
+    anc = target.parent
+    # lexists, not exists: a DANGLING link swapped in must be judged too.
+    while not os.path.lexists(anc) and anc != anc.parent:
+        anc = anc.parent
+    return anc.resolve() != anc
+
+
+def _parent_moved(p: Path, expect_parent) -> bool:
+    return expect_parent is not None and p.parent.resolve() != Path(expect_parent)
+
+
+def write_atomic(path, data, mode: int = DIGEST_FILE_MODE,
+                 expect_parent=None) -> None:
     """`<name>.partial` -> fsync -> os.replace. The rename REPLACES a symlink
     or a hardlink at the target name, so the other name of a hardlink (a gold
     file, an input) keeps its bytes. The parent must already exist: creating
-    it is the caller's decision, made on the checked path."""
+    it is the caller's decision, made on the checked path.
+
+    `expect_parent` is the resolved parent a checker approved. The parent is
+    re-resolved before the partial is created and again immediately before
+    the rename; if a directory on the way was swapped for a link in between,
+    the write is refused (security review finding 2). This narrows the race
+    to the instant between the last look and the rename; it does not close
+    it, which would need openat-style directory handles."""
     p = Path(path)
     partial = p.with_name(p.name + ".partial")
     raw = data if isinstance(data, bytes) else data.encode("utf-8")
     created = False
     try:
-        # A leftover partial from a crash, or a link planted at the
-        # predictable name: remove it, then create exclusively and without
-        # following, so the bytes can only land in a fresh file of our own.
-        if partial.is_symlink() or partial.exists():
+        if _parent_moved(p, expect_parent):
+            raise OutputRefused("the output location changed after it was "
+                                "checked; refusing to write")
+        # A regular leftover partial is ours, from a crash between create
+        # and rename: remove it. Anything else at that predictable name (a
+        # link, a directory, a fifo) we did not make -- refuse and leave it
+        # for a human, never unlink or follow it.
+        if partial.is_symlink() or (partial.exists() and not partial.is_file()):
+            raise OutputRefused("something that is not a leftover partial "
+                                "file sits at the temporary name; refusing "
+                                "to write")
+        if partial.exists():
             partial.unlink()
         fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                     | getattr(os, "O_NOFOLLOW", 0), 0o644)
+                     | getattr(os, "O_NOFOLLOW", 0), mode)
         created = True
         with os.fdopen(fd, "wb") as f:
             f.write(raw)
             f.flush()
             os.fsync(f.fileno())
+        if _parent_moved(p, expect_parent):
+            raise OutputRefused("the output location changed after it was "
+                                "checked; refusing to write")
         os.replace(partial, p)
-    except OSError:
+    except (OSError, ValueError, OutputRefused) as e:
         if created:
             try:
                 partial.unlink()
             except OSError:
                 pass
-        raise OutputRefused("could not write the output file")
+        if isinstance(e, OutputRefused):
+            raise
+        raise OutputRefused("could not write the output file") from None
     # The rename is durable only once the directory entry is; best effort,
     # since not every filesystem lets a directory be opened for fsync.
     try:
@@ -232,12 +298,20 @@ def write_json_digest(target: Path, kind: str, digest: dict) -> str:
     """Serialise with `kind` FIRST -- the only thing `_carries_marker` peeks
     at -- create the parent, write atomically, return the text written. The
     `kind` argument wins over any `kind` the dict carries, or a digest could
-    be written that its own next run may not replace."""
+    be written that its own next run may not replace. `target` must be
+    `check_digest_out`'s (resolved) return value: the parent it approved is
+    what the write insists on."""
     body = {k: v for k, v in digest.items() if k != "kind"}
     text = json.dumps({"kind": kind, **body}, indent=1, ensure_ascii=False)
     try:
+        # A missing parent is created here, but an existing ancestor that
+        # now resolves elsewhere was swapped after the check: refuse before
+        # mkdir could create anything under the link's target.
+        if _ancestor_moved(target):
+            raise OutputRefused("the output location changed after it was "
+                                "checked; refusing to write")
         target.parent.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        raise OutputRefused("could not create the output directory")
-    write_atomic(target, text)
+    except (OSError, ValueError):
+        raise OutputRefused("could not create the output directory") from None
+    write_atomic(target, text, mode=DIGEST_FILE_MODE, expect_parent=target.parent)
     return text

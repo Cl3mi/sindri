@@ -199,15 +199,169 @@ def test_write_atomic_replaces_a_symlink_not_its_target(tmp_path):
 
 
 def test_write_atomic_does_not_follow_a_planted_partial_link(tmp_path):
-    """The `.partial` name is predictable; a link planted there must be
-    removed, not opened and written through."""
+    """The `.partial` name is predictable; a link planted there is neither
+    written through nor removed -- we did not make it, so it is refused
+    (security review finding 8) and left for a human to look at."""
     gold = tmp_path / "gold.json"
     gold.write_text("GOLD")
     t = tmp_path / "t.json"
     (tmp_path / "t.json.partial").symlink_to(gold)
-    write_atomic(t, "new")
-    assert gold.read_text() == "GOLD" and t.read_text() == "new"
+    with pytest.raises(OutputRefused):
+        write_atomic(t, "new")
+    assert gold.read_text() == "GOLD" and not t.exists()
+    assert (tmp_path / "t.json.partial").is_symlink()
+
+
+def test_write_atomic_refuses_a_partial_that_is_a_directory(tmp_path):
+    (tmp_path / "t.json.partial").mkdir()
+    with pytest.raises(OutputRefused):
+        write_atomic(tmp_path / "t.json", "new")
+    assert (tmp_path / "t.json.partial").is_dir()
+
+
+def test_write_atomic_removes_a_stale_regular_partial(tmp_path):
+    """A crash between create and rename leaves a regular `.partial` of our
+    own; the next write must not be blocked by it."""
+    (tmp_path / "t.json.partial").write_text("half")
+    write_atomic(tmp_path / "t.json", "new")
+    assert (tmp_path / "t.json").read_text() == "new"
     assert not (tmp_path / "t.json.partial").exists()
+
+
+def test_write_atomic_mode(tmp_path):
+    """Client-value files (class B/C) are written 0600, digests 0644."""
+    from app.eval.outputs import CLIENT_FILE_MODE, DIGEST_FILE_MODE
+    assert (CLIENT_FILE_MODE, DIGEST_FILE_MODE) == (0o600, 0o644)
+    write_atomic(tmp_path / "c.json", "x", mode=CLIENT_FILE_MODE)
+    assert (tmp_path / "c.json").stat().st_mode & 0o777 == 0o600
+    write_atomic(tmp_path / "d.json", "x")
+    assert (tmp_path / "d.json").stat().st_mode & 0o077 in (0o044, 0o040, 0o004, 0)
+
+
+def _swap_for_link(real_dir, link_to):
+    """Replace a checked directory by a link -- what a racing writer would
+    do between the check and the write."""
+    real_dir.rename(real_dir.with_name(real_dir.name + "-moved"))
+    real_dir.symlink_to(link_to)
+
+
+def test_write_atomic_refuses_a_parent_swapped_before_the_write(roots, tmp_path):
+    """Security review finding 2: the checker resolved the parent; if it is
+    a link by the time we write, the bytes would land wherever it points."""
+    out = tmp_path / "scratch"
+    out.mkdir()
+    target = check_digest_out(out / "d.json", KIND)
+    _swap_for_link(out, roots / "gold")
+    with pytest.raises(OutputRefused):
+        write_atomic(target, "x", expect_parent=target.parent)
+    assert list((roots / "gold").iterdir()) == []
+
+
+def test_write_atomic_refuses_a_parent_swapped_during_the_write(
+        roots, tmp_path, monkeypatch):
+    """The second look is immediately before the rename, which is the step
+    that makes the file visible under its name."""
+    out = tmp_path / "scratch"
+    out.mkdir()
+    target = check_digest_out(out / "d.json", KIND)
+    real_fsync = os.fsync
+    swapped = []
+
+    def fsync_then_swap(fd):
+        real_fsync(fd)
+        if not swapped:
+            swapped.append(True)
+            _swap_for_link(out, roots / "gold")
+    monkeypatch.setattr(os, "fsync", fsync_then_swap)
+    with pytest.raises(OutputRefused):
+        write_atomic(target, "x", expect_parent=target.parent)
+    assert swapped and list((roots / "gold").iterdir()) == []
+
+
+def test_write_json_digest_checks_its_parent_too(roots, tmp_path):
+    from app.eval.outputs import write_json_digest
+    out = tmp_path / "scratch"
+    out.mkdir()
+    target = check_digest_out(out / "d.json", KIND)
+    _swap_for_link(out, roots / "gold")
+    with pytest.raises(OutputRefused):
+        write_json_digest(target, KIND, {"n": 1})
+    assert list((roots / "gold").iterdir()) == []
+
+
+def test_write_json_digest_checks_the_nearest_existing_ancestor(roots, tmp_path):
+    """The digest's own folder may not exist yet (it is created on write);
+    a swap one level higher must still be caught before mkdir."""
+    from app.eval.outputs import write_json_digest
+    out = tmp_path / "scratch"
+    out.mkdir()
+    target = check_digest_out(out / "new" / "deeper" / "d.json", KIND)
+    _swap_for_link(out, roots / "gold")
+    with pytest.raises(OutputRefused):
+        write_json_digest(target, KIND, {"n": 1})
+    assert list((roots / "gold").iterdir()) == []
+
+
+def test_claim_dir_checks_its_parent(roots):
+    from app.eval.outputs import check_client_dir_out as dir_out, claim_dir as claim
+    target = dir_out(roots / "runs" / "r9", subdir="runs", legacy=("*.pred.json",))
+    _swap_for_link(roots / "runs", roots / "gold")
+    with pytest.raises(OutputRefused):
+        claim(target)
+    assert list((roots / "gold").iterdir()) == []
+
+
+# ---- security review findings 4, 6, 7 ---------------------------------------
+
+@pytest.mark.parametrize("call", [
+    lambda p: check_digest_out(p / "a\x00b.json", KIND),
+    lambda p: check_digest_out(p / "d.json", KIND, avoid=[str(p / "x\x00")]),
+    lambda p: write_atomic(p / "a\x00b.json", "x"),
+])
+def test_nul_byte_is_a_fixed_refusal(roots, tmp_path, call):
+    """A NUL byte makes the OS calls raise ValueError, which would escape as
+    a traceback carrying the path."""
+    with pytest.raises(OutputRefused) as e:
+        call(tmp_path)
+    assert str(tmp_path) not in str(e.value)
+
+
+def test_nul_byte_in_client_checks_is_a_fixed_refusal(roots):
+    from app.eval.outputs import check_client_dir_out as dir_out
+    with pytest.raises(OutputRefused):
+        check_client_file_out(roots / "reports" / "a\x00.report.json",
+                              subdir="reports", suffix=".report.json")
+    with pytest.raises(OutputRefused):
+        dir_out(roots / "runs" / "r\x00", subdir="runs", legacy=("*.pred.json",))
+
+
+def test_target_inside_an_input_directory_refused(roots, tmp_path):
+    """`--run <dir>` is an input; a digest written INTO it is a new file in
+    a directory the run is reading (and may glob)."""
+    run = tmp_path / "run"
+    run.mkdir()
+    with pytest.raises(OutputRefused):
+        check_digest_out(run / "d.json", KIND, avoid=[run])
+    with pytest.raises(OutputRefused):
+        check_digest_out(run / "sub" / "d.json", KIND, avoid=[run])
+    assert check_digest_out(tmp_path / "run-sibling.json", KIND, avoid=[run])
+
+
+@pytest.mark.parametrize("parts", [(".git", "hooks", "x.json"),
+                                   (".claude", "settings.json"),
+                                   ("repo", ".git", "config.json")])
+def test_digest_into_git_or_claude_config_refused(roots, tmp_path, parts):
+    """A digest there is code or configuration an agent's tools then run
+    (hooks, settings), not a measurement."""
+    with pytest.raises(OutputRefused):
+        check_digest_out(tmp_path.joinpath(*parts), KIND)
+
+
+def test_digest_through_a_link_into_dot_git_refused(roots, tmp_path):
+    (tmp_path / "repo" / ".git").mkdir(parents=True)
+    (tmp_path / "innocent").symlink_to(tmp_path / "repo" / ".git")
+    with pytest.raises(OutputRefused):
+        check_digest_out(tmp_path / "innocent" / "x.json", KIND)
 
 
 def test_write_atomic_accepts_bytes(tmp_path):
