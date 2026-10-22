@@ -14,6 +14,7 @@ a client value or a path (CLAUDE.md §1)."""
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -59,9 +60,16 @@ def _check(entry: Path) -> dict:
     except (ValueError, KeyError, TypeError, ValidationError, OSError) as e:
         # TYPE only: a validation message can quote a client value (CLAUDE.md §1).
         raise BundleError(f"{entry.name}: unreadable proposal ({type(e).__name__})") from None
-    for k in ("campaign", "group", "file_name", "doc_hash"):
+    for k in ("campaign", "group", "file_name", "doc_hash", "source_run"):
         if not isinstance(facts.get(k), str) or not facts[k]:
             raise BundleError(f"{entry.name}: campaign.json lacks {k}")
+    # Grading maps a reviewer's pixel boxes back to PDF points by this scale;
+    # a drawing reviewed without it is discovered ungradable only after the
+    # client did the work. bool is an int to Python, and never a scale.
+    scale = facts.get("render_scale")
+    if (isinstance(scale, bool) or not isinstance(scale, (int, float))
+            or not math.isfinite(scale) or scale <= 0):
+        raise BundleError(f"{entry.name}: campaign.json lacks render_scale")
     # The dir name is what the operator selected by and campaign.json's
     # doc_hash is what grading joins on: if they disagree, one is wrong, and
     # a drawing graded under the wrong hash poisons the result silently.

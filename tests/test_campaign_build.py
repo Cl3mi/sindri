@@ -39,9 +39,49 @@ def test_an_entry_holds_what_the_loader_needs(tmp_path, sample_pdf):
     assert [r["id"] for r in result["rows"]] == ["r1"]
     assert result["rows"][0]["balloon_xy"] is not None   # re-placed for today
     facts = json.loads((entry / "campaign.json").read_text())
+    grading = {k: facts.pop(k) for k in
+               ("render_scale", "page_rect", "page_px", "run_config", "policy")}
     assert facts == {"campaign": "pilot-1", "group": "great", "source_run": "r5-control",
                      "doc_hash": "aa", "file_name": "DOC-1.pdf"}
     assert [p.name for p in out.iterdir()] == ["aa"]       # no temp dir left over
+    with Image.open(entry / "page.png") as im:
+        assert grading["page_px"] == [im.width, im.height]
+    assert grading["render_scale"] == 300 / 72.0
+    assert grading["page_rect"] == [0, 0, 595, 842]
+    assert grading["run_config"] == RunConfig().model_dump(mode="json")
+
+
+def test_campaign_json_records_the_policy_the_rows_were_derived_under(
+        tmp_path, sample_pdf):
+    """Decision 4 re-derives every proposal under TODAY's policy; grading (C2)
+    must know which policy that was, since the active rules move as arms
+    ship. Recorded at build time: nothing later can reconstruct it."""
+    from app.pipeline import policy_rules
+    entry = campaign_build.build_entry(_dump(tmp_path, sample_pdf), sample_pdf,
+                                       tmp_path / "bundle", campaign="p", group="great",
+                                       run="r", doc_hash="aa")
+    policy = json.loads((entry / "campaign.json").read_text())["policy"]
+    assert policy == {"flag_rules": list(policy_rules.ACTIVE_FLAG_RULES),
+                      "drop_stages": [list(s) for s in policy_rules.ACTIVE_DROP_STAGES]}
+
+
+def test_run_config_never_carries_a_filesystem_path(tmp_path, sample_pdf):
+    """campaign.json travels to the VPS and back into every header. RunConfig
+    holds names and hashes, but model_id comes from an env var that MAY be a
+    local path (and a future extra key could be one); a path names a machine
+    layout, never a grading fact, so absolute-looking values are dropped."""
+    dump = PredictionDump(doc_id="DOC-1", scale=300 / 72.0, page_rect=(0, 0, 595, 842),
+                          config=RunConfig(model_id="/home/op/models/q72",
+                                           extra={"adapter": "read-lora-v1",
+                                                  "where": "~/x", "pad": 24}),
+                          result=ExtractionResult(characteristics=[]))
+    path = save_dump(dump, tmp_path / "runs" / "r")
+    entry = campaign_build.build_entry(path, sample_pdf, tmp_path / "bundle",
+                                       campaign="p", group="great", run="r",
+                                       doc_hash="aa")
+    rc = json.loads((entry / "campaign.json").read_text())["run_config"]
+    assert "model_id" not in rc and "where" not in rc["extra"]
+    assert rc["extra"]["adapter"] == "read-lora-v1" and rc["extra"]["pad"] == 24
 
 
 def test_a_row_todays_policy_drops_rides_along_as_a_suggestion(tmp_path, sample_pdf):

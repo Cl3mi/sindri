@@ -25,10 +25,13 @@ import shutil
 import sys
 from pathlib import Path
 
+from PIL import Image
+
 from app.batch.worker import result_payload
 from app.eval.anon import Anonymizer
 from app.eval.dump import load_dump
 from app.eval.reapply import reapply_current_code
+from app.pipeline import policy_rules
 from export_share import _PRED, ScaleMismatch, check_out_dir, refresh_result
 
 __all__ = ["ScaleMismatch", "build_entry", "main"]
@@ -41,6 +44,25 @@ def _check_ids(rows) -> None:
     ids = [r.id for r in rows]
     if not all(ids) or len(set(ids)) != len(ids):
         raise ValueError("row ids")
+
+
+def _looks_like_path(v) -> bool:
+    """Absolute POSIX, home-relative, UNC or drive-letter (C:\\, C:/)."""
+    if not isinstance(v, str):
+        return False
+    return v.startswith(("/", "~", "\\")) or (len(v) > 2 and v[1] == ":" and v[2] in "/\\")
+
+
+def _run_config_facts(config) -> dict:
+    """RunConfig as JSON, minus any value that looks like a filesystem path.
+    Its fields are names, hashes and knobs (no doc id), but model_id comes
+    from VLM_MODEL_ID, which MAY be a local checkpoint path, and a future
+    `extra` key could be one too. campaign.json travels to the VPS and back
+    into every header; a path names a machine layout, not a grading fact."""
+    out = config.model_dump(mode="json")
+    extra = {k: v for k, v in (out.get("extra") or {}).items() if not _looks_like_path(v)}
+    out = {k: v for k, v in out.items() if k != "extra" and not _looks_like_path(v)}
+    return {**out, "extra": extra}
 
 
 def build_entry(dump_path: Path, pdf_path: Path, out: Path, *, campaign: str,
@@ -70,9 +92,23 @@ def build_entry(dump_path: Path, pdf_path: Path, out: Path, *, campaign: str,
         shutil.copyfile(pdf_path, tmp / "input.pdf")
         (tmp / "result.json").write_text(json.dumps(result_payload(res)),
                                          encoding="utf-8")
+        with Image.open(tmp / "page.png") as im:
+            page_px = [im.width, im.height]
         (tmp / "campaign.json").write_text(json.dumps({
             "campaign": campaign, "group": group, "source_run": run,
-            "doc_hash": doc_hash, "file_name": f"{dump.doc_id}.pdf"}),
+            "doc_hash": doc_hash, "file_name": f"{dump.doc_id}.pdf",
+            # Grading facts (C2), recorded here because nothing later can
+            # reconstruct them: the scale and page geometry map a reviewer's
+            # pixel boxes back to PDF points, and the run config and the
+            # policy the rows were re-derived under (decision 4) say what
+            # the client was actually shown -- the active rules move as arms
+            # ship.
+            "render_scale": scale,
+            "page_rect": list(dump.page_rect),
+            "page_px": page_px,
+            "run_config": _run_config_facts(dump.config),
+            "policy": {"flag_rules": list(policy_rules.ACTIVE_FLAG_RULES),
+                       "drop_stages": [list(s) for s in policy_rules.ACTIVE_DROP_STAGES]}}),
             encoding="utf-8")
         os.replace(tmp, entry)
     except BaseException:

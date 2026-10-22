@@ -48,8 +48,39 @@ def bundle(tmp_path, sample_pdf, hashes=(HA, HB), root_name="bundle", salt=b""):
             {"rows": rows, "notes": None, "marks": None, "title_block": []}))
         (e / "campaign.json").write_text(json.dumps(
             {"campaign": "pilot-1", "group": "great", "source_run": "r", "doc_hash": h,
-             "file_name": f"{h}.pdf"}))
+             "file_name": f"{h}.pdf", "render_scale": 300 / 72.0}))
     return root
+
+
+@pytest.mark.parametrize("key,bad", [("source_run", None), ("source_run", ""),
+                                     ("render_scale", None), ("render_scale", 0),
+                                     ("render_scale", -1.0), ("render_scale", "4.1"),
+                                     ("render_scale", True)])
+def test_an_entry_without_its_grading_facts_refuses_the_bundle(
+        tmp_path, sample_pdf, env, key, bad):
+    """Grading (C2) splits on the source run and maps reviewer boxes back to
+    PDF points by the render scale. A drawing reviewed without them cannot
+    be graded, and that is only discovered after the client did the work."""
+    data, repo, _, _ = env
+    b = bundle(tmp_path, sample_pdf)
+    facts = json.loads((b / HB / "campaign.json").read_text())
+    if bad is None:
+        del facts[key]
+    else:
+        facts[key] = bad
+    (b / HB / "campaign.json").write_text(json.dumps(facts))
+    with pytest.raises(load.BundleError):
+        load.load_bundle(b, data, repo)
+    assert repo.list_documents() == []
+
+
+def test_a_non_finite_render_scale_refuses_the_bundle(tmp_path, sample_pdf, env):
+    data, repo, _, _ = env
+    b = bundle(tmp_path, sample_pdf)
+    text = (b / HB / "campaign.json").read_text()
+    (b / HB / "campaign.json").write_text(text.replace(str(300 / 72.0), "Infinity"))
+    with pytest.raises(load.BundleError):
+        load.load_bundle(b, data, repo)
 
 
 def drain(worker):
