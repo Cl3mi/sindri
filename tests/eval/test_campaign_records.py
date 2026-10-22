@@ -54,6 +54,27 @@ def test_null_hash_and_collision_dirs_are_keyed_by_dir(tmp_path):
     assert rec.drawings["aaaaaaaa-1234abcd"].dir == "aaaaaaaa-1234abcd"
 
 
+def test_a_non_string_doc_hash_is_keyed_by_dir(tmp_path):
+    """A doc_hash that is not a string would mix key types (sorted() then
+    raises in the grader) or be unhashable outright; the dir is always a
+    string, so the record falls back to it."""
+    p = [proposal_row("a")]
+    path = write_tar(tmp_path / "r.tar", [drawing("aaaaaaaa", p, p, []),
+                                          drawing("bbbbbbbb", p, p, []),
+                                          drawing("cccccccc", p, p, [])])
+
+    def edit(n, b):
+        if not n.endswith("/index.json"):
+            return b
+        idx = json.loads(b)
+        idx["documents"][1]["doc_hash"] = 5
+        idx["documents"][2]["doc_hash"] = ["x"]
+        return json.dumps(idx).encode()
+    rec = read_records(rewrite_tar(path, tmp_path / "k.tar", edit))
+    assert set(rec.drawings) == {"aaaaaaaa", "bbbbbbbb", "cccccccc"}
+    assert all(isinstance(k, str) for k in rec.drawings)
+
+
 def test_a_missing_header_marks_that_drawing_only(tmp_path):
     p = [proposal_row("a")]
     rec = read_records(write_tar(tmp_path / "r.tar", [

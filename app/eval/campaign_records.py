@@ -114,7 +114,10 @@ def read_records(tar_path) -> CampaignRecords:
             if rev:
                 sealed, e = load(f"{base}/sealed/r{rev}.json", "sealed")
                 errors.append(e)
-            key = d.get("doc_hash") or d["dir"]
+            # A non-string hash would be unhashable or mix key types (the
+            # grader sorts the keys); the dir is always a string.
+            dh = d.get("doc_hash")
+            key = dh if isinstance(dh, str) and dh else d["dir"]
             if key in drawings:
                 key = d["dir"]
             sr = d.get("sealed_revision")

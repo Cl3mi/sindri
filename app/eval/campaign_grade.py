@@ -3,7 +3,9 @@ truth; gold is a cross-check that never flips a grade.
 
 Every output that leaves the protected root is counts + salted hashes only."""
 import math
+import re
 import statistics
+from collections import Counter
 from typing import Dict, List, Optional
 
 from pydantic import ValidationError
@@ -14,6 +16,7 @@ from app.eval.models import GoldDoc, MatchParams
 from app.eval.score import _compare_fields
 from app.models import Characteristic
 from app.review.grading import grade_session
+from app.review.journal import DELETE_REASONS
 from app.review.replay import note_of
 
 MM_PER_PT = 25.4 / 72.0
@@ -339,23 +342,62 @@ def gold_cross_check(proposal: List[dict], final: List[dict], grades: Dict[str, 
             "final_unlocatable": final_unlocatable,
             "matched_final": len(found),
             "neither_found": len(set(by_num) - found),
-            "n_gold": len(gold_chars)}
-
+            "n_gold": len(gold_chars),
+            # What the matrix must sum to; stated here so the caller can
+            # check the partition instead of assuming it.
+            "n_delivered": len(delivered)}
 
 # --- ranked findings and the campaign grade ----------------------------------
+# The digest is committed to docs/eval/, but almost every string the grader
+# sees comes from files a client session wrote or a pull re-read: reasons,
+# groups, run names, record keys. None of them is trusted to be a word. Each
+# reaches the digest only through a closed vocabulary or a shape check, so a
+# damaged or foreign record can at worst become "other"/"unknown", never quote
+# a value.
+_TOKEN = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+# Salted doc hashes and the two dir shapes pull.py packs under (nohash-<id8>,
+# <hash>-<id8> on a collision).
+_KEY = re.compile(r"\A(?:[0-9a-f]{8}|nohash-[0-9a-f]{8}|[0-9a-f]{8}-[0-9a-f]{8})\Z")
+
+
+def _token(s, fallback=None):
+    return s if isinstance(s, str) and _TOKEN.match(s) else fallback
+
+
+def _safe_key(k) -> str:
+    return k if isinstance(k, str) and _KEY.match(k) else "invalid_key"
+
+
+def _phantom_reason(reason) -> str:
+    # replay() does not validate reasons, and the seal is read raw: only the
+    # journal's own closed vocabulary may name a bucket.
+    if reason is None:
+        return "none"
+    return reason if isinstance(reason, str) and reason in DELETE_REASONS else "other"
+
 
 # Correction bucket -> the lever that could move it and that lever's status
-# (C1 design §6, CLAUDE.md §2-3). Prefix match, FIRST wins, so the list runs
-# most-specific first: a reason-specific phantom before phantoms in general.
-# A `fields:` signature is ordered as VALUE_FIELDS, so any edit that touched
-# char_type lands on the char_type lever even when other fields moved too.
+# (C1 design §6, CLAUDE.md §2-3). EXACT signatures first: a single-fault row
+# is the one a single lever can fix. A mixed signature must not borrow one
+# field's lever -- a fix only pays when it is the LAST fault on the row
+# (CLAUDE.md §2, the theoretical-parser result) -- so it falls to the generic
+# multi-field entry.
+EXACT_LEVERS = {
+    "fields:char_type": ("read stage (Ø Diameter↔Distance)", "open"),
+    "fields:upper_tol": ("render_target fix + adapter retrain (tolerances)", "open"),
+    "fields:lower_tol": ("render_target fix + adapter retrain (tolerances)", "open"),
+    "fields:upper_tol+lower_tol": ("render_target fix + adapter retrain (tolerances)", "open"),
+    "fields:nominal": ("read input / box framing (crop context)", "open"),
+    "phantom:duplicate": ("stage-1 contained_duplicate drop", "shipped"),
+    "phantom:wrong_region": ("box framing (detect_regions)", "open"),
+}
+# Prefix match, FIRST wins, so most-specific first.
 LEVERS = [
     ("phantom:unballooned_real_dimension",
      "ballooning-policy classifier learned on train gold", "open (verifier closed)"),
     ("phantom:", "phantom drops / ballooning policy", "stage-2 drops shipped"),
-    ("fields:char_type", "read stage (Ø Diameter↔Distance)", "open"),
-    ("fields:", "read input / box framing; render_target + adapter retrain for tolerances",
-     "open"),
+    ("fields:", "read input / box framing (multi-field: every fault must be fixed "
+                "before the row pays)", "open"),
     ("missed", "detector weights", "open (Rung 3 moved isolated misses)"),
     ("suggestion_", "suggestion tray thresholds (drop stage 2)", "shipped; graded here"),
     ("bubble_moved", "whitespace balloon placement (fa1cb6f)", "new, unmeasured"),
@@ -364,6 +406,8 @@ LEVERS = [
 
 
 def _lever(bucket):
+    if bucket in EXACT_LEVERS:
+        return EXACT_LEVERS[bucket]
     for prefix, lever, status in LEVERS:
         if bucket.startswith(prefix):
             return lever, status
@@ -373,9 +417,10 @@ def _lever(bucket):
 def _value_bucket(r) -> Optional[str]:
     g = r["grade"]
     if g == "edited":
+        # Field names come from VALUE_FIELDS via grade_session, not the record.
         return "fields:" + "+".join(r["fields"])
     if g == "phantom":
-        return f"phantom:{r.get('reason') or 'none'}"
+        return "phantom:" + _phantom_reason(r.get("reason"))
     if g in ("suggestion_confirmed", "suggestion_edited"):
         return g          # a dropped value the client wanted back
     return None
@@ -385,6 +430,9 @@ def ranked_findings(per_drawing: List[dict]) -> dict:
     """One table per kind (value / placement), each bucket with its count,
     share within its kind, distinct drawings and lever. `per_drawing`:
     [{"rows", "missed", "scale"}] for gradable drawings only.
+
+    A placement share is a share of correction EVENTS, not of rows: one row
+    can both have its bubble moved and its anchor nudged, and counts in both.
 
     A deleted suggestion is NOT a correction -- the client agreed with the
     drop -- so it is kept out of the value table as `tray_drop_right`;
@@ -438,10 +486,36 @@ def _scale_ok(s) -> bool:
             and math.isfinite(s) and s > 0)
 
 
-def _grade_one(d) -> dict:
+def _num_ok(w) -> bool:
+    return (not isinstance(w, bool) and isinstance(w, (int, float))
+            and math.isfinite(w) and w >= 0)
+
+
+def _manifest_parts(manifest):
+    """(roles, pool), refusing any shape the grader cannot use. The manifest is
+    the operator's own file, so a bad one is an operator error to fix, not a
+    drawing to skip -- but the message is still fixed words."""
+    if manifest is None:
+        return {}, {}
+    try:
+        if not isinstance(manifest, dict):
+            raise TypeError
+        roles = manifest.get("roles", {}) or {}
+        pool = manifest.get("pool", {}) or {}
+        if not (isinstance(roles, dict) and isinstance(pool, dict)):
+            raise TypeError
+        if not all(isinstance(k, str) and isinstance(v, str) for k, v in roles.items()):
+            raise TypeError
+        if not all(_token(k) and _num_ok(w) for k, w in pool.items()):
+            raise TypeError
+    except TypeError:
+        raise ValueError("manifest: bad roles/pool") from None
+    return roles, pool
+
+
+def _grade_one(d, facts) -> dict:
     """The per-drawing work that can trip over a damaged record. Raises on
     anything unexpected; the caller turns that into a fixed word."""
-    facts = d.header.get("campaign") or {}
     scale = facts.get("render_scale")
     if not _scale_ok(scale):
         return {"status": "ungradable", "reason": "no_render_scale"}
@@ -450,10 +524,39 @@ def _grade_one(d) -> dict:
     g = grade_session(d.proposal_rows, d.sealed)
     if g["ungradable"]:
         return {"status": "ungradable", "reason": g["ungradable"]}
-    note = note_of(d.sealed.get("net_events", []))
     return {"status": "approved", "reason": None, "rows": g["rows"], "missed": g["missed"],
-            "scale": scale, "time_ms": review_time_ms(d.events),
-            "note": note if isinstance(note, str) else ""}
+            "scale": scale, "time_ms": review_time_ms(d.events)}
+
+
+def _note(sealed) -> Optional[str]:
+    """The FINAL note, or None when it cannot be read. Separate from grading:
+    a malformed note must cost the note, never a valid grade."""
+    try:
+        note = note_of(sealed.get("net_events", []))
+    except Exception:  # noqa: BLE001 -- note_of raises KeyError/JournalError on bad events
+        return None
+    return note if isinstance(note, str) else None
+
+
+def _gold_section(crosses: List[dict]) -> dict:
+    """Digest view of every approved drawing's cross-check: counts only, the
+    per-row verdicts stay in the report."""
+    done = [c for c in crosses if c.get("computed") is True]
+    not_computed: Dict[str, int] = {}
+    for c in crosses:
+        if c.get("computed") is not True:
+            word = _token(c.get("reason"), "unknown")
+            not_computed[word] = not_computed.get(word, 0) + 1
+    matrix: Dict[str, int] = {}
+    for c in done:
+        for k, v in c["matrix"].items():
+            matrix[k] = matrix.get(k, 0) + v
+    return {"n_drawings_computed": len(done),
+            "not_computed": dict(sorted(not_computed.items())),
+            "matrix": dict(sorted(matrix.items())),
+            **{k: sum(c[k] for c in done)
+               for k in ("n_gold", "neither_found", "matched_final", "unlocatable",
+                         "row_invalid")}}
 
 
 def grade_campaign(records, gold_by_hash: Optional[Dict[str, GoldDoc]] = None,
@@ -473,36 +576,53 @@ def grade_campaign(records, gold_by_hash: Optional[Dict[str, GoldDoc]] = None,
     A drawing is ungradable (with a fixed word, never exception text, which
     can quote client values) when its record is damaged, its replay does not
     reproduce its seal, it has no usable render_scale, or grading raised
-    (`grade_error`). A cross-check failure alone keeps the client's grade."""
+    (`grade_error`). A cross-check failure alone keeps the client's grade.
+    Raises ValueError only for a malformed manifest."""
+    roles, pool = _manifest_parts(manifest)
     gold_by_hash = gold_by_hash or {}
-    roles = (manifest or {}).get("roles") or {}
-    pool = (manifest or {}).get("pool") or {}
     status = {"approved": 0, "pending": 0, "ungradable": 0}
     reasons: Dict[str, int] = {}
     by_group: Dict[str, List[dict]] = {}
     report_docs, problems = [], []
-    cross_done: List[dict] = []
-    not_computed: Dict[str, int] = {}
-    revision_mismatch = 0
+    notes_unreadable = revision_mismatch = 0
+
+    def doc_hash(d):
+        h = d.index.get("doc_hash")
+        return h if isinstance(h, str) and h else None
+
+    # Two records under one hash (pull.py's collision dirs) are flagged, and
+    # only the first is joined to roles and gold: the second would otherwise
+    # be counted against the same manifest role and gold twice.
+    hash_counts = Counter(h for h in map(doc_hash, records.drawings.values()) if h)
+    for h, n in sorted(hash_counts.items()):
+        if n > 1:
+            problems.append(f"duplicate_doc_hash:{_safe_key(h)}")
+    joined = set()
     for key, d in sorted(records.drawings.items()):
-        h = d.index.get("doc_hash") or key
-        facts = d.header.get("campaign") or {}
-        group = facts.get("group") or d.index.get("group") or "unknown"
-        if roles and h in roles and roles[h] != group:
-            problems.append(f"group_differs:{key}")
+        skey = _safe_key(key)
+        h = doc_hash(d)
+        primary = h is None or h not in joined
+        if h:
+            joined.add(h)
+        header = d.header if isinstance(d.header, dict) else {}
+        facts = header.get("campaign")
+        facts = facts if isinstance(facts, dict) else {}
+        group = _token(facts.get("group")) or _token(d.index.get("group")) or "unknown"
+        if primary and h in roles and roles[h] != group:
+            problems.append(f"group_differs:{skey}")
         revision_mismatch += bool(d.revision_mismatch)
-        doc = {"doc_hash": key, "group": group,
-               "source_run": facts.get("source_run") or "unknown",
+        doc = {"doc_hash": skey, "group": group,
+               "source_run": _token(facts.get("source_run"), "unknown"),
                "status": None, "reason": None, "rows": None, "missed": None,
                "scale": None, "time_ms": None, "proposal": None, "final": None,
                "cross": None, "note": None}
         if d.error:
-            res = {"status": "ungradable", "reason": d.error}
+            res = {"status": "ungradable", "reason": _token(d.error, "unknown")}
         elif d.sealed is None:
             res = {"status": "pending", "reason": None}
         else:
             try:
-                res = _grade_one(d)
+                res = _grade_one(d, facts)
             except Exception:  # noqa: BLE001 -- one bad drawing must not sink the run
                 res = {"status": "ungradable", "reason": "grade_error"}
         doc.update(res)
@@ -512,12 +632,17 @@ def grade_campaign(records, gold_by_hash: Optional[Dict[str, GoldDoc]] = None,
         if doc["status"] != "approved":
             report_docs.append(doc)
             continue
+        note = _note(d.sealed)
+        notes_unreadable += note is None
+        doc["note"] = note or ""
         if len(doc["rows"]) != len(d.proposal_rows):
-            problems.append(f"partition:{key}")
+            problems.append(f"partition:{skey}")
         doc["proposal"], doc["final"] = d.proposal_rows, d.sealed.get("rows", [])
         by_group.setdefault(group, []).append(doc)
-        gold = gold_by_hash.get(h)
-        if gold is None:
+        gold = gold_by_hash.get(h) if h else None
+        if not primary:
+            cross = {"computed": False, "reason": "duplicate_doc_hash"}
+        elif gold is None:
             cross = {"computed": False, "reason": "no_gold"}
         else:
             try:
@@ -528,48 +653,57 @@ def grade_campaign(records, gold_by_hash: Optional[Dict[str, GoldDoc]] = None,
             except Exception:  # noqa: BLE001 -- gold is a second lens; keep the grade
                 cross = {"computed": False, "reason": "cross_check_error"}
         doc["cross"] = cross
-        if cross.get("computed"):
-            cross_done.append(cross)
-        else:
-            not_computed[cross["reason"]] = not_computed.get(cross["reason"], 0) + 1
+        if cross.get("computed") is True:
+            # The matrix must partition the delivered rows and the gold rows
+            # must be either found or not -- checked against the counts the
+            # cross-check states, never assumed.
+            if sum(cross["matrix"].values()) != cross.get("n_delivered"):
+                problems.append(f"cross_matrix:{skey}")
+            if cross["matched_final"] + cross["neither_found"] != cross["n_gold"]:
+                problems.append(f"cross_gold:{skey}")
         report_docs.append(doc)
 
     groups = {grp: group_metrics(ds) for grp, ds in sorted(by_group.items())}
-    # Identity: the per-grade counts partition the rows each group graded.
     for grp, ds in sorted(by_group.items()):
         c = groups[grp]["counts"]
         if (sum(c[g] for g in VALUE_GRADES + SUGGESTION_GRADES)
                 != sum(len(e["rows"]) for e in ds)):
             problems.append(f"group_counts:{grp}")
+    if sum(m["n_drawings"] for m in groups.values()) != status["approved"]:
+        problems.append("group_drawings")
     if sum(status.values()) != len(records.drawings):
         problems.append("status_counts")
+    approved_docs = [e for ds in by_group.values() for e in ds]
+    gold_section = _gold_section([e["cross"] for e in approved_docs])
+    if (gold_section["n_drawings_computed"] + sum(gold_section["not_computed"].values())
+            != status["approved"]):
+        problems.append("gold_coverage")
 
+    in_records = {h for h in map(doc_hash, records.drawings.values()) if h}
+    in_skipped = {s.get("doc_hash") for s in records.skipped
+                  if isinstance(s, dict) and isinstance(s.get("doc_hash"), str)}
+    for h in sorted(in_records & in_skipped):
+        problems.append(f"skipped_and_recorded:{_safe_key(h)}")
     not_in_records = extra_in_records = None
     if roles:
-        in_records = {d.index.get("doc_hash") or k for k, d in records.drawings.items()}
-        in_skipped = {s.get("doc_hash") for s in records.skipped if isinstance(s, dict)}
-        missing = [h for h in roles if h not in in_records and h not in in_skipped]
-        not_in_records = len(missing)
-        extra_in_records = len([h for h in in_records if h not in roles])
-        # Every role must land in exactly one place; checked as an identity
-        # rather than assumed from how `missing` was built.
+        not_in_records = len([h for h in roles if h not in in_records | in_skipped])
+        # A hashless record cannot be in the manifest either.
+        extra_in_records = len([d for d in records.drawings.values()
+                                if doc_hash(d) not in roles])
         covered = (len([h for h in roles if h in in_records])
                    + len([h for h in roles if h not in in_records and h in in_skipped])
                    + not_in_records)
         if covered != len(roles):
             problems.append("manifest_coverage")
 
-    # No pool -> nothing to reweight to: None, never a guessed mix.
+    # No pool -> nothing to reweight to: None, never a guessed mix; and say
+    # which groups made a pooled value None, since reweight() cannot.
     pooled = {k: (reweight({grp: m[k] for grp, m in groups.items()}, pool) if pool else None)
               for k in POOLED_METRICS}
-    matrix: Dict[str, int] = {}
-    for c in cross_done:
-        for k, v in c["matrix"].items():
-            matrix[k] = matrix.get(k, 0) + v
-    approved_docs = [e for ds in by_group.values() for e in ds]
     runs = sorted({e["source_run"] for e in approved_docs})
+    campaign = _token(records.campaign, "invalid")
     digest = {
-        "campaign": records.campaign,
+        "campaign": campaign,
         "drawings": {**status, "ungradable_reasons": dict(sorted(reasons.items())),
                      "skipped": len(records.skipped),
                      "not_in_records": not_in_records,
@@ -577,25 +711,21 @@ def grade_campaign(records, gold_by_hash: Optional[Dict[str, GoldDoc]] = None,
         "revision_mismatch": revision_mismatch,
         "groups": groups,
         "pooled": pooled,
+        "pooled_unmeasured": {
+            "unpooled_groups": sorted(set(groups) - set(pool)),
+            "pool_groups_missing": sorted(g for g, w in pool.items()
+                                          if w and g not in groups)},
         "pool": pool,
-        # Counts only: the per-row verdicts stay in the report.
-        "gold_cross_check": {
-            "n_drawings_computed": len(cross_done),
-            "not_computed": dict(sorted(not_computed.items())),
-            "matrix": dict(sorted(matrix.items())),
-            "n_gold": sum(c["n_gold"] for c in cross_done),
-            "neither_found": sum(c["neither_found"] for c in cross_done),
-            "matched_final": sum(c["matched_final"] for c in cross_done),
-            "unlocatable": sum(c["unlocatable"] for c in cross_done),
-            "row_invalid": sum(c["row_invalid"] for c in cross_done)},
+        "gold_cross_check": gold_section,
         "findings": ranked_findings(approved_docs),
         # The FINAL note only (a cleared note is no note), and only as a count:
         # note text is client prose.
         "notes_written": sum(1 for e in approved_docs if e["note"]),
+        "notes_unreadable": notes_unreadable,
         "by_source_run": {r: sum(1 for e in approved_docs if e["source_run"] == r)
                           for r in runs},
         "reconcile_problems": problems,
         "reconciles": not problems,
     }
-    report = {"campaign": records.campaign, "drawings": report_docs, "digest": digest}
+    report = {"campaign": campaign, "drawings": report_docs, "digest": digest}
     return report, digest

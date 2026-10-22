@@ -339,6 +339,16 @@ def test_duplicate_gold_balloons_refuse():
     assert _check([], [], {}, gold) == {"computed": False, "reason": "gold_invalid"}
 
 
+def test_cross_check_reports_its_delivered_row_count():
+    # The matrix must partition the delivered rows; the caller can only
+    # check that against a count the cross-check states itself.
+    gold = _gold([_g(1, (30, 20), "10")])
+    sug = _prow("s", (20, 10, 40, 30), suggested=True)
+    rows = [_prow("a", (20, 10, 40, 30)), _prow("b", (700, 500, 720, 520)), sug]
+    out = _check(rows, rows, {"a": "confirmed", "b": "phantom"}, gold)
+    assert out["n_delivered"] == 2 == sum(out["matrix"].values())
+
+
 def test_reconciled_frames_are_unsupported():
     from app.eval.models import MatchParams
     gold = _gold([_g(1, (30, 20), "10")])
@@ -554,3 +564,163 @@ def test_a_failing_cross_check_keeps_the_client_grade(tmp_path, monkeypatch):
     by = {d["doc_hash"]: d for d in report["drawings"]}
     assert by["aaaaaaaa"]["cross"] == {"computed": False, "reason": "cross_check_error"}
     assert "SECRET" not in json.dumps(report)
+
+
+# --- review of f63f900: no client text in the digest, real reconciliation ----
+import pytest
+
+LEAK = "Ø12 H7 LEAK"
+
+
+def _tar(tmp_path, drawings, **kw):
+    return read_records(write_tar(tmp_path / "x.tar", drawings, **kw))
+
+
+def test_an_out_of_vocabulary_delete_reason_never_reaches_the_digest(tmp_path):
+    """replay does not validate reasons and the grader reads the raw seal, so
+    a reason can be any JSON a damaged or foreign journal holds. Only the
+    closed vocabulary may name a bucket; anything else is `other`."""
+    p = [proposal_row("a"), proposal_row("b"), proposal_row("c")]
+    sealed_events = [event(1, "delete_row", id="a", reason=LEAK),
+                     event(2, "delete_row", id="b", reason={"x": LEAK}),
+                     event(3, "delete_row", id="c")]
+    _, digest = grade_campaign(_tar(tmp_path, [drawing("aaaaaaaa", p, [], sealed_events)]))
+    buckets = {b["bucket"]: b["count"] for b in digest["findings"]["value"]}
+    assert buckets == {"phantom:other": 2, "phantom:none": 1}
+    assert "LEAK" not in json.dumps(digest)
+
+
+def test_free_form_group_source_run_and_campaign_are_replaced(tmp_path):
+    p = [proposal_row("a")]
+    d = drawing("aaaaaaaa", p, p, [], group=LEAK, source_run="part-4711 LEAK")
+    # drawing() puts the group in both the header and the index entry
+    rec = _tar(tmp_path, [d], campaign="pilot LEAK")
+    _, digest = grade_campaign(rec)
+    blob = json.dumps(digest)
+    assert "LEAK" not in blob
+    assert digest["campaign"] == "invalid"
+    assert set(digest["groups"]) == {"unknown"}
+    assert digest["by_source_run"] == {"unknown": 1}
+
+
+def test_record_keys_that_are_not_hash_shaped_are_never_quoted(tmp_path):
+    p = [proposal_row("a")]
+    rec = _tar(tmp_path, [drawing(None, p, p, [], dir="LEAK dir")])
+    report, digest = grade_campaign(rec, manifest=_manifest({"bbbbbbbb": "great"}))
+    assert "LEAK" not in json.dumps(digest)
+    assert [d["doc_hash"] for d in report["drawings"]] == ["invalid_key"]
+
+
+def test_group_drawing_counts_must_add_up_to_approved(tmp_path, monkeypatch):
+    real = campaign_grade.group_metrics
+    monkeypatch.setattr(campaign_grade, "group_metrics",
+                        lambda ds: {**real(ds), "n_drawings": real(ds)["n_drawings"] + 1})
+    _, digest = grade_campaign(read_records(_campaign(tmp_path)))
+    assert "group_drawings" in digest["reconcile_problems"]
+
+
+def test_gold_coverage_must_add_up_to_approved(tmp_path, monkeypatch):
+    real = campaign_grade._gold_section
+    def lossy(crosses):
+        s = real(crosses)
+        s["not_computed"] = {}
+        return s
+    monkeypatch.setattr(campaign_grade, "_gold_section", lossy)
+    _, digest = grade_campaign(read_records(_campaign(tmp_path)))
+    assert "gold_coverage" in digest["reconcile_problems"]
+
+
+def test_a_cross_check_matrix_that_loses_a_row_is_named(tmp_path, monkeypatch):
+    real = campaign_grade.gold_cross_check
+    def lossy(*a, **k):
+        out = real(*a, **k)
+        k0 = next(iter(out["matrix"]))
+        out["matrix"][k0] -= 1
+        out["matched_final"] += 1
+        return out
+    monkeypatch.setattr(campaign_grade, "gold_cross_check", lossy)
+    _, digest = grade_campaign(read_records(_campaign(tmp_path)),
+                               gold_by_hash={"aaaaaaaa": _gold_at_fixture_row()})
+    assert "cross_matrix:aaaaaaaa" in digest["reconcile_problems"]
+    assert "cross_gold:aaaaaaaa" in digest["reconcile_problems"]
+
+
+def test_a_hash_both_recorded_and_skipped_is_named(tmp_path):
+    p = [proposal_row("a")]
+    rec = _tar(tmp_path, [drawing("aaaaaaaa", p, p, [])],
+               skipped=[{"id8": "deadbeef", "reason": "no_proposal", "doc_hash": "aaaaaaaa"},
+                        {"id8": "deadbee0", "reason": "no_proposal", "doc_hash": [LEAK]}])
+    _, digest = grade_campaign(rec)
+    assert "skipped_and_recorded:aaaaaaaa" in digest["reconcile_problems"]
+    assert "LEAK" not in json.dumps(digest)
+
+
+def test_pooled_values_say_why_they_are_unmeasured(tmp_path):
+    p = [proposal_row("a")]
+    rec = _tar(tmp_path, [drawing("aaaaaaaa", p, p, [], group="great"),
+                          drawing("bbbbbbbb", p, p, [], group="odd")])
+    _, digest = grade_campaign(rec, manifest=_manifest({}))
+    assert digest["pooled_unmeasured"] == {"unpooled_groups": ["odd"],
+                                           "pool_groups_missing": ["problem"]}
+    assert digest["pooled"]["precision"] is None
+
+
+def test_exact_levers_beat_prefixes_and_mixed_signatures_stay_generic():
+    rows = [graded("edited", fields=["char_type"]),
+            graded("edited", fields=["char_type", "nominal"]),
+            graded("edited", fields=["upper_tol", "lower_tol"]),
+            {**graded("phantom"), "reason": "duplicate"}]
+    f = {b["bucket"]: b for b in
+         ranked_findings([{"rows": rows, "missed": [], "scale": 1.0}])["value"]}
+    assert f["fields:char_type"]["lever"].startswith("read stage")
+    assert not f["fields:char_type+nominal"]["lever"].startswith("read stage")
+    assert "multi-field" in f["fields:char_type+nominal"]["lever"]
+    assert f["fields:upper_tol+lower_tol"]["lever"].startswith("render_target")
+    assert f["phantom:duplicate"]["lever_status"] == "shipped"
+
+
+def test_a_collided_hash_is_flagged_and_joined_once(tmp_path):
+    p = [proposal_row("a"), proposal_row("b")]
+    rec = _tar(tmp_path, [drawing("aaaaaaaa", p, p, []),
+                          drawing("aaaaaaaa", p, p, [], dir="aaaaaaaa-1234abcd")])
+    _, digest = grade_campaign(rec, gold_by_hash={"aaaaaaaa": _gold_at_fixture_row()},
+                               manifest=_manifest({"aaaaaaaa": "problem"}))
+    probs = digest["reconcile_problems"]
+    assert "duplicate_doc_hash:aaaaaaaa" in probs
+    assert probs.count("group_differs:aaaaaaaa") == 1
+    g = digest["gold_cross_check"]
+    assert g["n_drawings_computed"] == 1 and g["not_computed"] == {"duplicate_doc_hash": 1}
+
+
+def test_malformed_record_shapes_never_crash_the_grade(tmp_path):
+    p = [proposal_row("a")]
+    ds = [drawing(h, p, p, []) for h in ("aaaaaaaa", "bbbbbbbb", "cccccccc", "dddddddd")]
+    ds[0]["header"]["campaign"] = [1, 2]
+    ds[1]["header"]["campaign"] = "pilot"
+    ds[2]["header"]["campaign"]["group"] = ["great"]
+    ds[3]["header"]["campaign"]["source_run"] = {"r": 1}
+    report, digest = grade_campaign(_tar(tmp_path, ds), manifest=_manifest({}))
+    d = digest["drawings"]
+    assert d["ungradable_reasons"] == {"no_render_scale": 2} and d["approved"] == 2
+    json.dumps(digest)
+
+
+@pytest.mark.parametrize("manifest", [
+    [1], {"roles": ["aaaaaaaa"]}, {"roles": {"aaaaaaaa": ["great"]}},
+    {"roles": {}, "pool": [30]}, {"roles": {}, "pool": {"great": -1}},
+    {"roles": {}, "pool": {"great": float("nan")}}, {"roles": {}, "pool": {"great": "30"}},
+    {"roles": {}, "pool": {"great": True}}])
+def test_a_malformed_manifest_is_refused_with_fixed_words(tmp_path, manifest):
+    with pytest.raises(ValueError) as ei:
+        grade_campaign(read_records(_campaign(tmp_path)), manifest=manifest)
+    assert str(ei.value) == "manifest: bad roles/pool"
+
+
+def test_an_unreadable_note_costs_the_note_not_the_grade(tmp_path):
+    p = [proposal_row("a")]
+    rec = _tar(tmp_path, [drawing("aaaaaaaa", p, p, [event(1, "set_note")]),
+                          drawing("bbbbbbbb", p, p, [event(1, "set_note", text={"x": 1})])])
+    report, digest = grade_campaign(rec)
+    assert digest["drawings"]["approved"] == 2
+    assert digest["notes_unreadable"] == 2 and digest["notes_written"] == 0
+    assert all(d["note"] == "" for d in report["drawings"])
