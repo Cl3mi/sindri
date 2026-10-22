@@ -334,11 +334,25 @@ def _cmd_headers(args):
     return 0
 
 
+# What a class-C directory written before H1 holds, by tool: such a dir
+# carries no .sindri-output marker but is still ours (predict resume on the
+# GPU host depends on it). Top-level names only.
+_GOLD_DIR_SHAPES = ("*.gold.json", "doc_id_map.json")
+_RUN_DIR_SHAPES = ("*.pred.json", ".complete")
+# predict/verify render into <out>/_work/<doc>/ and never remove it.
+_WORK_DIR = "_work"
+
+
 def _cmd_ingest(args):
+    # Checked and claimed before anything is read: gold holds client values,
+    # so the dir is <root>/gold itself or a direct child of it, and it is
+    # absent, empty, ours, or a pre-H1 ingest.
+    out = check_client_dir_out(
+        args.out, subdir="gold", legacy=_GOLD_DIR_SHAPES, subdir_itself=True,
+        avoid=_inputs(args, "pdfs", "excel", "originals", "variants"))
+    claim_dir(out)
     pdfs = {p.stem: p for p in Path(args.pdfs).glob(_PDF_GLOB)}
     excels = {p.stem: p for p in Path(args.excel).glob("*.xlsx")}
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
     variants = set(Path(args.variants).read_text().split()) if args.variants else set()
     anon = _anon(args)
     unpaired = sorted(set(pdfs) ^ set(excels))
@@ -364,15 +378,16 @@ def _cmd_ingest(args):
                               is_variant=stem in variants, use_cv=args.cv,
                               target_pdf=originals.get(stem),
                               require_target=bool(originals))
-        (out / f"{stem}.gold.json").write_text(gold.model_dump_json(indent=1),
-                                               encoding="utf-8")
+        write_atomic(out / f"{stem}.gold.json", gold.model_dump_json(indent=1),
+                     mode=CLIENT_FILE_MODE, expect_parent=out)
         provenance.append(gold.provenance)
         if gold.provenance["join_rate"] < 0.95:
             low_join.append((anon(stem), gold.provenance["join_rate"]))
     # Local-only trace file so a human can map a hash back to a drawing. Never
     # committed (gitignored + blocked by .git/hooks/pre-commit).
-    (out / "doc_id_map.json").write_text(
-        json.dumps(anon.mapping(paired), indent=1), encoding="utf-8")
+    write_atomic(out / "doc_id_map.json",
+                 json.dumps(anon.mapping(paired), indent=1),
+                 mode=CLIENT_FILE_MODE, expect_parent=out)
     if args.summary:
         print(json.dumps(_ingest_summary(provenance), indent=1,
                          ensure_ascii=False))
@@ -545,6 +560,13 @@ def _cmd_verify(args):
 
 def _cmd_predict(args):
     import os
+    # Before the backend loads (minutes, on the GPU host): the run dir holds
+    # client values, so it is a direct child of <root>/runs/ and absent,
+    # empty, ours, or a pre-H1 run -- and claimed before the first dump.
+    out = check_client_dir_out(args.out, subdir="runs", legacy=_RUN_DIR_SHAPES,
+                               work_dir=_WORK_DIR,
+                               avoid=_inputs(args, "pdfs", "splits"))
+    claim_dir(out)
     from app.pipeline.ocr import get_backend
     backend = get_backend()
     config = RunConfig(
@@ -561,7 +583,6 @@ def _cmd_predict(args):
               "Read per-document facts from `runner summary` instead.",
               file=sys.stderr)
     anon = _anon(args)
-    out = Path(args.out)
     predicted = skipped = 0
     failures, effective_dpi = [], {}
     for i, doc_id in enumerate(doc_ids, 1):
@@ -574,7 +595,7 @@ def _cmd_predict(args):
             continue
         try:
             dump = predict_one(pdfs[doc_id], doc_id, args.dpi, backend, config,
-                               out / "_work",
+                               out / _WORK_DIR,
                                detect_only=getattr(args, "detect_only", False))
         except Exception as e:
             # One unreadable drawing must cost one document, not the run. The
@@ -584,7 +605,7 @@ def _cmd_predict(args):
             failures.append({"doc": anon(doc_id), "error": type(e).__name__})
             print(f"{tag} FAILED {type(e).__name__}", file=sys.stderr)
             continue
-        save_dump(dump, out)
+        save_dump(dump, out, expect_parent=out)
         predicted += 1
         effective_dpi[doc_id] = dump.scale * 72.0
         print(f"{tag} dpi={dump.scale * 72.0:.0f}", file=sys.stderr)

@@ -335,8 +335,10 @@ def test_score_refuses_a_deck_outside_a_protected_root_before_scoring(
         tmp_path, monkeypatch):
     """Fail in seconds, not after a full re-score, and write nothing either:
     a refusal that still did the work would teach the operator to ignore it."""
-    _roots(tmp_path, monkeypatch, tmp_path / "client")
+    # The synthetic corpus is built first: its ingest goes to tmp_path/gold,
+    # which H1 refuses once roots are configured (gold belongs in <root>/gold).
     pdfs, gold_dir, run_dir = _corpus(tmp_path)
+    _roots(tmp_path, monkeypatch, tmp_path / "client")
     assert main(_score_args(tmp_path, run_dir, gold_dir, pdfs,
                             tmp_path / "d.json")) == 1
     assert not (tmp_path / "d.json").exists()
@@ -345,10 +347,10 @@ def test_score_refuses_a_deck_outside_a_protected_root_before_scoring(
 
 def test_score_needs_pdfs_to_know_where_the_drawings_are(tmp_path,
                                                          monkeypatch):
+    pdfs, gold_dir, run_dir = _corpus(tmp_path)    # before roots, as above
     root = tmp_path / "client"
     root.mkdir()
     _roots(tmp_path, monkeypatch, root)
-    pdfs, gold_dir, run_dir = _corpus(tmp_path)
     args = _score_args(tmp_path, run_dir, gold_dir, pdfs, root / "d.json")
     i = args.index("--pdfs")
     del args[i:i + 2]
@@ -358,10 +360,10 @@ def test_score_needs_pdfs_to_know_where_the_drawings_are(tmp_path,
 
 def test_score_writes_the_deck_and_prints_only_a_count(tmp_path, monkeypatch,
                                                        capsys):
+    pdfs, gold_dir, run_dir = _corpus(tmp_path)    # before roots, as above
     root = tmp_path / "client"
     root.mkdir()
     _roots(tmp_path, monkeypatch, root)
-    pdfs, gold_dir, run_dir = _corpus(tmp_path)
     deck = root / "reports" / "d.json"
     assert main(_score_args(tmp_path, run_dir, gold_dir, pdfs, deck)) == 0
     d = load_deck(deck)
