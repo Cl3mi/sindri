@@ -40,3 +40,25 @@ def test_an_upload_waits_for_health():
 def test_stop_extraction_is_campaign_chrome():
     """Stop cancels a drawing, a route campaign-only 403s."""
     assert re.search(r'<button[^>]*id="ex-stop"[^>]*data-campaign-hide', HTML)
+
+
+def _js_set(src: str, name: str) -> set:
+    m = re.search(rf"export const {name} = new Set\(\[(.*?)\]\)", src, re.S)
+    assert m, f"{name} not found"
+    return set(re.findall(r"'([^']+)'", m.group(1)))
+
+
+def test_the_ui_vocabularies_mirror_the_journal():
+    """The server refuses an unknown reason at append, which stalls the
+    reviewer's whole journal, and a longer note than NOTE_MAX; the browser
+    holds its own copies of all three. tests/js pins the JS side to itself,
+    this pins it to Python."""
+    from app.review import journal
+    reasons = (STATIC / "js" / "reasons.js").read_text(encoding="utf-8")
+    campaign = (STATIC / "js" / "campaign.js").read_text(encoding="utf-8")
+    assert _js_set(reasons, "EDIT_REASONS") == set(journal.EDIT_REASONS)
+    assert _js_set(reasons, "DELETE_REASONS") == set(journal.DELETE_REASONS)
+    assert int(re.search(r"export const NOTE_MAX = (\d+);", campaign).group(1)) == journal.NOTE_MAX
+    m = re.search(r'<textarea[^>]*id="doc-note"[^>]*maxlength="(\d+)"', HTML) or \
+        re.search(r'<textarea[^>]*maxlength="(\d+)"[^>]*id="doc-note"', HTML)
+    assert int(m.group(1)) == journal.NOTE_MAX
