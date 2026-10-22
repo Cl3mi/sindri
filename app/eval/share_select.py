@@ -40,27 +40,45 @@ def _esc(r):
     return _ratio(r["counts"].get("escaped_error", 0), r["n_gold"])
 
 
+def _eligible(rows, min_gold, great_recall, problem_recall_min, max_escaped):
+    """(great_pool, mid_pool): the rows each role may be drawn from. ONE
+    definition for select() and eligible_counts(), because the campaign
+    reweights its picks by the pool sizes -- a filter applied on one side
+    only would skew that denominator without any test noticing."""
+    ok = [r for r in rows if r["n_gold"] >= min_gold and _esc(r) <= max_escaped
+          and r["recall"] is not None]
+    return ([r for r in ok if r["recall"] >= great_recall],
+            [r for r in ok if problem_recall_min <= r["recall"] < great_recall])
+
+
+def eligible_counts(rows: List[Dict], min_gold: int = 15, great_recall: float = 0.55,
+                    problem_recall_min: float = 0.3, max_escaped: float = 0.1) -> Dict:
+    """Sizes of the ELIGIBLE great/problem sets (before any picking), which the
+    grader uses to reweight a 60/40 pick back to the population's mix."""
+    g, m = _eligible(rows, min_gold, great_recall, problem_recall_min, max_escaped)
+    return {"great": len(g), "problem": len(m)}
+
+
 def select(rows: List[Dict], great: int = 3, problem: int = 2, min_gold: int = 15,
            great_recall: float = 0.55, problem_recall_min: float = 0.3,
            max_escaped: float = 0.1) -> List[Dict]:
     """rows: per_doc rows, each tagged with a "run". Returns picks with a
     "role" ("great"|"problem") and a "why"; may return fewer than asked."""
-    ok = [r for r in rows if r["n_gold"] >= min_gold and _esc(r) <= max_escaped
-          and r["recall"] is not None]
+    great_pool, mid_all = _eligible(rows, min_gold, great_recall,
+                                    problem_recall_min, max_escaped)
     picks, used = [], set()
 
     def take(r, role, why):
         picks.append({**r, "role": role, "why": why})
         used.add((r["run"], r["doc"]))
 
-    pool = sorted((r for r in ok if r["recall"] >= great_recall),
+    pool = sorted(great_pool,
                   key=lambda r: (-r["recall"], _esc(r), r["doc"]))
     for r in pool[:great]:
         take(r, "great", f"recall {r['recall']:.2f}, "
                          f"{r['counts'].get('escaped_error', 0)} escaped")
 
-    mid = [r for r in ok if problem_recall_min <= r["recall"] < great_recall
-           and (r["run"], r["doc"]) not in used]
+    mid = [r for r in mid_all if (r["run"], r["doc"]) not in used]
     flavours = [
         ("over-detection", lambda r: _ratio(r["counts"].get("false_detection", 0),
                                             r["n_pred"])),
@@ -76,16 +94,20 @@ def select(rows: List[Dict], great: int = 3, problem: int = 2, min_gold: int = 1
     return picks
 
 
-def manifest(picks: List[Dict]) -> Dict:
+def manifest(picks: List[Dict], pool: Dict = None) -> Dict:
     """Group picks by run: {"runs": [{"run": ..., "hashes": [...]}],
     "roles": {hash: "great"|"problem"}}. `export_share.py` reads only "runs";
     "roles" lets the review campaign record each drawing's group so its report
-    can reweight the great/problem mix."""
+    can reweight the great/problem mix. `pool` (eligible_counts) adds the
+    population sizes that reweighting needs; omitted, the key is absent."""
     by_run: Dict[str, List[str]] = {}
     for p in picks:
         by_run.setdefault(p["run"], []).append(p["doc"])
-    return {"runs": [{"run": r, "hashes": h} for r, h in by_run.items()],
-            "roles": {p["doc"]: p["role"] for p in picks}}
+    out = {"runs": [{"run": r, "hashes": h} for r, h in by_run.items()],
+           "roles": {p["doc"]: p["role"] for p in picks}}
+    if pool is not None:
+        out["pool"] = dict(pool)
+    return out
 
 
 def load_rows(specs: List[str], allow_train: bool = False) -> List[Dict]:
@@ -130,10 +152,13 @@ def main(argv=None) -> int:
                          "decision 5); never for a client share-pack")
     args = ap.parse_args(argv)
 
-    picks = select(load_rows(args.digest, args.allow_train), args.great, args.problem, args.min_gold,
-                   args.great_recall, args.problem_recall_min, args.max_escaped)
+    rows = load_rows(args.digest, args.allow_train)
+    thresholds = (args.min_gold, args.great_recall, args.problem_recall_min,
+                  args.max_escaped)
+    picks = select(rows, args.great, args.problem, *thresholds)
+    pool = eligible_counts(rows, *thresholds)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.out).write_text(json.dumps(manifest(picks), indent=1), encoding="utf-8")
+    Path(args.out).write_text(json.dumps(manifest(picks, pool), indent=1), encoding="utf-8")
     for p in picks:
         print(f"{p['role']:8} {p['run']}/{p['doc']}  n_gold={p['n_gold']:3d}  {p['why']}")
     short = (args.great - sum(p["role"] == "great" for p in picks),
