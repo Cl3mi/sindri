@@ -511,3 +511,58 @@ def test_dir_out_unreadable_dir_is_a_fixed_refusal(roots):
         assert "locked" not in str(e.value)
     finally:
         d.chmod(0o755)
+
+
+# ---- the RunReport marker ------------------------------------------------
+
+def _report():
+    from app.eval.models import (MatchParams, ReviewCostWeights, RunConfig,
+                                 RunReport)
+    return RunReport(run_name="stub", config=RunConfig(model_id="stub", dpi=300),
+                     weights=ReviewCostWeights(), match_params=MatchParams())
+
+
+def test_run_report_dumps_kind_as_its_first_key():
+    """`score --out` may replace a report only if it carries the marker as
+    its FIRST key -- the marker peek reads the opening bytes and never
+    parses a (large) report. `schema_version` lives on the base class and
+    would otherwise dump first."""
+    text = _report().model_dump_json(indent=1)
+    assert text.startswith('{\n "kind": "run-report"')
+    assert list(_report().model_dump())[0] == "kind"
+
+
+def test_run_report_without_kind_still_loads():
+    """Every report written before the marker lacks it; they must stay
+    readable (summary, compare), and SCHEMA_VERSION stays 1."""
+    from app.eval.models import SCHEMA_VERSION, RunReport
+    payload = json.loads(_report().model_dump_json())
+    del payload["kind"]
+    old = RunReport.model_validate_json(json.dumps(payload))
+    assert old.kind == "run-report"
+    assert old.schema_version == SCHEMA_VERSION == 1
+
+
+def test_run_report_of_another_kind_is_rejected_loudly():
+    """A file labelled as something else (a grade report, a digest) must not
+    be misread as a run report."""
+    from app.eval.models import RunReport
+    payload = json.loads(_report().model_dump_json())
+    payload["kind"] = "campaign-grade-report"
+    with pytest.raises(ValueError):
+        RunReport.model_validate(payload)
+
+
+def test_run_report_roundtrips():
+    from app.eval.models import RunReport
+    r = _report()
+    assert RunReport.model_validate_json(r.model_dump_json()) == r
+
+
+def test_written_report_carries_the_marker_and_is_replaceable(roots):
+    from app.eval.review import _carries_marker
+    t = roots / "reports" / "r.report.json"
+    write_atomic(t, _report().model_dump_json(indent=1))
+    assert _carries_marker(t, "run-report")
+    assert check_client_file_out(t, subdir="reports", suffix=".report.json",
+                                 kind="run-report") == t
