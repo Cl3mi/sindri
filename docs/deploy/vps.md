@@ -88,8 +88,31 @@ is a few hundred KB) and events batches can be large too.
    - Safe during live reviewing. It writes atomically (`<out>.partial`, then
      renamed), skips incomplete records with a warning (type only), and
      excludes the writer token. Grading trusts the database's final revision.
-2. `rsync vps:~/sindri/export/pilot-1.tar <protected root>/reviews/`
-3. Grading: plan C2 (`runner score --reviewer-grade`).
+2. You: `rsync vps:~/sindri/export/pilot-1.tar <protected root>/reviews/`
+3. Agent (or you): grade it, reading the tar in place --
+   `python3 -m app.eval.runner score --reviewer-grade <protected root>/reviews/pilot-1.tar --gold <protected root>/gold --manifest ~/campaign-manifest.json --name pilot-1 --out <protected root>/reports/pilot-1.grade.json --grade-out docs/eval/pilot-1-grade.json`
+   - `--gold` must be the gold ingested with `--originals` (the campaign
+     showed the clean original; stamped-sheet gold of the same page size
+     passes the frame check with every position wrong). `--manifest` is the
+     one from step 1 of "Run a campaign": it carries the roles and the
+     selection pool the pooled metrics are reweighted to.
+   - This is the agent-safe step: stdout is one count line and the digest
+     is counts, salted hashes and fixed words. The full report holds client
+     values and notes, so it is refused anywhere but inside the protected
+     root, under a `.grade.json` name.
+   - Exit 0 = clean, 3 = written but does not reconcile (the digest's
+     `reconcile_problems` say which check failed; do not quote its numbers
+     until that is understood), 1 = refused, nothing written.
+   - Re-running after a later pull regenerates both files in place: an
+     existing file is only replaced when it carries its own kind marker
+     (`campaign-grade-report` / `campaign-grade-digest`); any other file at
+     either path is refused, never overwritten.
+   - Commit the digest; never the report or the tar.
+4. You, optionally: browse the corrections with crops of the original
+   drawings, from your own terminal --
+   `python3 -m app.eval.runner campaign-deck --report <protected root>/reports/pilot-1.grade.json --pdfs <protected root>/corpus/originals`
+   It serves client values on localhost behind a session token. An agent
+   never runs it and never receives the link it prints.
 
 ## After the campaign
 
