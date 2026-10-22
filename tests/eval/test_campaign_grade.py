@@ -1,6 +1,8 @@
 """Campaign metrics (C2 design §Metrics)."""
 import math
 
+import pytest
+
 from app.eval.campaign_grade import (IDLE_MS, group_metrics, px_to_mm,
                                      reweight, review_time_ms)
 
@@ -447,6 +449,23 @@ def test_grade_campaign_end_to_end_and_reconciles(tmp_path):
     by = {d["doc_hash"]: d for d in report["drawings"]}
     assert by["cccccccc"]["status"] == "pending"
     assert by["aaaaaaaa"]["status"] == "approved" and by["aaaaaaaa"]["scale"] == 300 / 72.0
+
+
+@pytest.mark.parametrize("rect,want", [
+    ([0.0, 0.0, 842.0, 595.0], [0.0, 0.0, 842.0, 595.0]),
+    ([0, 0, 842, 0], None), ([0, 0, float("nan"), 595], None), ([0, 0, 842], None),
+    ("0 0 842 595", None), ([True, 0, 842, 595], None), (None, None)])
+def test_the_report_carries_the_campaign_page_frame_and_the_digest_never(tmp_path,
+                                                                        rect, want):
+    """The operator's deck converts the report's px to points on the ORIGINAL
+    drawing and must check it is the same page; both need the page frame the
+    campaign rendered. A frame that is not 4 finite numbers spanning a real
+    area is None, never a guess."""
+    p = [proposal_row("a")]
+    tar = write_tar(tmp_path / "r.tar", [drawing("aaaaaaaa", p, p, [], page_rect=rect)])
+    report, digest = grade_campaign(read_records(tar), gold_by_hash={}, manifest=None)
+    assert report["drawings"][0]["page_rect"] == want
+    assert "page_rect" not in json.dumps(digest)
 
 
 def test_notes_count_the_final_note_only_and_never_reach_the_digest(tmp_path):

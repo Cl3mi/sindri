@@ -1102,6 +1102,19 @@ def _cmd_review_serve(args):
         return 1
 
 
+def _cmd_campaign_deck(args):
+    """For the OPERATOR: the drill-down into a graded campaign. Never an
+    agent's command -- it serves client values, and is absent from the
+    guard's allowlist on purpose. Refusals are fixed sentences."""
+    from app.eval import campaign_deck
+    from app.eval.review import ReviewRefused
+    try:
+        return campaign_deck.serve(args.report, args.pdfs, args.port)
+    except ReviewRefused as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+
+
 def _cmd_compare(args):
     a = RunReport.model_validate_json(Path(args.report_a).read_text())
     b = RunReport.model_validate_json(Path(args.report_b).read_text())
@@ -1364,6 +1377,24 @@ def main(argv=None) -> int:
     p.add_argument("--port", type=int, default=0,
                    help="default: any free port")
     p.set_defaults(fn=_cmd_review_serve)
+
+    p = sub.add_parser(
+        "campaign-deck", parents=[common],
+        help="OPERATOR ONLY: browse a graded campaign's corrections with crops",
+        description="The operator's drill-down into a campaign grading report: "
+                    "per correction bucket, example rows with crops of the "
+                    "original drawing. It serves CLIENT VALUES on localhost "
+                    "behind a session token -- run it from your own terminal; "
+                    "an agent never runs it or accepts its link.")
+    p.add_argument("--report", required=True,
+                   help="the .grade.json report `score --reviewer-grade` wrote "
+                        "inside a protected root")
+    p.add_argument("--pdfs", required=True,
+                   help="the campaign's ORIGINAL drawings (corpus/originals), "
+                        "matched to the report by salted hash of the file stem")
+    p.add_argument("--port", type=int, default=0,
+                   help="default: any free port")
+    p.set_defaults(fn=_cmd_campaign_deck)
 
     p = sub.add_parser("verify", parents=[common])
     # GPU-host command (docs/plans/2026-10-07-verifier-registration.md §3):

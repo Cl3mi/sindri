@@ -93,7 +93,11 @@ def page_rect(pdf_path) -> Optional[Tuple[float, float, float, float]]:
         return None
 
 
-def render_crop(pdf_path, rect, pred_box_pt=None, gold_pt=None) -> bytes:
+def render_crop(pdf_path, rect, pred_box_pt=None, gold_pt=None,
+                final_box_pt=None) -> bytes:
+    """`final_box_pt` (optional, the campaign deck's) outlines a second box
+    in blue, dashed so it stays legible where it overlaps the red one: the
+    anchor where the reviewer left it, beside the one we proposed."""
     try:
         doc = fitz.open(pdf_path)
     except Exception as e:
@@ -102,6 +106,9 @@ def render_crop(pdf_path, rect, pred_box_pt=None, gold_pt=None) -> bytes:
         if doc.page_count < 1:
             raise CropError("drawing has no pages")
         page = doc[0]
+        if final_box_pt:
+            page.draw_rect(fitz.Rect(final_box_pt), color=BLUE, width=1.2,
+                           dashes="[3 2] 0")
         if pred_box_pt:
             page.draw_rect(fitz.Rect(pred_box_pt), color=RED, width=1.2)
         if gold_pt:

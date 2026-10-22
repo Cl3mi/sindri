@@ -200,6 +200,18 @@ def _rect_ok(rect) -> bool:
     return all(math.isfinite(v) for v in (x0, y0, x1, y1)) and x1 > x0 and y1 > y0
 
 
+def _report_page_rect(rect) -> Optional[List[float]]:
+    """The campaign's page frame for the REPORT (the operator's deck turns px
+    into points with it and checks the original is the same page), or None.
+    Type-checked before _rect_ok: float() would take a bool or a digit
+    string, and a guessed frame would put every crop somewhere else."""
+    if (not isinstance(rect, (list, tuple)) or len(rect) != 4
+            or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in rect)
+            or not _rect_ok(rect)):
+        return None
+    return [float(v) for v in rect]
+
+
 def _same_frame(a, b) -> bool:
     """Gold must be the `--originals` ingest, whose page_rect is the clean
     ORIGINAL's, i.e. the page the campaign rendered. When the two rects
@@ -662,7 +674,9 @@ def grade_campaign(records, gold_by_hash: Optional[Dict[str, GoldDoc]] = None,
                "source_run": source_run(facts.get("source_run")),
                "status": None, "reason": None, "rows": None, "missed": None,
                "scale": None, "time_ms": None, "proposal": None, "final": None,
-               "cross": None, "note": None}
+               "cross": None, "note": None,
+               # Report only: the digest is built from counts and never sees it.
+               "page_rect": _report_page_rect(facts.get("page_rect"))}
         if d.error:
             res = {"status": "ungradable", "reason": _token(d.error, "unknown")}
         elif d.sealed is None:
