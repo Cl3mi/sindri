@@ -32,8 +32,10 @@ def test_review_time_reload_gap_is_never_counted():
     assert review_time_ms([{"t_ms": 0}, {"t_ms": 900}, {"t_ms": 10}, {"t_ms": 20}]) == 910
 
 
-def graded(grade, flagged=False, bubble_px=None, anchor_iou=None, moved=False, fields=()):
+def graded(grade, flagged=False, bubble_px=None, anchor_iou=None, moved=False, fields=(),
+           reviewed=False):
     return {"grade": grade, "flagged": flagged, "fields": list(fields), "reason": None,
+            "reviewed": reviewed,
             "bubble_px": bubble_px, "anchor_iou": anchor_iou, "anchor_moved": moved}
 
 
@@ -49,10 +51,12 @@ def test_group_metrics_counts_precision_recall_and_placement():
     assert math.isclose(m["precision"], 3 / 5)
     assert math.isclose(m["unflagged_precision"], 2 / 3)
     assert math.isclose(m["flag_precision"], 1 / 2)         # 1 of 2 flagged was wrong
-    assert math.isclose(m["recall_lower_bound"], 4 / 5)     # 4 surviving balloons, 1 missed
+    assert math.isclose(m["recall_shipped_vs_client_known"], 4 / 5)  # 4 surviving, 1 missed
+    assert "recall_lower_bound" not in m
     assert m["placement"]["bubble_moved"] == 1
     assert m["placement"]["anchor_nudged"] == 1 and m["placement"]["anchor_repointed"] == 0
-    assert m["review_minutes_median"] == 1.0
+    assert m["review_minutes_lower_bound_median"] == 1.0
+    assert m["n_timed"] == 1 and m["time_not_measured"] == 0
 
 
 def test_placement_counts_only_rows_with_a_bubble_measurement():
@@ -89,8 +93,9 @@ def test_recall_with_tray_counts_confirmed_and_edited_suggestions_as_found():
             graded("suggestion_deleted"), graded("suggestion_left")]
     m = group_metrics([{"rows": rows, "missed": [{"id": "a"}, {"id": "b"}],
                         "scale": 1.0, "time_ms": 0}])
-    assert math.isclose(m["recall_lower_bound"], 2 / 4)     # balloons only
-    assert math.isclose(m["recall_with_tray"], 4 / 6)
+    # one shared denominator: surviving 2 + tray found 2 + missed 2
+    assert math.isclose(m["recall_shipped_vs_client_known"], 2 / 6)
+    assert math.isclose(m["recall_with_tray_vs_client_known"], 4 / 6)
 
 
 def test_flag_precision_ignores_suggestions():
@@ -103,10 +108,11 @@ def test_flag_precision_ignores_suggestions():
 def test_zero_denominators_are_none_never_zero():
     m = group_metrics([{"rows": [], "missed": [], "scale": 1.0, "time_ms": 0}])
     for k in ("precision", "unflagged_precision", "flag_precision",
-              "recall_lower_bound", "recall_with_tray", "review_minutes_median"):
+              "recall_shipped_vs_client_known", "recall_with_tray_vs_client_known",
+              "review_minutes_lower_bound_median"):
         assert m[k] is None, k
     assert m["placement"]["bubble_moved_share"] is None
-    assert m["placement"]["bubble_mm_median"] is None
+    assert m["placement"]["moved_bubble_mm_median"] is None
     assert group_metrics([])["precision"] is None
 
 
@@ -120,3 +126,38 @@ def test_reweight_refuses_a_missing_or_zero_pool():
     assert reweight({"great": 0.9, "problem": 0.5}, {"great": 30}) is None
     assert reweight({"great": 0.9, "problem": 0.5}, {"great": 30, "problem": 0}) is None
     assert reweight({}, {}) is None
+
+
+def test_anchor_figures_exclude_rows_that_have_no_final_anchor():
+    # Phantoms (deleted) and unconfirmed suggestions have no final anchor by
+    # construction; counting them would bury the real unmeasurable rows.
+    rows = ([graded("phantom") for _ in range(30)] + [graded("suggestion_left")]
+            + [graded("confirmed", anchor_iou=0.9), graded("edited", anchor_iou=0.1, moved=True),
+               graded("confirmed", anchor_iou=None),
+               graded("suggestion_confirmed", anchor_iou=0.5, moved=True)])
+    p = group_metrics([{"rows": rows, "missed": [], "scale": 1.0, "time_ms": 0}])["placement"]
+    assert p["anchor_unmeasurable"] == 1 and p["anchor_measured"] == 3
+    assert p["anchor_nudged"] == 1 and p["anchor_repointed"] == 1
+
+
+def test_silent_confirmations_are_split_from_explicit_ones():
+    rows = [graded("confirmed", reviewed=True), graded("confirmed", reviewed=False),
+            graded("confirmed", flagged=True, reviewed=True)]
+    c = group_metrics([{"rows": rows, "missed": [], "scale": 1.0, "time_ms": 0}])["counts"]
+    assert c["confirmed"] == 3 and c["confirmed_explicit"] == 2 and c["confirmed_silent"] == 1
+    assert c["unflagged_confirmed_explicit"] == 1
+
+
+def test_time_not_measured_counts_drawings_without_time():
+    d = {"rows": [], "missed": [], "scale": 1.0}
+    m = group_metrics([dict(d, time_ms=120000), dict(d, time_ms=0), dict(d, time_ms=60000)])
+    assert m["n_timed"] == 2 and m["time_not_measured"] == 1
+    assert m["review_minutes_lower_bound_median"] == 1.5
+
+
+def test_reweight_refuses_missing_and_surprise_groups():
+    assert reweight({"great": 0.9}, {"great": 30, "problem": 10}) is None
+    assert reweight({"great": 0.9, "problem": 0.5, "x": 0.1},
+                    {"great": 30, "problem": 10}) is None
+    # a zero-weight pool group is not required
+    assert math.isclose(reweight({"great": 0.9}, {"great": 30, "problem": 0}), 0.9)

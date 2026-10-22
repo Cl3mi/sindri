@@ -8,13 +8,18 @@ from typing import Dict, List, Optional
 
 MM_PER_PT = 25.4 / 72.0
 IDLE_MS = 5 * 60 * 1000          # a gap longer than this is the reviewer away
-BUBBLE_MOVED_MM = 0.5            # below this a "move" is a nudge of the mouse
+# Kept at 0.5: at fit zoom the UI's 3-screen-px dead zone is already ~1.3 mm,
+# so this filters nothing there; at high zoom it filters sub-mm drags.
+# Arrow-key nudges are deliberate small moves we WANT counted.
+BUBBLE_MOVED_MM = 0.5
 FAR_MOVE_MM = 5.0
 NUDGE_IOU = 0.3
 
 VALUE_GRADES = ("confirmed", "edited", "phantom")
 SUGGESTION_GRADES = ("suggestion_confirmed", "suggestion_edited",
                      "suggestion_deleted", "suggestion_left")
+# Grades whose row survives into the final revision, hence has a final anchor.
+SURVIVING_GRADES = ("confirmed", "edited", "suggestion_confirmed", "suggestion_edited")
 
 
 def px_to_mm(px: float, render_scale: float) -> float:
@@ -27,8 +32,14 @@ def px_to_mm(px: float, render_scale: float) -> float:
 
 def review_time_ms(events: List[dict]) -> int:
     """Active review time: gaps between consecutive events within a page
-    session. t_ms restarts at each page load (C1 state 'What's next' 5), so
-    a decrease starts a new session and that gap is not counted; t_wall is
+    session. The input is the COMPACTED net events.jsonl: the seal drops
+    retracted pairs and their timing, plus the lead-in before the first event
+    and the tail before Approve, so the result is a LOWER bound, and a drawing
+    with fewer than 2 net events has no time (0). t_ms restarts at each open of the drawing (journal.start/resume;
+    C1 state 'What's next' 5), so a decrease starts a new session and that gap
+    is not counted. A boundary is only detected when t_ms DECREASES: an open
+    after a long pause with a higher t_ms inflates one gap by at most that
+    session's lead-in; t_wall is
     the client's clock and is never used. Events without a numeric t_ms are
     skipped rather than raising: a torn or foreign record must not sink the
     drawing's timing."""
@@ -64,10 +75,11 @@ def group_metrics(drawings: List[dict]) -> dict:
     "time_ms": int}] for ONE group, gradable drawings only."""
     counts: Dict[str, int] = {g: 0 for g in VALUE_GRADES + SUGGESTION_GRADES}
     counts["missed"] = 0
+    counts["confirmed_explicit"] = counts["unflagged_confirmed_explicit"] = 0
     flagged = flagged_wrong = 0
     unflagged = {g: 0 for g in VALUE_GRADES}
     moves_mm, moved, far, placed = [], 0, 0, 0
-    nudged = repointed = anchor_unmeasurable = 0
+    nudged = repointed = anchor_measured = anchor_unmeasurable = 0
     for d in drawings:
         counts["missed"] += len(d["missed"])
         for r in d["rows"]:
@@ -81,6 +93,9 @@ def group_metrics(drawings: List[dict]) -> dict:
                     flagged_wrong += g != "confirmed"
                 else:
                     unflagged[g] += 1
+            if g == "confirmed" and r.get("reviewed"):
+                counts["confirmed_explicit"] += 1
+                counts["unflagged_confirmed_explicit"] += not r["flagged"]
             # bubble_px is None for a deleted row or an unconfirmed
             # suggestion: no final position exists, so it is not evidence
             # that the bubble stayed put and must not enter the denominator.
@@ -91,50 +106,65 @@ def group_metrics(drawings: List[dict]) -> dict:
                     moved += 1
                     moves_mm.append(mm)
                     far += mm > FAR_MOVE_MM
-            # anchor_iou None = no anchor to compare (unmeasurable), which is
-            # different from "measured and unmoved"; report it so the digest
-            # can say how many rows the anchor figures could not speak for.
-            if r.get("anchor_iou") is None:
-                anchor_unmeasurable += 1
-            elif r.get("anchor_moved"):
-                if r["anchor_iou"] >= NUDGE_IOU:
-                    nudged += 1
+            # Only surviving rows have a final anchor: counting deleted rows
+            # or unconfirmed suggestions as "unmeasurable" would bury the real
+            # ones. anchor_iou None on a survivor is unmeasurable, which is
+            # different from "measured and unmoved".
+            if g in SURVIVING_GRADES:
+                if r.get("anchor_iou") is None:
+                    anchor_unmeasurable += 1
                 else:
-                    repointed += 1
+                    anchor_measured += 1
+                    if r.get("anchor_moved"):
+                        if r["anchor_iou"] >= NUDGE_IOU:
+                            nudged += 1
+                        else:
+                            repointed += 1
     graded_balloons = sum(counts[g] for g in VALUE_GRADES)
     surviving = counts["confirmed"] + counts["edited"]
     # Tray rows are values the pipeline found but did not ship; the client
     # recovering them is recall the shipped balloons alone understate.
     tray_found = counts["suggestion_confirmed"] + counts["suggestion_edited"]
+    counts["confirmed_silent"] = counts["confirmed"] - counts["confirmed_explicit"]
     times = [d["time_ms"] / 60000 for d in drawings if d.get("time_ms")]
+    # One shared denominator for both recalls: everything the client is known
+    # to have wanted. These are UPPER bounds whenever the client's manual
+    # additions are incomplete (the gold cross-check's 'neither found' covers
+    # what they did not add).
+    known = surviving + tray_found + counts["missed"]
     return {
         "n_drawings": len(drawings),
         "counts": counts,
+        # precision / unflagged_precision include SILENT confirmations (rows
+        # the client never touched); the digest shows the explicit/silent split.
         "precision": _ratio(counts["confirmed"], graded_balloons),
         "unflagged_precision": _ratio(unflagged["confirmed"], sum(unflagged.values())),
         "flag_precision": _ratio(flagged_wrong, flagged),
-        "recall_lower_bound": _ratio(surviving, surviving + counts["missed"]),
-        "recall_with_tray": _ratio(surviving + tray_found,
-                                   surviving + tray_found + counts["missed"]),
+        "recall_shipped_vs_client_known": _ratio(surviving, known),
+        "recall_with_tray_vs_client_known": _ratio(surviving + tray_found, known),
         "placement": {"placed": placed, "bubble_moved": moved,
                       "bubble_moved_share": _ratio(moved, placed),
-                      "bubble_mm_median": statistics.median(moves_mm) if moves_mm else None,
-                      "bubble_mm_p90": _pct(moves_mm, 0.9),
+                      "moved_bubble_mm_median": statistics.median(moves_mm) if moves_mm else None,
+                      "moved_bubble_mm_p90": _pct(moves_mm, 0.9),
+                      # moved_* are over MOVED rows only; the far share's
+                      # denominator is `placed`.
                       "bubble_far_share": _ratio(far, placed),
                       "anchor_nudged": nudged, "anchor_repointed": repointed,
+                      "anchor_measured": anchor_measured,
                       "anchor_unmeasurable": anchor_unmeasurable},
-        "review_minutes_median": statistics.median(times) if times else None,
+        "n_timed": len(times), "time_not_measured": len(drawings) - len(times),
+        "review_minutes_lower_bound_median": statistics.median(times) if times else None,
     }
 
 
 def reweight(by_group: Dict[str, Optional[float]], pool: Dict[str, int]) -> Optional[float]:
     """Pooled value at the selection POOL's great:problem mix (a 60/40 pick is
-    not representative). None if any group lacks the value, or the pool has no
-    weight for a group present: an absent group would silently re-weight the
-    rest."""
-    weights = {g: pool.get(g) for g in by_group}
-    if (not by_group or any(v is None for v in by_group.values())
-            or any(not w for w in weights.values())):
+    not representative). Iterates the POOL: None if by_group lacks a pool group
+    with weight, has None for one, or carries a surprise group the pool does
+    not weight, since a silently absent group would re-weight the rest.
+    Weighting a per-row ratio by drawing counts is an approximation."""
+    groups = [g for g, w in pool.items() if w]
+    if (not groups or any(by_group.get(g) is None for g in groups)
+            or any(g not in groups for g in by_group)):
         return None
-    total = sum(weights.values())
-    return sum(v * weights[g] for g, v in by_group.items()) / total
+    return sum(by_group[g] * pool[g] for g in groups) / sum(pool[g] for g in groups)

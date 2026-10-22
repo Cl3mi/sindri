@@ -60,13 +60,23 @@ that way. Per group:
 - precision = confirmed / (confirmed + edited + phantom)
 - unflagged precision: the same, restricted to rows that were not flagged
 - flag precision = (edited + phantom among flagged) / flagged
-- recall lower bound = surviving balloons / (surviving + missed)
+- recall against what the client knows, one shared denominator
+  known = surviving + tray found + missed (surviving = confirmed + edited; tray
+  found = suggestion confirmed + edited): `recall_shipped_vs_client_known` =
+  surviving / known, `recall_with_tray_vs_client_known` = (surviving + tray
+  found) / known. Both are UPPER bounds whenever the client's manual additions
+  are incomplete; the gold cross-check's 'neither found' covers the rest.
+- silence: `confirmed_explicit` (the client touched the row) vs
+  `confirmed_silent`; precision includes silent confirmations and the digest
+  shows the split
 - tray accuracy: suggestion outcome counts
-- review time per drawing: the sum of `t_ms` gaps within a session from
-  `events.jsonl`. A gap > 5 min counts as idle, and a decrease starts a new
+- review time per drawing, a LOWER BOUND (`review_minutes_lower_bound_median`,
+  with `n_timed` / `time_not_measured`): the sum of `t_ms` gaps within a
+  session from the compacted net `events.jsonl` (the seal drops retracted pairs
+  and their timing, the lead-in and the tail before Approve). A gap > 5 min counts as idle, and a decrease starts a new
   session.
 - placement: the share of bubbles moved; median and p90 of the displacement in
-  mm; the share > 5 mm; anchors nudged and repointed
+  mm over moved bubbles only; the share > 5 mm; anchors nudged and repointed
 
 ## Gold cross-check (does not change a grade)
 
