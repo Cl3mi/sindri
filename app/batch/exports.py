@@ -187,6 +187,10 @@ class Exports:
         except UnknownDocument:
             return base
         batch = self.repo.get_batch(doc["batch_id"])
+        if batch.get("campaign"):
+            # Campaign drawings are graded, never shipped (plan C1 decision 11).
+            return {**base, "batch": batch["name"], "state": doc["state"],
+                    "skip_reason": "campaign"}
         folder_parts = [windows_safe_component(batch["name"])]
         if doc["rel_path"]:
             folder_parts += [windows_safe_component(p) for p in doc["rel_path"].split("/") if p]

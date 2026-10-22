@@ -2,7 +2,8 @@
 // reopening a drawing from its link, and Finish & Export.
 
 import { state, on, restoreSession, clearSession, undo, redo,
-         canUndo, canRedo, progress, canFinish } from './state.js';
+         canUndo, canRedo, progress, canFinish, apply, opSetNote } from './state.js';
+import { approvedCount, finishCopy, isCampaignDoc, noteToCommit } from './campaign.js';
 import { getDocument, cancelDocument, openDocument, deleteDocument, downloadExport,
          health, postEvents, beaconEvents, sealSession, createBatch, getBatch,
          startBatch, discardBatch, setIncluded, listDocuments, moveToFront,
@@ -27,6 +28,7 @@ import {
   initThemeAndDensity, initDragDrop,
 } from './ui.js';
 import { initShortcuts } from './shortcuts.js';
+import { settleReasonPrompt } from './reasons.js';
 import { installAuthGate, submitToken } from './auth.js';
 
 // The drawing this tab is waiting on (staged or extracting). Extraction runs
@@ -48,6 +50,22 @@ let finishing = false;    // a Finish is running: never switch drawings under it
 let pendingOpen = null;   // id
 let closePendingToast = null;
 let workList = null;      // initWorkList()'s handle; Task 13 reads it back via workList.getDocs()
+let routedDoc = null;     // { id, campaign } of the last GET /api/documents/{id} routed (currentDocIsCampaign)
+let noteSid = null;       // the drawing open when #doc-note took focus: its text belongs to that one
+
+// Journal the note box's text onto the drawing it was typed on, if it
+// changed (campaign.js noteToCommit). Blur alone is not enough: Back/Forward
+// keeps the box focused, a reload or close never blurs it, and Finish's
+// snapshot must already hold it. So every place that leaves or seals a
+// drawing calls this first, while state.sessionId is still that drawing.
+// apply() records into journal.pending synchronously, which is what lets
+// pagehide's beacon carry it.
+function commitNote() {
+  const note = document.getElementById('doc-note');
+  if (!note) return;
+  const text = noteToCommit(noteSid, state.sessionId, note.value, state.note);
+  if (text !== null) apply(opSetNote(text));
+}
 let stagingView = null;   // initStagingView()'s handle (this task)
 // A single-drawing import's id, once started, while it is still on its way
 // (design §3 "batch of one"): if the reviewer stays on the work list and
@@ -85,7 +103,15 @@ const finisher = createFinisher({
   seal: (sid, body) => sealSession(sid, body),
   // Remembers which file of a revision already arrived, so a retry after a
   // failed PDF does not download the spreadsheet a second time.
-  exportAll: createExporter((sid, kind, revision) => downloadExport(sid, kind, revision)),
+  // A campaign drawing is approved, never exported (campaign design §3):
+  // the seal is the whole act, and the server refuses its export anyway.
+  // Ordinary drawings keep both downloads.
+  exportAll: (() => {
+    const exporter = createExporter((sid, kind, revision) => downloadExport(sid, kind, revision));
+    // Asked of the SNAPSHOT's drawing, not of whatever is open by the time
+    // the seal returns.
+    return (snapshot, revision) => (docIsCampaign(snapshot.sessionId) ? Promise.resolve() : exporter(snapshot, revision));
+  })(),
 });
 
 // Optional shared access token (batch design §1, decision 23). Installed at
@@ -142,6 +168,13 @@ function init() {
   wireFileInputs();
   wireExtractionControls();
   wireFinish();
+  // The reviewer's per-drawing note (campaign design §3), journaled as
+  // set_note on blur rather than per keystroke: the server keeps only the
+  // latest net text anyway, and one event per pause is all grading reads.
+  // Focus records WHICH drawing the text is being typed for (commitNote).
+  const note = document.getElementById('doc-note');
+  note?.addEventListener('focus', () => { noteSid = state.sessionId; });
+  note?.addEventListener('blur', commitNote);
   wireJournal();
   wireUndoRedo();
   pingHealth();
@@ -215,6 +248,19 @@ const router = createSerialRunner(routeOnce);
 function routeFromHash() { return router.run(); }
 
 async function routeOnce() {
+  // An open reason prompt holds an edit or delete that is not applied yet
+  // (apply-on-resolution, reasons.js). Every guard below reads journal state
+  // -- flushBeforeLeaving's pending count, and openForReview's resume, which
+  // DISCARDS unflushed events -- so the held op must be in the journal
+  // first. Awaited, not just called: resolving the popover only queues
+  // commitWithReason's continuation, and settleReasonPrompt's promise is
+  // what resolves once the op has actually been applied. (askReason's own
+  // hashchange listener also dismisses it, but go() writes the hash with
+  // replaceState, which fires no hashchange -- decision 10.)
+  await settleReasonPrompt();
+  // Same reason for an un-blurred note: state.sessionId is still the drawing
+  // being left, which is the one its text belongs to.
+  commitNote();
   const route = currentRoute();
   // A Finish in flight is mid-seal: finisher.run() reads journal.writer at
   // the top and again when it posts the seal, and opening ANOTHER drawing
@@ -309,6 +355,45 @@ function updateReviewBarInfo() {
   const posEl = document.getElementById('rb-position');
   if (batchEl) batchEl.textContent = `Batch "${batchName}"`;
   if (posEl) posEl.textContent = idx >= 0 ? `${idx + 1} of ${order.length}` : '';
+  syncCampaignChrome();
+}
+
+// Approve vs Finish & Export, the note box and the "N / M approved" counter
+// all follow ONE question -- is the open drawing a campaign drawing -- so
+// they are set together, from every place that question's answer can change
+// (a new session, any review change, the review bar being shown).
+function syncCampaignChrome() {
+  const campaign = currentDocIsCampaign();
+  const copy = finishCopy(campaign);
+  const label = document.getElementById('finish-label');
+  if (label && label.textContent !== copy.label) label.textContent = copy.label;
+  const btn = document.getElementById('finish-btn');
+  // A blocked button's title names the outstanding rows (wireFinish); only
+  // a finishable one carries the promise of what Finish/Approve does.
+  if (btn && canFinish()) btn.title = copy.title;
+  const note = document.getElementById('doc-note');
+  if (note) {
+    note.hidden = !campaign || !state.sessionId;
+    // Never overwrite what the reviewer is typing -- unless the drawing
+    // changed under a focused box (Back/Forward), when the text on screen
+    // is the previous drawing's and must not be shown as this one's.
+    // Drop focus rather than re-bind: restoreSession emits 'session'/'change'
+    // with state.note '' BEFORE replaying the new drawing's set_note, so a
+    // re-bound focused box would hold '' and its next blur erase that note.
+    // This blur's commitNote() is a no-op (noteSid is still the old drawing).
+    if (document.activeElement !== note || state.sessionId !== noteSid) {
+      note.value = state.note || '';
+      if (document.activeElement === note) note.blur();
+    }
+  }
+  const appr = document.getElementById('rb-approved');
+  if (appr) {
+    const { approved, total } = campaign
+      ? approvedCount(worklistDocsCache(), currentBatchId()) : { approved: 0, total: 0 };
+    // total 0 = the batch is not in the work-list cache yet; "0 / 0" would lie.
+    appr.hidden = !campaign || total === 0;
+    if (!appr.hidden) appr.textContent = `${approved} / ${total} approved`;
+  }
 }
 
 // Batch-of-one auto-open (design §3, decision 17 -- one drawing is still a
@@ -357,6 +442,7 @@ function watchAutoOpen() {
 }
 
 async function routeDocument(doc) {
+  routedDoc = { id: doc.id, campaign: doc.campaign ?? null };
   waitingOn = { id: doc.id, batchId: doc.batch_id, fileName: doc.file_name, pages: doc.pages };
   if (doc.state === 'staged') {
     setReviewBarVisible(false);
@@ -421,7 +507,12 @@ function backToEmptyOrCurrent() {
 
 // ===== Header / file chip ============================================
 function wireHeader() {
-  document.getElementById('file-close').addEventListener('click', () => {
+  document.getElementById('file-close').addEventListener('click', async () => {
+    // The beacon below sends journal.pending and clearSession() then ends
+    // the drawing: an op the reason prompt still holds must be applied
+    // first, or it is never journaled at all.
+    await settleReasonPrompt();
+    commitNote();   // likewise an un-blurred note, before the beacon below
     if (!confirm('Close this drawing? Your review is saved and reopens from its link.')) return;
     // clearSession() below wipes sessionId/writer out of the journal's
     // reach (start() on the NEXT drawing resets it anyway) -- so any event
@@ -448,6 +539,7 @@ function wireHeader() {
       chip.hidden = false;
       name.textContent = state.fileName || 'drawing.pdf';
       document.getElementById('finish-btn').disabled = false;
+      syncCampaignChrome();
     } else {
       chip.hidden = true;
       const fin = document.getElementById('finish-btn');
@@ -455,7 +547,10 @@ function wireHeader() {
       // The 'change' handler skips a cleared session, so reset here or the
       // next drawing opens with the last one's "N flagged rows" state.
       fin.classList.remove('blocked');
-      fin.title = 'Seal the review and export Excel + ballooned PDF';
+      fin.title = finishCopy(false).title;
+      // Hides the note box and counter and puts the ordinary label back, so
+      // a closed campaign drawing leaves no Approve chrome behind.
+      syncCampaignChrome();
     }
   });
 }
@@ -482,6 +577,18 @@ function wireFileInputs() {
 
 async function handleFile(file) {
   if (!file) return;
+  // Drag-and-drop listens on the whole window, so no [data-campaign-hide]
+  // can remove it; say plainly why nothing happens instead of uploading
+  // into a guaranteed 403 (plan C1 decision 10).
+  if (document.body.classList.contains('campaign-only')) {
+    toast({ kind: 'warn', title: 'Uploads are off here', msg: 'This instance is for reviewing the drawings already in the list.' });
+    return;
+  }
+  // Before /api/health answers we cannot know whether uploads are off.
+  if (document.body.classList.contains('health-pending')) {
+    toast({ kind: 'warn', title: 'Still connecting to the server', msg: 'Try again in a moment.' });
+    return;
+  }
   // One waiting drawing per tab: a second upload would orphan the first,
   // which only its link could ever reach again (B3 adds a list). Each
   // refusal names a control the reviewer actually has on screen.
@@ -883,8 +990,17 @@ async function openForReview(id, { skipFlush = false } = {}) {
     setReviewBarVisible(true);
     return;
   }
-  // Taken synchronously, before any await, so a second flush tick cannot
-  // start a second open of the same waiting drawing. "Stay" re-sets it.
+  // Reached without routeOnce too (scheduleFlush's 'open'/'open_stale', the
+  // file-close handler's pendingOpen), and journal.resume() below wipes
+  // whatever is unflushed -- so a held reason-prompt op is applied (and
+  // thereby flushed or confirmed-away) before anything decides to leave.
+  // Below the no-op return above: re-asserting the drawing already open
+  // must not dismiss a prompt the reviewer is still reading.
+  await settleReasonPrompt();
+  // Taken before any await that yields to a TASK (settleReasonPrompt above
+  // is microtask-only, so no flush tick can run in between), so a second
+  // flush tick cannot start a second open of the same waiting drawing.
+  // "Stay" re-sets it.
   if (pendingOpen === id) {
     pendingOpen = null;
     closePendingToast?.();
@@ -1059,7 +1175,22 @@ function wireJournal() {
   });
   // pagehide, not beforeunload: it also fires on mobile tab discards.
   window.addEventListener('pagehide', () => {
-    if (journal.active) beaconEvents(journal.sessionId, journal.writer, journal.pending);
+    // A reload or close never blurs the note box; committing it here puts
+    // its set_note in journal.pending before the first beacon reads it.
+    commitNote();
+    if (!journal.active) return;
+    const { sessionId, writer } = journal;
+    const sent = journal.pending.length;
+    beaconEvents(sessionId, writer, journal.pending);
+    // A pagehide listener cannot await. Beaconing first keeps the common
+    // case unchanged; the settleReasonPrompt() call below resolves any held
+    // prompt synchronously, its op is applied in the microtask checkpoint
+    // right after this listener returns (before the page goes), and the
+    // `.then` sends that op in a second beacon. Append is by seq server-side,
+    // so the overlap double-sends at worst, never drops.
+    settleReasonPrompt().then(() => {
+      if (journal.pending.length > sent) beaconEvents(sessionId, writer, journal.pending);
+    });
   });
   document.getElementById('banner-lagging-retry')?.addEventListener('click', () => scheduleFlush(0));
 }
@@ -1167,13 +1298,20 @@ function wireFinish() {
     const p = progress();
     btn.classList.toggle('blocked', !canFinish());
     btn.title = canFinish()
-      ? 'Seal the review and export Excel + ballooned PDF'
+      ? finishCopy(currentDocIsCampaign()).title
       : `${p.outstanding} flagged row${p.outstanding === 1 ? '' : 's'} still to resolve`;
+    syncCampaignChrome();
   });
   btn.addEventListener('click', finish);
 }
 
 async function finish() {
+  // Before the snapshot: an edit still held by the reason prompt must be in
+  // the sealed revision, not applied a microtask after it was copied. Only
+  // microtasks pass here, so a second click (its own task) cannot slip in
+  // before `finishing` and btn.disabled are set below.
+  await settleReasonPrompt();
+  commitNote();   // a note still being typed is part of what is sealed
   const btn = document.getElementById('finish-btn');
   // A copy, so the sealed rows and the exported files describe one moment
   // even if an op lands while the run is awaiting the server.
@@ -1204,7 +1342,10 @@ async function finish() {
               msg: `${n} flagged row${n === 1 ? '' : 's'} still to resolve — showing them now.` });
       document.querySelector('#filter-pills button[data-filter="review"]')?.click();
     } else if (res.status === 'done') {
-      toast({ kind: 'ok', title: 'Finished', msg: `Review sealed as revision r${res.revision}` });
+      // Read now: go() below moves state.sessionId to the next drawing.
+      const campaign = currentDocIsCampaign();
+      toast({ kind: 'ok', title: campaign ? 'Approved' : 'Finished',
+              msg: `Review sealed as revision r${res.revision}` });
       // The browser drive's finding: the work list's own 3 s poll window
       // can still list THIS drawing as ready/in_review right here -- the
       // server has just sealed it, but nothing has told the client cache
@@ -1216,6 +1357,9 @@ async function finish() {
       recentlyFinished.add(snapshot.sessionId);
       workList?.markDoc(snapshot.sessionId, { state: 'finished' });
       await workList?.refresh(true);
+      // The counter reads the cache just refreshed; nothing else re-syncs
+      // it if the chain below stays on this drawing (extracting / done).
+      syncCampaignChrome();
       // finisher.run() returns only { status, revision } (finish.js) -- the
       // snapshot taken at the top of finish() is what names which drawing
       // this run was for. currentBatchId() still reads state.sessionId,
@@ -1235,7 +1379,12 @@ async function finish() {
       } else {
         // B4 builds mass export; until then the work list's per-drawing
         // export buttons (already shipped) are what "Export batch" means.
-        toast({ kind: 'ok', title: 'Batch complete', msg: 'Export batch from the work list.' });
+        // A campaign has nothing to export (campaign design §3), so its end
+        // says what the reviewer can still do instead.
+        toast({ kind: 'ok',
+                title: campaign ? 'All drawings approved — thank you' : 'Batch complete',
+                msg: campaign ? 'You can still reopen any drawing from the list.'
+                              : 'Export batch from the work list.' });
         go(worklistUrl());
       }
     }
@@ -1300,6 +1449,21 @@ function setReviewBarButtonsDisabled(disabled) {
 
 function currentBatchId() {
   return worklistDocsCache().find((d) => d.id === state.sessionId)?.batch_id || null;
+}
+
+// The work-list row is the source of truth (same list as the review bar);
+// routeDocument's own GET is the fallback for a #/doc link opened before
+// the work list's first poll has landed -- without it that drawing would
+// offer "Finish & Export" and try an export the server refuses.
+function docIsCampaign(id) {
+  if (!id) return false;
+  const cached = worklistDocsCache().find((d) => d.id === id);
+  if (cached) return isCampaignDoc(cached);
+  return routedDoc?.id === id && isCampaignDoc(routedDoc);
+}
+
+function currentDocIsCampaign() {
+  return docIsCampaign(state.sessionId);
 }
 
 // A minimal in-page combobox: a text input filtered by filterJump
@@ -1448,8 +1612,17 @@ async function pingHealth() {
   if (!data) {
     pill.classList.remove('ok'); pill.classList.add('warn');
     label.textContent = 'API unreachable';
+    // Still unknown whether this instance is campaign-only, so the chrome
+    // stays hidden (health-pending) and we ask again.
+    setTimeout(pingHealth, 5000);
     return;
   }
+  // A campaign-only instance 403s every upload, bulk and export route
+  // (plan C1 decision 10); hide their controls rather than show buttons
+  // that can only fail ([data-campaign-hide], components.css).
+  document.body.classList.toggle('campaign-only', !!data.campaign_only);
+  document.body.classList.remove('health-pending');
+  pill.classList.remove('warn');
   pill.classList.add('ok');
   const backend = data.ocr_backend_active || data.backend || 'OCR';
   const short = String(backend).replace('Backend','');

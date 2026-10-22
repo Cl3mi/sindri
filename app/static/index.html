@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="/styles/layout.css" />
   <link rel="stylesheet" href="/styles/components.css" />
 </head>
-<body>
+<body class="health-pending">
 
 <!-- SVG icon sprite (line-stroke, 1.5px, currentColor) -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -59,6 +59,7 @@
       <a href="#/" class="btn ghost">← Work list</a>
       <span id="rb-batch">Batch "…"</span>
       <span id="rb-position">1 of 1</span>
+      <span id="rb-approved" hidden></span>
       <button class="btn ghost" id="rb-prev">‹ Prev</button>
       <button class="btn ghost" id="rb-skip">Skip for now ›</button>
       <button class="btn ghost" id="rb-jump">Jump to… (Ctrl+K)</button>
@@ -88,8 +89,10 @@
   <!-- ===== WORK LIST (batch design §3) ========================= -->
   <section id="screen-worklist" hidden>
     <div class="wl-toolbar">
-      <button class="btn primary" id="wl-import"><svg class="icon" width="14" height="14"><use href="#i-plus"/></svg> Import</button>
-      <button class="btn ghost" id="wl-import-folder"><svg class="icon" width="14" height="14"><use href="#i-plus"/></svg> Import folder</button>
+      <!-- data-campaign-hide: controls a SINDRI_CAMPAIGN_ONLY instance 403s
+           (plan C1 decision 10); hidden under body.campaign-only. -->
+      <button class="btn primary" id="wl-import" data-campaign-hide><svg class="icon" width="14" height="14"><use href="#i-plus"/></svg> Import</button>
+      <button class="btn ghost" id="wl-import-folder" data-campaign-hide><svg class="icon" width="14" height="14"><use href="#i-plus"/></svg> Import folder</button>
       <div class="search" id="wl-search-wrap">
         <svg width="13" height="13"><use href="#i-search"/></svg>
         <input type="search" id="wl-search" placeholder="Search by file name…" autocomplete="off" />
@@ -114,19 +117,19 @@
       <button class="btn ghost" id="wl-needs-me">Needs me</button>
       <div class="spacer"></div>
       <span id="wl-queue-header" class="wl-queue-header">Queue idle</span>
-      <button class="btn ghost" id="wl-pause-resume">Pause</button>
+      <button class="btn ghost" id="wl-pause-resume" data-campaign-hide>Pause</button>
     </div>
     <table class="wl-table">
       <thead>
         <tr>
-          <th class="check"><input type="checkbox" id="wl-select-all" /></th>
+          <th class="check" data-campaign-hide><input type="checkbox" id="wl-select-all" /></th>
           <th>File</th><th>Batch</th><th>State</th><th>Flagged</th><th>Unchecked</th>
           <th>Last change</th><th>Badges</th>
         </tr>
       </thead>
       <tbody id="wl-body"></tbody>
     </table>
-    <div class="wl-bulk" id="wl-bulk" hidden>
+    <div class="wl-bulk" id="wl-bulk" data-campaign-hide hidden>
       <span id="wl-bulk-count">0 selected</span>
       <button class="btn ghost" id="wl-bulk-front">Move to front</button>
       <button class="btn ghost" id="wl-bulk-cancel">Cancel</button>
@@ -222,7 +225,9 @@
         <div id="rubber-band"></div>
 
         <div id="plan-empty">
-          <div class="inner">
+          <!-- The whole upload prompt, not just its button: "Drop a PDF
+               anywhere" is a promise a campaign-only instance cannot keep. -->
+          <div class="inner" data-campaign-hide>
             <div class="title">Upload a technical drawing</div>
             <div class="hint">Drop a PDF anywhere — or use the button below.</div>
             <label class="btn primary file-btn" style="margin-top:14px">
@@ -257,7 +262,7 @@
                 <div class="title" id="ex-title">Extracting…</div>
                 <div class="hint" id="ex-detail">Starting…</div>
               </div>
-              <button class="btn ghost" id="ex-stop" title="Stop extraction">
+              <button class="btn ghost" id="ex-stop" title="Stop extraction" data-campaign-hide>
                 <svg class="icon" width="14" height="14"><use href="#i-x"/></svg>
                 Stop
               </button>
@@ -296,10 +301,13 @@
           <span id="bulk-accept-label">Accept all</span>
         </button>
 
+        <textarea id="doc-note" rows="1" maxlength="2000" hidden
+                  placeholder="Note on this drawing (optional) — e.g. “we never balloon chamfers”"></textarea>
+
         <button class="btn primary" id="finish-btn" disabled
                 title="Seal the review and export Excel + ballooned PDF">
           <svg class="icon"><use href="#i-download"/></svg>
-          Finish &amp; Export
+          <span id="finish-label">Finish &amp; Export</span>
         </button>
       </div>
 

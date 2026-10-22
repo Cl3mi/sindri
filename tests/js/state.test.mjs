@@ -119,3 +119,48 @@ test('setSession() and clearSession() reset readOnly: a fresh or closed drawing 
   S.clearSession();
   assert.equal(S.state.readOnly, false);
 });
+
+// Campaign C1 (plan Task 8): the journal's move_target / set_note / reasons,
+// mirrored op for op so a restored review rebuilds what replay.py seals.
+test('opMoveTarget moves the anchor, undoes, and emits move_target', () => {
+  load([row('a', 0, 0)]);
+  const op = S.opMoveTarget('a', [5, 5, 20, 20]);
+  S.apply(op);
+  assert.deepEqual(S.state.rows[0].target_region, [5, 5, 20, 20]);
+  assert.deepEqual(op.event(), { type: 'move_target', id: 'a', box: [5, 5, 20, 20] });
+  S.undo();
+  assert.deepEqual(S.state.rows[0].target_region, [0, 0, 10, 10]);
+});
+
+test('opSetNote sets the drawing note and undo restores the old one', () => {
+  load([row('a', 0, 0)]);
+  assert.equal(S.state.note, '');
+  const op = S.opSetNote('we never balloon chamfers');
+  S.apply(op);
+  assert.equal(S.state.note, 'we never balloon chamfers');
+  assert.deepEqual(op.event(), { type: 'set_note', text: 'we never balloon chamfers' });
+  S.undo();
+  assert.equal(S.state.note, '');
+});
+
+test('a reason rides on edit_cell and delete_row only when given', () => {
+  load([row('a', 0, 0)]);
+  assert.equal('reason' in S.opEditCell('a', 'nominal', '2').event(), false);
+  const withReason = S.opEditCell('a', 'nominal', '2', 'misread_digit');
+  S.apply(withReason);
+  assert.equal(withReason.event().reason, 'misread_digit');
+  assert.equal('reason' in S.opDeleteRow('a').event(), false);
+  assert.equal(S.opDeleteRow('a', 'duplicate').event().reason, 'duplicate');
+});
+
+test('opFromEvent restores move_target, set_note and reasons', () => {
+  load([row('a', 0, 0)]);
+  S.restoreSession({ session_id: 's', image_url: '', rows: [row('a', 0, 0)], notes: null }, [
+    { seq: 1, type: 'move_target', id: 'a', box: [1, 1, 9, 9] },
+    { seq: 2, type: 'set_note', text: 'n' },
+    { seq: 3, type: 'edit_cell', id: 'a', field: 'nominal', old: '1', new: '3', reason: 'other' },
+  ]);
+  assert.deepEqual(S.state.rows[0].target_region, [1, 1, 9, 9]);
+  assert.equal(S.state.note, 'n');
+  assert.equal(S.state.rows[0].nominal, '3');
+});

@@ -21,6 +21,7 @@ from starlette.types import Scope
 from starlette.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StringConstraints
 from app import auth
+from app.campaign import policy as campaign_policy
 from app.models import Characteristic
 from app.pipeline.extract import extract
 from app.pipeline.ocr import get_backend, backend_status
@@ -125,6 +126,17 @@ async def _token_gate(request: Request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def _campaign_only_gate(request: Request, call_next):
+    """The public campaign instance serves the review and nothing else
+    (plan C1 decision 10) -- no upload, export or queue control, whatever
+    the UI shows."""
+    if campaign_policy.campaign_only() and not campaign_policy.allowed(
+            request.method, request.url.path):
+        return JSONResponse({"detail": "not available on this instance"}, status_code=403)
+    return await call_next(request)
+
+
 class AuthRequest(BaseModel):
     token: str
 
@@ -205,7 +217,16 @@ def _doc_view(doc_id: str) -> dict:
             "final_revision": doc["final_revision"],
             "exported_revision": doc["exported_revision"],
             "queue_position": rt.repo.queue_position(doc_id),
-            "progress": rt.worker.progress_of(doc_id)}
+            "progress": rt.worker.progress_of(doc_id),
+            "campaign": rt.repo.campaign_of(doc_id)}
+
+
+def _refuse_campaign(rt, doc_id: str, action: str) -> None:
+    """Campaign drawings are the client's to grade, never ours to change or
+    ship (plan C1 decision 11): refused on every instance, campaign-only or
+    not, so the operator's own instance cannot export or discard one either."""
+    if rt.repo.campaign_of(doc_id) is not None:
+        raise InvalidTransition(f"campaign drawings cannot be {action}")
 
 
 class ReadRegionRequest(BaseModel):
@@ -289,6 +310,7 @@ def health():
         log.warning("health: free disk space unavailable: %s", type(e).__name__)
         status["disk_free_mb"] = None
     status["min_free_mb"] = rt.uploads.min_free_bytes // batch_uploads.MIB
+    status["campaign_only"] = campaign_policy.campaign_only()
     return status
 
 
@@ -497,6 +519,9 @@ def list_documents(batch_id: Optional[str] = None, state: Optional[str] = None,
             "allowed_out_of_scope": bool(r["allowed_out_of_scope"]),
             "final_revision": r["final_revision"], "exported_revision": r["exported_revision"],
             "updated_at": r["updated_at"],
+            # The review screen picks Approve vs Finish & Export from this
+            # list (main.js currentDocIsCampaign), not from a second fetch.
+            "campaign": r["campaign"],
         })
     summary = rt.repo.queue_summary()
     summary["eta_seconds"] = rt.worker.eta_seconds(summary["queued"])
@@ -544,6 +569,7 @@ def reextract_document(doc_id: str):
     discards an untouched, unsealed session outright (app/review/store.py)."""
     work = _doc_dir(doc_id)
     rt = runtime()
+    _refuse_campaign(rt, doc_id, "re-extracted")
     doc = rt.repo.get(doc_id)
     if rt.worker.current == doc_id:
         raise InvalidTransition(
@@ -634,6 +660,10 @@ def delete_document(doc_id: str):
     the files from being pulled out from under it.)"""
     work = _doc_dir(doc_id)
     rt = runtime()
+    # DELETE is idempotent: a second delete of a gone row must still answer
+    # 200, and campaign_of raises on a missing row, so guard only live rows.
+    if rt.repo.has_document(doc_id):
+        _refuse_campaign(rt, doc_id, "removed")
     if rt.worker.current == doc_id:
         raise InvalidTransition(
             "the extraction is still stopping; remove the drawing once it has")
@@ -820,6 +850,7 @@ def export_document(doc_id: str, kind: str, rev: Optional[int] = None):
         raise HTTPException(status_code=404, detail="unknown export kind")
     rt = runtime()
     doc = rt.repo.get(doc_id)
+    _refuse_campaign(rt, doc_id, "exported")
     if doc["state"] == "purged":
         raise HTTPException(status_code=410, detail="drawing was purged after retention")
     if rev is None:

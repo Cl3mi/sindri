@@ -14,7 +14,7 @@ from pathlib import Path
 
 APP = Path(__file__).resolve().parents[2] / "app"
 # Every product package that ships to the client.
-PRODUCT_DIRS = [APP / "review", APP / "batch"]
+PRODUCT_DIRS = [APP / "review", APP / "batch", APP / "campaign"]
 
 
 def _imports_app_eval(tree: ast.AST) -> bool:

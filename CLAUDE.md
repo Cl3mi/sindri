@@ -292,6 +292,32 @@ the batch/async-review project (B1-B4); HITL phase 2 (forcing, grading, dev
 validation, return bundle) is next. Suite at close: **1946 passed, 2
 skipped**; node 272; guard 32/0.
 
+**REVIEW CAMPAIGN C1** (2026-10-22, `docs/plans/2026-10-21-campaign-c1-review-plan.md`).
+A campaign is a batch with `batch.campaign` set (migration 6): drawings
+loaded from stored dumps by `app.campaign.load` (operator bundle from
+`campaign_build.py`: today's policy re-applied, balloons re-placed; picks
+from `share_select`, whose `--allow-train` lifts the dev/test-only rule for
+the campaign alone), reviewed in the hosted app, Approved (seal, no
+export), and packed by `app.campaign.pull` into the protected root. The
+loader validates every entry before its first write (dir name = 8-hex
+`doc_hash`, no client value in any refusal), copies files before the row,
+and re-queues a row an interrupted load left `staged`; pull writes
+`<out>.partial` and renames only once `index.json` is in. Export,
+re-extract and remove refuse campaign drawings on every instance, and
+`SINDRI_CAMPAIGN_ONLY=1` is a positive allowlist for GETs as well as
+writes — `test_policy.py` fails until a new `/api` route is classified.
+The journal gained `move_target` (the anchor box, dragged by its handles),
+`set_note` (bound to the drawing it was typed on, committed on blur and on
+every way out) and closed reasons on edit/delete (`app/static/js/reasons.js`,
+phase 2's keys; a digit picks a chip only outside an editor). Balloon and
+anchor drags need 3 screen px before anything is journaled, so a click is
+never graded as a correction. A table re-render now keeps the cell being
+edited (`table.js`), or the keystroke after a reason prompt was lost.
+Grading is plan C2. VPS runbook: `docs/deploy/vps.md`. The page starts
+`body.health-pending`, which hides the campaign-only chrome (and refuses a
+dropped file) until `/api/health` answers, retrying every 5 s, so a cold
+server never flashes Import at the client.
+
 **`read-lora-v1` IS NOW HARMFUL UNDER THE SHIPPED POLICY — deployment CLOSED**
 (2026-10-05, `docs/plans/2026-10-05-read-adapter-repricing-result.md`;
 DERIVED, `--reapply-policy` on stored dev dumps, pad 6). The scoped adapter's

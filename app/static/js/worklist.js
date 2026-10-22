@@ -134,8 +134,10 @@ function row(d) {
   const link = document.createElement('a');
   link.href = docUrlFor(d);
   link.textContent = d.file_name;
+  // The selection column only feeds the bulk bar, which a campaign-only
+  // instance hides (index.html's header cell carries the same attribute).
   tr.innerHTML = `
-    <td class="check"><input type="checkbox" class="wl-row-check" ${checked} /></td>
+    <td class="check" data-campaign-hide><input type="checkbox" class="wl-row-check" ${checked} /></td>
     <td class="wl-file"></td>
     <td class="wl-batch"></td>
     <td><span class="state-chip state-${d.state}${d.state === 'purged' ? ' state-chip-muted' : ''}">${stateLabel(d.state)}</span></td>

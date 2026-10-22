@@ -59,16 +59,25 @@ function randomSteps(steps, ids, log) {
     else if (r < 0.45) {
       const id = pick(anyIds); const f = pick(['char_type', 'nominal', 'upper_tol', 'lower_tol']);
       const v = pick(['', '1', '2', 'Diameter', '+0.1']);
-      S.apply(S.opEditCell(id, f, v)); label = `edit ${id}.${f}=${v}`;
+      const reason = pick([undefined, undefined, 'misread_digit', 'other']);
+      S.apply(S.opEditCell(id, f, v, reason)); label = `edit ${id}.${f}=${v}`;
     } else if (r < 0.55) {
       const id = pick(anyIds); S.apply(S.opMoveRow(id, [Math.round(rnd() * 100), 7])); label = `move ${id}`;
-    } else if (r < 0.65) {
-      const id = pick(anyIds); S.apply(S.opDeleteRow(id)); label = `del ${id}`;
-    } else if (r < 0.72) {
+    } else if (r < 0.62) {
+      const id = pick(anyIds);
+      S.apply(S.opDeleteRow(id, pick([undefined, 'duplicate', 'wrong_region'])));
+      label = `del ${id}`;
+    } else if (r < 0.67) {
       const id = 'm' + (addN++);
       S.apply(S.opAddRow({ ...row(id), suggested: false, reviewed: false, source: 'manual' }));
       label = `add ${id}`;
-    } else if (r < 0.80) {
+    } else if (r < 0.72) {
+      const id = pick(anyIds); const x = Math.round(rnd() * 400);
+      S.apply(S.opMoveTarget(id, [x, 5, x + 20, 30])); label = `anchor ${id}`;
+    } else if (r < 0.76) {
+      const t = pick(['', 'policy', 'we never balloon chamfers']);
+      S.apply(S.opSetNote(t)); label = `note ${t}`;
+    } else if (r < 0.82) {
       const sel = anyIds.filter(() => rnd() < 0.4); S.apply(S.opConfirmSuggestions(sel)); label = `confirm ${sel}`;
     } else {
       const sel = anyIds.filter(() => rnd() < 0.4); const t = rnd() < 0.6;
@@ -94,6 +103,7 @@ for (let c = 0; c < N; c++) {
   let lastSeq = j.lastSeq;
   let restoredRows = null;
   let restoredReviewed = null;
+  let restoredNote = null;
   if (RESUME) {
     // Simulated reload: rebuild from what the server holds, then keep going
     // -- including undos that reach back into restored operations. lastSeq
@@ -104,6 +114,7 @@ for (let c = 0; c < N; c++) {
       netEvents(before));
     restoredRows = JSON.parse(JSON.stringify(S.state.rows));
     restoredReviewed = S.state.rows.filter((r) => r.reviewed).map((r) => r.id);
+    restoredNote = S.state.note;
     const j2 = createJournal({ send: async () => ({ contiguous: 0 }), now: () => 0, wallNow: () => '' });
     j2.resume('s' + c, 'w', lastSeq, pairs);
     const off2 = S.on('op', (e) => j2.record(e));
@@ -115,8 +126,9 @@ for (let c = 0; c < N; c++) {
   cases.push({
     case: c, log, proposal, events,
     events_before_reload: before, last_seq: lastSeq,
-    restored_rows: restoredRows, restored_reviewed: restoredReviewed,
+    restored_rows: restoredRows, restored_reviewed: restoredReviewed, restored_note: restoredNote,
     rows: JSON.parse(JSON.stringify(S.state.rows)),
+    note: S.state.note,
     reviewed_ids: S.state.rows.filter((r) => r.reviewed).map((r) => r.id),
   });
 }

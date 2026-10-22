@@ -27,6 +27,7 @@
 | 9 | Note = `set_note{text}` (doc level; latest net wins), max 2000 chars; `replay.note_of(events)` | the design's free-text policy note, journaled like every other reviewer act |
 | 10 | `SINDRI_CAMPAIGN_ONLY=1` allows only GETs (except export downloads) plus `/open`, `/events`, `/seal`, `/read_region`, `/api/auth`; everything else is 403. The UI hides import, the bulk bar and exports | the public instance cannot be used to upload or export anything, whatever the UI shows |
 | 11 | Per-batch guards remain too: export (single + mass), re-extract and delete refuse a campaign drawing | the operator's own non-campaign-only instance must not export or discard a campaign drawing either |
+| 12 | (added at final review) `campaign.json` also records the grading facts: `render_scale`, `page_rect`, `page_px`, `run_config` (minus any path-like value) and `policy` (`flag_rules`, `drop_stages`); the loader refuses an entry without `source_run` or a finite positive `render_scale` | C2 maps reviewer boxes back to PDF points and must know which policy derived the rows; none of this can be reconstructed after the build. The code snippets below predate this row |
 
 ## File map
 

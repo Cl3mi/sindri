@@ -31,3 +31,7 @@ Originalzeichnungen/
 
 # brainstorming companion mockups (local only)
 .superpowers/
+
+# VPS campaign working dirs hold client data (docs/deploy/vps.md)
+import/
+export/

@@ -5,7 +5,7 @@ and no grade built on it can be trusted -- so seal records the mismatch."""
 import pytest
 
 from app.review.journal import JournalError
-from app.review.replay import mismatches, replay
+from app.review.replay import mismatches, note_of, replay
 
 
 def row(id_, **kw):
@@ -60,3 +60,32 @@ def test_mismatches_names_every_kind_of_disagreement():
              row("c"),                        # reviewed state differs (below)
              row("x")]                        # row the journal never added; d missing
     assert mismatches(replayed, final, ["c"]) == ["a", "b", "c", "d", "x"]
+
+
+def _row(**kw):
+    return {"id": "r1", "char_type": "", "nominal": "1", "upper_tol": "", "lower_tol": "",
+            "balloon_xy": [1, 1], "target_region": [0, 0, 10, 10], **kw}
+
+
+def test_move_target_moves_the_anchor_and_mismatches_compare_it():
+    rows = replay([_row()], [{"seq": 1, "type": "move_target", "id": "r1", "box": [2, 2, 12, 12]}])
+    assert rows["r1"]["target_region"] == [2, 2, 12, 12]
+    assert mismatches(rows, [_row(target_region=[2, 2, 12, 12])], []) == []
+    assert mismatches(rows, [_row()], []) == ["r1"]
+
+
+def test_set_note_changes_no_row_and_the_latest_note_wins():
+    events = [{"seq": 1, "type": "set_note", "text": "a"},
+              {"seq": 2, "type": "set_note", "text": "b"}]
+    assert replay([_row()], events)["r1"]["nominal"] == "1"
+    assert note_of(events) == "b"
+    assert note_of([]) == ""
+
+
+def test_note_of_refuses_a_raw_journal_like_replay_does():
+    """A retract in the list means the caller skipped net_events(); returning
+    the note the reviewer undid would grade an operation that never stood."""
+    events = [{"seq": 1, "type": "set_note", "text": "a"},
+              {"seq": 2, "type": "retract", "target_seq": 1}]
+    with pytest.raises(JournalError):
+        note_of(events)

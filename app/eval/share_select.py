@@ -10,6 +10,8 @@ safe to run in an agent session. Writes a manifest of HASHES that
 `--digest RUN=FILE`: RUN is the predict run directory under <root>/runs, FILE is
 a `summary --per-doc` output for that run. Dev/test digests only: a train
 drawing was seen in adapter training and would flatter the result.
+`--allow-train` lifts that for the review campaign only (plan C1 decision 5),
+and then accepts train and dev digests ONLY: the campaign keeps test held out.
 
 Criteria (defaults; every one is a flag):
   eligible  n_gold >= --min-gold (a demo needs a drawing with substance)
@@ -75,14 +77,18 @@ def select(rows: List[Dict], great: int = 3, problem: int = 2, min_gold: int = 1
 
 
 def manifest(picks: List[Dict]) -> Dict:
-    """Group picks by run: {"runs": [{"run": ..., "hashes": [...]}]}."""
+    """Group picks by run: {"runs": [{"run": ..., "hashes": [...]}],
+    "roles": {hash: "great"|"problem"}}. `export_share.py` reads only "runs";
+    "roles" lets the review campaign record each drawing's group so its report
+    can reweight the great/problem mix."""
     by_run: Dict[str, List[str]] = {}
     for p in picks:
         by_run.setdefault(p["run"], []).append(p["doc"])
-    return {"runs": [{"run": r, "hashes": h} for r, h in by_run.items()]}
+    return {"runs": [{"run": r, "hashes": h} for r, h in by_run.items()],
+            "roles": {p["doc"]: p["role"] for p in picks}}
 
 
-def load_rows(specs: List[str]) -> List[Dict]:
+def load_rows(specs: List[str], allow_train: bool = False) -> List[Dict]:
     rows = []
     for spec in specs:
         run, _, path = spec.partition("=")
@@ -91,8 +97,20 @@ def load_rows(specs: List[str]) -> List[Dict]:
         digest = json.loads(Path(path).read_text(encoding="utf-8"))
         if "per_doc" not in digest:
             raise SystemExit(f"{path}: no per_doc -- re-run summary with --per-doc")
-        if digest.get("split") == "train":
+        # A share-pack shows the client our quality, which a train drawing
+        # flatters. The review campaign (docs/plans/2026-10-21-campaign-c1-
+        # review-plan.md, decision 5) needs ~50 drawings, more than dev's 15
+        # scoped ones, and asks the client to grade rather than admire -- so it
+        # may opt in to train. Test stays held out either way.
+        if digest.get("split") == "train" and not allow_train:
             raise SystemExit(f"{path}: train split -- the adapter saw these drawings")
+        # Under --allow-train (the campaign) test must stay unseen by the
+        # client's grades: it is where every later arm is confirmed. "all"
+        # holds test drawings, and a digest that names no split cannot prove
+        # it holds none, so only train and dev pass.
+        if allow_train and digest.get("split") not in ("train", "dev"):
+            raise SystemExit(f"{path}: split {digest.get('split')!r} -- the review "
+                             f"campaign draws from train and dev only; test stays held out")
         rows += [{**r, "run": run} for r in digest["per_doc"]]
     return rows
 
@@ -107,9 +125,12 @@ def main(argv=None) -> int:
     ap.add_argument("--problem-recall-min", type=float, default=0.3)
     ap.add_argument("--max-escaped", type=float, default=0.1)
     ap.add_argument("--out", required=True, help="manifest json (hashes only)")
+    ap.add_argument("--allow-train", action="store_true",
+                    help="accept train digests -- review campaign only (plan C1 "
+                         "decision 5); never for a client share-pack")
     args = ap.parse_args(argv)
 
-    picks = select(load_rows(args.digest), args.great, args.problem, args.min_gold,
+    picks = select(load_rows(args.digest, args.allow_train), args.great, args.problem, args.min_gold,
                    args.great_recall, args.problem_recall_min, args.max_escaped)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps(manifest(picks), indent=1), encoding="utf-8")
