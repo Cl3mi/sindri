@@ -347,15 +347,20 @@ def write_json_digest(target: Path, kind: str, digest: dict) -> str:
     what the write insists on."""
     body = {k: v for k, v in digest.items() if k != "kind"}
     text = json.dumps({"kind": kind, **body}, indent=1, ensure_ascii=False)
+    prepare_parent(target)
+    write_atomic(target, text, mode=DIGEST_FILE_MODE, expect_parent=target.parent)
+    return text
+
+
+def prepare_parent(target: Path) -> None:
+    """Create a checked file target's missing parent directories. `target`
+    is a checker's (resolved) return value; an existing ancestor that now
+    resolves elsewhere was swapped for a link after the check, so refuse
+    before mkdir could create anything under the link's target."""
     try:
-        # A missing parent is created here, but an existing ancestor that
-        # now resolves elsewhere was swapped after the check: refuse before
-        # mkdir could create anything under the link's target.
         if _ancestor_moved(target):
             raise OutputRefused("the output location changed after it was "
                                 "checked; refusing to write")
         target.parent.mkdir(parents=True, exist_ok=True)
     except (OSError, ValueError):
         raise OutputRefused("could not create the output directory") from None
-    write_atomic(target, text, mode=DIGEST_FILE_MODE, expect_parent=target.parent)
-    return text

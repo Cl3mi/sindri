@@ -60,6 +60,11 @@ def direct_writes(source: str):
         elif (isinstance(f, ast.Attribute) and name in _COPIES
               and getattr(f.value, "id", None) == "shutil"):
             found.append((node.lineno, f"shutil.{name}"))
+        elif (isinstance(f, ast.Attribute) and name in ("replace", "rename")
+              and getattr(f.value, "id", None) == "os"):
+            # A hand-rolled atomic writer: the second writer this test exists
+            # to keep out.
+            found.append((node.lineno, f"os.{name}"))
     return found
 
 
@@ -73,13 +78,28 @@ def test_the_scanner_sees_each_kind_of_direct_write():
         open(p, mode="a")
         p.open("wb")
         shutil.copy(p, q)
+        os.replace(p, q)
         open(p)                 # a read: not a write
         p.open()                # a read
+        p.replace(q)            # a Path method: not os.replace (pull.py's tar)
         write_atomic(p, "x")    # the sanctioned writer
     """
     assert [w for _, w in direct_writes(src)] == [
         "write_text", "write_bytes", "open-for-write", "open-for-write",
-        "open-for-write", "shutil.copy"]
+        "open-for-write", "shutil.copy", "os.replace"]
+
+
+def test_there_is_one_atomic_writer():
+    """runner had its own `_write_atomic` for the grading report, which
+    unlinked a link planted at the partial name instead of refusing it. Two
+    writers drift; the reviewer-grade path goes through outputs.write_atomic
+    like every other output."""
+    assert not hasattr(runner, "_write_atomic")
+    src = inspect.getsource(runner._cmd_reviewer_grade)
+    assert direct_writes(src) == []
+    assert "_write_checked(" in src
+    helper = inspect.getsource(runner._write_checked)
+    assert "write_atomic(" in helper and direct_writes(helper) == []
 
 
 @pytest.mark.parametrize("module,name", WRITE_SITES)

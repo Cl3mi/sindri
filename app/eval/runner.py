@@ -644,27 +644,14 @@ _NOT_WITH_REVIEWER_GRADE = (
     ("assignment", "greedy"), ("reconcile_frames", "none"), ("dpi", 300))
 
 
-def _write_atomic(target: Path, text: str, mode: int) -> None:
-    """<name>.partial, fsync, rename: a crash never leaves a half report that
-    reads as a whole one. The partial is created O_EXCL, so a link planted
-    under its name is refused rather than followed; on failure it is removed."""
-    import os
-    partial = target.with_name(target.name + ".partial")
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        partial.unlink(missing_ok=True)     # a stale partial, or a planted link
-        fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(partial, target)
-    except OSError:
-        try:
-            partial.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
+def _write_checked(target: Path, text: str, mode: int) -> None:
+    """Write a checker-approved file target through THE atomic writer
+    (outputs.write_atomic: partial, fsync, rename; a link at the partial
+    name refused, the approved parent re-checked before the rename), after
+    creating its parent if needed. Raises OutputRefused only."""
+    from app.eval.outputs import prepare_parent, write_atomic
+    prepare_parent(target)
+    write_atomic(target, text, mode=mode, expect_parent=target.parent)
 
 
 def _cmd_reviewer_grade(args):
@@ -751,15 +738,18 @@ def _cmd_reviewer_grade(args):
             return fail("--manifest: bad roles/pool")
         # Report first, digest second: a digest whose report failed to write
         # could never be checked against it.
+        from app.eval.outputs import (CLIENT_FILE_MODE, DIGEST_FILE_MODE,
+                                      OutputRefused)
         try:
-            _write_atomic(out, json.dumps(report, indent=1, ensure_ascii=False),
-                          0o600)
-        except OSError:
+            _write_checked(out, json.dumps(report, indent=1, ensure_ascii=False),
+                           CLIENT_FILE_MODE)
+        except OutputRefused:
             return fail("--out: the report could not be written")
         if grade_out is not None:
             try:
-                _write_atomic(grade_out, json.dumps(digest, indent=1) + "\n", 0o644)
-            except OSError:
+                _write_checked(grade_out, json.dumps(digest, indent=1) + "\n",
+                               DIGEST_FILE_MODE)
+            except OutputRefused:
                 return fail("--grade-out: the digest could not be written")
         s = digest["drawings"]
         nir = "n/a" if s["not_in_records"] is None else s["not_in_records"]
