@@ -19,6 +19,10 @@ from app.review.grading import grade_session
 from app.review.journal import DELETE_REASONS
 from app.review.replay import note_of
 
+# The first key of each output, and what makes an existing file replaceable.
+REPORT_KIND = "campaign-grade-report"
+DIGEST_KIND = "campaign-grade-digest"
+
 MM_PER_PT = 25.4 / 72.0
 IDLE_MS = 5 * 60 * 1000          # a gap longer than this is the reviewer away
 # Kept at 0.5: at fit zoom the UI's 3-screen-px dead zone is already ~1.3 mm,
@@ -735,7 +739,12 @@ def grade_campaign(records, gold_by_hash: Optional[Dict[str, GoldDoc]] = None,
               for k in POOLED_METRICS}
     runs = sorted({e["source_run"] for e in approved_docs})
     campaign = _token(records.campaign, "invalid")
+    # "kind" goes FIRST in both: an agent picks the output paths, so a later
+    # run only overwrites a file whose opening bytes say it is one of ours
+    # (review.check_report_path / check_digest_path), without parsing a
+    # report that may be large.
     digest = {
+        "kind": DIGEST_KIND,
         "campaign": campaign,
         "drawings": {**status, "ungradable_reasons": dict(sorted(reasons.items())),
                      "skipped": len(records.skipped),
@@ -760,5 +769,6 @@ def grade_campaign(records, gold_by_hash: Optional[Dict[str, GoldDoc]] = None,
         "reconcile_problems": problems,
         "reconciles": not problems,
     }
-    report = {"campaign": campaign, "drawings": report_docs, "digest": digest}
+    report = {"kind": REPORT_KIND, "campaign": campaign, "drawings": report_docs,
+              "digest": digest}
     return report, digest

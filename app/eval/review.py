@@ -27,6 +27,7 @@ so the operator reviews exactly the rows the counts describe.
 import hashlib
 import json
 import os
+import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -192,19 +193,77 @@ def check_deck_path(path) -> Path:
     return target
 
 
-def check_report_path(path) -> Path:
+_MARKER_PEEK = 4096
+
+
+def _carries_marker(target: Path, kind: str) -> bool:
+    """A regular file whose FIRST key is `"kind": <kind>`. Only the opening
+    bytes are read: a report can be large, and the writer puts the marker
+    first precisely so this never has to parse one."""
+    if not target.is_file():
+        return False
+    try:
+        with open(target, "rb") as f:
+            head = f.read(_MARKER_PEEK).decode("utf-8", errors="replace")
+    except OSError:
+        return False
+    return re.match(r'\A\s*\{\s*"kind"\s*:\s*' + re.escape(json.dumps(kind))
+                    + r"\s*[,}]", head) is not None
+
+
+def _check_grade_output(path, suffix: str, kind: str, avoid, what: str) -> Path:
+    """Shared by report and digest. An agent picks both paths, so each one
+    must be unable to replace anything else: not through a link (checked
+    BEFORE resolving, or the link is followed to gold or a dump), not under
+    another file's name, not over a file that is not a previous output of
+    this same kind, and not over the inputs being graded. Fixed messages
+    only: they are printed where an agent reads, and a path can be client
+    text."""
+    if Path(path).is_symlink():
+        raise ReviewRefused(f"the {what} path is a symbolic link")
+    target = Path(path).resolve()
+    if not target.name.endswith(suffix) or target.name == suffix:
+        raise ReviewRefused(f"the {what} file name must end in {suffix}")
+    if any(target == Path(a).resolve() for a in avoid if a):
+        raise ReviewRefused(f"the {what} path is one of the run's inputs")
+    if target.exists() and not _carries_marker(target, kind):
+        raise ReviewRefused(
+            f"a file that is not a previous {what} already exists there; "
+            "move it away deliberately")
+    return target
+
+
+def check_report_path(path, avoid=()) -> Path:
     """The campaign grading report (C2) carries the client's per-row values
     and notes, so it goes inside a protected root like a deck. Unlike a deck
-    it MAY be overwritten: nothing is keyed to it, and it is a pure function
-    of the pull tar, so re-grading regenerates it. The message names no path:
-    the caller prints it where an agent reads."""
-    target = Path(path).resolve()
+    it MAY replace a previous report: nothing is keyed to it, and it is a
+    pure function of the pull tar, so re-grading regenerates it. `avoid`
+    names the run's inputs (the pull tar, the manifest)."""
+    from app.eval.campaign_grade import REPORT_KIND
+    target = _check_grade_output(path, ".grade.json", REPORT_KIND, avoid,
+                                 "grading report")
     if not inside_protected(target):
         raise ReviewRefused(
             "the grading report holds client values, so it may only be "
             "written inside a protected root (one listed in "
             "~/.claude/sindri-protected-paths)" + ("" if _protected_roots()
             else " -- and no protected roots are configured on this machine"))
+    return target
+
+
+def check_digest_path(path, avoid=()) -> Path:
+    """The counts-only grading digest is the agent's output (docs/eval/), so
+    it goes OUTSIDE every protected root -- inside one it could never be
+    read, and an agent-picked path there could replace client data. Named
+    `-grade.json`, distinct from the report's `.grade.json`."""
+    from app.eval.campaign_grade import DIGEST_KIND
+    target = _check_grade_output(path, "-grade.json", DIGEST_KIND, avoid,
+                                 "grading digest")
+    if inside_protected(target):
+        raise ReviewRefused(
+            "the grading digest is the output meant for the agent; it may "
+            "not be written inside a protected root -- write it under "
+            "docs/eval/")
     return target
 
 

@@ -138,6 +138,19 @@ def test_an_odd_index_is_refused_without_client_text(tmp_path):
         assert "not a campaign pull" in str(ei.value) and "SECRET" not in str(ei.value)
 
 
+def test_a_compressed_archive_is_not_a_pull(tmp_path):
+    """pull.py writes a plain tar. tarfile's "r" would decompress anything it
+    is handed, which turns a small file into an unbounded read."""
+    import gzip
+    p = [proposal_row("a")]
+    raw = write_tar(tmp_path / "r.tar", [drawing("aaaaaaaa", p, p, [])]).read_bytes()
+    gz = tmp_path / "r.tar.gz"
+    gz.write_bytes(gzip.compress(raw))
+    with pytest.raises(ValueError) as ei:
+        read_records(gz)
+    assert "not a campaign pull" in str(ei.value)
+
+
 def test_a_revision_mismatch_is_flagged(tmp_path):
     """pull.py's crash window: the sealed file was written but the index still
     names the previous revision (or the reverse)."""

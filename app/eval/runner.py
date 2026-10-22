@@ -627,6 +627,39 @@ def _serving_backend(env=None):
     return choice.lower() if choice.lower() not in ("", "vlm") else None
 
 
+# Flags of score's OTHER modes, with their parser defaults: given alongside
+# --reviewer-grade they would be silently ignored, which reads as if they had
+# applied. A value equal to the default cannot be told from "not passed".
+_NOT_WITH_REVIEWER_GRADE = (
+    ("run", None), ("review_deck", None), ("policy_check", False),
+    ("reapply_policy", False), ("gentol_check", False),
+    ("phantom_profile", False), ("drop_check", False),
+    ("reparse_check", False), ("splits", None), ("split", "dev"))
+
+
+def _write_atomic(target: Path, text: str, mode: int) -> None:
+    """<name>.partial, fsync, rename: a crash never leaves a half report that
+    reads as a whole one. The partial is created O_EXCL, so a link planted
+    under its name is refused rather than followed; on failure it is removed."""
+    import os
+    partial = target.with_name(target.name + ".partial")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        partial.unlink(missing_ok=True)     # a stale partial, or a planted link
+        fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(partial, target)
+    except OSError:
+        try:
+            partial.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 def _cmd_reviewer_grade(args):
     """Grade a pulled review campaign (C2 design §Outputs). Client-primary;
     gold is a cross-check.
@@ -635,81 +668,99 @@ def _cmd_reviewer_grade(args):
     values, notes) goes ONLY inside a protected root; the --grade-out digest
     (counts, fixed words, salted hashes) and one stdout line are what an agent
     reads. So every error below is a FIXED sentence -- an exception message or
-    a path can quote a part number, and stderr is read by agents too."""
-    from app.eval.campaign_grade import grade_campaign
+    a path can quote a part number, and stderr is read by agents too.
+
+    Exit codes: 0 clean, 1 refused or failed, 3 graded but the digest does not
+    reconcile (2 is argparse's usage error)."""
+    from app.eval import campaign_grade
     from app.eval.campaign_records import read_records
-    from app.eval.review import ReviewRefused, check_report_path
+    from app.eval.review import ReviewRefused, check_digest_path, check_report_path
+
+    def fail(msg):
+        print(f"ERROR: {msg}", file=sys.stderr)
+        return 1
     if getattr(args, "show_ids", False):
         # The records are keyed by 8-hex salted hashes; real ids would join to
         # nothing, and the digest must stay salted regardless.
-        print("ERROR: --show-ids cannot be used with --reviewer-grade",
-              file=sys.stderr)
-        return 1
+        return fail("--show-ids cannot be used with --reviewer-grade")
+    if any(getattr(args, k, d) != d for k, d in _NOT_WITH_REVIEWER_GRADE):
+        return fail("--reviewer-grade cannot be combined with another score "
+                    "mode's flags (--run, --review-deck, --policy-check, "
+                    "--reapply-policy, --gentol-check, --phantom-profile, "
+                    "--drop-check, --reparse-check, --splits, --split)")
     if not args.manifest:
-        print("ERROR: --reviewer-grade needs --manifest (roles + pool)",
-              file=sys.stderr)
-        return 1
-    # Checked BEFORE anything is read, so a bad path fails in seconds and no
-    # client value is ever held in memory on the way to a refusal.
+        return fail("--reviewer-grade needs --manifest (roles + pool)")
+    # Both outputs are checked BEFORE anything is read: an agent picks these
+    # paths, so neither may land on gold, a dump, the pull, the manifest or
+    # each other -- and a bad path fails in seconds, holding no client value.
     try:
-        out = check_report_path(args.out)
+        out = check_report_path(args.out, avoid=[args.reviewer_grade, args.manifest])
     except ReviewRefused as e:
-        print(f"ERROR: --out refused: {e}", file=sys.stderr)
-        return 1
+        return fail(f"--out refused: {e}")
+    grade_out = None
+    if args.grade_out:
+        try:
+            grade_out = check_digest_path(
+                args.grade_out, avoid=[args.out, args.reviewer_grade, args.manifest])
+        except ReviewRefused as e:
+            return fail(f"--grade-out refused: {e}")
+    # A fresh salt would hash no gold id to any record's hash: every join
+    # would silently fail, and the minted salt file would be left behind.
+    if not salt_is_persistent():
+        return fail("--reviewer-grade needs the persistent doc-id salt "
+                    "(~/.claude/sindri-doc-salt or SINDRI_DOC_SALT)")
+    gold_dir = Path(args.gold)
+    if not gold_dir.is_dir() or not any(gold_dir.glob("*.gold.json")):
+        return fail("--gold: not a directory of gold files")
     try:
         records = read_records(args.reviewer_grade)
     except Exception:  # noqa: BLE001 -- not a tar, missing, torn: one fixed line
-        print("ERROR: --reviewer-grade: not a readable campaign pull",
-              file=sys.stderr)
-        return 1
+        return fail("--reviewer-grade: not a readable campaign pull")
     try:
         manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001 -- missing or not JSON
-        print("ERROR: --manifest: not a readable JSON manifest", file=sys.stderr)
-        return 1
+        return fail("--manifest: not a readable JSON manifest")
     try:
-        gold = _load_gold_dir(args.gold)
+        gold = _load_gold_dir(gold_dir)
     except Exception:  # noqa: BLE001 -- a validation message quotes gold values
-        print("ERROR: --gold: a gold file could not be read", file=sys.stderr)
-        return 1
-    # gold is keyed by real part number, the records by salted hash: join
-    # through the same salt, and only for drawings the pull actually holds.
-    in_records = {d.index.get("doc_hash") for d in records.drawings.values()}
-    gold_by_hash = {h: gold[d] for h, d in _anon(args).mapping(gold).items()
-                    if h in in_records}
+        return fail("--gold: a gold file could not be read")
     try:
-        report, digest = grade_campaign(records, gold_by_hash, manifest)
-    except ValueError:  # grade_campaign raises it only for a bad manifest
-        print("ERROR: --manifest: bad roles/pool", file=sys.stderr)
-        return 1
-    # Report first, digest second: a digest whose report failed to write
-    # could never be checked against it.
-    try:
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(report, indent=1, ensure_ascii=False),
-                       encoding="utf-8")
-    except OSError:
-        print("ERROR: --out: the report could not be written", file=sys.stderr)
-        return 1
-    if args.grade_out:
+        # gold is keyed by real part number, the records by salted hash: join
+        # through the same salt, and only for drawings the pull holds.
+        in_records = {d.index.get("doc_hash") for d in records.drawings.values()}
+        gold_by_hash = {h: gold[d] for h, d in _anon(args).mapping(gold).items()
+                        if h in in_records}
         try:
-            Path(args.grade_out).parent.mkdir(parents=True, exist_ok=True)
-            Path(args.grade_out).write_text(json.dumps(digest, indent=1),
-                                            encoding="utf-8")
+            report, digest = campaign_grade.grade_campaign(
+                records, gold_by_hash, manifest)
+        except ValueError:  # grade_campaign raises it only for a bad manifest
+            return fail("--manifest: bad roles/pool")
+        # Report first, digest second: a digest whose report failed to write
+        # could never be checked against it.
+        try:
+            _write_atomic(out, json.dumps(report, indent=1, ensure_ascii=False),
+                          0o600)
         except OSError:
-            print("ERROR: --grade-out: the digest could not be written",
-                  file=sys.stderr)
-            return 1
-    s = digest["drawings"]
-    nir = "n/a" if s["not_in_records"] is None else s["not_in_records"]
-    print(f"reviewer-grade: approved={s['approved']} pending={s['pending']} "
-          f"ungradable={s['ungradable']} skipped={s['skipped']} "
-          f"not_in_records={nir} reconciles={digest['reconciles']}")
-    if digest["reconcile_problems"]:
+            return fail("--out: the report could not be written")
+        if grade_out is not None:
+            try:
+                _write_atomic(grade_out, json.dumps(digest, indent=1) + "\n", 0o644)
+            except OSError:
+                return fail("--grade-out: the digest could not be written")
+        s = digest["drawings"]
+        nir = "n/a" if s["not_in_records"] is None else s["not_in_records"]
+        line = (f"reviewer-grade: approved={s['approved']} pending={s['pending']} "
+                f"ungradable={s['ungradable']} skipped={s['skipped']} "
+                f"not_in_records={nir} reconciles={digest['reconciles']}")
+        n_problems = len(digest["reconcile_problems"])
+    except Exception:  # noqa: BLE001 -- the message could quote a client value
+        return fail("grading failed")
+    print(line)
+    if n_problems:
         # The count only: the problem keys carry hashes and belong in the
         # digest. Nonzero so a script chaining on the exit code stops here.
-        print(f"reviewer-grade: PROBLEMS {len(digest['reconcile_problems'])}")
-        return 2
+        print(f"reviewer-grade: PROBLEMS {n_problems}")
+        return 3
     return 0
 
 
@@ -1075,8 +1126,19 @@ def _cmd_summary(args):
     return 0
 
 
+class _QuietParser(argparse.ArgumentParser):
+    """argparse quotes the offending VALUE in its errors ("unrecognized
+    arguments: --outt <path>", an invalid choice), and this CLI's stderr is
+    read by agents -- a path or a part number would travel with it. A usage
+    error is one fixed line, exit 2 as before; --help is untouched.
+    Subparsers inherit this class (add_subparsers defaults to type(self))."""
+
+    def error(self, message):
+        self.exit(2, "ERROR: bad arguments (see --help)\n")
+
+
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="python -m app.eval.runner")
+    ap = _QuietParser(prog="python -m app.eval.runner")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     common = argparse.ArgumentParser(add_help=False)

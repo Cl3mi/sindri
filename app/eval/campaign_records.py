@@ -61,7 +61,14 @@ def _events(raw: bytes) -> List[dict]:
 
 
 def read_records(tar_path) -> CampaignRecords:
-    with tarfile.open(tar_path, "r") as tar:
+    # "r:" = plain tar only. pull.py never compresses, and "r" would
+    # transparently decompress whatever it is handed -- an unbounded read
+    # from a small file.
+    try:
+        tar = tarfile.open(tar_path, "r:")
+    except tarfile.ReadError:
+        raise ValueError("not a campaign pull: not a plain tar") from None
+    with tar:
         members = {m.name: m for m in tar.getmembers() if m.isfile()}
 
         def raw(name):
