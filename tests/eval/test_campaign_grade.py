@@ -161,3 +161,131 @@ def test_reweight_refuses_missing_and_surprise_groups():
                     {"great": 30, "problem": 10}) is None
     # a zero-weight pool group is not required
     assert math.isclose(reweight({"great": 0.9}, {"great": 30, "problem": 0}), 0.9)
+
+
+# --- gold cross-check (design §Gold cross-check) -----------------------------
+# Synthetic gold only: the cross-check is a second lens on the client's grade,
+# so every test asserts the grades dict is read, never written.
+from app.eval.campaign_grade import gold_cross_check
+from app.eval.models import GoldCharacteristic, GoldDoc
+
+SCALE = 300 / 72.0     # px per pt
+PAGE = (0, 0, 842, 595)
+
+
+def _gold(chars, page_rect=PAGE):
+    return GoldDoc(doc_id="D1", pdf="x", excel="y", page_rect=page_rect,
+                   characteristics=chars)
+
+
+def _prow(id, box_pt, nominal="10", **kw):
+    return {"id": id, "char_type": "Distance", "nominal": nominal, "upper_tol": "",
+            "lower_tol": "", "target_region": [v * SCALE for v in box_pt], "pos": 1,
+            "needs_review": False, "suggested": False, **kw}
+
+
+def _g(balloon, pos, nominal, **kw):
+    return GoldCharacteristic(balloon=balloon, position_pt=pos, char_type="Distance",
+                              nominal=nominal, **kw)
+
+
+def _check(proposal, final, grades, gold, **kw):
+    before = dict(grades)
+    out = gold_cross_check(proposal, final, grades, gold,
+                           render_scale=SCALE, page_rect=kw.pop("page_rect", PAGE), **kw)
+    assert grades == before          # gold never flips (or touches) a grade
+    return out
+
+
+def test_cross_check_classifies_without_flipping_grades():
+    gold = _gold([_g(1, (30, 20), "10"), _g(2, (230, 220), "7"), _g(3, (500, 400), "3")])
+    proposal = [_prow("ok", (20, 10, 40, 30)),                    # matches g1, correct
+                _prow("bad", (220, 210, 240, 230), nominal="9"),  # matches g2, wrong
+                _prow("ph", (700, 500, 720, 520))]                # no gold near: phantom
+    final = proposal[:2]                                          # client deleted "ph"
+    grades = {"ok": "confirmed", "bad": "confirmed", "ph": "phantom"}
+    out = _check(proposal, final, grades, gold)
+    assert out["computed"] is True
+    assert out["verdicts"] == {"ok": "gold_correct", "bad": "gold_wrong", "ph": "gold_phantom"}
+    assert out["matrix"]["gold_wrong&confirmed"] == 1          # client missed an error gold knows
+    assert out["matrix"]["gold_phantom&phantom"] == 1
+    assert out["neither_found"] == 1                           # g3: no final row near it
+    assert out["matched_final"] == 2 and out["n_gold"] == 3
+
+
+def test_suggestions_are_never_matched_on_either_side():
+    # A tray row sits right on g1; it was never delivered, so it neither gets a
+    # verdict nor counts as the client having found g1.
+    gold = _gold([_g(1, (30, 20), "10")])
+    sug = _prow("s", (20, 10, 40, 30), suggested=True)
+    out = _check([sug], [sug], {"s": "suggestion_left"}, gold)
+    assert out["verdicts"] == {} and out["matrix"] == {}
+    assert out["neither_found"] == 1 and out["matched_final"] == 0
+
+
+def test_frame_mismatch_refuses_to_compute():
+    # Gold from the STAMPED sheet, campaign rendered from the ORIGINAL: if the
+    # pages differ, every distance is measured in two frames at once (this once
+    # silently cost 141 matches), so no number is better than a wrong one.
+    gold = _gold([_g(1, (30, 20), "10")], page_rect=(0, 0, 1191, 842))
+    out = _check([_prow("ok", (20, 10, 40, 30))], [], {"ok": "confirmed"}, gold)
+    assert out == {"computed": False, "reason": "frame_mismatch"}
+    # sub-point rounding between the two sources is not a mismatch
+    gold2 = _gold([_g(1, (30, 20), "10")], page_rect=(0, 0, 842.4, 595.2))
+    assert _check([], [], {}, gold2)["computed"] is True
+    # a degenerate or non-finite campaign rect cannot be trusted either
+    for bad in [(0, 0, float("nan"), 595), (842, 595, 0, 0)]:
+        assert _check([], [], {}, _gold([]), page_rect=bad)["reason"] == "frame_mismatch"
+
+
+def test_rows_without_a_usable_region_are_counted_unlocatable():
+    gold = _gold([_g(1, (30, 20), "10")])
+    proposal = [_prow("none", (0, 0, 0, 0), target_region=None),
+                _prow("short", (0, 0, 0, 0), target_region=[1, 2]),
+                _prow("nan", (0, 0, 0, 0), target_region=[1, 2, float("inf"), 4]),
+                _prow("ok", (20, 10, 40, 30))]
+    grades = {"none": "confirmed", "short": "phantom", "nan": "edited", "ok": "confirmed"}
+    out = _check(proposal, proposal, grades, gold)
+    assert out["unlocatable"] == 3
+    assert out["verdicts"]["none"] == "gold_unlocatable"
+    assert out["matrix"]["gold_unlocatable&confirmed"] == 1
+    assert out["matrix"]["gold_unlocatable&phantom"] == 1
+    assert out["matrix"]["gold_correct&confirmed"] == 1
+    # the matrix partitions the non-suggestion proposal rows
+    assert sum(out["matrix"].values()) == 4
+
+
+def test_invalid_row_is_counted_never_raised_or_quoted():
+    gold = _gold([_g(1, (30, 20), "10")])
+    secret = "CLIENT-VALUE-42"
+    # extras the UI carries (reviewed/source/...) are dropped, not fatal
+    ok = _prow("ok", (20, 10, 40, 30), reviewed=True, source="auto", anchor_note="x")
+    bad = _prow("bad", (20, 10, 40, 30), pos=secret)      # pos must be an int
+    out = _check([ok, bad], [ok], {"ok": "confirmed", "bad": "edited"}, gold)
+    assert out["verdicts"] == {"ok": "gold_correct", "bad": "row_invalid"}
+    assert out["row_invalid"] == 1
+    assert out["matrix"]["row_invalid&edited"] == 1
+    assert secret not in repr(out)
+
+
+def test_unlocated_gold_pairs_on_value_alone():
+    # match_candidates falls back to value similarity for a gold row whose
+    # balloon was never located (center None), whatever the distance: the
+    # value is still printed on the drawing, so a correct read anywhere pairs.
+    # A value below value_sim_min does not pair.
+    gold = _gold([_g(1, None, "12.5"), _g(2, None, "40")])
+    proposal = [_prow("far", (700, 500, 720, 520), nominal="12.5"),
+                _prow("other", (100, 100, 120, 120), nominal="3")]
+    out = _check(proposal, proposal[:1], {"far": "confirmed", "other": "phantom"}, gold)
+    assert out["verdicts"] == {"far": "gold_correct", "other": "gold_phantom"}
+    assert out["neither_found"] == 1 and out["matched_final"] == 1   # g2 found by nobody
+
+
+def test_only_scored_kinds_count_and_output_carries_no_value_keys():
+    gold = _gold([_g(1, (30, 20), "10"), _g(2, (300, 300), "5", kind="note")])
+    p = _prow("ok", (20, 10, 40, 30))
+    out = _check([p], [p], {"ok": "confirmed"}, gold)
+    assert out["n_gold"] == 1 and out["neither_found"] == 0
+    blob = repr(out)
+    for k in ("upper_tol", "lower_tol", "characteristics", "position_pt"):
+        assert k not in blob

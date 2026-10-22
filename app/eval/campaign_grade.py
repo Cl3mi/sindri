@@ -6,6 +6,14 @@ import math
 import statistics
 from typing import Dict, List, Optional
 
+from pydantic import ValidationError
+
+from app.eval.dump import to_points
+from app.eval.matching import Cand, match_candidates
+from app.eval.models import GoldDoc, MatchParams
+from app.eval.score import _compare_fields
+from app.models import Characteristic
+
 MM_PER_PT = 25.4 / 72.0
 IDLE_MS = 5 * 60 * 1000          # a gap longer than this is the reviewer away
 # Kept at 0.5: at fit zoom the UI's 3-screen-px dead zone is already ~1.3 mm,
@@ -168,3 +176,146 @@ def reweight(by_group: Dict[str, Optional[float]], pool: Dict[str, int]) -> Opti
             or any(g not in groups for g in by_group)):
         return None
     return sum(by_group[g] * pool[g] for g in groups) / sum(pool[g] for g in groups)
+
+
+# Two sources' page sizes may differ by rounding (PyMuPDF vs the ingest's
+# rect), never by more than this; anything larger is a different sheet.
+FRAME_TOL_PT = 1.0
+
+
+def _rect_ok(rect) -> bool:
+    try:
+        x0, y0, x1, y1 = (float(v) for v in rect)
+    except (TypeError, ValueError):
+        return False
+    return all(math.isfinite(v) for v in (x0, y0, x1, y1)) and x1 > x0 and y1 > y0
+
+
+def _same_frame(a, b) -> bool:
+    """Gold positions come from the STAMPED sheet, the campaign's pixels from
+    the ORIGINAL; when those pages differ, every distance mixes two frames.
+    That once silently cost 141 matches, so a mismatch refuses the whole
+    cross-check instead of producing a number that looks like a result."""
+    if not (_rect_ok(a) and _rect_ok(b)):
+        return False
+    return (abs((a[2] - a[0]) - (b[2] - b[0])) <= FRAME_TOL_PT
+            and abs((a[3] - a[1]) - (b[3] - b[1])) <= FRAME_TOL_PT)
+
+
+def _center_pt(row, render_scale, page_rect):
+    """Centre of a row's target_region in PDF points, or None when the region
+    is unusable (missing, wrong arity, non-numeric, non-finite). Same
+    conversion as score._center_pt applies to a dump's characteristics."""
+    box = row.get("target_region")
+    if not isinstance(box, (list, tuple)) or len(box) != 4:
+        return None
+    if any(isinstance(v, bool) or not isinstance(v, (int, float))
+           or not math.isfinite(v) for v in box):
+        return None
+    b = to_points(box, render_scale, page_rect)
+    return ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0)
+
+
+def _as_characteristic(row) -> Optional[Characteristic]:
+    # Rows carry UI extras (reviewed, ...); only the model's own fields are
+    # kept. A row that still refuses is reported as such, and the exception is
+    # dropped unread: pydantic's message quotes the offending client value.
+    try:
+        return Characteristic.model_validate(
+            {k: v for k, v in row.items() if k in Characteristic.model_fields})
+    except (ValidationError, TypeError, ValueError):
+        return None
+
+
+def _match(located, gold_chars, diag, params) -> Dict[int, int]:
+    """located: [(index, center_pt, nominal)]. Keys are list INDICES, not row
+    ids, so a duplicate or missing id can never make match_candidates raise.
+    Returns {index: gold balloon}."""
+    pairs = match_candidates(
+        [Cand(key=i, center_pt=c, nominal=n) for i, c, n in located],
+        [Cand(key=g.balloon, center_pt=g.position_pt, nominal=g.nominal)
+         for g in gold_chars], diag, params)
+    return {pk: gk for pk, gk, _ in pairs}
+
+
+def gold_cross_check(proposal: List[dict], final: List[dict], grades: Dict[str, str],
+                     gold: GoldDoc, *, render_scale: float, page_rect,
+                     params: Optional[MatchParams] = None) -> dict:
+    """Gold as a second lens (design §Gold cross-check). Never changes a grade.
+
+    Proposal balloons -> gold verdict, crossed with the client's grade in
+    `matrix` as "<verdict>&<grade>":
+      gold_correct / gold_wrong  matched a scored gold row; fields agree or not
+      gold_phantom               no scored gold row pairs with it
+      gold_unlocatable           no usable target_region, so it cannot be matched
+      row_invalid                not a valid Characteristic, so not comparable
+    Suggestions are skipped on both sides: they were never delivered, so gold
+    has nothing to say about them and they cannot count as found.
+    Final rows -> `matched_final` and `neither_found` (scored gold rows no
+    final row pairs with). Matching is the scorer's own, in PDF points, so
+    'phantom' means exactly what it means in a score report.
+
+    Output is counts, fixed words and the per-row verdict keyed by row id;
+    nothing in it is a client value."""
+    params = params or MatchParams()
+    if not _same_frame(gold.page_rect, page_rect):
+        return {"computed": False, "reason": "frame_mismatch"}
+    if (isinstance(render_scale, bool) or not isinstance(render_scale, (int, float))
+            or not math.isfinite(render_scale) or render_scale <= 0):
+        return {"computed": False, "reason": "bad_render_scale"}
+    gold_chars = [g for g in gold.characteristics if g.kind in params.score_kinds]
+    by_num = {g.balloon: g for g in gold_chars}
+    # The gold page's diagonal, as score() uses when frames are not reconciled;
+    # _same_frame has just established the two agree.
+    diag = math.dist(gold.page_rect[:2], gold.page_rect[2:])
+
+    delivered = [r for r in proposal if not r.get("suggested")]
+    verdicts: Dict[str, str] = {}
+    located, chars = [], {}
+    unlocatable = invalid = 0
+    for i, r in enumerate(delivered):
+        c = _center_pt(r, render_scale, page_rect)
+        if c is None:
+            verdicts[r.get("id")] = "gold_unlocatable"
+            unlocatable += 1
+            continue
+        ch = _as_characteristic(r)
+        if ch is None:
+            verdicts[r.get("id")] = "row_invalid"
+            invalid += 1
+            continue
+        chars[i] = ch
+        located.append((i, c, ch.nominal))
+    pm = _match(located, gold_chars, diag, params)
+    for i, _c, _n in located:
+        gk = pm.get(i)
+        if gk is None:
+            v = "gold_phantom"
+        else:
+            v = "gold_wrong" if _compare_fields(chars[i], by_num[gk]) else "gold_correct"
+        verdicts[delivered[i].get("id")] = v
+    matrix: Dict[str, int] = {}
+    for r in delivered:
+        # A row the grader did not grade is said so, not dropped: the matrix
+        # must keep partitioning the delivered proposal rows.
+        key = f"{verdicts[r.get('id')]}&{grades.get(r.get('id'), 'ungraded')}"
+        matrix[key] = matrix.get(key, 0) + 1
+
+    final_located, final_unlocatable = [], 0
+    for i, r in enumerate(f for f in final if not f.get("suggested")):
+        c = _center_pt(r, render_scale, page_rect)
+        if c is None:
+            final_unlocatable += 1
+            continue
+        n = r.get("nominal")
+        # canon_value expects text; a non-string nominal only loses the value
+        # bonus / value fallback, it does not make the row unmatchable.
+        final_located.append((i, c, n if isinstance(n, str) else ""))
+    fm = _match(final_located, gold_chars, diag, params)
+    found = set(fm.values())
+    return {"computed": True, "verdicts": verdicts, "matrix": matrix,
+            "unlocatable": unlocatable, "row_invalid": invalid,
+            "final_unlocatable": final_unlocatable,
+            "matched_final": len(found),
+            "neither_found": len(set(by_num) - found),
+            "n_gold": len(gold_chars)}
