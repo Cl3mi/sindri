@@ -2,8 +2,8 @@
 
 - Plan: `docs/plans/2026-10-22-campaign-c2-grading-plan.md`; design: `...-design.md`
 - Branch / worktree: `feature/review-campaign-c2` at `.worktrees/review-campaign-c2`
-- Current milestone: **B — campaign analysis: DONE** (task 9 of 12)
-- Completed tasks: 1-9
+- Current milestone: **C — operator drill-down: DONE** (task 11 of 12)
+- Completed tasks: 1-11 (tests/eval + tests/review: 975 passed; guard 32/0)
 - Baseline before Task 1: 2089 passed, 2 skipped, **2 pre-existing failures** in
   `tests/test_title_block.py` (this worktree lacks the untracked root sample drawing;
   they pass in the main checkout). At close of B: tests/eval + tests/review 912 passed;
@@ -49,6 +49,24 @@
   `_QuietParser`); missing salt / empty gold dir refused; PROBLEMS exits 3; flags that would be
   silently ignored are refused. Operator: `--gold` MUST be the `--originals` gold directory.
 
+**Milestone C (operator drill-down)**
+- Task 10 `0064d6c`: `campaign_grade.row_buckets` is the ONE bucket definition used by
+  `ranked_findings` and `campaign_deck.examples` (a consistency test pins every bucket's example
+  total to the digest's count). `examples` returns `{"buckets": {b: {"total","examples"}},
+  "order": [...]}`; reasons are closed-vocabulary words only.
+- Task 11 `9de13fe` + `33cbee4`: `runner campaign-deck --report --pdfs [--port]`, OPERATOR-ONLY
+  (the guard regex does not match it; a test pins that; it is not to be added). Same security
+  as review-serve (127.0.0.1, Host check, per-session token, no-store, no-referrer, no logging)
+  plus: startup refusals with fixed sentences (symlink, outside protected root, kind marker,
+  `--pdfs` dir, persistent salt); drawings resolved by hashing PDF stems; crops from the ORIGINAL
+  drawings after a 1 pt page-frame check (report drawings now carry `page_rect`; report only);
+  `/crop?doc=&bucket=&i=` validated against the examples shown; per-response script nonce CSP
+  (no `unsafe-inline` for script); every client value set with textContent/setAttribute; PyMuPDF
+  calls behind a lock; fixed one-line errors. **Verified in a real browser on synthetic data:**
+  hostile `<img onerror>`/`</script>`/U+202E payloads inert, every crop loads, no Referer, no CSP
+  errors from the page's own script. An old report (no `page_rect`) shows placeholders: re-run
+  `score --reviewer-grade`.
+
 ## Record shape later tasks consume
 Report (protected-root only): `{"kind": "campaign-grade-report", "campaign", "drawings": [per
 drawing: doc_hash(key), group, source_run, status, reason, rows, missed, scale, time_ms,
@@ -81,4 +99,6 @@ proposal, final, cross, note], "digest"}`; examples for the deck come from `rows
 3. `/home` hit 0 bytes free during Task 7 (user's disk, not ours); freed to ~19 GB.
 
 ## What's next
-Milestone C: Task 10 (`examples`), plan section "Milestone C".
+Milestone D, Task 12: the C1→C2 seam test (real `build_entry` → `load_bundle` → worker → seal →
+`pull_campaign` → `read_records` → `grade_campaign` → `score --reviewer-grade`), the CLAUDE.md
+paragraph and the runbook step. Then the final cross-cutting review and the merge choice.
