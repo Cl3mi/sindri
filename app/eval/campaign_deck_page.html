@@ -59,6 +59,9 @@ tr.changed td.prop { color: var(--red); text-decoration: line-through; }
 .note { margin-top: 6px; font-size: 13px; padding: 6px; border-left: 3px solid var(--blue);
         background: var(--sel); white-space: pre-wrap; overflow-wrap: anywhere; }
 .err { color: var(--red); }
+/* Client text may carry RTL marks or overrides; isolate it so it can never
+   reorder the text around it (a reversed tolerance reads as another number). */
+.val, .note, .meta, .b-name { unicode-bidi: isolate; }
 @media (max-width: 720px) {
   .app { grid-template-columns: 1fr; }
   nav { position: static; max-height: none; border-right: 0; border-bottom: 1px solid var(--rule); }
@@ -71,8 +74,9 @@ tr.changed td.prop { color: var(--red); text-decoration: line-through; }
   <nav><h1>Corrections</h1><div id="buckets"></div></nav>
   <main><p class="head" id="head">Loading…</p><div class="cards" id="cards"></div></main>
 </div>
-<script>
-// EVERY client value (row fields, notes) is placed with textContent or
+<script nonce="__NONCE__">
+// The server swaps a fresh nonce into this tag and the CSP per response; the
+// page runs no other script. EVERY client value (row fields, notes) is placed with textContent or
 // setAttribute and never parsed as markup: a note reading "<img onerror=...>"
 // must show as those characters. Nothing here may build HTML from strings.
 "use strict";
@@ -100,19 +104,21 @@ function valueTable(prop, fin) {
     const p = prop ? prop[f] : undefined, q = fin ? fin[f] : undefined;
     const tr = el("tr", show(p) !== show(q) ? {class: "changed"} : {});
     tr.append(el("th", {}, f),
-              el("td", {class: "val prop"}, prop ? show(p) : "(none)"),
-              el("td", {class: "val fin"}, fin ? show(q) : "(deleted)"));
+              el("td", {class: "val prop", dir: "auto"}, prop ? show(p) : "(none)"),
+              el("td", {class: "val fin", dir: "auto"}, fin ? show(q) : "(deleted)"));
     t.append(tr);
   }
   return t;
 }
 
-function card(ex) {
+function card(ex, bucket, i) {
   const c = el("div", {class: "card"});
-  const q = new URLSearchParams({doc: ex.doc_hash, row: String(ex.row_id), t: TOKEN});
+  // A crop is named by its place in the examples, never by row id: ids are
+  // per side, so a client-added row may share one with a proposal row.
+  const q = new URLSearchParams({doc: ex.doc_hash, bucket: bucket, i: String(i), t: TOKEN});
   c.append(el("img", {src: "/crop?" + q.toString(), alt: "crop of the original drawing",
                       loading: "lazy"}));
-  c.append(el("div", {class: "meta"},
+  c.append(el("div", {class: "meta", dir: "auto"},
               ex.doc_hash + " · row " + ex.row_id + " · " + show(ex.group)
               + (typeof ex.mm === "number" ? " · moved " + ex.mm.toFixed(1) + " mm" : "")));
   c.append(valueTable(ex.proposed, ex.final));
@@ -122,7 +128,7 @@ function card(ex) {
               el("span", {}, "gold: " + show(ex.verdict)));
   if (ex.note) tags.append(el("span", {}, "note ✎"));
   c.append(tags);
-  if (ex.note) c.append(el("div", {class: "note"}, ex.note));
+  if (ex.note) c.append(el("div", {class: "note", dir: "auto"}, ex.note));
   return c;
 }
 
@@ -137,7 +143,7 @@ function select(bucket) {
                             + (lever && lever.lever ? " · lever: " + lever.lever
                                + " (" + show(lever.lever_status) + ")" : "")));
   const cards = document.getElementById("cards");
-  cards.replaceChildren(...info.examples.map(card));
+  cards.replaceChildren(...info.examples.map((ex, i) => card(ex, bucket, i)));
 }
 
 function render() {

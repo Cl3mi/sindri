@@ -15,6 +15,8 @@ import json
 import math
 import re
 import secrets
+import sys
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -111,9 +113,28 @@ def examples(report: dict, per_bucket: int = DEFAULT_PER_BUCKET) -> dict:
 # --- the server ---------------------------------------------------------------
 
 _PAGE = Path(__file__).with_name("campaign_deck_page.html")
-_CSP = ("default-src 'none'; script-src 'unsafe-inline'; "
-        "style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; "
-        "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+# The page's one <script> carries this placeholder; each HTML response swaps
+# in a fresh nonce and names only that nonce in script-src. Without
+# 'unsafe-inline', a client value that ever did reach the DOM as markup still
+# could not run. Styles stay inline: they carry no client text.
+_NONCE_SLOT = b"__NONCE__"
+
+
+def _csp(nonce: Optional[str] = None) -> str:
+    script = f"'nonce-{nonce}'" if nonce else "'none'"
+    return (f"default-src 'none'; script-src {script}; "
+            "style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; "
+            "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+
+
+# PyMuPDF is not thread-safe, and the page lazy-loads up to a dozen crops at
+# once on a ThreadingHTTPServer: every fitz call (page_rect, render_crop and
+# the placeholder) runs under this one lock, one crop at a time.
+_FITZ_LOCK = threading.Lock()
+# The only line a failed request leaves on the terminal: the default
+# handle_error prints a traceback, which can quote a path or a value.
+MSG_REQUEST_FAILED = "campaign deck: a request failed (details withheld)"
+_INDEX = re.compile(r"\A(?:0|[1-9][0-9]{0,5})\Z")
 # Fixed sentences only, here and in every refusal: whatever this prints may be
 # read by someone other than the operator, and a path, a stem or exception
 # text can name a client part.
@@ -193,16 +214,23 @@ class CampaignDeckApp:
         for d in self.report["drawings"]:
             if isinstance(d, dict) and isinstance(d.get("doc_hash"), str):
                 self.drawings.setdefault(d["doc_hash"], d)
-        # Only (doc, row) pairs the page shows are croppable: never a free id.
+        # Only examples the page shows are croppable, each by its own
+        # (doc, bucket, index): never a free id. Not by row id -- a row the
+        # client added may reuse a proposal row's id in the same drawing, and
+        # a damaged report may carry ids that are not strings.
         self.shown: Dict[tuple, dict] = {}
-        for b in self.examples["buckets"].values():
-            for e in b["examples"]:
+        for bucket, b in self.examples["buckets"].items():
+            for i, e in enumerate(b["examples"]):
                 if isinstance(e["doc_hash"], str) and _KEY.match(e["doc_hash"]):
-                    self.shown.setdefault((e["doc_hash"], str(e["row_id"])), e)
+                    self.shown[(e["doc_hash"], bucket, i)] = e
         # Stems are hashed, never kept by name in anything a response carries.
         a = anon.Anonymizer(salt=salt)
         self.pdfs: Dict[str, Path] = {}
-        for p in sorted(pdfs.iterdir()):
+        try:
+            entries = sorted(pdfs.iterdir())
+        except OSError:
+            _refuse("--pdfs unreadable")
+        for p in entries:
             if p.suffix.lower() == ".pdf" and p.is_file():
                 self.pdfs.setdefault(a(p.stem), p)
 
@@ -213,8 +241,16 @@ class CampaignDeckApp:
         m = _HASH_OF_KEY.match(key)
         return self.pdfs.get(m.group(1)) if m else None
 
-    def crop(self, key: str, row_id: str) -> bytes:
-        ex, d = self.shown[(key, row_id)], self.drawings.get(key) or {}
+    def crop(self, key: str, bucket: str, index: int) -> bytes:
+        ex = self.shown[(key, bucket, index)]
+        with _FITZ_LOCK:
+            try:
+                return self._crop(key, ex)
+            except Exception:  # noqa: BLE001 -- its text may quote a path or value
+                return review_crops.placeholder_png(MSG_NO_DRAWING)
+
+    def _crop(self, key: str, ex: dict) -> bytes:
+        d = self.drawings.get(key) or {}
         pdf = self._pdf_for(key)
         page = review_crops.page_rect(pdf) if pdf is not None else None
         if page is None:
@@ -248,11 +284,8 @@ class CampaignDeckApp:
         # crop_rect pads by PAD_PT (40 pt), grows to a readable minimum and
         # keeps the region on the page.
         rect = review_crops.crop_rect(page, union, None)
-        try:
-            return review_crops.render_crop(pdf, rect, pred_box_pt=pbox, gold_pt=fdot,
-                                            final_box_pt=fbox)
-        except review_crops.CropError:
-            return review_crops.placeholder_png(MSG_NO_DRAWING)
+        return review_crops.render_crop(pdf, rect, pred_box_pt=pbox, gold_pt=fdot,
+                                        final_box_pt=fbox)
 
 
 def make_handler(app: CampaignDeckApp):
@@ -262,14 +295,14 @@ def make_handler(app: CampaignDeckApp):
         def log_message(self, *args):
             pass        # request lines carry the token and doc hashes
 
-        def _send(self, status: int, body: bytes, ctype: str):
+        def _send(self, status: int, body: bytes, ctype: str, nonce=None):
             self.send_response(status)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Content-Security-Policy", _CSP)
+            self.send_header("Content-Security-Policy", _csp(nonce))
             self.end_headers()
             self.wfile.write(body)
 
@@ -295,17 +328,21 @@ def make_handler(app: CampaignDeckApp):
             if url is None:
                 return
             if url.path == "/":
-                self._send(200, _PAGE.read_bytes(), "text/html; charset=utf-8")
+                nonce = secrets.token_urlsafe(18)
+                page = _PAGE.read_bytes().replace(_NONCE_SLOT, nonce.encode())
+                self._send(200, page, "text/html; charset=utf-8", nonce=nonce)
             elif url.path == "/api/examples":
                 self._json(200, app.payload())
             elif url.path == "/crop":
                 q = parse_qs(url.query)
                 key = q.get("doc", [""])[0]
-                rid = q.get("row", [""])[0]
+                bucket = q.get("bucket", [""])[0]
+                i = q.get("i", [""])[0]
                 # Shape first, then membership: the answer never depends on,
-                # or echoes, anything but a pair the report itself shows.
-                if _KEY.match(key) and (key, rid) in app.shown:
-                    self._send(200, app.crop(key, rid), "image/png")
+                # or echoes, anything but an example the report itself shows.
+                if (_KEY.match(key) and _INDEX.match(i)
+                        and (key, bucket, int(i)) in app.shown):
+                    self._send(200, app.crop(key, bucket, int(i)), "image/png")
                 else:
                     self._json(404, {"error": "not found"})
             else:
@@ -314,8 +351,13 @@ def make_handler(app: CampaignDeckApp):
     return Handler
 
 
+class _QuietServer(ThreadingHTTPServer):
+    def handle_error(self, request, client_address):
+        print(MSG_REQUEST_FAILED, file=sys.stderr)
+
+
 def make_server(app: CampaignDeckApp, port: int = 0) -> ThreadingHTTPServer:
-    return ThreadingHTTPServer(("127.0.0.1", port), make_handler(app))
+    return _QuietServer(("127.0.0.1", port), make_handler(app))
 
 
 def serve(report_path, pdfs_dir, port: int = 0) -> int:

@@ -87,6 +87,18 @@ def test_pdfs_that_is_not_a_directory_is_refused(env, capsys):
                       "--pdfs", str(pdfs / (STEM + SAMPLE.suffix))], bound)
 
 
+def test_an_unreadable_pdfs_dir_is_refused_with_a_fixed_line(env, monkeypatch, capsys):
+    prot, pdfs, bound = env
+    report = _write(prot, _report())
+
+    def denied(self):
+        raise PermissionError(13, "denied", str(self))
+    monkeypatch.setattr(Path, "iterdir", denied)
+    line = _refused(capsys, ["campaign-deck", "--report", str(report),
+                             "--pdfs", str(pdfs)], bound)
+    assert line == "ERROR: --pdfs unreadable"
+
+
 def test_no_persistent_salt_is_refused_and_none_is_minted(env, tmp_path, monkeypatch,
                                                           capsys):
     """Without the operator's salt no report hash joins to a drawing, and
