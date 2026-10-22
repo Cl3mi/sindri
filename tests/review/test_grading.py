@@ -150,3 +150,43 @@ def test_placement_is_measured_against_the_proposal_not_the_events():
 def test_a_deleted_row_has_no_placement():
     g = grade_session([row("a")], sealed([], [{"seq": 1, "type": "delete_row", "id": "a"}]))
     assert g["rows"][0]["bubble_px"] is None and g["rows"][0]["anchor_iou"] is None
+
+
+def test_iou_of_a_degenerate_or_inverted_box_is_none():
+    assert iou([0, 0, 0, 10], [0, 0, 10, 10]) is None
+    assert iou([0, 0, 10, 10], [5, 5, 5, 5]) is None
+    assert iou([10, 0, 0, 10], [0, 0, 10, 10]) is None
+    assert iou([0, 10, 10, 0], [0, 0, 10, 10]) is None
+
+
+def test_a_moved_anchor_is_a_move_with_partial_overlap():
+    final = [row("a", target_region=[20.0, 10.0, 60.0, 30.0])]
+    r = grade_session([row("a")], sealed(final, []))["rows"][0]
+    assert r["anchor_moved"] is True
+    assert abs(r["anchor_iou"] - 0.6) < 1e-9  # 600 / (800 + 800 - 600)
+
+
+def test_a_missing_final_balloon_is_none_not_zero():
+    final = [row("a", balloon_xy=None)]
+    r = grade_session([row("a")], sealed(final, []))["rows"][0]
+    assert r["bubble_px"] is None
+
+
+def test_a_drag_that_settles_back_within_ui_rounding_is_not_a_move():
+    """settleBox rounds a journaled box to 0.1 px, so a drag returned to its
+    start can land 0.1 px off; that is rounding, not a correction."""
+    final = [row("a", target_region=[10.1, 10.0, 50.0, 29.9])]
+    r = grade_session([row("a")], sealed(final, []))["rows"][0]
+    assert r["anchor_moved"] is False
+
+
+def test_a_moved_unconfirmed_suggestion_has_no_placement():
+    """Moving a tray suggestion that was never confirmed is not a correction
+    to a delivered balloon."""
+    p = row("s", suggested=True)
+    final = [row("s", suggested=True, balloon_xy=[300.0, 300.0],
+                 target_region=[20.0, 10.0, 60.0, 30.0])]
+    r = grade_session([p], sealed(final, []))["rows"][0]
+    assert r["grade"] == "suggestion_left"
+    assert r["bubble_px"] is None and r["anchor_iou"] is None
+    assert r["anchor_moved"] is False

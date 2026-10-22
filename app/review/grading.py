@@ -47,9 +47,17 @@ def _edit_reason(r: dict, fields: List[str]) -> Optional[str]:
     return max(cands)[1] if cands else None
 
 
+# Must sit above settleBox's 0.1 px rounding (the UI rounds a journaled box to
+# 0.1), so a drag settled back on its start never reads as a move, yet below
+# the smallest drag the UI can produce at high zoom.
+ANCHOR_MOVED_PX = 0.15
+
+
 def iou(a, b) -> Optional[float]:
     if a is None or b is None:
         return None
+    if a[2] <= a[0] or a[3] <= a[1] or b[2] <= b[0] or b[3] <= b[1]:
+        return None  # degenerate or inverted: no meaningful overlap
     ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
     iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
     inter = ix * iy
@@ -62,13 +70,15 @@ def _placement(p: dict, f: Optional[dict]) -> dict:
     (C1 decision 8), so the old one can only come from the proposal. Pixels in
     the page image the proposal was drawn in; campaign_grade turns them into
     mm with the drawing's render_scale. A deleted row has no placement."""
-    if f is None:
+    # A move on a suggestion the client never confirmed is not a correction to
+    # a delivered balloon, so it carries no placement at all.
+    if f is None or (p.get("suggested") and f.get("suggested")):
         return {"bubble_px": None, "anchor_iou": None, "anchor_moved": False}
     a, b = p.get("balloon_xy"), f.get("balloon_xy")
     bubble = (round(math.dist(a, b), 3) if a is not None and b is not None else None)
     pa, fa = p.get("target_region"), f.get("target_region")
     moved = (pa is not None and fa is not None
-             and any(abs(x - y) > 1e-6 for x, y in zip(pa, fa)))
+             and any(abs(x - y) > ANCHOR_MOVED_PX for x, y in zip(pa, fa)))
     return {"bubble_px": bubble, "anchor_iou": iou(pa, fa), "anchor_moved": moved}
 
 
