@@ -143,7 +143,65 @@ function renderAll() {
   updateBulkAvailability();
 }
 
+// A rebuild must not take the cell being edited with it. renderRows throws
+// every row away on each 'change', and since the reason prompt (reasons.js)
+// applies an edit only once it resolves, that 'change' now lands DURING the
+// next keystroke's dispatch: Tab to the next cell, type "5", the popover
+// dismisses, the op applies, the table rebuilds, and the focused cell the
+// "5" was meant for is gone -- the keystroke goes to <body> and is lost.
+// (Before the prompt, the synchronous apply-on-blur rebuilt during Tab's own
+// focus change and dropped focus to <body> the same way.) So the focused
+// cell is captured before the rebuild and handed to its replacement: same
+// row and field, any unsaved text, its _orig, and the caret.
+function captureEditFocus() {
+  const el = document.activeElement;
+  if (!el || el.tagName !== 'TD' || !el.isContentEditable || !body.contains(el)) return null;
+  const saved = { id: el.dataset.id, field: el.dataset.field,
+                  text: el.textContent, orig: el.dataset._orig, sel: null };
+  const s = window.getSelection();
+  if (s && s.rangeCount && el.contains(s.anchorNode) && el.contains(s.focusNode)) {
+    saved.sel = [textOffset(el, s.anchorNode, s.anchorOffset),
+                 textOffset(el, s.focusNode, s.focusOffset)];
+  }
+  return saved;
+}
+
+// The caret as a character offset into the cell's text. A cell holds one
+// text node (rendered via textContent); a caret on the element itself counts
+// child nodes, so it is read as "before/after the text".
+function textOffset(el, node, offset) {
+  if (node === el) return offset === 0 ? 0 : el.textContent.length;
+  return offset;
+}
+
+function restoreEditFocus(saved) {
+  if (!saved) return;
+  const td = body.querySelector(
+    `td[data-id="${CSS.escape(saved.id)}"][data-field="${CSS.escape(saved.field)}"]`);
+  if (!td) return;   // the row was deleted or filtered out: nothing to keep
+  // Unsaved typing survives the rebuild instead of reverting to the state's
+  // value; its blur then still sees it as an edit against the old _orig.
+  if (saved.orig !== undefined && saved.text !== saved.orig) td.textContent = saved.text;
+  td.focus();
+  // After focus(): the focus listener sets _orig to the current text, which
+  // would hide a pending edit from the blur that commits it.
+  if (saved.orig !== undefined) td.dataset._orig = saved.orig;
+  if (saved.sel) {
+    const len = td.textContent.length;
+    const node = td.firstChild || td;
+    const at = (o) => (node === td ? 0 : Math.max(0, Math.min(o, len)));
+    const s = window.getSelection();
+    s.setBaseAndExtent(node, at(saved.sel[0]), node, at(saved.sel[1]));
+  }
+}
+
 function renderRows() {
+  const editing = captureEditFocus();
+  renderRowsInto();
+  restoreEditFocus(editing);
+}
+
+function renderRowsInto() {
   body.innerHTML = '';
   for (const r of state.rows) {
     const tr = document.createElement('tr');
