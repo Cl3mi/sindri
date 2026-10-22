@@ -122,7 +122,7 @@ def main(argv=None) -> int:
                          "decision 5); never for a client share-pack")
     args = ap.parse_args(argv)
 
-    picks = select(load_rows(args.digest, args.allow_train),args.great, args.problem, args.min_gold,
+    picks = select(load_rows(args.digest, args.allow_train), args.great, args.problem, args.min_gold,
                    args.great_recall, args.problem_recall_min, args.max_escaped)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps(manifest(picks), indent=1), encoding="utf-8")

@@ -108,6 +108,13 @@ def main(argv=None) -> int:
             if (out / h / "campaign.json").is_file():
                 print(f"have {h}")      # complete: entries are renamed in whole
                 continue
+            if (out / h).exists():
+                # Not built by this tool (or from before entries were atomic):
+                # renaming over it would fail as a bare OSError, and silently
+                # replacing it could discard something the operator put there.
+                print(f"SKIP {h}: incomplete entry exists -- delete it", file=sys.stderr)
+                failed += 1
+                continue
             dump_path = by_hash.get(h)
             pdf = root / "corpus" / "originals" / (
                 dump_path.name[:-len(_PRED)] + ".pdf") if dump_path else None

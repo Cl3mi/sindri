@@ -158,6 +158,23 @@ def test_a_rerun_keeps_complete_entries(tmp_path, sample_pdf, monkeypatch, capsy
     assert (out / hg / "result.json").stat().st_mtime_ns == before
 
 
+def test_an_incomplete_entry_is_named_not_overwritten(tmp_path, sample_pdf,
+                                                      monkeypatch, capsys):
+    """A folder without campaign.json (copied by hand, or from before entries
+    were atomic) cannot be renamed over -- say so by hash and move on, rather
+    than surface a bare OSError the operator cannot act on."""
+    root, man, hb, hg = _root(tmp_path, sample_pdf, monkeypatch)
+    out = tmp_path / "out"
+    (out / hg).mkdir(parents=True)
+    (out / hg / "page.png").write_bytes(b"")
+    rc = campaign_build.main(["--root", str(root), "--manifest", str(man),
+                              "--name", "p", "--out", str(out)])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert f"SKIP {hg}: incomplete entry exists -- delete it" in err
+    assert [p.name for p in (out / hg).iterdir()] == ["page.png"]
+
+
 # --- the output folder guard (shared with export_share) ----------------------
 
 def test_out_dir_inside_the_protected_root_is_refused(tmp_path):
