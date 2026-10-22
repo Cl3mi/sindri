@@ -10,11 +10,11 @@ from tests.eval.test_runner_phantom_profile import _score, _write
 def test_drop_check_writes_counts_and_keeps_the_report(tmp_path):
     run, gold_dir = _write(tmp_path)
     assert _score(tmp_path, run, gold_dir) == 0
-    plain = (tmp_path / "r.json").read_text()
+    plain = (tmp_path / "r.report.json").read_text()
     out = tmp_path / "drops.json"
     assert _score(tmp_path, run, gold_dir, "--drop-check",
                   "--drop-out", str(out)) == 0
-    assert (tmp_path / "r.json").read_text() == plain
+    assert (tmp_path / "r.report.json").read_text() == plain
     r = json.loads(out.read_text())
     assert len(r["configs"]) == 11 and r["selected"] == "conf_below_099"
 

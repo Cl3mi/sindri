@@ -322,7 +322,13 @@ from tests.eval.test_score_scope_policy import _corpus  # noqa: E402
 def _score_args(tmp_path, run_dir, gold_dir, pdfs, deck):
     return ["score", "--run", str(run_dir), "--gold", str(gold_dir),
             "--pdfs", str(pdfs), "--name", "ws",
-            "--out", str(tmp_path / "scored.json"), "--review-deck", str(deck)]
+            # The report holds client values: since H1 it must sit directly
+            # under <root>/reports/ whenever roots are configured.
+            "--out", str(_scored(tmp_path)), "--review-deck", str(deck)]
+
+
+def _scored(tmp_path):
+    return tmp_path / "client" / "reports" / "scored.report.json"
 
 
 def test_score_refuses_a_deck_outside_a_protected_root_before_scoring(
@@ -334,7 +340,7 @@ def test_score_refuses_a_deck_outside_a_protected_root_before_scoring(
     assert main(_score_args(tmp_path, run_dir, gold_dir, pdfs,
                             tmp_path / "d.json")) == 1
     assert not (tmp_path / "d.json").exists()
-    assert not (tmp_path / "scored.json").exists()
+    assert not _scored(tmp_path).exists()
 
 
 def test_score_needs_pdfs_to_know_where_the_drawings_are(tmp_path,

@@ -212,3 +212,120 @@ def test_share_pack_summary_command_shape(tmp_path, roots, capsys):
                               "--problem", "0",
                               "--out", str(tmp_path / "m.json")]) in (0, 1)
     _no_leak(capsys, out)
+
+
+# ---- class B-file: score --out, split --out, variants --out ---------------
+
+REPORT = ".report.json"
+
+
+def _plain_score(tmp_path, out, *extra):
+    run, gold = _score_inputs(tmp_path, "phantom")
+    return runner.main(["score", "--run", str(run), "--gold", str(gold),
+                        "--name", "t", "--out", str(out), *extra])
+
+
+def test_score_report_lands_in_reports_and_replaces_only_a_report(
+        tmp_path, roots, capsys):
+    out = roots / "reports" / f"n{REPORT}"
+    assert _plain_score(tmp_path, out) == 0
+    assert _carries_marker(out, "run-report")
+    assert out.stat().st_mode & 0o777 == 0o600       # client values
+    assert _plain_score(tmp_path, out) == 0          # re-score: marker
+    old = roots / "reports" / f"old{REPORT}"         # written before H1
+    old.write_text('{"schema_version": 1, "run_name": "old"}')
+    assert _plain_score(tmp_path, old) == 1
+    assert old.read_text() == '{"schema_version": 1, "run_name": "old"}'
+    _no_leak(capsys, out, old)
+
+
+@pytest.mark.parametrize("where", ["gold", "grandchild", "root", "outside",
+                                   "suffix"])
+def test_score_report_refused_outside_reports(where, tmp_path, roots, capsys):
+    out = {"gold": roots / "gold" / f"x{REPORT}",
+           "grandchild": roots / "reports" / "sub" / f"x{REPORT}",
+           "root": roots / f"x{REPORT}",
+           "outside": tmp_path / f"x{REPORT}",
+           "suffix": roots / "reports" / "x.json"}[where]
+    assert _plain_score(tmp_path, out) == 1
+    assert not out.exists()
+    _no_leak(capsys, out)
+
+
+def test_score_report_refuses_a_link_to_gold(tmp_path, roots, capsys):
+    gold = _gold_standin(roots)
+    before = gold.read_bytes()
+    link = roots / "reports" / f"x{REPORT}"
+    link.symlink_to(gold)
+    assert _plain_score(tmp_path, link) == 1
+    assert gold.read_bytes() == before
+    _no_leak(capsys, link, gold)
+
+
+def test_score_report_checked_before_scoring(tmp_path, roots, capsys):
+    """Refused with no digest written either: the check runs first."""
+    digest = tmp_path / "scratch" / "p.json"
+    assert _plain_score(tmp_path, roots / "gold" / f"x{REPORT}",
+                        "--phantom-profile", "--phantom-out", str(digest)) == 1
+    assert not digest.exists()
+
+
+def test_score_report_may_not_go_into_its_own_run_dir(tmp_path, capsys):
+    """No roots configured (the conftest default), so only the input rule
+    can refuse this one."""
+    run, _ = _score_inputs(tmp_path, "phantom")
+    out = run / f"x{REPORT}"
+    assert _plain_score(tmp_path, out) == 1
+    assert not out.exists()
+
+
+def test_score_report_no_roots_mode_still_works(tmp_path, capsys):
+    out = tmp_path / "reports" / f"n{REPORT}"
+    assert _plain_score(tmp_path, out) == 0
+    assert _carries_marker(out, "run-report")
+    assert _plain_score(tmp_path, tmp_path / "n.json") == 1     # suffix holds
+
+
+def _split(tmp_path, out):
+    _, gold = _score_inputs(tmp_path, "phantom")
+    return runner.main(["split", "--gold", str(gold), "--out", str(out)])
+
+
+def test_split_written_once_into_meta_and_then_frozen(tmp_path, roots, capsys):
+    """The split is frozen (6d174d5e4f1b9228): re-running split must never
+    replace it, however the file is marked."""
+    out = roots / "meta" / "splits.json"
+    assert _split(tmp_path, out) == 0
+    first = out.read_bytes()
+    assert out.stat().st_mode & 0o777 == 0o600
+    assert _split(tmp_path, out) == 1
+    assert out.read_bytes() == first
+    for bad in (roots / "gold" / "splits.json", tmp_path / "splits.json",
+                roots / "meta" / "splits.txt"):
+        assert _split(tmp_path, bad) == 1
+        assert not bad.exists()
+    _no_leak(capsys, out)
+
+
+def test_split_no_roots_mode_still_never_overwrites(tmp_path, capsys):
+    out = tmp_path / "meta" / "splits.json"
+    assert _split(tmp_path, out) == 0
+    assert _split(tmp_path, out) == 1
+
+
+def _variants(tmp_path, out):
+    pdfs = tmp_path / "pdfs"
+    pdfs.mkdir(exist_ok=True)
+    return runner.main(["variants", "--pdfs", str(pdfs), "--out", str(out)])
+
+
+def test_variants_written_once_into_meta(tmp_path, roots, capsys):
+    out = roots / "meta" / "variants.txt"
+    assert _variants(tmp_path, out) == 0
+    first = out.read_bytes()
+    assert _variants(tmp_path, out) == 1
+    assert out.read_bytes() == first
+    for bad in (roots / "runs" / "variants.txt", roots / "meta" / "v.json"):
+        assert _variants(tmp_path, bad) == 1
+        assert not bad.exists()
+    _no_leak(capsys, out)

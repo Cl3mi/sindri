@@ -239,6 +239,10 @@ def _atypical_traits(rec) -> list:
 
 
 def _cmd_variants(args):
+    # Part numbers, and the split is built from them: directly under
+    # <root>/meta/, never overwriting an existing list.
+    out = check_client_file_out(args.out, subdir="meta", suffix=".txt",
+                                avoid=_inputs(args, "pdfs"))
     anon = _anon(args)
     scored, trait_counts = [], {}
     for pdf in sorted(Path(args.dir if hasattr(args, "dir") else args.pdfs)
@@ -254,10 +258,8 @@ def _cmd_variants(args):
     limit = args.limit if args.limit is not None else max(1, len(scored))
     chosen = scored[:limit]
 
-    out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text("\n".join(stem for _, stem, _ in chosen) + "\n",
-                   encoding="utf-8")
+    _write_checked(out, "\n".join(stem for _, stem, _ in chosen) + "\n",
+                   CLIENT_FILE_MODE)
 
     n_docs = len(list(Path(args.pdfs).glob(_PDF_GLOB)))
     print(json.dumps({
@@ -431,10 +433,15 @@ def _load_gold_dir(gold_dir):
 
 
 def _cmd_split(args):
+    # The split is FROZEN (6d174d5e4f1b9228) and lists part numbers: it goes
+    # only directly under <root>/meta/, and kind=None means an existing file
+    # is never replaced -- re-splitting is a deliberate act of moving it.
+    target = check_client_file_out(args.out, subdir="meta", suffix=".json",
+                                   avoid=_inputs(args, "gold"))
     gold = _load_gold_dir(args.gold)
     variants = [d for d, g in gold.items() if g.is_variant]
     splits = make_splits(sorted(gold), variants, seed=args.seed)
-    path = save_splits(splits, args.out)
+    path = save_splits(splits, target, expect_parent=target.parent)
     # The hash is the committable proof that a split is frozen: every report
     # embeds it, and compare refuses runs whose splits differ. The file itself
     # lists part numbers and stays outside the repo.
@@ -830,7 +837,13 @@ def _cmd_score(args):
               file=sys.stderr)
         return 1
     # Output paths first (H1): OutputRefused propagates to main(), which
-    # prints its fixed sentence and exits 1.
+    # prints its fixed sentence and exits 1. The report holds client values:
+    # directly under <root>/reports/, replacing only a previous run report.
+    report_target = check_client_file_out(
+        args.out, subdir="reports", suffix=".report.json", kind="run-report",
+        avoid=_inputs(args, "run", "gold", "splits", "weights", "pdfs",
+                      "review_deck") + [p for a, _ in _SCORE_DIGEST_FLAGS
+                                        if (p := getattr(args, a, None))])
     digest_targets = _check_score_digests(args)
     if getattr(args, "reapply_policy", False) and getattr(args, "policy_check", False):
         # --reapply-policy re-parses and re-flags every dump under the ACTIVE
@@ -1038,9 +1051,8 @@ def _cmd_score(args):
                        exclude_clamped=getattr(args, "exclude_clamped", False),
                        missing_dumps=len(missing_preds))
     report.reapplied_policy = reapplied
-    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.out).write_text(report.model_dump_json(indent=1),
-                              encoding="utf-8")
+    _write_checked(report_target, report.model_dump_json(indent=1),
+                   CLIENT_FILE_MODE)
     print(f"{args.name}: docs={len(scores)} "
           f"mean_review_cost={report.mean_review_cost:.2f} "
           f"recall={report.micro_recall:.3f} "
