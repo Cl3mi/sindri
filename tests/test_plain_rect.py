@@ -99,6 +99,34 @@ def test_export_share_drops_boxed_rows_and_renumbers(tmp_path):
     assert kept[0].pos == 1 and kept[0].balloon_xy is not None
 
 
+def test_export_share_refreshes_suggestions_like_the_pipeline(tmp_path):
+    """Tray rows get the same plain-rectangle drop as the confirmed rows and
+    are placed AFTER them (extract.py's order), keeping pos 0 -- so a bundle
+    built from a dump shows the tray exactly as a fresh run would."""
+    import export_share
+    scale = 300 / 72.0
+    pdf = tmp_path / "d.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=300, height=200)
+    page.draw_rect(fitz.Rect(30, 30, 80, 50), color=(0, 0, 0), width=1.5)   # sharp box
+    page.insert_text((38, 45), "101", fontsize=10)
+    page.insert_text((150, 120), "8.6", fontsize=10)
+    page.insert_text((150, 160), "4.2", fontsize=10)
+    doc.save(pdf)
+    doc.close()
+    plain = Characteristic(pos=1, target_region=(148 * scale, 108 * scale, 175 * scale, 122 * scale))
+    boxed_s = Characteristic(pos=0, suggested=True,
+                             target_region=(30 * scale, 30 * scale, 80 * scale, 50 * scale))
+    plain_s = Characteristic(pos=0, suggested=True, balloon_xy=(1, 1),
+                             target_region=(148 * scale, 148 * scale, 175 * scale, 162 * scale))
+    kept, sugg, dropped = export_share.refresh_result(
+        [plain], pdf, scale, suggestions=[boxed_s, plain_s])
+    assert dropped == 1
+    assert [c.target_region for c in kept] == [plain.target_region]
+    assert [c.target_region for c in sugg] == [plain_s.target_region]
+    assert sugg[0].pos == 0 and sugg[0].balloon_xy not in (None, (1, 1))
+
+
 def test_leader_stops_outside_balloon_and_box():
     b = fitz.Point(100, 100)
     start, end = _leader_segment(b, (150, 150, 190, 170), 9.0, 2.5)

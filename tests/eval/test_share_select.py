@@ -66,6 +66,18 @@ def test_train_digest_is_refused(tmp_path):
         select_main(["--digest", f"r={f}", "--out", str(tmp_path / "m.json")])
 
 
+def test_train_digest_is_allowed_only_when_asked(tmp_path):
+    """The review campaign selects from train + dev (plan C1 decision 5): 50
+    drawings exceed dev's scoped 15. A client share-pack still refuses train
+    unless the flag is given."""
+    f = tmp_path / "t.json"
+    f.write_text(json.dumps({"split": "train", "per_doc": [_row("a", .9)]}))
+    out = tmp_path / "m.json"
+    assert select_main(["--digest", f"r={f}", "--out", str(out), "--great", "1",
+                        "--problem", "0", "--allow-train"]) == 0
+    assert json.loads(out.read_text())["roles"] == {"a": "great"}
+
+
 def test_end_to_end_manifest_to_files(tmp_path, monkeypatch):
     monkeypatch.setenv("SINDRI_DOC_SALT", "testsalt")
     root = tmp_path / "root"
@@ -98,10 +110,11 @@ def test_end_to_end_manifest_to_files(tmp_path, monkeypatch):
 
 def test_unknown_hash_fails_loudly(tmp_path, monkeypatch):
     monkeypatch.setenv("SINDRI_DOC_SALT", "testsalt")
-    (tmp_path / "runs" / "r1").mkdir(parents=True)
+    # The out dir sits beside the root, never inside it (check_out_dir).
+    (tmp_path / "root" / "runs" / "r1").mkdir(parents=True)
     man = tmp_path / "m.json"
     man.write_text(json.dumps({"runs": [{"run": "r1", "hashes": ["deadbeef"]}]}))
-    assert export_share.main(["--root", str(tmp_path), "--manifest", str(man),
+    assert export_share.main(["--root", str(tmp_path / "root"), "--manifest", str(man),
                               "--out", str(tmp_path / "o")]) == 1
 
 

@@ -12,62 +12,72 @@ Each pick becomes <out>/<hash>/ with input.pdf, page.png, result.json and
 campaign.json -- exactly what app.campaign.load expects. Rows are what we
 would ship TODAY (plan C1 decision 4): today's flags/drops/tray via
 reapply_current_code, then the shipped plain-rectangle drop, renumbering and
-whitespace balloon placement via export_share.refresh_rows. Terminal output
-is hashes only. The output folder must stay outside the protected root and
-any git tree.
+whitespace balloon placement (confirmed rows, then the tray) via
+export_share.refresh_result. Terminal output is hashes only, and a failure is
+reported by exception TYPE only. The output folder must stay outside the
+protected root and any git tree (refused otherwise). Re-running into the same
+folder keeps every complete entry and retries the rest.
 """
 import argparse
 import json
 import os
 import shutil
 import sys
-import tempfile
 from pathlib import Path
 
 from app.batch.worker import result_payload
 from app.eval.anon import Anonymizer
 from app.eval.dump import load_dump
 from app.eval.reapply import reapply_current_code
-from app.pipeline.render import render_page
-from export_share import _PRED, refresh_rows
+from export_share import _PRED, ScaleMismatch, check_out_dir, refresh_result
+
+__all__ = ["ScaleMismatch", "build_entry", "main"]
 
 
-class ScaleMismatch(RuntimeError):
-    """The drawing no longer renders at the scale its dump was predicted at.
-
-    refresh_rows only WARNS in that case and leaves the rows as stored, which
-    is right for a PDF export (it draws at the dump's own dpi) but wrong here:
-    the review screen draws the rows' pixel boxes straight onto page.png, so a
-    page at another scale would show every box in the wrong place. The entry
-    is refused instead."""
+def _check_ids(rows) -> None:
+    """The review journal addresses rows by id, so an empty or repeated id
+    would make every reviewer act on that row ambiguous. The message names no
+    id: main() reports failures by type, but the rule holds for any caller."""
+    ids = [r.id for r in rows]
+    if not all(ids) or len(set(ids)) != len(ids):
+        raise ValueError("row ids")
 
 
 def build_entry(dump_path: Path, pdf_path: Path, out: Path, *, campaign: str,
                 group: str, run: str, doc_hash: str) -> Path:
-    dump = reapply_current_code(load_dump(dump_path))
-    res = dump.result
-    scale = res.render_scale or dump.scale
-    entry = Path(out) / doc_hash
-    with tempfile.TemporaryDirectory() as tmp:
-        # The page the app shows must be the render the rows' pixel boxes live
-        # in: the dump's own scale, never the app's default dpi. render_page
-        # may clamp the dpi under its pixel budget, so check the scale it
-        # actually used BEFORE anything is written -- no half-built entry.
-        render = render_page(pdf_path, dpi=int(round(scale * 72.0)), out_dir=tmp)
-        if abs(render.scale - scale) > 1e-3 * scale:
-            raise ScaleMismatch(f"{doc_hash}: render scale {render.scale:.4f} "
-                                f"!= dump scale {scale:.4f}")
-        # Suggestions are not re-placed: refresh_rows renumbers and places
-        # confirmed balloons only, and a tray row is pos 0 by construction.
-        rows, _ = refresh_rows(list(res.characteristics), pdf_path, scale)
-        res = res.model_copy(update={"characteristics": rows})
-        entry.mkdir(parents=True, exist_ok=False)
-        shutil.copyfile(render.png_path, entry / "page.png")
-    shutil.copyfile(pdf_path, entry / "input.pdf")
-    (entry / "result.json").write_text(json.dumps(result_payload(res)), encoding="utf-8")
-    (entry / "campaign.json").write_text(json.dumps({
-        "campaign": campaign, "group": group, "source_run": run,
-        "doc_hash": doc_hash, "file_name": f"{dump.doc_id}.pdf"}), encoding="utf-8")
+    """Build <out>/<doc_hash>/ atomically: everything goes into a hidden temp
+    dir that is renamed into place only once complete, so an interrupted or
+    failing build never leaves an entry the loader would take as whole."""
+    out = Path(out)
+    entry = out / doc_hash
+    tmp = out / f".{doc_hash}.tmp"
+    shutil.rmtree(tmp, ignore_errors=True)      # a previous crash's leftovers
+    tmp.mkdir(parents=True)
+    try:
+        dump = reapply_current_code(load_dump(dump_path))
+        res = dump.result
+        scale = res.render_scale or dump.scale
+        # strict: the review screen draws the rows' pixel boxes on page.png,
+        # so a page that no longer renders at the dump's scale must refuse the
+        # entry -- a PDF export may keep stored rows, this may not. page.png
+        # is the very render the boxes were checked against.
+        rows, suggestions, _ = refresh_result(
+            res.characteristics, pdf_path, scale, suggestions=res.suggestions,
+            strict=True, page_out=tmp / "page.png")
+        _check_ids([*rows, *suggestions])
+        res = res.model_copy(update={"characteristics": rows,
+                                     "suggestions": suggestions})
+        shutil.copyfile(pdf_path, tmp / "input.pdf")
+        (tmp / "result.json").write_text(json.dumps(result_payload(res)),
+                                         encoding="utf-8")
+        (tmp / "campaign.json").write_text(json.dumps({
+            "campaign": campaign, "group": group, "source_run": run,
+            "doc_hash": doc_hash, "file_name": f"{dump.doc_id}.pdf"}),
+            encoding="utf-8")
+        os.replace(tmp, entry)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
     return entry
 
 
@@ -81,6 +91,11 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     root = Path(args.root).expanduser()
     out = Path(args.out).expanduser()
+    try:
+        check_out_dir(out, root)
+    except ValueError as e:
+        print(f"refused: {e}", file=sys.stderr)
+        return 2
     out.mkdir(parents=True, exist_ok=True)
     m = json.loads(Path(args.manifest).expanduser().read_text(encoding="utf-8"))
     roles = m.get("roles") or {}
@@ -90,25 +105,37 @@ def main(argv=None) -> int:
         run_dir = root / "runs" / entry["run"]
         by_hash = {anon(p.name[:-len(_PRED)]): p for p in run_dir.glob(f"*{_PRED}")}
         for h in entry["hashes"]:
+            if (out / h / "campaign.json").is_file():
+                print(f"have {h}")      # complete: entries are renamed in whole
+                continue
             dump_path = by_hash.get(h)
             pdf = root / "corpus" / "originals" / (
                 dump_path.name[:-len(_PRED)] + ".pdf") if dump_path else None
-            if dump_path is None or not pdf.is_file() or h not in roles:
-                print(f"SKIP {h}: {'no dump' if dump_path is None else 'no drawing' if not pdf.is_file() else 'no role'}",
-                      file=sys.stderr)
+            if pdf is not None and not pdf.is_file():
+                pdf = None
+            if dump_path is None or pdf is None or h not in roles:
+                why = ("no dump" if dump_path is None else
+                       "no drawing" if pdf is None else "no role")
+                print(f"SKIP {h}: {why}", file=sys.stderr)
                 failed += 1
                 continue
             try:
                 build_entry(dump_path, pdf, out, campaign=args.name, group=roles[h],
                             run=entry["run"], doc_hash=h)
             except ScaleMismatch:
-                # The message names the hash only; never the doc id.
                 print(f"SKIP {h}: page no longer renders at the dump's scale",
                       file=sys.stderr)
                 failed += 1
                 continue
+            except Exception as e:
+                # The TYPE only, never the message: pydantic, fitz and OS
+                # errors quote the values, paths and ids they choked on, and
+                # this output is pasted back to an agent.
+                print(f"SKIP {h}: {type(e).__name__}", file=sys.stderr)
+                failed += 1
+                continue
             print(f"ok   {h} ({roles[h]})")
-    n = sum(1 for p in out.iterdir() if p.is_dir())
+    n = sum(1 for p in out.iterdir() if p.is_dir() and not p.name.startswith("."))
     print(f"\n{n} drawings in {out}" + (f"  ({failed} FAILED -- see above)" if failed else ""))
     return 1 if failed else 0
 

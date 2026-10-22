@@ -34,6 +34,7 @@ outside the protected root and any git tree. Terminal output is hashes only.
 import argparse
 import json
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -53,29 +54,79 @@ _PRED = ".pred.json"
 DEFAULT_RUNS = ("r4-control", "r4-controltest")
 
 
-def refresh_rows(rows, pdf_path, scale: float, drop_boxed: bool = True):
-    """(rows, n_dropped): the stored rows as a fresh run would deliver them --
-    minus those inside a plain rectangle (when `drop_boxed`), renumbered, and
-    with every balloon re-placed in blank space on the page.
+# A render at the dump's scale reproduces it to float precision (render_page
+# only computes dpi / 72), so anything above rounding noise is a real clamp.
+_SCALE_TOL = 1e-6
+
+
+class ScaleMismatch(RuntimeError):
+    """The drawing no longer renders at the scale its dump was predicted at
+    (the pixel budget clamps it now), so the stored pixel boxes and a fresh
+    render are in different frames."""
+
+
+def check_out_dir(out, root) -> None:
+    """Refuse an output folder inside the protected root or inside any git
+    tree (raises ValueError). Both tools write client drawings and values, and
+    either place would put them where the guard or a commit can reach them."""
+    out = Path(out).expanduser().resolve()
+    root = Path(root).expanduser().resolve()
+    if out == root or root in out.parents:
+        raise ValueError(f"--out {out} is inside the protected root {root}")
+    for p in (out, *out.parents):
+        if (p / ".git").exists():
+            raise ValueError(f"--out {out} is inside the git tree at {p}")
+
+
+def refresh_result(rows, pdf_path, scale: float, drop_boxed: bool = True,
+                   suggestions=(), strict: bool = False, page_out=None):
+    """(rows, suggestions, n_dropped): the stored rows AND tray suggestions as
+    a fresh run would deliver them -- minus those inside a plain rectangle
+    (when `drop_boxed`; n_dropped counts both), confirmed rows renumbered, and
+    every balloon re-placed in blank space on the page: the confirmed rows
+    first, then the suggestions in their own pass, as extract.py does, so a
+    suggestion can never push a real balloon off its callout. Suggestions
+    keep pos 0.
 
     The page is rendered at the dump's own scale, because the stored boxes are
-    pixels at that scale; a mismatch (budget clamp changed) leaves the rows
-    untouched rather than compare boxes in the wrong frame."""
+    pixels at that scale; a mismatch (budget clamp changed) leaves everything
+    untouched rather than compare boxes in the wrong frame -- or, with
+    `strict`, raises ScaleMismatch. `page_out` keeps a copy of that render,
+    so a caller showing the page gets exactly the frame the boxes were
+    checked against."""
+    rows, suggestions = list(rows), list(suggestions)
     with tempfile.TemporaryDirectory() as tmp:
-        render = render_page(pdf_path, dpi=int(round(scale * 72.0)), out_dir=tmp)
-        if abs(render.scale - scale) > 1e-3 * scale:
-            print(f"WARN render scale {render.scale:.4f} != dump scale {scale:.4f}: "
-                  f"rows left as stored", file=sys.stderr)
-            return rows, 0
+        # The float dpi, not a rounded one: a clamped dump's scale is not an
+        # integer dpi, and rounding would render a slightly different page.
+        render = render_page(pdf_path, dpi=scale * 72.0, out_dir=tmp)
+        if abs(render.scale - scale) > _SCALE_TOL * scale:
+            msg = f"render scale {render.scale:.4f} != dump scale {scale:.4f}"
+            if strict:
+                raise ScaleMismatch(msg)
+            print(f"WARN {msg}: rows left as stored", file=sys.stderr)
+            return rows, suggestions, 0
+        if page_out is not None:
+            shutil.copyfile(render.png_path, page_out)
         with Image.open(render.png_path) as im:
             im = im.convert("RGB")
             rects = bx.find_plain_rectangles(im) if drop_boxed else []
             ink = InkMap.from_image(im)
-    kept = [c for c in rows
-            if not (c.target_region and bx.in_plain_rectangle(c.target_region, rects))]
+
+    def unboxed(cs):
+        return [c for c in cs
+                if not (c.target_region and bx.in_plain_rectangle(c.target_region, rects))]
+    kept, kept_s = unboxed(rows), unboxed(suggestions)
     kept = number_characteristics(kept)
     place_balloons(kept, dpi=scale * 72.0, ink=ink)
-    return kept, len(rows) - len(kept)
+    place_balloons(kept_s, dpi=scale * 72.0, ink=ink)
+    return kept, kept_s, len(rows) + len(suggestions) - len(kept) - len(kept_s)
+
+
+def refresh_rows(rows, pdf_path, scale: float, drop_boxed: bool = True):
+    """(rows, n_dropped): refresh_result for confirmed rows only -- what the
+    client-share export writes (it never exports suggestions)."""
+    kept, _, n = refresh_result(rows, pdf_path, scale, drop_boxed)
+    return kept, n
 
 
 def export_one(dump_path: Path, pdf_path: Path, out_dir: Path,
@@ -166,6 +217,11 @@ def main(argv=None) -> int:
         return 1
 
     out_dir = Path(args.out).expanduser()
+    try:
+        check_out_dir(out_dir, root)
+    except ValueError as e:
+        print(f"refused: {e}", file=sys.stderr)
+        return 2
     out_dir.mkdir(parents=True, exist_ok=True)
     failed = sum(export_run(r, pdfs, out_dir, ids, hashes, args.keep_boxed)
                  for r, ids, hashes in jobs)
