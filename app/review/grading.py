@@ -80,7 +80,15 @@ def _placement(p: dict, f: Optional[dict]) -> dict:
     pa, fa = p.get("target_region"), f.get("target_region")
     moved = (pa is not None and fa is not None
              and any(abs(x - y) > ANCHOR_MOVED_PX for x, y in zip(pa, fa)))
-    return {"bubble_px": bubble, "anchor_iou": iou(pa, fa), "anchor_moved": moved}
+    overlap = iou(pa, fa)
+    # A journalled move of 1e308 -> -1e308 overflows to inf, and an anchor of
+    # that size makes the IoU nan: neither is a measurement, and either would
+    # make every JSON written from these rows invalid (Infinity/NaN).
+    if bubble is not None and not math.isfinite(bubble):
+        bubble = None
+    if overlap is not None and not math.isfinite(overlap):
+        overlap = None
+    return {"bubble_px": bubble, "anchor_iou": overlap, "anchor_moved": moved}
 
 
 def _ungradable(proposal_rows: List[dict], sealed: dict) -> Optional[str]:

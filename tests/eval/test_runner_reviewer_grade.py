@@ -20,6 +20,9 @@ SALT = "test-salt"
 # Planted client text: none of it may ever reach stdout or stderr.
 SECRET_FILE = "SECRET-PART-4711_rev-B.pdf"
 SECRET_NOTE = "customer said bore 12H7 is wrong"
+# The default drawing's hash JOINS the fixture gold (PART-9) under SALT: a run
+# whose gold joins nothing is now a reconcile problem, not a clean exit.
+H = doc_hash("PART-9", SALT)
 
 
 @pytest.fixture
@@ -52,7 +55,7 @@ def _manifest(tmp_path, roles, pool=None):
     return m
 
 
-def _tar(tmp_path, h="aaaaaaaa", group="great", path=None):
+def _tar(tmp_path, h=H, group="great", path=None):
     p = [proposal_row("a")]
     return write_tar(path or tmp_path / "r.tar", [drawing(
         h, p, p, [event(1, "set_note", text=SECRET_NOTE)], group=group,
@@ -85,7 +88,7 @@ def _no_leak(capsys):
 
 def _run(tmp_path, env, *extra, tar=None, man=None, out=None, gout=None):
     tar = tar or _tar(tmp_path)
-    man = man or _manifest(tmp_path, {"aaaaaaaa": "great"})
+    man = man or _manifest(tmp_path, {H: "great"})
     return runner.main(_args(tmp_path, tar, man, out or _out(env),
                              gout or _gout(tmp_path), *extra))
 
@@ -103,10 +106,11 @@ def test_reviewer_grade_writes_digest_and_report(tmp_path, env, capsys):
     # it may overwrite without parsing the whole of a large report.
     assert next(iter(report)) == "kind" and report["kind"] == "campaign-grade-report"
     assert next(iter(digest)) == "kind" and digest["kind"] == "campaign-grade-digest"
+    assert digest["name"] == report["name"] == "pilot-1"
     cap = _no_leak(capsys)
     assert cap.out.strip().splitlines() == [
         "reviewer-grade: approved=1 pending=0 ungradable=0 "
-        "skipped=0 not_in_records=0 reconciles=True"]
+        "skipped=0 not_in_records=0 gold=1/1 reconciles=True"]
     # The digest is the agent-safe file: the note is a count, never text.
     assert SECRET_NOTE not in gout.read_text()
     assert SECRET_FILE not in gout.read_text()
@@ -168,7 +172,7 @@ def test_report_may_not_overwrite_the_pull_it_grades(tmp_path, env, capsys):
 
 def test_report_may_not_overwrite_the_manifest(tmp_path, env, capsys):
     man = env / "m.grade.json"
-    man.write_text(json.dumps({"runs": [], "roles": {"aaaaaaaa": "great"},
+    man.write_text(json.dumps({"runs": [], "roles": {H: "great"},
                                "pool": {"great": 1}}))
     before = man.read_text()
     _refused(tmp_path, env, capsys, man=man, out=man)
@@ -270,7 +274,7 @@ def test_a_missing_salt_is_refused_not_minted(tmp_path, env, capsys, monkeypatch
 @pytest.mark.parametrize("which", ["missing", "empty", "file"])
 def test_a_gold_dir_without_gold_is_refused(tmp_path, env, capsys, which):
     tar = _tar(tmp_path)
-    man = _manifest(tmp_path, {"aaaaaaaa": "great"})
+    man = _manifest(tmp_path, {H: "great"})
     gold = tmp_path / ("g-" + which)
     if which == "empty":
         gold.mkdir()
@@ -314,8 +318,8 @@ def test_a_missing_pull_is_one_fixed_error(tmp_path, env, capsys):
 
 @pytest.mark.parametrize("content", [
     "{not json",
-    json.dumps({"runs": [], "roles": ["aaaaaaaa"], "pool": {}}),
-    json.dumps({"runs": [], "roles": {"aaaaaaaa": "great"}, "pool": {"great": "x"}}),
+    json.dumps({"runs": [], "roles": [H], "pool": {}}),
+    json.dumps({"runs": [], "roles": {H: "great"}, "pool": {"great": "x"}}),
 ])
 def test_a_bad_manifest_is_one_fixed_error(tmp_path, env, capsys, content):
     man = tmp_path / "m.json"
@@ -397,7 +401,7 @@ def test_a_reconcile_problem_exits_3_with_a_count_only(tmp_path, env, capsys):
     """The run is not clean, so a script chaining on the exit code must stop;
     3, because 2 is argparse's usage error. The problem keys carry salted
     hashes, but stdout gets the count alone."""
-    man = _manifest(tmp_path, {"aaaaaaaa": "problem"})   # disagrees on group
+    man = _manifest(tmp_path, {H: "problem"})   # disagrees on group
     assert _run(tmp_path, env, man=man) == 3
     digest = json.loads(_gout(tmp_path).read_text())
     assert digest["reconciles"] is False and _out(env).is_file()
@@ -447,3 +451,63 @@ def test_help_still_works(capsys):
         runner.main(["score", "--help"])
     assert e.value.code == 0
     assert "--reviewer-grade" in capsys.readouterr().out
+
+
+# --- gold that joins nothing is loud (final review) ---------------------------
+
+HINT = ("reviewer-grade: no drawing joined to gold (wrong salt, or --gold is not "
+        "the --originals ingest)")
+
+
+def test_a_wrong_salt_exits_3_with_the_fixed_hint(tmp_path, env, capsys, monkeypatch):
+    """The manifest roles still join (they were hashed with the build salt),
+    so without this every drawing would read no_gold and exit 0."""
+    monkeypatch.setenv("SINDRI_DOC_SALT", "another-salt")
+    assert _run(tmp_path, env) == 3
+    lines = _no_leak(capsys).out.strip().splitlines()
+    assert "gold=0/1 gold_not_computed=no_gold:1 reconciles=False" in lines[0]
+    assert lines[1].startswith("reviewer-grade: PROBLEMS ")
+    assert lines[2] == HINT
+    digest = json.loads(_gout(tmp_path).read_text())
+    assert "gold_none_joined" in digest["reconcile_problems"]
+
+
+def test_a_frame_mismatch_everywhere_exits_3(tmp_path, env, capsys):
+    g = GoldDoc(doc_id="PART-9", pdf="x", excel="y", page_rect=(0.0, 0.0, 1191.0, 842.0))
+    (tmp_path / "gold" / "PART-9.gold.json").write_text(g.model_dump_json())
+    assert _run(tmp_path, env) == 3
+    lines = _no_leak(capsys).out.strip().splitlines()
+    assert "gold=0/1 gold_not_computed=frame_mismatch:1" in lines[0]
+    assert lines[-1] == HINT
+
+
+def test_a_partial_gold_join_exits_0_with_the_fraction(tmp_path, env, capsys):
+    p = [proposal_row("a")]
+    other = "bbbbbbbb"
+    tar = write_tar(tmp_path / "r.tar", [drawing(H, p, p, []), drawing(other, p, p, [])])
+    man = _manifest(tmp_path, {H: "great", other: "great"})
+    assert _run(tmp_path, env, tar=tar, man=man) == 0
+    assert _no_leak(capsys).out.strip().splitlines() == [
+        "reviewer-grade: approved=2 pending=0 ungradable=0 skipped=0 "
+        "not_in_records=0 gold=1/2 gold_not_computed=no_gold:1 reconciles=True"]
+
+
+# --- --name is recorded; grade-only flags need --reviewer-grade ----------------
+
+def test_an_untoken_name_is_recorded_as_unnamed(tmp_path, env, capsys):
+    argv = _args(tmp_path, _tar(tmp_path), _manifest(tmp_path, {H: "great"}),
+                 _out(env), _gout(tmp_path))
+    argv[argv.index("--name") + 1] = "PART 4711/x"
+    assert runner.main(argv) == 0
+    assert json.loads(_gout(tmp_path).read_text())["name"] == "unnamed"
+    assert "PART 4711" not in _no_leak(capsys).out
+
+
+@pytest.mark.parametrize("flag", ["--manifest", "--grade-out"])
+def test_grade_only_flags_are_refused_without_reviewer_grade(tmp_path, env, capsys, flag):
+    rc = runner.main(["score", "--run", str(tmp_path / "run"), "--gold",
+                      str(tmp_path / "gold"), "--name", "x",
+                      "--out", str(tmp_path / "o.json"), flag, str(tmp_path / "m-grade.json")])
+    assert rc == 1
+    err = _no_leak(capsys).err
+    assert err.count("\n") == 1 and "--reviewer-grade" in err and str(tmp_path) not in err

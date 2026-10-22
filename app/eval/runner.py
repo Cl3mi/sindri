@@ -746,7 +746,7 @@ def _cmd_reviewer_grade(args):
                         if h in in_records}
         try:
             report, digest = campaign_grade.grade_campaign(
-                records, gold_by_hash, manifest)
+                records, gold_by_hash, manifest, name=args.name)
         except ValueError:  # grade_campaign raises it only for a bad manifest
             return fail("--manifest: bad roles/pool")
         # Report first, digest second: a digest whose report failed to write
@@ -763,10 +763,19 @@ def _cmd_reviewer_grade(args):
                 return fail("--grade-out: the digest could not be written")
         s = digest["drawings"]
         nir = "n/a" if s["not_in_records"] is None else s["not_in_records"]
+        # gold=<joined>/<approved>: a wrong salt or a wrong --gold dir must be
+        # visible on the one line an agent reads, not only in the digest. The
+        # not-computed reasons are closed words (_gold_section tokens them).
+        g = digest["gold_cross_check"]
+        gold = f"gold={g['n_drawings_computed']}/{s['approved']}"
+        if g["not_computed"]:
+            gold += " gold_not_computed=" + ",".join(
+                f"{k}:{v}" for k, v in g["not_computed"].items())
         line = (f"reviewer-grade: approved={s['approved']} pending={s['pending']} "
                 f"ungradable={s['ungradable']} skipped={s['skipped']} "
-                f"not_in_records={nir} reconciles={digest['reconciles']}")
+                f"not_in_records={nir} {gold} reconciles={digest['reconciles']}")
         n_problems = len(digest["reconcile_problems"])
+        gold_none = "gold_none_joined" in digest["reconcile_problems"]
     except Exception:  # noqa: BLE001 -- the message could quote a client value
         return fail("grading failed")
     print(line)
@@ -774,6 +783,9 @@ def _cmd_reviewer_grade(args):
         # The count only: the problem keys carry hashes and belong in the
         # digest. Nonzero so a script chaining on the exit code stops here.
         print(f"reviewer-grade: PROBLEMS {n_problems}")
+        if gold_none:
+            print("reviewer-grade: no drawing joined to gold (wrong salt, or "
+                  "--gold is not the --originals ingest)")
         return 3
     return 0
 
@@ -781,6 +793,12 @@ def _cmd_reviewer_grade(args):
 def _cmd_score(args):
     if getattr(args, "reviewer_grade", None):
         return _cmd_reviewer_grade(args)
+    # The mirror of _NOT_WITH_REVIEWER_GRADE: these mean nothing to a plain
+    # score, and silently ignoring them reads as if a digest had been written.
+    if getattr(args, "manifest", None) or getattr(args, "grade_out", None):
+        print("ERROR: --manifest and --grade-out need --reviewer-grade",
+              file=sys.stderr)
+        return 1
     if not args.run:
         print("ERROR: --run is required (except with --reviewer-grade)",
               file=sys.stderr)

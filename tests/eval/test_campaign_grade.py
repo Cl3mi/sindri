@@ -429,7 +429,9 @@ def _campaign(tmp_path, extra=()):
 
 
 def test_grade_campaign_end_to_end_and_reconciles(tmp_path):
-    report, digest = grade_campaign(read_records(_campaign(tmp_path)), gold_by_hash={},
+    # gold_by_hash=None: no cross-check asked for. {} would mean "asked, and
+    # nothing joined", which is the gold_none_joined problem.
+    report, digest = grade_campaign(read_records(_campaign(tmp_path)), gold_by_hash=None,
                                     manifest=_manifest({"aaaaaaaa": "great",
                                                         "bbbbbbbb": "problem",
                                                         "cccccccc": "problem",
@@ -504,7 +506,7 @@ def test_damaged_pending_and_ungradable_drawings_are_counted_not_fatal(tmp_path)
         drawing("dddddddd", p, p, [], header=False),
         drawing("eeeeeeee", noid, p, []),
         drawing("ffffffff", p, p, [], render_scale=None)])
-    report, digest = grade_campaign(read_records(tar), gold_by_hash={}, manifest=None)
+    report, digest = grade_campaign(read_records(tar), gold_by_hash=None, manifest=None)
     d = digest["drawings"]
     assert d["approved"] == 2 and d["pending"] == 1 and d["ungradable"] == 3
     assert d["ungradable_reasons"] == {"header_missing": 1, "grade_error": 1,
@@ -778,3 +780,137 @@ def test_an_unreadable_note_costs_the_note_not_the_grade(tmp_path):
     assert digest["drawings"]["approved"] == 2
     assert digest["notes_unreadable"] == 2 and digest["notes_written"] == 0
     assert all(d["note"] == "" for d in report["drawings"])
+
+
+# --- final review (C2): gold that joins nothing is a problem, not a silence ---
+
+def test_gold_asked_for_but_joined_to_nothing_is_a_problem(tmp_path):
+    """A wrong salt or a wrong --gold dir leaves every drawing 'no_gold' and
+    would otherwise reconcile cleanly: the cross-check silently vanishes."""
+    _, digest = grade_campaign(read_records(_campaign(tmp_path)), gold_by_hash={},
+                               manifest=None)
+    assert "gold_none_joined" in digest["reconcile_problems"]
+    assert digest["reconciles"] is False
+    # None = no cross-check requested at all: nothing to complain about.
+    _, digest = grade_campaign(read_records(_campaign(tmp_path)), gold_by_hash=None)
+    assert "gold_none_joined" not in digest["reconcile_problems"]
+
+
+def test_a_frame_mismatch_on_every_drawing_is_gold_none_joined(tmp_path):
+    bad = GoldDoc(doc_id="D", pdf="x", excel="y", page_rect=(0, 0, 1191, 842))
+    _, digest = grade_campaign(read_records(_campaign(tmp_path)),
+                               gold_by_hash={"aaaaaaaa": bad, "bbbbbbbb": bad})
+    assert digest["gold_cross_check"]["not_computed"] == {"frame_mismatch": 2}
+    assert "gold_none_joined" in digest["reconcile_problems"]
+
+
+def test_a_partial_gold_join_is_not_a_problem(tmp_path):
+    _, digest = grade_campaign(read_records(_campaign(tmp_path)),
+                               gold_by_hash={"aaaaaaaa": _gold_at_fixture_row()})
+    assert digest["gold_cross_check"]["n_drawings_computed"] == 1
+    assert digest["reconcile_problems"] == []
+
+
+def test_no_approved_drawing_needs_no_gold(tmp_path):
+    p = [proposal_row("a")]
+    rec = _tar(tmp_path, [drawing("aaaaaaaa", p, p, [], approved=False)])
+    _, digest = grade_campaign(rec, gold_by_hash={})
+    assert digest["reconcile_problems"] == []
+
+
+# --- final review (C2): the precision ratios are checkable from the digest ---
+
+def test_flag_split_counts_and_explicit_lower_bounds_are_emitted():
+    """precision / unflagged_precision count SILENT confirmations (approval
+    only needs flagged rows resolved), so the digest must carry the counts
+    behind them and the explicit-only lower bounds."""
+    rows = [graded("confirmed", reviewed=True),                  # unflagged, explicit
+            graded("confirmed"),                                 # unflagged, silent
+            graded("edited"), graded("phantom"),                 # unflagged, wrong
+            graded("confirmed", flagged=True, reviewed=True),    # flagged, right
+            graded("phantom", flagged=True),                     # flagged, wrong
+            graded("suggestion_left")]
+    m = group_metrics([{"rows": rows, "missed": [], "scale": 1.0, "time_ms": 0}])
+    c = m["counts"]
+    assert (c["flagged"], c["flagged_wrong"]) == (2, 1)
+    assert (c["unflagged_confirmed"], c["unflagged_edited"], c["unflagged_phantom"]) == (2, 1, 1)
+    assert c["unflagged_confirmed"] + c["unflagged_edited"] + c["unflagged_phantom"] \
+        + c["flagged"] == 6
+    assert math.isclose(m["unflagged_precision"], 2 / 4)
+    assert math.isclose(m["unflagged_precision_explicit_only"], 1 / 4)
+    assert math.isclose(m["precision"], 3 / 6)
+    assert math.isclose(m["precision_explicit_only"], 2 / 6)
+    assert math.isclose(m["flag_precision"], c["flagged_wrong"] / c["flagged"])
+
+
+def test_explicit_only_ratios_are_none_without_a_denominator():
+    m = group_metrics([{"rows": [graded("suggestion_left")], "missed": [], "scale": 1.0,
+                        "time_ms": 0}])
+    assert m["precision_explicit_only"] is None
+    assert m["unflagged_precision_explicit_only"] is None
+
+
+@pytest.mark.parametrize("break_it, problem", [
+    (lambda c: c.__setitem__("flagged", c["flagged"] + 1), "group_flag_partition:great"),
+    (lambda c: c.__setitem__("confirmed_explicit", c["confirmed"] + 1),
+     "group_explicit:great"),
+])
+def test_the_flag_partition_and_explicit_bound_are_checked(tmp_path, monkeypatch,
+                                                           break_it, problem):
+    real = campaign_grade.group_metrics
+
+    def drifted(ds):
+        m = real(ds)
+        break_it(m["counts"])
+        return m
+    monkeypatch.setattr(campaign_grade, "group_metrics", drifted)
+    _, digest = grade_campaign(read_records(_campaign(tmp_path)))
+    assert problem in digest["reconcile_problems"]
+
+
+# --- final review (C2): odd inputs ------------------------------------------
+
+def test_a_non_finite_placement_never_makes_the_digest_invalid_json(tmp_path):
+    """A journal move of 1e308 -> -1e308 overflows math.dist to inf, and an
+    anchor of that size makes the IoU nan; json.dumps would then write
+    Infinity/NaN, which is not JSON."""
+    big = 1e308
+    p = [proposal_row("a", balloon_xy=[-big, -big],
+                      target_region=[-big, -big, big, big])]
+    final = [proposal_row("a", balloon_xy=[big, big], target_region=[-big, -big, big, 1.0])]
+    d = drawing("aaaaaaaa", p, final,
+                [event(1, "move_row", id="a", xy=[big, big]),
+                 event(2, "move_target", id="a", box=[-big, -big, big, 1.0])])
+    report, digest = grade_campaign(_tar(tmp_path, [d]))
+    assert digest["drawings"]["approved"] == 1
+    row = report["drawings"][0]["rows"][0]
+    assert row["bubble_px"] is None and row["anchor_iou"] is None
+    json.dumps(digest, allow_nan=False)
+    json.dumps(report, allow_nan=False)
+
+
+def test_group_metrics_skip_a_non_finite_distance():
+    rows = [graded("confirmed", bubble_px=float("inf")), graded("confirmed", bubble_px=60.0)]
+    m = group_metrics([{"rows": rows, "missed": [], "scale": 1.0, "time_ms": 0}])
+    assert m["placement"]["placed"] == 1
+    json.dumps(m, allow_nan=False)
+
+
+def test_manifest_run_names_must_be_tokens(tmp_path):
+    """A run name is copied into the digest's by_source_run, so a name that
+    is not a plain token never joins the allowlist."""
+    p = [proposal_row("a")]
+    ds = [drawing("aaaaaaaa", p, p, [], source_run="PART 4711/x")]
+    man = {"runs": [{"run": "PART 4711/x"}], "roles": {}}
+    _, digest = grade_campaign(_tar(tmp_path, ds), manifest=man)
+    assert digest["by_source_run"] == {"unknown": 1}
+
+
+def test_the_name_is_recorded_after_the_kind(tmp_path):
+    report, digest = grade_campaign(read_records(_campaign(tmp_path)), name="pilot-1")
+    assert list(digest)[:2] == ["kind", "name"] and digest["name"] == "pilot-1"
+    assert list(report)[:2] == ["kind", "name"] and report["name"] == "pilot-1"
+    _, digest = grade_campaign(read_records(_campaign(tmp_path)), name="PART 4711/x")
+    assert digest["name"] == "unnamed"
+    _, digest = grade_campaign(read_records(_campaign(tmp_path)))
+    assert digest["name"] == "unnamed"

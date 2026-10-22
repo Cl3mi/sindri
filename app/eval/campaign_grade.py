@@ -116,9 +116,12 @@ def group_metrics(drawings: List[dict]) -> dict:
             # bubble_px is None for a deleted row or an unconfirmed
             # suggestion: no final position exists, so it is not evidence
             # that the bubble stayed put and must not enter the denominator.
-            if r.get("bubble_px") is not None:
+            # Non-finite is no measurement either (a hand-built or pre-guard
+            # row): it would put Infinity/NaN into the digest, which is not JSON.
+            mm = (px_to_mm(r["bubble_px"], d["scale"])
+                  if r.get("bubble_px") is not None else None)
+            if mm is not None and math.isfinite(mm):
                 placed += 1
-                mm = px_to_mm(r["bubble_px"], d["scale"])
                 if mm > BUBBLE_MOVED_MM:
                     moved += 1
                     moves_mm.append(mm)
@@ -128,7 +131,7 @@ def group_metrics(drawings: List[dict]) -> dict:
             # ones. anchor_iou None on a survivor is unmeasurable, which is
             # different from "measured and unmoved".
             if g in SURVIVING_GRADES:
-                if r.get("anchor_iou") is None:
+                if r.get("anchor_iou") is None or not math.isfinite(r["anchor_iou"]):
                     anchor_unmeasurable += 1
                 else:
                     anchor_measured += 1
@@ -143,6 +146,12 @@ def group_metrics(drawings: List[dict]) -> dict:
     # recovering them is recall the shipped balloons alone understate.
     tray_found = counts["suggestion_confirmed"] + counts["suggestion_edited"]
     counts["confirmed_silent"] = counts["confirmed"] - counts["confirmed_explicit"]
+    # The counts behind every precision ratio, so each one can be recomputed
+    # (and checked) from the digest alone. unflagged_* + flagged partition
+    # the graded balloons; grade_campaign checks that.
+    counts["flagged"], counts["flagged_wrong"] = flagged, flagged_wrong
+    for g in VALUE_GRADES:
+        counts[f"unflagged_{g}"] = unflagged[g]
     times = [d["time_ms"] / 60000 for d in drawings if d.get("time_ms")]
     # One shared denominator for both recalls: everything the client is known
     # to have wanted. These are UPPER bounds whenever the client's manual
@@ -152,10 +161,16 @@ def group_metrics(drawings: List[dict]) -> dict:
     return {
         "n_drawings": len(drawings),
         "counts": counts,
-        # precision / unflagged_precision include SILENT confirmations (rows
-        # the client never touched); the digest shows the explicit/silent split.
+        # precision / unflagged_precision include SILENT confirmations: approval
+        # only requires the FLAGGED rows to be resolved, so an unflagged row
+        # the client never looked at counts as confirmed. They are upper
+        # bounds; the *_explicit_only values count only rows the client
+        # explicitly accepted and are the matching lower bounds.
         "precision": _ratio(counts["confirmed"], graded_balloons),
+        "precision_explicit_only": _ratio(counts["confirmed_explicit"], graded_balloons),
         "unflagged_precision": _ratio(unflagged["confirmed"], sum(unflagged.values())),
+        "unflagged_precision_explicit_only": _ratio(
+            counts["unflagged_confirmed_explicit"], sum(unflagged.values())),
         "flag_precision": _ratio(flagged_wrong, flagged),
         "recall_shipped_vs_client_known": _ratio(surviving, known),
         "recall_with_tray_vs_client_known": _ratio(surviving + tray_found, known),
@@ -545,7 +560,9 @@ def _manifest_parts(manifest):
             raise TypeError
     except TypeError:
         raise ValueError("manifest: bad roles/pool") from None
-    return roles, pool, {r["run"] for r in runs}
+    # A run name is copied into by_source_run, so only plain tokens may join
+    # the allowlist; anything else falls to "unknown" like an unlisted run.
+    return roles, pool, {r["run"] for r in runs if _token(r["run"])}
 
 
 # Our own predict-run naming (r5-control, r4-controltest, r3-trainpredict):
@@ -611,7 +628,7 @@ def _gold_section(crosses: List[dict]) -> dict:
 
 def grade_campaign(records, gold_by_hash: Optional[Dict[str, GoldDoc]] = None,
                    manifest: Optional[dict] = None, *,
-                   params: Optional[MatchParams] = None):
+                   params: Optional[MatchParams] = None, name=None):
     """-> (report, digest).
 
     `report` holds per-row grades, proposed/final values and notes: it goes
@@ -621,7 +638,11 @@ def grade_campaign(records, gold_by_hash: Optional[Dict[str, GoldDoc]] = None,
     `gold_by_hash` maps doc_hash -> GoldDoc and MUST come from the
     `--originals` gold ingest: the campaign renders the clean original, and a
     stamped-sheet gold of the same page size passes the frame check while
-    every position is wrong (see _same_frame).
+    every position is wrong (see _same_frame). None means "no cross-check
+    requested"; a dict (even an empty one) means gold was asked for, and if no
+    approved drawing joins it that is the reconcile problem gold_none_joined.
+
+    `name` is the run's --name, kept only if it is a plain token.
 
     A drawing is ungradable (with a fixed word, never exception text, which
     can quote client values) when its record is damaged, its replay does not
@@ -637,6 +658,9 @@ def grade_campaign(records, gold_by_hash: Optional[Dict[str, GoldDoc]] = None,
         if manifest_runs:
             return _allowed(s, manifest_runs) or "unknown"
         return s if isinstance(s, str) and _RUN_NAME.match(s) else "unknown"
+    # The operator's --name lands in the digest, so only a plain token is kept.
+    run_name = _token(name, "unnamed")
+    gold_requested = gold_by_hash is not None
     gold_by_hash = gold_by_hash or {}
     status = {"approved": 0, "pending": 0, "ungradable": 0}
     reasons: Dict[str, int] = {}
@@ -735,6 +759,15 @@ def grade_campaign(records, gold_by_hash: Optional[Dict[str, GoldDoc]] = None,
         if (sum(c[g] for g in VALUE_GRADES + SUGGESTION_GRADES)
                 != sum(len(e["rows"]) for e in ds)):
             problems.append(f"group_counts:{grp}")
+        # The counts behind the precision ratios must add up: flagged plus
+        # the unflagged per-grade counts partition the graded balloons, and
+        # an explicit confirmation is a confirmation. Both are checked against
+        # counts the digest carries, so a reader can redo them.
+        graded = sum(c[g] for g in VALUE_GRADES)
+        if sum(c[f"unflagged_{g}"] for g in VALUE_GRADES) + c["flagged"] != graded:
+            problems.append(f"group_flag_partition:{grp}")
+        if not (c["unflagged_confirmed_explicit"] <= c["confirmed_explicit"] <= c["confirmed"]):
+            problems.append(f"group_explicit:{grp}")
     if sum(m["n_drawings"] for m in groups.values()) != status["approved"]:
         problems.append("group_drawings")
     if sum(status.values()) != len(records.drawings):
@@ -744,8 +777,15 @@ def grade_campaign(records, gold_by_hash: Optional[Dict[str, GoldDoc]] = None,
     if (gold_section["n_drawings_computed"] + sum(gold_section["not_computed"].values())
             != status["approved"]):
         problems.append("gold_coverage")
+    # Gold was asked for (a dict, even empty) yet no approved drawing joined
+    # it: a wrong salt or a wrong --gold dir. Every drawing would otherwise
+    # read no_gold and the run would reconcile cleanly with its cross-check
+    # silently gone. None means no cross-check was requested at all.
+    if (gold_requested and status["approved"]
+            and gold_section["n_drawings_computed"] == 0):
+        problems.append("gold_none_joined")
 
-    in_records = {h for h in map(doc_hash, records.drawings.values()) if h}
+    in_records ={h for h in map(doc_hash, records.drawings.values()) if h}
     in_skipped = {s.get("doc_hash") for s in records.skipped
                   if isinstance(s, dict) and isinstance(s.get("doc_hash"), str)}
     for h in sorted(in_records & in_skipped):
@@ -774,6 +814,7 @@ def grade_campaign(records, gold_by_hash: Optional[Dict[str, GoldDoc]] = None,
     # report that may be large.
     digest = {
         "kind": DIGEST_KIND,
+        "name": run_name,
         "campaign": campaign,
         "drawings": {**status, "ungradable_reasons": dict(sorted(reasons.items())),
                      "skipped": len(records.skipped),
@@ -798,6 +839,6 @@ def grade_campaign(records, gold_by_hash: Optional[Dict[str, GoldDoc]] = None,
         "reconcile_problems": problems,
         "reconciles": not problems,
     }
-    report = {"kind": REPORT_KIND, "campaign": campaign, "drawings": report_docs,
-              "digest": digest}
+    report = {"kind": REPORT_KIND, "name": run_name, "campaign": campaign,
+              "drawings": report_docs, "digest": digest}
     return report, digest

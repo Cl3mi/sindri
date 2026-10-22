@@ -100,9 +100,20 @@ is a few hundred KB) and events batches can be large too.
      is counts, salted hashes and fixed words. The full report holds client
      values and notes, so it is refused anywhere but inside the protected
      root, under a `.grade.json` name.
-   - Exit 0 = clean, 3 = written but does not reconcile (the digest's
-     `reconcile_problems` say which check failed; do not quote its numbers
-     until that is understood), 1 = refused, nothing written.
+   - The count line carries `gold=<joined>/<approved>`, plus
+     `gold_not_computed=<reason>:<n>,...` (closed words such as `no_gold`,
+     `frame_mismatch`) when any approved drawing was not cross-checked. A
+     partial join is normal (not every pick need have gold) and exits 0.
+   - Exit 0 = clean; 3 = written but does not reconcile (the digest's
+     `reconcile_problems` say which check failed, and a `PROBLEMS <n>` line
+     follows the count line; do not quote its numbers until that is
+     understood); 1 = refused or failed (if only the digest write failed,
+     the report was written); 2 = bad arguments.
+   - If NO approved drawing joined gold, the run exits 3 with
+     `gold_none_joined` and prints `reviewer-grade: no drawing joined to
+     gold (wrong salt, or --gold is not the --originals ingest)`: check
+     that `~/.claude/sindri-doc-salt` is the one the campaign was built
+     with, and that `--gold` is the `--originals` ingest.
    - Re-running after a later pull regenerates both files in place: an
      existing file is only replaced when it carries its own kind marker
      (`campaign-grade-report` / `campaign-grade-digest`); any other file at

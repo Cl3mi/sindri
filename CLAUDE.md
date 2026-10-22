@@ -344,9 +344,16 @@ what they are named for: pooled metrics are reweighted to `manifest.pool`
 (the selection's great:problem mix, not the pick's) and say why when they
 are unmeasured (`pooled_unmeasured`); `recall_*_vs_client_known` are UPPER
 bounds (the client's adds are what they bothered to add); review time is a
-LOWER bound (the sealed journal is compacted); precision counts silent
-confirmations as correct, so quote it with the
-`confirmed_explicit`/`confirmed_silent` split. Exit 3 = written but does not
+LOWER bound (the sealed journal is compacted); `precision` and
+`unflagged_precision` count SILENT confirmations as correct (approval only
+needs the flagged rows resolved), so they are upper bounds — quote them with
+`precision_explicit_only` / `unflagged_precision_explicit_only`, the matching
+lower bounds, and the `confirmed_explicit`/`confirmed_silent` split. Every
+ratio's counts are in the digest (`flagged`, `flagged_wrong`,
+`unflagged_{confirmed,edited,phantom}`) and checked to partition the graded
+balloons. The count line ends `gold=<joined>/<approved>`; gold asked for but
+joined to NO approved drawing (wrong salt, or `--gold` not the `--originals`
+ingest) is the problem `gold_none_joined`. Exit 3 = written but does not
 reconcile (`reconcile_problems`). `runner campaign-deck` (§1) is the
 operator's drill-down over the report. `tests/eval/test_campaign_c2_seam.py`
 runs builder → loader → worker → real store/seal → pull → grader → CLI →

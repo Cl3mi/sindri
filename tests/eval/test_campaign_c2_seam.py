@@ -227,7 +227,7 @@ def test_the_cli_writes_the_same_grade_inside_and_a_safe_digest_outside(
     assert rc == 0
     cap = capsys.readouterr()
     assert cap.out.strip() == ("reviewer-grade: approved=1 pending=0 ungradable=0 "
-                               "skipped=0 not_in_records=0 reconciles=True")
+                               "skipped=0 not_in_records=0 gold=1/1 reconciles=True")
     _no_leak(cap.out + cap.err)
 
     text = gout.read_text()
