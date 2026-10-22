@@ -970,6 +970,10 @@ input[type="file"].sr {
    these controls toggle their own `hidden`/display from JS (the bulk bar
    shows on selection); a campaign-only instance must win over that. */
 body.campaign-only [data-campaign-hide] { display: none !important; }
+/* Until /api/health answers the page cannot know it is campaign-only, and a
+   cold server takes a second: hide the same chrome until it does, so the
+   client never sees Import flash. pingHealth lifts it. */
+body.health-pending [data-campaign-hide] { display: none !important; }
 #doc-note {
   width: 280px; resize: vertical; font: inherit; font-size: var(--fs-sm);
   color: var(--fg); background: var(--bg-input);

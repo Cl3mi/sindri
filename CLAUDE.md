@@ -313,9 +313,10 @@ phase 2's keys; a digit picks a chip only outside an editor). Balloon and
 anchor drags need 3 screen px before anything is journaled, so a click is
 never graded as a correction. A table re-render now keeps the cell being
 edited (`table.js`), or the keystroke after a reason prompt was lost.
-Grading is plan C2. VPS runbook: `docs/deploy/vps.md`. Known, unfixed: on a
-cold server the work list can show Import for ~1 s, until `/api/health`
-answers and hides the campaign-only chrome.
+Grading is plan C2. VPS runbook: `docs/deploy/vps.md`. The page starts
+`body.health-pending`, which hides the campaign-only chrome (and refuses a
+dropped file) until `/api/health` answers, retrying every 5 s, so a cold
+server never flashes Import at the client.
 
 **`read-lora-v1` IS NOW HARMFUL UNDER THE SHIPPED POLICY — deployment CLOSED**
 (2026-10-05, `docs/plans/2026-10-05-read-adapter-repricing-result.md`;

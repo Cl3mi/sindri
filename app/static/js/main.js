@@ -584,6 +584,11 @@ async function handleFile(file) {
     toast({ kind: 'warn', title: 'Uploads are off here', msg: 'This instance is for reviewing the drawings already in the list.' });
     return;
   }
+  // Before /api/health answers we cannot know whether uploads are off.
+  if (document.body.classList.contains('health-pending')) {
+    toast({ kind: 'warn', title: 'Still connecting to the server', msg: 'Try again in a moment.' });
+    return;
+  }
   // One waiting drawing per tab: a second upload would orphan the first,
   // which only its link could ever reach again (B3 adds a list). Each
   // refusal names a control the reviewer actually has on screen.
@@ -1607,12 +1612,17 @@ async function pingHealth() {
   if (!data) {
     pill.classList.remove('ok'); pill.classList.add('warn');
     label.textContent = 'API unreachable';
+    // Still unknown whether this instance is campaign-only, so the chrome
+    // stays hidden (health-pending) and we ask again.
+    setTimeout(pingHealth, 5000);
     return;
   }
   // A campaign-only instance 403s every upload, bulk and export route
   // (plan C1 decision 10); hide their controls rather than show buttons
   // that can only fail ([data-campaign-hide], components.css).
   document.body.classList.toggle('campaign-only', !!data.campaign_only);
+  document.body.classList.remove('health-pending');
+  pill.classList.remove('warn');
   pill.classList.add('ok');
   const backend = data.ocr_backend_active || data.backend || 'OCR';
   const short = String(backend).replace('Backend','');
