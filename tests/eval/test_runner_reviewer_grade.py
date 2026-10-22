@@ -234,7 +234,13 @@ def test_reviewer_grade_refuses_show_ids(tmp_path, env, capsys):
     ["--run", "x"], ["--review-deck", "x"], ["--policy-check"],
     ["--reapply-policy"], ["--gentol-check"], ["--phantom-profile"],
     ["--drop-check"], ["--reparse-check"], ["--splits", "s.json"],
-    ["--split", "test"]])
+    ["--split", "test"], ["--policy-out", "p.json"], ["--gentol-out", "g.json"],
+    ["--phantom-out", "x.json"], ["--drop-out", "d.json"], ["--pdfs", "dir"],
+    ["--max-pages", "1"], ["--exclude-clamped"], ["--weights", "w.json"],
+    ["--allow-partial"], ["--flag-rules", "a"], ["--drop-rules", "a"],
+    ["--drop-configs", "a"], ["--drop-family", "verifier"],
+    ["--assignment", "max_cardinality"], ["--reconcile-frames", "scale"],
+    ["--dpi", "150"]])
 def test_score_flags_of_other_modes_are_refused(tmp_path, env, capsys, flags):
     assert _run(tmp_path, env, *flags) == 1
     assert not _out(env).exists() and not _gout(tmp_path).exists()
@@ -331,6 +337,58 @@ def test_an_unexpected_failure_is_one_fixed_error(tmp_path, env, capsys, monkeyp
     assert _run(tmp_path, env) == 1
     assert not _out(env).exists() and not _gout(tmp_path).exists()
     assert _no_leak(capsys).err == "ERROR: grading failed\n"
+
+
+# --- an OSError while probing a path never prints the path ---------------------
+# resolve(), is_symlink(), exists() and the marker read can all raise, and a
+# PermissionError's text IS the path -- a client folder name, on a real run.
+MARKER = "PLANTED-CLIENT-DIR-4711"
+
+
+@pytest.mark.parametrize("check", ["check_report_path", "check_digest_path"])
+def test_an_oserror_checking_an_output_is_a_fixed_refusal(tmp_path, env, capsys,
+                                                         monkeypatch, check):
+    import app.eval.review as review
+
+    def boom(*a, **k):
+        raise PermissionError(13, "Permission denied", MARKER)
+    monkeypatch.setattr(review, check, boom)
+    assert _run(tmp_path, env) == 1
+    assert not _out(env).exists() and not _gout(tmp_path).exists()
+    cap = _no_leak(capsys)
+    assert cap.err == "ERROR: output path refused\n" and MARKER not in cap.out
+
+
+def test_an_oserror_from_the_real_path_probe_is_a_fixed_refusal(tmp_path, env, capsys,
+                                                                monkeypatch):
+    """The same through pathlib itself, not a stubbed checker."""
+    import pathlib
+    real = pathlib.Path.is_symlink
+
+    def boom(self):
+        if self.name.endswith("grade.json"):
+            raise PermissionError(13, "Permission denied", MARKER)
+        return real(self)
+    monkeypatch.setattr(pathlib.Path, "is_symlink", boom)
+    assert _run(tmp_path, env) == 1
+    cap = _no_leak(capsys)
+    assert cap.err == "ERROR: output path refused\n" and MARKER not in cap.out
+
+
+def test_an_oserror_probing_the_inputs_is_a_fixed_refusal(tmp_path, env, capsys,
+                                                          monkeypatch):
+    import pathlib
+    real = pathlib.Path.glob
+
+    def boom(self, pattern, *a, **k):
+        if pattern.endswith("gold.json"):
+            raise PermissionError(13, "Permission denied", MARKER)
+        return real(self, pattern, *a, **k)
+    monkeypatch.setattr(pathlib.Path, "glob", boom)
+    assert _run(tmp_path, env) == 1
+    assert not _out(env).exists() and not _gout(tmp_path).exists()
+    cap = _no_leak(capsys)
+    assert cap.err == "ERROR: input unreadable\n" and MARKER not in cap.out
 
 
 # --- exit codes and writes -----------------------------------------------------

@@ -634,7 +634,14 @@ _NOT_WITH_REVIEWER_GRADE = (
     ("run", None), ("review_deck", None), ("policy_check", False),
     ("reapply_policy", False), ("gentol_check", False),
     ("phantom_profile", False), ("drop_check", False),
-    ("reparse_check", False), ("splits", None), ("split", "dev"))
+    ("reparse_check", False), ("splits", None), ("split", "dev"),
+    ("policy_out", None), ("gentol_out", None), ("phantom_out", None),
+    ("drop_out", None), ("pdfs", None), ("max_pages", None),
+    ("exclude_clamped", False), ("weights", None), ("allow_partial", False),
+    ("flag_rules", ""), ("drop_rules", ""), ("drop_configs", ""),
+    ("drop_family", "phantom"),
+    # grade_campaign runs with the default MatchParams; these would not reach it.
+    ("assignment", "greedy"), ("reconcile_frames", "none"), ("dpi", 300))
 
 
 def _write_atomic(target: Path, text: str, mode: int) -> None:
@@ -685,33 +692,40 @@ def _cmd_reviewer_grade(args):
         return fail("--show-ids cannot be used with --reviewer-grade")
     if any(getattr(args, k, d) != d for k, d in _NOT_WITH_REVIEWER_GRADE):
         return fail("--reviewer-grade cannot be combined with another score "
-                    "mode's flags (--run, --review-deck, --policy-check, "
-                    "--reapply-policy, --gentol-check, --phantom-profile, "
-                    "--drop-check, --reparse-check, --splits, --split)")
+                    "mode's flags; it takes only --gold, --name, --out, "
+                    "--manifest and --grade-out")
     if not args.manifest:
         return fail("--reviewer-grade needs --manifest (roles + pool)")
     # Both outputs are checked BEFORE anything is read: an agent picks these
     # paths, so neither may land on gold, a dump, the pull, the manifest or
     # each other -- and a bad path fails in seconds, holding no client value.
+    # resolve/is_symlink/exists and the marker read can raise OSError, and a
+    # PermissionError's text IS the path -- so it is caught here, by type,
+    # and never printed. ReviewRefused messages are our own fixed words.
     try:
         out = check_report_path(args.out, avoid=[args.reviewer_grade, args.manifest])
+        grade_out = None
+        if args.grade_out:
+            try:
+                grade_out = check_digest_path(
+                    args.grade_out, avoid=[args.out, args.reviewer_grade, args.manifest])
+            except ReviewRefused as e:
+                return fail(f"--grade-out refused: {e}")
     except ReviewRefused as e:
         return fail(f"--out refused: {e}")
-    grade_out = None
-    if args.grade_out:
-        try:
-            grade_out = check_digest_path(
-                args.grade_out, avoid=[args.out, args.reviewer_grade, args.manifest])
-        except ReviewRefused as e:
-            return fail(f"--grade-out refused: {e}")
-    # A fresh salt would hash no gold id to any record's hash: every join
-    # would silently fail, and the minted salt file would be left behind.
-    if not salt_is_persistent():
-        return fail("--reviewer-grade needs the persistent doc-id salt "
-                    "(~/.claude/sindri-doc-salt or SINDRI_DOC_SALT)")
-    gold_dir = Path(args.gold)
-    if not gold_dir.is_dir() or not any(gold_dir.glob("*.gold.json")):
-        return fail("--gold: not a directory of gold files")
+    except (OSError, RuntimeError):     # RuntimeError: a symlink loop in resolve()
+        return fail("output path refused")
+    try:
+        # A fresh salt would hash no gold id to any record's hash: every join
+        # would silently fail, and the minted salt file would be left behind.
+        if not salt_is_persistent():
+            return fail("--reviewer-grade needs the persistent doc-id salt "
+                        "(~/.claude/sindri-doc-salt or SINDRI_DOC_SALT)")
+        gold_dir = Path(args.gold)
+        if not gold_dir.is_dir() or not any(gold_dir.glob("*.gold.json")):
+            return fail("--gold: not a directory of gold files")
+    except OSError:
+        return fail("input unreadable")
     try:
         records = read_records(args.reviewer_grade)
     except Exception:  # noqa: BLE001 -- not a tar, missing, torn: one fixed line
