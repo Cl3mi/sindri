@@ -13,10 +13,22 @@ text (a part number in a file name)."""
 import fnmatch
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from app.eval.review import _carries_marker, _protected_roots, inside_protected
+from app.eval.review import (ProtectedRootsError, _carries_marker,
+                             _protected_roots, inside_protected)
+
+# What a check may raise that must become a fixed refusal: a filesystem
+# error, or a roots file that cannot be trusted (which fails CLOSED -- it is
+# never read as "no roots").
+_CHECK_ERRORS = (OSError, ProtectedRootsError)
+
+# Announced once per process, so a machine that should have roots but has
+# none (a missing or misnamed file) is visible rather than silently laxer.
+_NO_ROOTS_ANNOUNCED = False
+_NO_ROOTS_NOTICE = "no protected roots configured: root rule skipped"
 
 # Written into a class-C directory on first use, so a later run (or a
 # resume) recognises the directory as this tool's. Its CONTENT is checked,
@@ -80,8 +92,8 @@ def check_digest_out(path, kind: str, avoid: Sequence = ()) -> Path:
             raise OutputRefused("a file that is not a previous digest of this "
                                 "kind already exists there; move it away "
                                 "deliberately")
-    except OSError:
-        raise OutputRefused("the digest path cannot be checked")
+    except _CHECK_ERRORS:
+        raise OutputRefused("the digest path cannot be checked") from None
     return target
 
 
@@ -93,8 +105,14 @@ def _in_subdir(target_parent: Path, subdir: str) -> bool:
     itself a link (pointing who knows where) fails closed. With no roots
     (GPU container, CI) the rule cannot be evaluated and is skipped; every
     other rule still applies (operator decision 3)."""
+    global _NO_ROOTS_ANNOUNCED
     roots = _protected_roots()
-    return not roots or any(target_parent == r / subdir for r in roots)
+    if not roots:
+        if not _NO_ROOTS_ANNOUNCED:
+            _NO_ROOTS_ANNOUNCED = True
+            print(_NO_ROOTS_NOTICE, file=sys.stderr)
+        return True
+    return any(target_parent == r / subdir for r in roots)
 
 
 def check_client_file_out(path, *, subdir: str, suffix: str, kind=None,
@@ -115,8 +133,8 @@ def check_client_file_out(path, *, subdir: str, suffix: str, kind=None,
             raise OutputRefused("a file already exists there and is not a "
                                 "previous output of this kind; move it away "
                                 "deliberately")
-    except OSError:
-        raise OutputRefused("the output path cannot be checked")
+    except _CHECK_ERRORS:
+        raise OutputRefused("the output path cannot be checked") from None
     return target
 
 
@@ -149,8 +167,8 @@ def check_client_dir_out(path, *, subdir: str, legacy: Sequence[str],
                    for e in entries):
             raise OutputRefused("the output directory holds files that are "
                                 "not this tool's output")
-    except OSError:
-        raise OutputRefused("the output directory cannot be checked")
+    except _CHECK_ERRORS:
+        raise OutputRefused("the output directory cannot be checked") from None
     return target
 
 

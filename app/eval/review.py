@@ -160,14 +160,47 @@ def build_deck(rows: List[ReviewRow], run: str, originals_dir,
             "rows": [asdict(r) for r in rows]}
 
 
+class ProtectedRootsError(ReviewRefused):
+    """The roots file exists but cannot be trusted (unreadable, undecodable,
+    or a line that is not an absolute path). A ReviewRefused, so every caller
+    that already refuses on one refuses on this too: a broken roots file
+    must fail CLOSED, never read as "no roots" or as a root nobody meant."""
+
+
+_ROOTS_BROKEN = ("the protected-roots file cannot be used (unreadable, or a "
+                 "line that is not an absolute path); fix it before writing "
+                 "any output")
+
+
 def _protected_roots() -> List[Path]:
+    """Parsed exactly as the Bash guard parses the same file: `#` starts a
+    comment, `~` expands. Before this, every non-blank line counted, so the
+    file's own comment lines resolved against the cwd into roots like
+    `<cwd>/# ...` -- and a path under them passed the inside-a-root checks.
+    The guard would accept a relative line by anchoring it at ITS cwd, which
+    is not ours; here it is a config error, raised with a fixed sentence
+    (no path: the message prints where an agent reads)."""
     f = Path(os.environ.get("SINDRI_PROTECTED_PATHS",
                             Path.home() / ".claude" / "sindri-protected-paths"))
-    if not f.is_file():
-        return []
-    return [Path(line.strip()).resolve()
-            for line in f.read_text(encoding="utf-8").splitlines()
-            if line.strip()]
+    try:
+        if not f.is_file():
+            return []
+        text = f.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError, ValueError):
+        raise ProtectedRootsError(_ROOTS_BROKEN) from None
+    roots = []
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        expanded = os.path.expanduser(line)
+        if not os.path.isabs(expanded):
+            raise ProtectedRootsError(_ROOTS_BROKEN)
+        try:
+            roots.append(Path(expanded).resolve())
+        except (OSError, RuntimeError, ValueError):
+            raise ProtectedRootsError(_ROOTS_BROKEN) from None
+    return roots
 
 
 def inside_protected(path) -> bool:
