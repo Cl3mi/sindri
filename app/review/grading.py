@@ -9,6 +9,7 @@ because events.jsonl can hold unsealed or torn tail events (C1 state file,
 'What's next' 1). Value comparison is exact string equality on the four
 VALUE_FIELDS: every change arrives as an explicit edit_cell, so a difference
 is the reviewer's act, and an edit undone by a later edit nets to unchanged."""
+import math
 from typing import Dict, List, Optional
 
 from app.review.journal import VALUE_FIELDS
@@ -46,6 +47,31 @@ def _edit_reason(r: dict, fields: List[str]) -> Optional[str]:
     return max(cands)[1] if cands else None
 
 
+def iou(a, b) -> Optional[float]:
+    if a is None or b is None:
+        return None
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    union = ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter)
+    return inter / union if union > 0 else None
+
+
+def _placement(p: dict, f: Optional[dict]) -> dict:
+    """Proposal -> sealed-final placement. Events carry only the NEW position
+    (C1 decision 8), so the old one can only come from the proposal. Pixels in
+    the page image the proposal was drawn in; campaign_grade turns them into
+    mm with the drawing's render_scale. A deleted row has no placement."""
+    if f is None:
+        return {"bubble_px": None, "anchor_iou": None, "anchor_moved": False}
+    a, b = p.get("balloon_xy"), f.get("balloon_xy")
+    bubble = (round(math.dist(a, b), 3) if a is not None and b is not None else None)
+    pa, fa = p.get("target_region"), f.get("target_region")
+    moved = (pa is not None and fa is not None
+             and any(abs(x - y) > 1e-6 for x, y in zip(pa, fa)))
+    return {"bubble_px": bubble, "anchor_iou": iou(pa, fa), "anchor_moved": moved}
+
+
 def grade_session(proposal_rows: List[dict], sealed: dict) -> dict:
     final = {r["id"]: r for r in sealed.get("rows", [])}
     reasons = _last_reasons(sealed.get("net_events", []))
@@ -75,6 +101,7 @@ def grade_session(proposal_rows: List[dict], sealed: dict) -> dict:
             rec["fields"] = _changed_fields(p, f)
             rec["grade"] = "edited" if rec["fields"] else "confirmed"
             rec["reason"] = _edit_reason(r, rec["fields"])
+        rec.update(_placement(p, f))
         graded.append(rec)
     proposed = {p["id"] for p in proposal_rows}
     missed = [r for i, r in final.items() if i not in proposed]

@@ -123,3 +123,30 @@ def test_explicit_review_is_recorded_apart_from_silence():
                       sealed([row("a"), row("b")], ev, reviewed=["a"]))
     by = {r["id"]: r for r in g["rows"]}
     assert by["a"]["reviewed"] is True and by["b"]["reviewed"] is False
+
+
+from app.review.grading import iou
+
+
+def test_iou_basics():
+    assert iou([0, 0, 10, 10], [0, 0, 10, 10]) == 1.0
+    assert iou([0, 0, 10, 10], [20, 20, 30, 30]) == 0.0
+    assert abs(iou([0, 0, 10, 10], [5, 0, 15, 10]) - 1 / 3) < 1e-9
+    assert iou(None, [0, 0, 1, 1]) is None
+
+
+def test_placement_is_measured_against_the_proposal_not_the_events():
+    """Events carry only the NEW position (C1 decision 8); the old one is the
+    proposal's, so displacement is proposal -> sealed final."""
+    ev = [{"seq": 1, "type": "move_row", "id": "a", "xy": [130.0, 140.0]},
+          {"seq": 2, "type": "move_target", "id": "a", "box": [10.0, 10.0, 50.0, 30.0]}]
+    final = [row("a", balloon_xy=[130.0, 140.0])]
+    g = grade_session([row("a")], sealed(final, ev))
+    r = g["rows"][0]
+    assert r["bubble_px"] == 50.0           # (30, 40) -> 50
+    assert r["anchor_iou"] == 1.0 and r["anchor_moved"] is False
+
+
+def test_a_deleted_row_has_no_placement():
+    g = grade_session([row("a")], sealed([], [{"seq": 1, "type": "delete_row", "id": "a"}]))
+    assert g["rows"][0]["bubble_px"] is None and g["rows"][0]["anchor_iou"] is None
