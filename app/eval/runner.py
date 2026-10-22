@@ -627,7 +627,182 @@ def _serving_backend(env=None):
     return choice.lower() if choice.lower() not in ("", "vlm") else None
 
 
+# Flags of score's OTHER modes, with their parser defaults: given alongside
+# --reviewer-grade they would be silently ignored, which reads as if they had
+# applied. A value equal to the default cannot be told from "not passed".
+_NOT_WITH_REVIEWER_GRADE = (
+    ("run", None), ("review_deck", None), ("policy_check", False),
+    ("reapply_policy", False), ("gentol_check", False),
+    ("phantom_profile", False), ("drop_check", False),
+    ("reparse_check", False), ("splits", None), ("split", "dev"),
+    ("policy_out", None), ("gentol_out", None), ("phantom_out", None),
+    ("drop_out", None), ("pdfs", None), ("max_pages", None),
+    ("exclude_clamped", False), ("weights", None), ("allow_partial", False),
+    ("flag_rules", ""), ("drop_rules", ""), ("drop_configs", ""),
+    ("drop_family", "phantom"),
+    # grade_campaign runs with the default MatchParams; these would not reach it.
+    ("assignment", "greedy"), ("reconcile_frames", "none"), ("dpi", 300))
+
+
+def _write_atomic(target: Path, text: str, mode: int) -> None:
+    """<name>.partial, fsync, rename: a crash never leaves a half report that
+    reads as a whole one. The partial is created O_EXCL, so a link planted
+    under its name is refused rather than followed; on failure it is removed."""
+    import os
+    partial = target.with_name(target.name + ".partial")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        partial.unlink(missing_ok=True)     # a stale partial, or a planted link
+        fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(partial, target)
+    except OSError:
+        try:
+            partial.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def _cmd_reviewer_grade(args):
+    """Grade a pulled review campaign (C2 design §Outputs). Client-primary;
+    gold is a cross-check.
+
+    Three surfaces, split along the data boundary: the full report (per-row
+    values, notes) goes ONLY inside a protected root; the --grade-out digest
+    (counts, fixed words, salted hashes) and one stdout line are what an agent
+    reads. So every error below is a FIXED sentence -- an exception message or
+    a path can quote a part number, and stderr is read by agents too.
+
+    Exit codes: 0 clean, 1 refused or failed, 3 graded but the digest does not
+    reconcile (2 is argparse's usage error)."""
+    from app.eval import campaign_grade
+    from app.eval.campaign_records import read_records
+    from app.eval.review import ReviewRefused, check_digest_path, check_report_path
+
+    def fail(msg):
+        print(f"ERROR: {msg}", file=sys.stderr)
+        return 1
+    if getattr(args, "show_ids", False):
+        # The records are keyed by 8-hex salted hashes; real ids would join to
+        # nothing, and the digest must stay salted regardless.
+        return fail("--show-ids cannot be used with --reviewer-grade")
+    if any(getattr(args, k, d) != d for k, d in _NOT_WITH_REVIEWER_GRADE):
+        return fail("--reviewer-grade cannot be combined with another score "
+                    "mode's flags; it takes only --gold, --name, --out, "
+                    "--manifest and --grade-out")
+    if not args.manifest:
+        return fail("--reviewer-grade needs --manifest (roles + pool)")
+    # Both outputs are checked BEFORE anything is read: an agent picks these
+    # paths, so neither may land on gold, a dump, the pull, the manifest or
+    # each other -- and a bad path fails in seconds, holding no client value.
+    # resolve/is_symlink/exists and the marker read can raise OSError, and a
+    # PermissionError's text IS the path -- so it is caught here, by type,
+    # and never printed. ReviewRefused messages are our own fixed words.
+    try:
+        out = check_report_path(args.out, avoid=[args.reviewer_grade, args.manifest])
+        grade_out = None
+        if args.grade_out:
+            try:
+                grade_out = check_digest_path(
+                    args.grade_out, avoid=[args.out, args.reviewer_grade, args.manifest])
+            except ReviewRefused as e:
+                return fail(f"--grade-out refused: {e}")
+    except ReviewRefused as e:
+        return fail(f"--out refused: {e}")
+    except (OSError, RuntimeError):     # RuntimeError: a symlink loop in resolve()
+        return fail("output path refused")
+    try:
+        # A fresh salt would hash no gold id to any record's hash: every join
+        # would silently fail, and the minted salt file would be left behind.
+        if not salt_is_persistent():
+            return fail("--reviewer-grade needs the persistent doc-id salt "
+                        "(~/.claude/sindri-doc-salt or SINDRI_DOC_SALT)")
+        gold_dir = Path(args.gold)
+        if not gold_dir.is_dir() or not any(gold_dir.glob("*.gold.json")):
+            return fail("--gold: not a directory of gold files")
+    except OSError:
+        return fail("input unreadable")
+    try:
+        records = read_records(args.reviewer_grade)
+    except Exception:  # noqa: BLE001 -- not a tar, missing, torn: one fixed line
+        return fail("--reviewer-grade: not a readable campaign pull")
+    try:
+        manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 -- missing or not JSON
+        return fail("--manifest: not a readable JSON manifest")
+    try:
+        gold = _load_gold_dir(gold_dir)
+    except Exception:  # noqa: BLE001 -- a validation message quotes gold values
+        return fail("--gold: a gold file could not be read")
+    try:
+        # gold is keyed by real part number, the records by salted hash: join
+        # through the same salt, and only for drawings the pull holds.
+        in_records = {d.index.get("doc_hash") for d in records.drawings.values()}
+        gold_by_hash = {h: gold[d] for h, d in _anon(args).mapping(gold).items()
+                        if h in in_records}
+        try:
+            report, digest = campaign_grade.grade_campaign(
+                records, gold_by_hash, manifest, name=args.name)
+        except ValueError:  # grade_campaign raises it only for a bad manifest
+            return fail("--manifest: bad roles/pool")
+        # Report first, digest second: a digest whose report failed to write
+        # could never be checked against it.
+        try:
+            _write_atomic(out, json.dumps(report, indent=1, ensure_ascii=False),
+                          0o600)
+        except OSError:
+            return fail("--out: the report could not be written")
+        if grade_out is not None:
+            try:
+                _write_atomic(grade_out, json.dumps(digest, indent=1) + "\n", 0o644)
+            except OSError:
+                return fail("--grade-out: the digest could not be written")
+        s = digest["drawings"]
+        nir = "n/a" if s["not_in_records"] is None else s["not_in_records"]
+        # gold=<joined>/<approved>: a wrong salt or a wrong --gold dir must be
+        # visible on the one line an agent reads, not only in the digest. The
+        # not-computed reasons are closed words (_gold_section tokens them).
+        g = digest["gold_cross_check"]
+        gold = f"gold={g['n_drawings_computed']}/{s['approved']}"
+        if g["not_computed"]:
+            gold += " gold_not_computed=" + ",".join(
+                f"{k}:{v}" for k, v in g["not_computed"].items())
+        line = (f"reviewer-grade: approved={s['approved']} pending={s['pending']} "
+                f"ungradable={s['ungradable']} skipped={s['skipped']} "
+                f"not_in_records={nir} {gold} reconciles={digest['reconciles']}")
+        n_problems = len(digest["reconcile_problems"])
+        gold_none = "gold_none_joined" in digest["reconcile_problems"]
+    except Exception:  # noqa: BLE001 -- the message could quote a client value
+        return fail("grading failed")
+    print(line)
+    if n_problems:
+        # The count only: the problem keys carry hashes and belong in the
+        # digest. Nonzero so a script chaining on the exit code stops here.
+        print(f"reviewer-grade: PROBLEMS {n_problems}")
+        if gold_none:
+            print("reviewer-grade: no drawing joined to gold (wrong salt, or "
+                  "--gold is not the --originals ingest)")
+        return 3
+    return 0
+
+
 def _cmd_score(args):
+    if getattr(args, "reviewer_grade", None):
+        return _cmd_reviewer_grade(args)
+    # The mirror of _NOT_WITH_REVIEWER_GRADE: these mean nothing to a plain
+    # score, and silently ignoring them reads as if a digest had been written.
+    if getattr(args, "manifest", None) or getattr(args, "grade_out", None):
+        print("ERROR: --manifest and --grade-out need --reviewer-grade",
+              file=sys.stderr)
+        return 1
+    if not args.run:
+        print("ERROR: --run is required (except with --reviewer-grade)",
+              file=sys.stderr)
+        return 1
     if getattr(args, "reapply_policy", False) and getattr(args, "policy_check", False):
         # --reapply-policy re-parses and re-flags every dump under the ACTIVE
         # rules before scoring, so --policy-check would then price a rule on
@@ -945,6 +1120,19 @@ def _cmd_review_serve(args):
         return 1
 
 
+def _cmd_campaign_deck(args):
+    """For the OPERATOR: the drill-down into a graded campaign. Never an
+    agent's command -- it serves client values, and is absent from the
+    guard's allowlist on purpose. Refusals are fixed sentences."""
+    from app.eval import campaign_deck
+    from app.eval.review import ReviewRefused
+    try:
+        return campaign_deck.serve(args.report, args.pdfs, args.port)
+    except ReviewRefused as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+
+
 def _cmd_compare(args):
     a = RunReport.model_validate_json(Path(args.report_a).read_text())
     b = RunReport.model_validate_json(Path(args.report_b).read_text())
@@ -983,8 +1171,19 @@ def _cmd_summary(args):
     return 0
 
 
+class _QuietParser(argparse.ArgumentParser):
+    """argparse quotes the offending VALUE in its errors ("unrecognized
+    arguments: --outt <path>", an invalid choice), and this CLI's stderr is
+    read by agents -- a path or a part number would travel with it. A usage
+    error is one fixed line, exit 2 as before; --help is untouched.
+    Subparsers inherit this class (add_subparsers defaults to type(self))."""
+
+    def error(self, message):
+        self.exit(2, "ERROR: bad arguments (see --help)\n")
+
+
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="python -m app.eval.runner")
+    ap = _QuietParser(prog="python -m app.eval.runner")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     common = argparse.ArgumentParser(add_help=False)
@@ -1063,8 +1262,29 @@ def main(argv=None) -> int:
     p.set_defaults(fn=_cmd_predict)
 
     p = sub.add_parser("score", parents=[common])
-    p.add_argument("--run", required=True); p.add_argument("--gold", required=True)
-    p.add_argument("--name", required=True); p.add_argument("--out", required=True)
+    # --run is required in every mode except --reviewer-grade, which grades a
+    # pull tar instead of a predict run; _cmd_score enforces it.
+    p.add_argument("--run", default=None)
+    p.add_argument("--gold", required=True,
+                   help="gold directory. With --reviewer-grade it MUST be the "
+                        "gold ingested with --originals: the campaign renders "
+                        "the clean original, and stamped-sheet gold of the "
+                        "same page size passes the frame check with every "
+                        "position wrong")
+    p.add_argument("--name", required=True)
+    p.add_argument("--out", required=True,
+                   help="the report. With --reviewer-grade it holds the "
+                        "client's per-row values and notes, so it must be "
+                        "inside a protected root")
+    p.add_argument("--reviewer-grade", default=None, metavar="PULL_TAR",
+                   help="grade a pulled review campaign (C2) instead of a "
+                        "predict run: needs --manifest; prints one count line")
+    p.add_argument("--manifest", default=None,
+                   help="with --reviewer-grade: the share_select manifest "
+                        "(roles + pool)")
+    p.add_argument("--grade-out", default=None,
+                   help="with --reviewer-grade: write the counts-only digest "
+                        "here (for docs/eval/)")
     p.add_argument("--splits", default=None); p.add_argument("--split", default="dev")
     p.add_argument("--weights", default=None)
     p.add_argument("--pdfs", default=None,
@@ -1175,6 +1395,24 @@ def main(argv=None) -> int:
     p.add_argument("--port", type=int, default=0,
                    help="default: any free port")
     p.set_defaults(fn=_cmd_review_serve)
+
+    p = sub.add_parser(
+        "campaign-deck", parents=[common],
+        help="OPERATOR ONLY: browse a graded campaign's corrections with crops",
+        description="The operator's drill-down into a campaign grading report: "
+                    "per correction bucket, example rows with crops of the "
+                    "original drawing. It serves CLIENT VALUES on localhost "
+                    "behind a session token -- run it from your own terminal; "
+                    "an agent never runs it or accepts its link.")
+    p.add_argument("--report", required=True,
+                   help="the .grade.json report `score --reviewer-grade` wrote "
+                        "inside a protected root")
+    p.add_argument("--pdfs", required=True,
+                   help="the campaign's ORIGINAL drawings (corpus/originals), "
+                        "matched to the report by salted hash of the file stem")
+    p.add_argument("--port", type=int, default=0,
+                   help="default: any free port")
+    p.set_defaults(fn=_cmd_campaign_deck)
 
     p = sub.add_parser("verify", parents=[common])
     # GPU-host command (docs/plans/2026-10-07-verifier-registration.md §3):

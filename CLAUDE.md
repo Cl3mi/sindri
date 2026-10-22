@@ -22,7 +22,10 @@ advisory, and it has been right every single time it fired.
   the counts-only tally in `docs/eval/` is for an agent. Do not add them to
   the guard. **The guard does not cover a plain `curl` to the running review
   app** — its session token is the protection, so never ask for, or accept,
-  the link `review-serve` prints.
+  the link `review-serve` prints. **`runner campaign-deck` is the same kind of
+  tool** (C2's drill-down into a campaign grading report, with crops of the
+  original drawings): operator-only, not in the allowlist, never run by an
+  agent, its link never accepted.
 * **Single, unpiped, unchained commands only.** These are all denied and each one
   has actually cost time here: `cmd | tail`, `cmd && cmd`, `cmd > file`, a heredoc
   whose body mentions the root, and `ls` on the root itself. Run the sanctioned
@@ -317,6 +320,48 @@ Grading is plan C2. VPS runbook: `docs/deploy/vps.md`. The page starts
 `body.health-pending`, which hides the campaign-only chrome (and refuses a
 dropped file) until `/api/health` answers, retrying every 5 s, so a cold
 server never flashes Import at the client.
+
+**REVIEW CAMPAIGN C2: GRADING** (2026-10-22, `docs/plans/2026-10-22-campaign-c2-grading-plan.md`).
+`score --reviewer-grade <pull tar> --gold <the --originals gold dir>
+--manifest <share_select manifest> --name <name> --out <protected
+root>/reports/<name>.grade.json --grade-out docs/eval/<name>-grade.json`
+reads the pull tar in place and grades CLIENT-PRIMARY: the sealed revision
+is the truth (`app/review/grading.py`, product code so HITL phase 3 reuses
+it), and each proposed row is `confirmed` / `edited` (per field, with the
+reviewer's closed-vocabulary reason) / `phantom` / a `suggestion_*` grade,
+plus the client's manual adds as `missed` and bubble/anchor placement in mm
+via the header's `render_scale`. Gold is a CROSS-CHECK only, matched with
+the scorer's own matcher, and **never flips a grade**; it refuses (fixed
+word) on a frame mismatch, which is why `--gold` must be the `--originals`
+ingest. A drawing whose replay does not reproduce its seal is ungradable,
+never graded. **The report holds client values and notes**: it may only be
+written inside the protected root, named `*.grade.json`, never over a file
+lacking its `campaign-grade-report` kind marker, never through a symlink.
+**The digest is the agent's view**: counts, salted hashes and closed words
+only (notes as a count, keys namespaced like every digest), kind
+`campaign-grade-digest`, committed under `docs/eval/`. Read its numbers by
+what they are named for: pooled metrics are reweighted to `manifest.pool`
+(the selection's great:problem mix, not the pick's) and say why when they
+are unmeasured (`pooled_unmeasured`); `recall_*_vs_client_known` are UPPER
+bounds (the client's adds are what they bothered to add); review time is a
+LOWER bound (the sealed journal is compacted); `precision` and
+`unflagged_precision` count SILENT confirmations as correct (approval only
+needs the flagged rows resolved), so they are upper bounds — quote them with
+`precision_explicit_only` / `unflagged_precision_explicit_only`, the matching
+lower bounds, and the `confirmed_explicit`/`confirmed_silent` split. Every
+ratio's counts are in the digest (`flagged`, `flagged_wrong`,
+`unflagged_{confirmed,edited,phantom}`) and checked to partition the graded
+balloons. The count line ends `gold=<joined>/<approved>`; gold asked for but
+joined to NO approved drawing (wrong salt, or `--gold` not the `--originals`
+ingest) is the problem `gold_none_joined`. Exit 3 = written but does not
+reconcile (`reconcile_problems`). `runner campaign-deck` (§1) is the
+operator's drill-down over the report. `tests/eval/test_campaign_c2_seam.py`
+runs builder → loader → worker → real store/seal → pull → grader → CLI →
+deck examples on records the real code wrote; if it breaks, a seam drifted.
+**KNOWN OPEN:** plain `score --out`, `--policy-out`, `--gentol-out`,
+`--phantom-out` and `--drop-out` still write to any agent-chosen path while
+the guard allowlists `runner score` — harden them like `check_report_path`
+(suffix, no symlink, kind marker) in a task of their own.
 
 **`read-lora-v1` IS NOW HARMFUL UNDER THE SHIPPED POLICY — deployment CLOSED**
 (2026-10-05, `docs/plans/2026-10-05-read-adapter-repricing-result.md`;

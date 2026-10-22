@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>campaign deck</title>
+<style>
+/* Same drafting-table palette as the gdt review page; the red box and blue
+   dot are the ones drawn on the crops (red = what we proposed, blue = where
+   the reviewer left it). Everything is local: no fonts, no assets. */
+:root {
+  --paper: #f3efe4; --sheet: #fbf9f3; --ink: #1b2330; --ink-2: #4a5566;
+  --ink-3: #7b8595; --rule: #cfc6b2; --red: #c4372c; --blue: #1f5fd6;
+  --sel: rgba(31, 95, 214, .12);
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: "Segoe UI", "Noto Sans", system-ui, sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #0d2440; --sheet: #12305a; --ink: #e8f0ff; --ink-2: #b4c5e4;
+    --ink-3: #7f95bb; --rule: #2b4c7c; --red: #ff7a6b; --blue: #7fb2ff;
+    --sel: rgba(127, 178, 255, .16);
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { font: 14px/1.45 var(--sans); color: var(--ink); background: var(--paper); }
+.app { display: grid; grid-template-columns: minmax(220px, 300px) 1fr; min-height: 100vh; }
+nav { border-right: 1px solid var(--rule); padding: 12px; overflow-y: auto; max-height: 100vh;
+      position: sticky; top: 0; }
+nav h1 { font-size: 15px; margin: 0 0 8px; }
+nav button { display: block; width: 100%; text-align: left; background: none; color: inherit;
+             border: 1px solid transparent; border-radius: 6px; padding: 6px 8px;
+             margin-bottom: 2px; cursor: pointer; font: inherit; }
+nav button[aria-current="true"] { background: var(--sel); border-color: var(--rule); }
+.b-name { font-family: var(--mono); font-size: 13px; }
+.b-count { float: right; font-family: var(--mono); color: var(--ink-2); }
+.b-lever { display: block; font-size: 12px; color: var(--ink-3); }
+main { padding: 16px; min-width: 0; }
+.head { margin: 0 0 12px; color: var(--ink-2); }
+.head strong { color: var(--ink); font-family: var(--mono); }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 12px; }
+.card { background: var(--sheet); border: 1px solid var(--rule); border-radius: 8px;
+        padding: 10px; min-width: 0; }
+.card img { width: 100%; height: auto; display: block; border: 1px solid var(--rule);
+            border-radius: 4px; background: #fff; }
+.meta { font-family: var(--mono); font-size: 12px; color: var(--ink-3); margin: 6px 0; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+td, th { padding: 2px 6px; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+th { color: var(--ink-3); font-weight: normal; width: 84px; }
+td.val { font-family: var(--mono); }
+tr.changed td.fin { color: var(--blue); font-weight: 600; }
+tr.changed td.prop { color: var(--red); text-decoration: line-through; }
+.tags span { display: inline-block; font-size: 12px; border: 1px solid var(--rule);
+             border-radius: 10px; padding: 0 7px; margin: 4px 4px 0 0; }
+.note { margin-top: 6px; font-size: 13px; padding: 6px; border-left: 3px solid var(--blue);
+        background: var(--sel); white-space: pre-wrap; overflow-wrap: anywhere; }
+.err { color: var(--red); }
+/* Client text may carry RTL marks or overrides; isolate it so it can never
+   reorder the text around it (a reversed tolerance reads as another number). */
+.val, .note, .meta, .b-name { unicode-bidi: isolate; }
+@media (max-width: 720px) {
+  .app { grid-template-columns: 1fr; }
+  nav { position: static; max-height: none; border-right: 0; border-bottom: 1px solid var(--rule); }
+  .cards { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <nav><h1>Corrections</h1><div id="buckets"></div></nav>
+  <main><p class="head" id="head">Loading…</p><div class="cards" id="cards"></div></main>
+</div>
+<script nonce="__NONCE__">
+// The server swaps a fresh nonce into this tag and the CSP per response; the
+// page runs no other script. EVERY client value (row fields, notes) is placed with textContent or
+// setAttribute and never parsed as markup: a note reading "<img onerror=...>"
+// must show as those characters. Nothing here may build HTML from strings.
+"use strict";
+const TOKEN = new URLSearchParams(location.search).get("t") || "";
+const FIELDS = ["char_type", "nominal", "upper_tol", "lower_tol", "kind"];
+let data = null;
+
+function el(tag, attrs, text) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, String(v));
+  if (text !== undefined && text !== null) e.textContent = String(text);
+  return e;
+}
+
+function show(v) {
+  return v === undefined || v === null || v === "" ? "–" : String(v);
+}
+
+function valueTable(prop, fin) {
+  const t = el("table");
+  const hr = el("tr");
+  hr.append(el("th"), el("th", {}, "proposed"), el("th", {}, "final"));
+  t.append(hr);
+  for (const f of FIELDS) {
+    const p = prop ? prop[f] : undefined, q = fin ? fin[f] : undefined;
+    const tr = el("tr", show(p) !== show(q) ? {class: "changed"} : {});
+    tr.append(el("th", {}, f),
+              el("td", {class: "val prop", dir: "auto"}, prop ? show(p) : "(none)"),
+              el("td", {class: "val fin", dir: "auto"}, fin ? show(q) : "(deleted)"));
+    t.append(tr);
+  }
+  return t;
+}
+
+function card(ex, bucket, i) {
+  const c = el("div", {class: "card"});
+  // A crop is named by its place in the examples, never by row id: ids are
+  // per side, so a client-added row may share one with a proposal row.
+  const q = new URLSearchParams({doc: ex.doc_hash, bucket: bucket, i: String(i), t: TOKEN});
+  c.append(el("img", {src: "/crop?" + q.toString(), alt: "crop of the original drawing",
+                      loading: "lazy"}));
+  c.append(el("div", {class: "meta", dir: "auto"},
+              ex.doc_hash + " · row " + ex.row_id + " · " + show(ex.group)
+              + (typeof ex.mm === "number" ? " · moved " + ex.mm.toFixed(1) + " mm" : "")));
+  c.append(valueTable(ex.proposed, ex.final));
+  const tags = el("div", {class: "tags"});
+  tags.append(el("span", {}, "grade: " + show(ex.grade)),
+              el("span", {}, "reason: " + show(ex.reason)),
+              el("span", {}, "gold: " + show(ex.verdict)));
+  if (ex.note) tags.append(el("span", {}, "note ✎"));
+  c.append(tags);
+  if (ex.note) c.append(el("div", {class: "note", dir: "auto"}, ex.note));
+  return c;
+}
+
+function select(bucket) {
+  for (const b of document.querySelectorAll("nav button"))
+    b.setAttribute("aria-current", String(b.dataset.bucket === bucket));
+  const info = data.buckets[bucket];
+  const lever = (data.levers || {})[bucket];
+  const head = document.getElementById("head");
+  head.replaceChildren(el("strong", {}, bucket),
+    document.createTextNode(" — showing " + info.examples.length + " of " + info.total
+                            + (lever && lever.lever ? " · lever: " + lever.lever
+                               + " (" + show(lever.lever_status) + ")" : "")));
+  const cards = document.getElementById("cards");
+  cards.replaceChildren(...info.examples.map((ex, i) => card(ex, bucket, i)));
+}
+
+function render() {
+  const nav = document.getElementById("buckets");
+  nav.replaceChildren();
+  for (const bucket of data.order) {
+    const info = data.buckets[bucket];
+    const lever = (data.levers || {})[bucket];
+    const b = el("button", {type: "button"});
+    b.dataset.bucket = bucket;
+    b.append(el("span", {class: "b-count"}, info.total),
+             el("span", {class: "b-name"}, bucket),
+             el("span", {class: "b-lever"}, lever && lever.lever ? lever.lever : ""));
+    b.addEventListener("click", () => select(bucket));
+    nav.append(b);
+  }
+  if (data.order.length) select(data.order[0]);
+  else document.getElementById("head").textContent = "No corrections in this report.";
+}
+
+fetch("/api/examples?t=" + encodeURIComponent(TOKEN), {cache: "no-store"})
+  .then(r => { if (!r.ok) throw new Error("status " + r.status); return r.json(); })
+  .then(d => { data = d; render(); })
+  .catch(() => {
+    const h = document.getElementById("head");
+    h.className = "head err";
+    h.textContent = "Could not load the examples (is the token in the URL?).";
+  });
+</script>
+</body>
+</html>

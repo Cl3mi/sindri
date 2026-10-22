@@ -377,3 +377,104 @@ def test_review_serve_refuses_a_tally_path_inside_a_root(tmp_path, monkeypatch):
     path, _ = _saved(tmp_path, monkeypatch)
     assert main(["review-serve", str(path),
                  "--tally-out", str(path.parent / "t.json")]) == 1
+
+
+# --- the campaign grading report and digest (C2) ------------------------------
+# An agent runs `score --reviewer-grade`, so both output paths are agent-chosen:
+# neither may be aimed at gold, a dump, the pull it grades, or a link to one.
+
+def _croot(tmp_path, monkeypatch):
+    root = tmp_path / "client"
+    root.mkdir()
+    _roots(tmp_path, monkeypatch, root)
+    return root
+
+
+def test_a_report_path_must_be_inside_a_protected_root(tmp_path, monkeypatch):
+    from app.eval.review import check_report_path
+    root = _croot(tmp_path, monkeypatch)
+    want = (root / "sub" / "r.grade.json").resolve()
+    assert check_report_path(root / "sub" / "r.grade.json") == want
+    with pytest.raises(ReviewRefused):
+        check_report_path(tmp_path / "r.grade.json")
+
+
+def test_no_protected_roots_means_no_report(tmp_path, monkeypatch):
+    from app.eval.review import check_report_path
+    monkeypatch.setenv("SINDRI_PROTECTED_PATHS", str(tmp_path / "missing"))
+    with pytest.raises(ReviewRefused):
+        check_report_path(tmp_path / "r.grade.json")
+
+
+@pytest.mark.parametrize("name", ["r.json", "D1.gold.json", "D1.pred.json",
+                                  "r.grade.json.bak", "pull.tar"])
+def test_a_report_must_be_named_grade_json(tmp_path, monkeypatch, name):
+    from app.eval.review import check_report_path
+    root = _croot(tmp_path, monkeypatch)
+    with pytest.raises(ReviewRefused):
+        check_report_path(root / name)
+
+
+def test_a_report_is_never_a_symlink(tmp_path, monkeypatch):
+    from app.eval.review import check_report_path
+    root = _croot(tmp_path, monkeypatch)
+    (root / "D1.gold.json").write_text("{}")
+    (root / "a.grade.json").symlink_to(root / "D1.gold.json")
+    with pytest.raises(ReviewRefused):
+        check_report_path(root / "a.grade.json")
+
+
+def test_a_report_replaces_only_a_previous_report(tmp_path, monkeypatch):
+    """Nothing is keyed to a report, so regenerating one is allowed -- but
+    only a file whose first key says it IS one."""
+    from app.eval.review import check_report_path
+    root = _croot(tmp_path, monkeypatch)
+    prev = root / "r.grade.json"
+    prev.write_text(json.dumps({"kind": "campaign-grade-report", "x": 1}, indent=1))
+    assert check_report_path(prev) == prev.resolve()
+    for body in ('{"x": 1, "kind": "campaign-grade-report"}', "not json",
+                 '{"kind": "campaign-grade-digest"}'):
+        prev.write_text(body)
+        with pytest.raises(ReviewRefused):
+            check_report_path(prev)
+    (root / "d.grade.json").mkdir()
+    with pytest.raises(ReviewRefused):
+        check_report_path(root / "d.grade.json")
+
+
+def test_a_report_never_replaces_its_own_inputs(tmp_path, monkeypatch):
+    from app.eval.review import check_report_path
+    root = _croot(tmp_path, monkeypatch)
+    with pytest.raises(ReviewRefused):
+        check_report_path(root / "pull.grade.json",
+                          avoid=[root / "." / "pull.grade.json"])
+
+
+def test_a_digest_goes_outside_the_root_named_grade_json(tmp_path, monkeypatch):
+    from app.eval.review import check_digest_path
+    root = _croot(tmp_path, monkeypatch)
+    ok = tmp_path / "eval" / "pilot-grade.json"
+    assert check_digest_path(ok) == ok.resolve()
+    for bad in (root / "pilot-grade.json", tmp_path / "pilot.json",
+                tmp_path / "pilot.grade.json"):
+        with pytest.raises(ReviewRefused):
+            check_digest_path(bad)
+    with pytest.raises(ReviewRefused):
+        check_digest_path(ok, avoid=[ok])
+
+
+def test_a_digest_replaces_only_a_previous_digest(tmp_path, monkeypatch):
+    from app.eval.review import check_digest_path
+    _croot(tmp_path, monkeypatch)
+    prev = tmp_path / "pilot-grade.json"
+    prev.write_text(json.dumps({"kind": "campaign-grade-digest"}))
+    assert check_digest_path(prev) == prev.resolve()
+    prev.write_text(json.dumps({"would_fix": 1}))
+    with pytest.raises(ReviewRefused):
+        check_digest_path(prev)
+    link = tmp_path / "l-grade.json"
+    link.symlink_to(tmp_path / "elsewhere.json")
+    with pytest.raises(ReviewRefused):
+        check_digest_path(link)
+
+

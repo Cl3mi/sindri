@@ -155,3 +155,51 @@ def test_manifest_records_each_picks_role():
     m = manifest(picks)
     assert m["roles"] == {"aa": "great", "bb": "problem"}
     assert {r["run"] for r in m["runs"]} == {"r5-control", "r3-trainpredict"}
+
+
+def _pool_rows():
+    return [{"run": "r5-control", "doc": f"{i:08x}", "n_gold": 20, "n_pred": 20,
+             "recall": rec, "counts": {"escaped_error": 0}}
+            for i, rec in enumerate([0.9, 0.8, 0.6, 0.4, 0.35, 0.1])]
+
+
+def test_manifest_records_the_eligible_pool_for_reweighting():
+    """A 3+2 pick over a 3-great / 2-problem pool says nothing about the
+    population until the grader knows how big each eligible set was, so the
+    manifest carries the counts of the ELIGIBLE sets (not of what was left
+    after picking) for campaign_grade to reweight by."""
+    from app.eval.share_select import eligible_counts, manifest
+    pool = eligible_counts(_pool_rows())
+    assert pool == {"great": 3, "problem": 2}
+    assert manifest([], pool)["pool"] == pool
+    assert "pool" not in manifest([])           # optional: old manifests unchanged
+
+
+def test_eligible_counts_and_select_share_one_filter():
+    """They must never drift: the pool is reweighting's denominator, and a
+    filter select() applied but the count did not would silently skew it."""
+    from app.eval.share_select import eligible_counts, select
+    rows = _pool_rows() + [
+        {"run": "r5-control", "doc": "ffffffff", "n_gold": 5, "n_pred": 5,
+         "recall": 0.9, "counts": {}},                       # too few gold rows
+        {"run": "r5-control", "doc": "eeeeeeee", "n_gold": 20, "n_pred": 20,
+         "recall": 0.9, "counts": {"escaped_error": 10}},    # silent errors
+        {"run": "r5-control", "doc": "dddddddd", "n_gold": 20, "n_pred": 20,
+         "recall": None, "counts": {}}]                      # unmeasured
+    assert eligible_counts(rows) == {"great": 3, "problem": 2}
+    picks = select(rows, great=99, problem=99)
+    assert sum(p["role"] == "great" for p in picks) == 3
+    # a looser escaped ceiling admits the noisy drawing in both
+    assert eligible_counts(rows, max_escaped=0.6)["great"] == 4
+
+
+def test_manifest_with_pool_passes_the_grader():
+    """Contract test: the grader refuses a malformed roles/pool/runs, and the
+    manifest this module writes is its only producer."""
+    from app.eval.campaign_grade import _manifest_parts
+    from app.eval.share_select import eligible_counts, manifest, select
+    rows = _pool_rows()
+    m = manifest(select(rows, 2, 1), eligible_counts(rows))
+    roles, pool, runs = _manifest_parts(json.loads(json.dumps(m)))
+    assert pool == {"great": 3, "problem": 2}
+    assert runs == {"r5-control"} and set(roles.values()) <= {"great", "problem"}
