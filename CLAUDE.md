@@ -86,8 +86,13 @@ The export folder and the manifest stay out of git and out of the repo.
 
 ## 2. Where things stand
 
-**Read `docs/plans/2026-10-07-session-handoff.md` first — it is the current
-state of play: the automated-precision direction is CLOSED and fully written up
+**Read `docs/plans/2026-10-23-session-handoff.md` first — it is the newest
+state of play: the client review campaign (C1 review app + VPS deploy, C2
+grading + findings digest) is built and merged, and it lists the hardening
+backlog (H1: old `runner` `--out` flags can write anywhere), the pilot
+checklist and the roadmap.** Then read
+`docs/plans/2026-10-07-session-handoff.md`, which is the state of play for the
+precision direction: the automated-precision direction is CLOSED and fully written up
 (current quality, MEASURED: delivered precision dev 0.526 / test 0.958; what
 shipped, what closed, what is parked), and the next direction is
 human-in-the-loop (grading recommendations against reviewer actions, cognitive
