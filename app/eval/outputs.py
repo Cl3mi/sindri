@@ -10,12 +10,19 @@ is replaced, never written through).
 Messages are fixed sentences -- no path, no value, no exception text --
 because they are printed where an agent reads, and a path can be client
 text (a part number in a file name)."""
+import fnmatch
 import json
 import os
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from app.eval.review import _carries_marker, inside_protected
+from app.eval.review import _carries_marker, _protected_roots, inside_protected
+
+# Written into a class-C directory on first use, so a later run (or a
+# resume) recognises the directory as this tool's. Its CONTENT is checked,
+# not just its name: the marker is what lets a directory hold any file.
+DIR_MARKER = ".sindri-output"
+DIR_KIND = "sindri-output-dir"
 
 
 class OutputRefused(Exception):
@@ -76,6 +83,89 @@ def check_digest_out(path, kind: str, avoid: Sequence = ()) -> Path:
     except OSError:
         raise OutputRefused("the digest path cannot be checked")
     return target
+
+
+def _in_subdir(target_parent: Path, subdir: str) -> bool:
+    """With roots configured the output must be a DIRECT child of
+    <root>/<subdir> -- not anywhere inside the root, where gold/ and corpus/
+    are inputs. `target_parent` is already resolved and the roots are too;
+    `<root>/<subdir>` is deliberately NOT resolved, so a subfolder that is
+    itself a link (pointing who knows where) fails closed. With no roots
+    (GPU container, CI) the rule cannot be evaluated and is skipped; every
+    other rule still applies (operator decision 3)."""
+    roots = _protected_roots()
+    return not roots or any(target_parent == r / subdir for r in roots)
+
+
+def check_client_file_out(path, *, subdir: str, suffix: str, kind=None,
+                          avoid: Sequence = ()) -> Path:
+    """Class B-file: a file of client values, or a frozen one, directly under
+    <root>/<subdir>. Replaced only if `kind` is given and the file carries it
+    (the score report); the split and the variants list pass kind=None and
+    are never overwritten -- the split is frozen."""
+    target = _target(path, "output", avoid)
+    if not target.name.endswith(suffix) or target.name == suffix:
+        raise OutputRefused(f"the output file name must end in {suffix}")
+    try:
+        if not _in_subdir(target.parent, subdir):
+            raise OutputRefused("this output holds client data; it may only be "
+                                "written directly under <protected root>/"
+                                f"{subdir}/")
+        if target.exists() and not (kind and _carries_marker(target, kind)):
+            raise OutputRefused("a file already exists there and is not a "
+                                "previous output of this kind; move it away "
+                                "deliberately")
+    except OSError:
+        raise OutputRefused("the output path cannot be checked")
+    return target
+
+
+def check_client_dir_out(path, *, subdir: str, legacy: Sequence[str],
+                         avoid: Sequence = ()) -> Path:
+    """Class C: a directory of client-value files, directly under
+    <root>/<subdir>. Absent, empty, or ours: it holds our marker, OR it is a
+    legacy run whose every entry matches `legacy` -- runs written before this
+    check carry no marker, and predict resume on the GPU host depends on
+    them. A link or subdirectory refuses it even when marked: nothing we
+    write is one, and a link entry is how a write would reach gold."""
+    target = _target(path, "output directory", avoid)
+    try:
+        if not _in_subdir(target.parent, subdir):
+            raise OutputRefused("this output holds client data; it may only be "
+                                "written directly under <protected root>/"
+                                f"{subdir}/")
+        if not target.exists():
+            return target
+        if not target.is_dir():
+            raise OutputRefused("the output directory path is not a directory")
+        entries = list(target.iterdir())
+        for e in entries:
+            if e.is_symlink() or not e.is_file():
+                raise OutputRefused("the output directory holds a link or "
+                                    "subdirectory; refusing to write into it")
+        if not entries or _carries_marker(target / DIR_MARKER, DIR_KIND):
+            return target
+        if not all(any(fnmatch.fnmatchcase(e.name, g) for g in legacy)
+                   for e in entries):
+            raise OutputRefused("the output directory holds files that are "
+                                "not this tool's output")
+    except OSError:
+        raise OutputRefused("the output directory cannot be checked")
+    return target
+
+
+def claim_dir(target: Path) -> None:
+    """Create the directory and mark it ours, so a later run (or a resume)
+    recognises it. Idempotent. Call it on a path a class-C check returned,
+    BEFORE the first file is written: a crash that leaves a `.partial` in an
+    unmarked legacy dir would otherwise make it fail the legacy rule."""
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        marked = _carries_marker(target / DIR_MARKER, DIR_KIND)
+    except OSError:
+        raise OutputRefused("could not create the output directory")
+    if not marked:
+        write_atomic(target / DIR_MARKER, json.dumps({"kind": DIR_KIND}))
 
 
 def write_atomic(path, data) -> None:

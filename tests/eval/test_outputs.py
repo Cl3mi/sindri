@@ -245,3 +245,269 @@ def test_write_json_digest_puts_kind_first(roots, tmp_path):
     assert json.loads(text) == {"kind": KIND, "n": 3}
     assert _carries_marker(target, KIND)
     assert check_digest_out(target, KIND) == target
+
+
+# ---- class B-file: one client-value (or frozen) file ---------------------
+
+from app.eval.outputs import (  # noqa: E402
+    DIR_KIND, DIR_MARKER, check_client_dir_out, check_client_file_out,
+    claim_dir)
+
+
+def test_file_out_must_be_direct_child_of_subdir(roots):
+    """Operator decision 2: client values land in the root's fixed
+    subfolders, not anywhere inside it -- `gold/` and `corpus/` are inputs."""
+    ok = roots / "reports" / "a.report.json"
+    assert check_client_file_out(ok, subdir="reports", suffix=".report.json")
+    for bad in (roots / "gold" / "a.report.json",                 # wrong subfolder
+                roots / "reports" / "sub" / "a.report.json",      # grandchild
+                roots / "a.report.json"):                         # root itself
+        with pytest.raises(OutputRefused):
+            check_client_file_out(bad, subdir="reports", suffix=".report.json")
+
+
+def test_file_out_dotdot_out_of_subdir_refused(roots):
+    with pytest.raises(OutputRefused):
+        check_client_file_out(roots / "reports" / ".." / "gold" / "a.report.json",
+                              subdir="reports", suffix=".report.json")
+
+
+def test_file_out_parent_symlink_resolves_before_the_subdir_rule(roots, tmp_path):
+    """A link outside the root that points INTO reports/ is judged by where
+    it lands; one that points into gold/ is refused."""
+    (tmp_path / "to_reports").symlink_to(roots / "reports")
+    (tmp_path / "to_gold").symlink_to(roots / "gold")
+    assert check_client_file_out(tmp_path / "to_reports" / "a.report.json",
+                                 subdir="reports", suffix=".report.json") \
+        == roots / "reports" / "a.report.json"
+    with pytest.raises(OutputRefused):
+        check_client_file_out(tmp_path / "to_gold" / "a.report.json",
+                              subdir="reports", suffix=".report.json")
+
+
+def test_file_out_outside_root_refused_when_roots_configured(roots, tmp_path):
+    with pytest.raises(OutputRefused):
+        check_client_file_out(tmp_path / "a.report.json", subdir="reports",
+                              suffix=".report.json")
+
+
+def test_file_out_no_roots_configured_skips_only_the_root_rule(tmp_path, monkeypatch):
+    """Operator decision 3: the GPU container and CI have no roots file;
+    there only the location rule is skipped -- suffix, link and overwrite
+    rules still hold."""
+    monkeypatch.setenv("SINDRI_PROTECTED_PATHS", str(tmp_path / "absent.txt"))
+    assert check_client_file_out(tmp_path / "a.report.json", subdir="reports",
+                                 suffix=".report.json")
+    with pytest.raises(OutputRefused):                              # suffix still applies
+        check_client_file_out(tmp_path / "a.txt", subdir="reports",
+                              suffix=".report.json")
+    (tmp_path / "real.report.json").write_text("{}")
+    (tmp_path / "l.report.json").symlink_to(tmp_path / "real.report.json")
+    with pytest.raises(OutputRefused):                              # link still applies
+        check_client_file_out(tmp_path / "l.report.json", subdir="reports",
+                              suffix=".report.json")
+    with pytest.raises(OutputRefused):                              # overwrite still applies
+        check_client_file_out(tmp_path / "real.report.json", subdir="reports",
+                              suffix=".report.json", kind="run-report")
+
+
+def test_file_out_suffix_alone_is_not_a_name(roots):
+    with pytest.raises(OutputRefused):
+        check_client_file_out(roots / "reports" / ".report.json",
+                              subdir="reports", suffix=".report.json")
+
+
+def test_file_out_never_overwrites_without_kind(roots):
+    """The split is frozen at 6d174d5e4f1b9228 and the variants list feeds
+    it: with kind=None no existing file is ever replaced, marked or not."""
+    t = roots / "meta" / "splits.json"
+    t.write_text("{}")
+    with pytest.raises(OutputRefused):
+        check_client_file_out(t, subdir="meta", suffix=".json")
+    t.write_text(json.dumps({"kind": "run-report"}))
+    with pytest.raises(OutputRefused):
+        check_client_file_out(t, subdir="meta", suffix=".json")
+
+
+def test_report_replaced_only_when_marked(roots):
+    t = roots / "reports" / "r.report.json"
+    t.write_text('{"schema_version": 1}')
+    with pytest.raises(OutputRefused):
+        check_client_file_out(t, subdir="reports", suffix=".report.json",
+                              kind="run-report")
+    t.write_text('{"kind": "run-report", "schema_version": 1}')
+    assert check_client_file_out(t, subdir="reports", suffix=".report.json",
+                                 kind="run-report")
+
+
+def test_report_hardlinked_to_gold_refused(roots):
+    """A second name for a gold file carries gold's bytes, so no marker."""
+    gold = roots / "gold" / "x.gold.json"
+    gold.write_text("GOLD")
+    t = roots / "reports" / "r.report.json"
+    os.link(gold, t)
+    with pytest.raises(OutputRefused):
+        check_client_file_out(t, subdir="reports", suffix=".report.json",
+                              kind="run-report")
+
+
+def test_file_out_symlink_to_gold_refused(roots):
+    gold = roots / "gold" / "x.gold.json"
+    gold.write_text("GOLD")
+    link = roots / "reports" / "r.report.json"
+    link.symlink_to(gold)
+    with pytest.raises(OutputRefused):
+        check_client_file_out(link, subdir="reports", suffix=".report.json",
+                              kind="run-report")
+
+
+def test_file_out_equal_to_an_input_refused(roots):
+    t = roots / "reports" / "r.report.json"
+    t.write_text('{"kind": "run-report"}')
+    with pytest.raises(OutputRefused):
+        check_client_file_out(t, subdir="reports", suffix=".report.json",
+                              kind="run-report", avoid=[t])
+
+
+# ---- class C: a directory of client-value files --------------------------
+
+LEG = ("*.pred.json", ".complete")
+
+
+def test_dir_out_new_empty_marked_legacy_ok(roots):
+    new = roots / "runs" / "r6"
+    assert check_client_dir_out(new, subdir="runs", legacy=LEG)
+    new.mkdir()
+    assert check_client_dir_out(new, subdir="runs", legacy=LEG)       # empty
+    (new / "a.pred.json").write_text("{}")
+    (new / ".complete").write_text("")
+    # A run written before this check carries no marker; predict resume on
+    # the GPU host is load bearing, so a dir of only its own file shapes
+    # still counts as ours.
+    assert check_client_dir_out(new, subdir="runs", legacy=LEG)
+    claim_dir(new)
+    (new / "other.txt").write_text("x")
+    assert check_client_dir_out(new, subdir="runs", legacy=LEG)       # marker => ours
+
+
+def test_claim_dir_creates_marks_and_is_idempotent(roots):
+    from app.eval.review import _carries_marker
+    d = roots / "runs" / "fresh"
+    claim_dir(d)
+    claim_dir(d)
+    assert _carries_marker(d / DIR_MARKER, DIR_KIND)
+    assert sorted(p.name for p in d.iterdir()) == [DIR_MARKER]
+
+
+def test_dir_out_refuses_foreign_dir_gold_dir_and_wrong_place(roots):
+    gold = roots / "gold" / "g"
+    gold.mkdir()
+    (gold / "a.gold.json").write_text("GOLD")
+    with pytest.raises(OutputRefused):
+        check_client_dir_out(gold, subdir="runs", legacy=LEG)          # wrong subfolder
+    r = roots / "runs" / "r"
+    r.mkdir()
+    (r / "note.txt").write_text("x")
+    with pytest.raises(OutputRefused):
+        check_client_dir_out(r, subdir="runs", legacy=LEG)             # foreign file, no marker
+    with pytest.raises(OutputRefused):
+        check_client_dir_out(roots / "runs" / "a" / "b", subdir="runs",
+                             legacy=LEG)                               # grandchild
+    with pytest.raises(OutputRefused):
+        check_client_dir_out(roots / "runs", subdir="runs", legacy=LEG)  # the subfolder itself
+
+
+def test_dir_out_legacy_shapes_are_per_tool(roots):
+    """An ingest dir (gold files) is not a predict dir: aiming predict --out
+    at gold must not pass as 'legacy' just because the dir is all JSON."""
+    d = roots / "runs" / "looks-like-gold"
+    d.mkdir()
+    (d / "a.gold.json").write_text("GOLD")
+    (d / "doc_id_map.json").write_text("{}")
+    with pytest.raises(OutputRefused):
+        check_client_dir_out(d, subdir="runs", legacy=LEG)
+    g = roots / "gold" / "ingest1"
+    g.mkdir()
+    (g / "a.gold.json").write_text("{}")
+    (g / "doc_id_map.json").write_text("{}")
+    assert check_client_dir_out(g, subdir="gold",
+                                legacy=("*.gold.json", "doc_id_map.json"))
+
+
+def test_dir_marker_must_carry_its_kind(roots):
+    """The marker is what lets a dir hold ANY file; an empty or foreign file
+    that merely has the marker's name must not unlock that."""
+    d = roots / "runs" / "spoof"
+    d.mkdir()
+    (d / DIR_MARKER).write_text("")
+    (d / "note.txt").write_text("x")
+    with pytest.raises(OutputRefused):
+        check_client_dir_out(d, subdir="runs", legacy=LEG)
+    (d / DIR_MARKER).write_text(json.dumps({"kind": "something-else"}))
+    with pytest.raises(OutputRefused):
+        check_client_dir_out(d, subdir="runs", legacy=LEG)
+
+
+def test_dir_out_refuses_symlink_entry_subdir_and_symlink_dir(roots, tmp_path):
+    gold = roots / "gold" / "x.gold.json"
+    gold.write_text("GOLD")
+    r = roots / "runs" / "r"
+    r.mkdir()
+    (r / "a.pred.json").symlink_to(gold)
+    with pytest.raises(OutputRefused):
+        check_client_dir_out(r, subdir="runs", legacy=LEG)
+    claim_dir(r)                       # even a marked dir: a link is never ours
+    with pytest.raises(OutputRefused):
+        check_client_dir_out(r, subdir="runs", legacy=LEG)
+    r2 = roots / "runs" / "r2"
+    r2.mkdir()
+    (r2 / "sub").mkdir()
+    with pytest.raises(OutputRefused):
+        check_client_dir_out(r2, subdir="runs", legacy=LEG)
+    link = roots / "runs" / "r3"
+    link.symlink_to(roots / "gold")
+    with pytest.raises(OutputRefused):
+        check_client_dir_out(link, subdir="runs", legacy=LEG)
+
+
+def test_dir_out_existing_file_at_target_refused(roots):
+    f = roots / "runs" / "r"
+    f.write_text("x")
+    with pytest.raises(OutputRefused):
+        check_client_dir_out(f, subdir="runs", legacy=LEG)
+
+
+def test_dir_out_equal_to_an_input_refused(roots):
+    """`verify --run X --out X` would rewrite the dumps it is reading."""
+    r = roots / "runs" / "r"
+    r.mkdir()
+    (r / "a.pred.json").write_text("{}")
+    with pytest.raises(OutputRefused):
+        check_client_dir_out(r, subdir="runs", legacy=LEG, avoid=[r])
+
+
+def test_dir_out_no_roots_configured_keeps_the_ours_rule(tmp_path, monkeypatch):
+    monkeypatch.setenv("SINDRI_PROTECTED_PATHS", str(tmp_path / "absent.txt"))
+    assert check_client_dir_out(tmp_path / "out", subdir="runs", legacy=LEG)
+    d = tmp_path / "foreign"
+    d.mkdir()
+    (d / "x.txt").write_text("x")
+    with pytest.raises(OutputRefused):
+        check_client_dir_out(d, subdir="runs", legacy=LEG)
+
+
+def test_dir_out_unreadable_dir_is_a_fixed_refusal(roots):
+    """An OSError from listing must become a fixed sentence, not a
+    traceback carrying the path."""
+    d = roots / "runs" / "locked"
+    d.mkdir()
+    (d / "a.pred.json").write_text("{}")
+    d.chmod(0)
+    try:
+        if os.access(d, os.R_OK):
+            pytest.skip("running as a user that ignores permissions")
+        with pytest.raises(OutputRefused) as e:
+            check_client_dir_out(d, subdir="runs", legacy=LEG)
+        assert "locked" not in str(e.value)
+    finally:
+        d.chmod(0o755)
