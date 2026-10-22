@@ -1,0 +1,17 @@
+# Copy to /etc/caddy/Caddyfile and replace the domain. Caddy gets the TLS
+# certificate itself. Create the hash with:  caddy hash-password
+review.example.com {
+	basic_auth {
+		# one line per reviewer account: <user> <bcrypt hash>
+		reviewer $2a$14$REPLACE_WITH_CADDY_HASH_PASSWORD_OUTPUT
+	}
+	request_body {
+		# A seal POST carries every row of a drawing and an events batch can
+		# hold many edits. A Characteristic is well under 1 KB, so a few
+		# hundred rows is a few hundred KB; 1MB would sit uncomfortably
+		# close and a rejected seal loses a reviewer's finish. 10MB is
+		# generous yet still bounds abuse.
+		max_size 10MB
+	}
+	reverse_proxy 127.0.0.1:8000
+}

@@ -1,0 +1,21 @@
+# Hetzner VPS override (campaign design §1). Use with:
+#   docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d --build
+# The app listens on localhost ONLY: Docker's published ports bypass ufw, so a
+# plain "8000:8000" would serve the app to the internet WITHOUT the proxy's
+# basic auth. Caddy (deploy/Caddyfile.example) is the only way in.
+# `ports: !override` needs docker compose >= 2.24; without it the list would
+# be MERGED with the base file's "8000:8000" and expose the app publicly.
+services:
+  sindri:
+    ports: !override
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./import:/import:ro
+      - ./export:/export
+    environment:
+      - SINDRI_CAMPAIGN_ONLY=1
+      # Campaign drawings are never exported, so retention would not purge
+      # them anyway; the campaign must not depend on that reasoning.
+      - SINDRI_RETENTION_DAYS=0
+      - SINDRI_VERSION=${SINDRI_VERSION:-unknown}
+    restart: unless-stopped
