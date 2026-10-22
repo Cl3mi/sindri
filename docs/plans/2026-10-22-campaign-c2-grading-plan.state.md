@@ -2,8 +2,9 @@
 
 - Plan: `docs/plans/2026-10-22-campaign-c2-grading-plan.md`; design: `...-design.md`
 - Branch / worktree: `feature/review-campaign-c2` at `.worktrees/review-campaign-c2`
-- Current milestone: **C — operator drill-down: DONE** (task 11 of 12)
-- Completed tasks: 1-11 (tests/eval + tests/review: 975 passed; guard 32/0)
+- Current milestone: **D — seam + docs: DONE** (task 12 of 12; plan complete)
+- Completed tasks: 1-12 (full suite 2339 passed, 2 skipped, 2 pre-existing title_block
+  failures; node 298; guard 32/0)
 - Baseline before Task 1: 2089 passed, 2 skipped, **2 pre-existing failures** in
   `tests/test_title_block.py` (this worktree lacks the untracked root sample drawing;
   they pass in the main checkout). At close of B: tests/eval + tests/review 912 passed;
@@ -98,7 +99,14 @@ proposal, final, cross, note], "digest"}`; examples for the deck come from `rows
    is pushed, so all can be amended.
 3. `/home` hit 0 bytes free during Task 7 (user's disk, not ours); freed to ~19 GB.
 
+**Milestone D**
+- Task 12 `c305b9e`: `tests/eval/test_campaign_c2_seam.py` runs the REAL chain (build_entry →
+  load_bundle → Worker.run_once → ReviewStore append/seal as /seal does → mark_finished →
+  pull_campaign → read_records → grade_campaign and `runner score --reviewer-grade` →
+  campaign_deck.examples). Found no seam drift: header.campaign carries render_scale/page_rect
+  after a real load, events keep t_ms, the gold cross-check computes. CLAUDE.md §1 (campaign-deck
+  operator-only) + §2 C2 paragraph; vps.md grading + optional deck steps.
+
 ## What's next
-Milestone D, Task 12: the C1→C2 seam test (real `build_entry` → `load_bundle` → worker → seal →
-`pull_campaign` → `read_records` → `grade_campaign` → `score --reviewer-grade`), the CLAUDE.md
-paragraph and the runbook step. Then the final cross-cutting review and the merge choice.
+The final cross-cutting review and the merge choice. Open item 1 above (plain `score` output
+hardening) stays open as its own task.
