@@ -102,8 +102,26 @@ def load_bundle(root, data: DataDir, repo: Repo) -> dict:
             # else ever moves (requeue_interrupted handles `extracting`
             # only). Re-running the load is the operator's remedy, so it
             # queues such a row instead of calling it present.
-            if repo.get(existing)["state"] == "staged":
+            state = repo.get(existing)["state"]
+            if state == "staged":
                 repo.enqueue(existing)
+                requeued += 1
+            elif state in ("failed", "cancelled"):
+                # A campaign drawing has no GPU path, so Retry alone would
+                # run it again over whatever files it lost (a startup sweep
+                # mid-copy, a disk fault). Restore the missing ones, and
+                # result.json ALWAYS: the worker deletes an unreadable one,
+                # and without it the retry would try to extract.
+                d = data.doc_dir(existing)
+                try:
+                    d.mkdir(parents=True, exist_ok=True)
+                    for f in _FILES:
+                        if f == "result.json" or not (d / f).is_file():
+                            shutil.copyfile(entry / f, d / f)
+                except OSError as e:
+                    raise BundleError(f"{entry.name}: copy failed ({type(e).__name__});"
+                                      f" {loaded} loaded before it, re-run to resume") from None
+                repo.retry(existing)
                 requeued += 1
             else:
                 skipped += 1

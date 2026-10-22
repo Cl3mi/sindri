@@ -56,11 +56,12 @@ is a few hundred KB) and events batches can be large too.
      ones, so it is safe to repeat after an interruption.
 3. You: `rsync -a ~/campaign-pilot-1/ vps:~/sindri/import/pilot-1/`
 4. You: `ssh vps 'cd ~/sindri && docker compose exec sindri python -m app.campaign.load /import/pilot-1'`
-   - The loader reports loaded / skipped / requeued. Re-running is safe and
-     requeues a drawing stuck in `staged`.
+   - The loader reports loaded / skipped / requeued. Re-running is safe: it
+     requeues a drawing stuck in `staged`, and restores the files of a
+     `failed` or `cancelled` one and re-queues it.
    - Run ONE loader at a time. Never restart or redeploy the container while a
      load is running: the startup sweep can delete a half-copied drawing, which
-     then shows as failed. Remedy: remove the failed drawing and re-run the load.
+     then shows as failed. Remedy: re-run the load; it re-queues failed drawings.
    - Loaded drawings become ready within about 2 s each (the worker polls); no
      restart is needed.
 5. Open the domain yourself, review one drawing end to end, then send the

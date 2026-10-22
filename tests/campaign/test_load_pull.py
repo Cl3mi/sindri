@@ -239,6 +239,29 @@ def test_a_drawing_left_staged_by_an_interrupted_load_is_requeued(
     assert {d["state"] for d in repo.list_documents()} == {"ready"}
 
 
+def test_a_failed_campaign_drawing_is_recovered_by_re_running_the_load(
+        tmp_path, sample_pdf, env):
+    """A campaign drawing has no GPU path: once it fails (the startup sweep
+    took a half-copied file, a disk fault, the worker discarded an unreadable
+    result.json) Retry alone runs it with files still missing, and the
+    loader used to call it "already present". Re-running the load is the
+    runbook's remedy, so it restores the missing files -- result.json
+    always, since the worker may have deleted it -- and re-queues it."""
+    data, repo, _, worker = env
+    b = bundle(tmp_path, sample_pdf, hashes=(HA,))
+    load.load_bundle(b, data, repo)
+    [doc] = repo.list_documents()
+    d = data.doc_dir(doc["id"])
+    (d / "input.pdf").unlink()
+    (d / "result.json").unlink()
+    drain(worker)
+    assert repo.get(doc["id"])["state"] == "failed"
+    assert load.load_bundle(b, data, repo) == {"loaded": 0, "skipped": 0, "requeued": 1}
+    drain(worker)
+    assert repo.get(doc["id"])["state"] == "ready"
+    assert (d / "input.pdf").read_bytes() == (b / HA / "input.pdf").read_bytes()
+
+
 def test_a_doc_hash_that_is_not_an_anon_hash_refuses_the_bundle(tmp_path, sample_pdf, env):
     """Entry names become paths and archive dirs; only the shape the salted
     anonymiser emits (8 lowercase hex) is accepted, so nothing else -- a raw
