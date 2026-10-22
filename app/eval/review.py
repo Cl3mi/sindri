@@ -180,10 +180,18 @@ def _protected_roots() -> List[Path]:
     The guard would accept a relative line by anchoring it at ITS cwd, which
     is not ours; here it is a config error, raised with a fixed sentence
     (no path: the message prints where an agent reads)."""
-    f = Path(os.environ.get("SINDRI_PROTECTED_PATHS",
-                            Path.home() / ".claude" / "sindri-protected-paths"))
+    override = os.environ.get("SINDRI_PROTECTED_PATHS")
+    f = Path(override if override is not None else
+             Path.home() / ".claude" / "sindri-protected-paths")
     try:
         if not f.is_file():
+            # Only the DEFAULT file may be absent (the GPU container has no
+            # ~/.claude). An explicit override that names no regular file is
+            # a typo or a broken setup: reading it as "no roots" would skip
+            # the root rule on a machine that has client data, so fail
+            # closed. An empty file is how to say "no roots" on purpose.
+            if override is not None:
+                raise ProtectedRootsError(_ROOTS_BROKEN)
             return []
         text = f.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError, ValueError):

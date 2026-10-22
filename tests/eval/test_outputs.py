@@ -449,7 +449,8 @@ def test_file_out_no_roots_configured_skips_only_the_root_rule(tmp_path, monkeyp
     """Operator decision 3: the GPU container and CI have no roots file;
     there only the location rule is skipped -- suffix, link and overwrite
     rules still hold."""
-    monkeypatch.setenv("SINDRI_PROTECTED_PATHS", str(tmp_path / "absent.txt"))
+    # No roots: conftest points SINDRI_PROTECTED_PATHS at an EMPTY file
+    # (an explicitly named missing file fails closed).
     assert check_client_file_out(tmp_path / "a.report.json", subdir="reports",
                                  suffix=".report.json")
     with pytest.raises(OutputRefused):                              # suffix still applies
@@ -732,7 +733,8 @@ def test_dir_out_equal_to_an_input_refused(roots):
 
 
 def test_dir_out_no_roots_configured_keeps_the_ours_rule(tmp_path, monkeypatch):
-    monkeypatch.setenv("SINDRI_PROTECTED_PATHS", str(tmp_path / "absent.txt"))
+    # No roots: conftest points SINDRI_PROTECTED_PATHS at an EMPTY file
+    # (an explicitly named missing file fails closed).
     assert check_client_dir_out(tmp_path / "out", subdir="runs", legacy=LEG)
     d = tmp_path / "foreign"
     d.mkdir()

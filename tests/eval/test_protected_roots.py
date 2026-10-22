@@ -115,6 +115,40 @@ def test_an_unreadable_roots_file_fails_closed(tmp_path, monkeypatch):
         f.chmod(0o644)
 
 
+# ---- fix round 2 (E): an explicit override that names nothing fails closed --
+
+@pytest.mark.parametrize("what", ["missing", "directory"])
+def test_an_explicit_override_that_is_not_a_file_fails_closed(
+        tmp_path, monkeypatch, what):
+    """SINDRI_PROTECTED_PATHS set by hand means someone meant a roots file.
+    A typo there used to read as 'no roots' -- skipping the root rule on a
+    machine that has client data. Only the DEFAULT path may be absent."""
+    target = tmp_path / "roots-typo"
+    if what == "directory":
+        target.mkdir()
+    monkeypatch.setenv("SINDRI_PROTECTED_PATHS", str(target))
+    with pytest.raises(ProtectedRootsError) as e:
+        _protected_roots()
+    assert str(tmp_path) not in str(e.value)
+    with pytest.raises(OutputRefused):
+        check_client_file_out(tmp_path / "a.report.json", subdir="reports",
+                              suffix=".report.json")
+
+
+def test_an_empty_roots_file_means_no_roots(tmp_path, monkeypatch):
+    f = tmp_path / "empty"
+    f.write_text("# no roots on this machine\n")
+    monkeypatch.setenv("SINDRI_PROTECTED_PATHS", str(f))
+    assert _protected_roots() == []
+
+
+def test_the_default_path_may_be_absent(tmp_path, monkeypatch):
+    """The GPU container has no ~/.claude at all."""
+    monkeypatch.delenv("SINDRI_PROTECTED_PATHS")
+    monkeypatch.setenv("HOME", str(tmp_path / "nohome"))
+    assert _protected_roots() == []
+
+
 # ---- finding 5b: a skipped root rule is visible ---------------------------
 
 def test_skipping_the_root_rule_says_so_once(tmp_path, monkeypatch, capsys):
@@ -122,7 +156,8 @@ def test_skipping_the_root_rule_says_so_once(tmp_path, monkeypatch, capsys):
     decision 3). On a machine that SHOULD have roots that is a silent
     misconfiguration, so it is announced -- once, in a fixed sentence."""
     monkeypatch.setattr(outputs, "_NO_ROOTS_ANNOUNCED", False)
-    monkeypatch.setenv("SINDRI_PROTECTED_PATHS", str(tmp_path / "absent.txt"))
+    # No roots: conftest points SINDRI_PROTECTED_PATHS at an EMPTY file
+    # (an explicitly named missing file fails closed).
     check_client_file_out(tmp_path / "a.report.json", subdir="reports",
                           suffix=".report.json")
     check_client_dir_out = outputs.check_client_dir_out

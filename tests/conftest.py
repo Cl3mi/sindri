@@ -29,8 +29,11 @@ def _isolated_runtime(tmp_path, monkeypatch):
     # use; a test about roots points this at its own synthetic file. The
     # once-per-process "no protected roots" notice is pre-silenced so it
     # cannot land in whichever test happens to trigger it first.
-    monkeypatch.setenv("SINDRI_PROTECTED_PATHS",
-                       str(tmp_path / "no-protected-roots-in-tests"))
+    # An EMPTY file, not a missing one: an explicit override that names no
+    # file fails closed (review._protected_roots).
+    no_roots = tmp_path / "no-protected-roots-in-tests"
+    no_roots.write_text("")
+    monkeypatch.setenv("SINDRI_PROTECTED_PATHS", str(no_roots))
     monkeypatch.setattr("app.eval.outputs._NO_ROOTS_ANNOUNCED", True)
     mod = sys.modules.get("app.main")
     if mod is not None:
