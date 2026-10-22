@@ -289,3 +289,58 @@ def test_only_scored_kinds_count_and_output_carries_no_value_keys():
     blob = repr(out)
     for k in ("upper_tol", "lower_tol", "characteristics", "position_pt"):
         assert k not in blob
+
+
+def test_frame_check_compares_origin_too():
+    # Same size, shifted origin: every gold position would sit 100 pt off, so
+    # each delivered value would read as a gold_phantom. Refuse instead.
+    gold = _gold([_g(1, (130, 120), "10")], page_rect=(100, 100, 942, 695))
+    assert _check([], [], {}, gold)["reason"] == "frame_mismatch"
+
+
+def test_client_manual_add_counts_as_found():
+    gold = _gold([_g(1, (30, 20), "10"), _g(2, (230, 220), "7")])
+    p = _prow("ok", (20, 10, 40, 30))
+    added = _prow("m1", (220, 210, 240, 230), nominal="7", source="manual")
+    out = _check([p], [p, added], {"ok": "confirmed"}, gold)
+    assert out["matched_final"] == 2 and out["neither_found"] == 0
+    assert out["verdicts"] == {"ok": "gold_correct"}      # a final-only row gets no verdict
+
+
+def test_bad_render_scale_refuses():
+    gold = _gold([_g(1, (30, 20), "10")])
+    for s in (0, -1.0, float("nan"), True):
+        out = gold_cross_check([], [], {}, gold, render_scale=s, page_rect=PAGE)
+        assert out == {"computed": False, "reason": "bad_render_scale"}
+
+
+def test_row_beside_only_a_note_gold_row_is_a_phantom():
+    # Notes are outside score_kinds: the scorer would call this a false
+    # detection, so the cross-check must too.
+    gold = _gold([_g(1, (30, 20), "10", kind="note")])
+    p = _prow("p", (20, 10, 40, 30))
+    out = _check([p], [p], {"p": "confirmed"}, gold)
+    assert out["verdicts"] == {"p": "gold_phantom"} and out["n_gold"] == 0
+
+
+def test_duplicate_or_missing_row_ids_refuse():
+    # Verdicts are keyed by id: two rows sharing one would merge silently.
+    gold = _gold([_g(1, (30, 20), "10")])
+    a = _prow("x", (20, 10, 40, 30))
+    b = _prow("x", (700, 500, 720, 520))
+    out = _check([a, b], [a], {"x": "confirmed"}, gold)
+    assert out == {"computed": False, "reason": "duplicate_ids"}
+    noid = {k: v for k, v in a.items() if k != "id"}
+    assert _check([noid], [], {}, gold)["reason"] == "duplicate_ids"
+
+
+def test_duplicate_gold_balloons_refuse():
+    gold = _gold([_g(1, (30, 20), "10"), _g(1, (230, 220), "7")])
+    assert _check([], [], {}, gold) == {"computed": False, "reason": "gold_invalid"}
+
+
+def test_reconciled_frames_are_unsupported():
+    from app.eval.models import MatchParams
+    gold = _gold([_g(1, (30, 20), "10")])
+    out = _check([], [], {}, gold, params=MatchParams(reconcile_frames="scale"))
+    assert out == {"computed": False, "reason": "unsupported_params"}

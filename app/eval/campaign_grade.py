@@ -192,14 +192,18 @@ def _rect_ok(rect) -> bool:
 
 
 def _same_frame(a, b) -> bool:
-    """Gold positions come from the STAMPED sheet, the campaign's pixels from
-    the ORIGINAL; when those pages differ, every distance mixes two frames.
-    That once silently cost 141 matches, so a mismatch refuses the whole
-    cross-check instead of producing a number that looks like a result."""
+    """Gold must be the `--originals` ingest, whose page_rect is the clean
+    ORIGINAL's, i.e. the page the campaign rendered. When the two rects
+    differ, every distance mixes two frames; that once silently cost 141
+    matches, so a mismatch refuses the whole cross-check instead of producing
+    a number that looks like a result. All four coordinates are compared: a
+    shifted origin moves every gold position just as a resize does.
+    Blind spot: gold ingested WITHOUT --originals from a stamped sheet of the
+    same size passes any rect check, so the caller (Task 7 / runner help) must
+    insist on the --originals gold dir."""
     if not (_rect_ok(a) and _rect_ok(b)):
         return False
-    return (abs((a[2] - a[0]) - (b[2] - b[0])) <= FRAME_TOL_PT
-            and abs((a[3] - a[1]) - (b[3] - b[1])) <= FRAME_TOL_PT)
+    return all(abs(a[k] - b[k]) <= FRAME_TOL_PT for k in range(4))
 
 
 def _center_pt(row, render_scale, page_rect):
@@ -231,6 +235,8 @@ def _match(located, gold_chars, diag, params) -> Dict[int, int]:
     """located: [(index, center_pt, nominal)]. Keys are list INDICES, not row
     ids, so a duplicate or missing id can never make match_candidates raise.
     Returns {index: gold balloon}."""
+    # The scorer keys by pos, so an EXACT cost tie may break differently here;
+    # acceptable, since ties need identical distances and value bonuses.
     pairs = match_candidates(
         [Cand(key=i, center_pt=c, nominal=n) for i, c, n in located],
         [Cand(key=g.balloon, center_pt=g.position_pt, nominal=g.nominal)
@@ -258,18 +264,31 @@ def gold_cross_check(proposal: List[dict], final: List[dict], grades: Dict[str, 
     Output is counts, fixed words and the per-row verdict keyed by row id;
     nothing in it is a client value."""
     params = params or MatchParams()
+    # Reconciling frames would put gold in a third frame this function never
+    # converts rows into; the frame check already requires the pages to agree.
+    if params.reconcile_frames != "none":
+        return {"computed": False, "reason": "unsupported_params"}
     if not _same_frame(gold.page_rect, page_rect):
         return {"computed": False, "reason": "frame_mismatch"}
     if (isinstance(render_scale, bool) or not isinstance(render_scale, (int, float))
             or not math.isfinite(render_scale) or render_scale <= 0):
         return {"computed": False, "reason": "bad_render_scale"}
     gold_chars = [g for g in gold.characteristics if g.kind in params.score_kinds]
+    # match_candidates would raise on a repeated balloon number, and by_num
+    # would silently keep only one of them.
+    if len({g.balloon for g in gold_chars}) != len(gold_chars):
+        return {"computed": False, "reason": "gold_invalid"}
     by_num = {g.balloon: g for g in gold_chars}
     # The gold page's diagonal, as score() uses when frames are not reconciled;
     # _same_frame has just established the two agree.
     diag = math.dist(gold.page_rect[:2], gold.page_rect[2:])
 
     delivered = [r for r in proposal if not r.get("suggested")]
+    # Verdicts and grades are keyed by id: two rows sharing one (or rows with
+    # none) would merge in the matrix without a trace, so refuse instead.
+    ids = [r.get("id") for r in delivered]
+    if any(not isinstance(i, str) or not i for i in ids) or len(set(ids)) != len(ids):
+        return {"computed": False, "reason": "duplicate_ids"}
     verdicts: Dict[str, str] = {}
     located, chars = [], {}
     unlocatable = invalid = 0
