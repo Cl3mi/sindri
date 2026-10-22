@@ -216,22 +216,30 @@ def inside_protected(path) -> bool:
     return any(target.is_relative_to(root) for root in _protected_roots())
 
 
-def check_deck_path(path) -> Path:
-    """Inside a protected root and not already there. Called before scoring
-    too, so a bad path fails in seconds rather than after a re-score."""
-    target = Path(path).resolve()
-    if not inside_protected(target):
+def check_deck_path(path, avoid=()) -> Path:
+    """The class-B file rule (outputs.check_client_file_out): directly under
+    <root>/reports/, `.json`, never a link (dangling ones included), never
+    one of the run's inputs, and never replacing anything -- answers are
+    keyed to the deck. Before review round 2 it was "anywhere inside a
+    root", which let a deck land in gold/ under a gold file's name. Unlike
+    class B it also refuses when NO roots are configured: a deck is only
+    ever safe inside one. Called before scoring too, so a bad path fails in
+    seconds rather than after a re-score."""
+    from app.eval.outputs import OutputRefused, check_client_file_out
+    if not _protected_roots():
         raise ReviewRefused(
             "the review deck holds client text, so it may only be written "
-            "inside a protected root (one listed in "
-            "~/.claude/sindri-protected-paths, e.g. the client-data reports/ "
-            "folder)" + ("" if _protected_roots() else " -- and no protected "
-                         "roots are configured on this machine"))
-    if target.exists():
-        raise ReviewRefused(
-            "a deck already exists at that path and its answers are keyed to "
-            "it; move it away deliberately to regenerate")
-    return target
+            "inside a protected root -- and no protected roots are "
+            "configured on this machine")
+    try:
+        return check_client_file_out(path, subdir="reports", suffix=".json",
+                                     kind=None, avoid=avoid)
+    except OutputRefused as e:
+        if "already exists" in str(e):
+            raise ReviewRefused(
+                "a deck already exists at that path and its answers are "
+                "keyed to it; move it away deliberately to regenerate") from None
+        raise ReviewRefused(f"the review deck: {e}") from None
 
 
 _MARKER_PEEK = 4096
@@ -308,11 +316,22 @@ def check_digest_path(path, avoid=()) -> Path:
     return target
 
 
-def write_deck(path, deck: Dict) -> int:
-    target = check_deck_path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(deck, indent=1, ensure_ascii=False),
-                      encoding="utf-8")
+def _write_through_the_one_writer(target: Path, text: str, mode: int) -> None:
+    """outputs.write_atomic (partial, fsync, rename; the approved parent
+    re-checked), with its refusal turned into ours."""
+    from app.eval.outputs import OutputRefused, prepare_parent, write_atomic
+    try:
+        prepare_parent(target)
+        write_atomic(target, text, mode=mode, expect_parent=target.parent)
+    except OutputRefused as e:
+        raise ReviewRefused(str(e)) from None
+
+
+def write_deck(path, deck: Dict, avoid=()) -> int:
+    from app.eval.outputs import CLIENT_FILE_MODE
+    target = check_deck_path(path, avoid=avoid)
+    _write_through_the_one_writer(
+        target, json.dumps(deck, indent=1, ensure_ascii=False), CLIENT_FILE_MODE)
     return len(deck["rows"])
 
 
@@ -460,7 +479,14 @@ def tally(deck: Dict, answers: Dict[str, Dict]) -> Dict:
 
 
 def check_tally_out(path) -> Path:
-    target = Path(path).resolve()
+    # Checked BEFORE resolving: resolving would follow a link at the name,
+    # and the atomic writer would then replace the link's target.
+    try:
+        if Path(path).is_symlink():
+            raise ReviewRefused("the tally path is a symbolic link")
+        target = Path(path).resolve()
+    except (OSError, RuntimeError, ValueError):
+        raise ReviewRefused("the tally path cannot be resolved") from None
     if inside_protected(target):
         raise ReviewRefused(
             "the tally is the output meant for the agent; inside a protected "
@@ -469,8 +495,9 @@ def check_tally_out(path) -> Path:
 
 
 def write_tally(path, t: Dict) -> Path:
+    from app.eval.outputs import DIGEST_FILE_MODE
     target = check_tally_out(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(t, indent=1, ensure_ascii=False) + "\n",
-                      encoding="utf-8")
+    _write_through_the_one_writer(
+        target, json.dumps(t, indent=1, ensure_ascii=False) + "\n",
+        DIGEST_FILE_MODE)
     return target

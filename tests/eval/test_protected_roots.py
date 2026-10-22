@@ -66,7 +66,7 @@ def test_the_real_root_still_works(commented_roots):
     client, _ = commented_roots
     assert check_client_file_out(client / "reports" / "a.report.json",
                                  subdir="reports", suffix=".report.json")
-    assert check_deck_path(client / "deck.json")
+    assert check_deck_path(client / "reports" / "deck.json")
     with pytest.raises(OutputRefused):
         check_digest_out(client / "reports" / "d.json", "run-summary-digest")
 

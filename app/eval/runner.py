@@ -913,8 +913,11 @@ def _cmd_score(args):
                   "cut from the drawings, and --pdfs is where they are",
                   file=sys.stderr)
             return 1
+        deck_avoid = (_inputs(args, "run", "out", "gold", "splits", "weights",
+                              "pdfs", "manifest", "reviewer_grade")
+                      + [getattr(args, a, None) for a, _ in _SCORE_DIGEST_FLAGS])
         try:
-            check_deck_path(deck_out)
+            check_deck_path(deck_out, avoid=deck_avoid)
         except ReviewRefused as e:
             print(f"ERROR: --review-deck refused: {e}", file=sys.stderr)
             return 1
@@ -1141,7 +1144,8 @@ def _cmd_score(args):
         pdfs = Path(args.pdfs)
         n = write_deck(deck_out, build_deck(
             collect_gdt_rows(dumps, gold, scores), args.name,
-            originals_dir=pdfs, stamped_dir=pdfs.parent / "stamped"))
+            originals_dir=pdfs, stamped_dir=pdfs.parent / "stamped"),
+            avoid=deck_avoid)
         print(f"review deck: {n} row(s) for a human reviewer. It contains "
               f"client data -- the operator opens it with review-serve, "
               f"never an agent.")

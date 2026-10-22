@@ -12,7 +12,7 @@ import textwrap
 
 import pytest
 
-from app.eval import dump, runner, splits, verify
+from app.eval import dump, review, runner, splits, verify
 
 # (module, function) for every write path of predict, ingest, verify, score,
 # split, variants, plus the class-A summary/compare digests and the two
@@ -23,6 +23,7 @@ WRITE_SITES = [
     (runner, "_cmd_summary"), (runner, "_cmd_review_tally"),
     (runner, "_cmd_reviewer_grade"), (verify, "cmd_verify"),
     (splits, "save_splits"), (dump, "save_dump"),
+    (review, "write_deck"), (review, "write_tally"),
 ]
 
 _WRITE_METHODS = {"write_text", "write_bytes"}

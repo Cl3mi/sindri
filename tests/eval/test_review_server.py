@@ -136,9 +136,9 @@ def test_the_app_refuses_a_tally_path_inside_a_protected_root(tmp_path,
     root = tmp_path / "client"
     root.mkdir()
     _roots(tmp_path, monkeypatch, root)
-    write_deck(root / "d.json", build_deck(_rows3(), "r", "/o", "/s"))
+    write_deck(root / "reports" / "d.json", build_deck(_rows3(), "r", "/o", "/s"))
     with pytest.raises(ReviewRefused):
-        ReviewApp(root / "d.json", root / "tally.json")
+        ReviewApp(root / "reports" / "d.json", root / "tally.json")
 
 
 def test_the_app_refuses_a_deck_outside_a_protected_root(tmp_path, monkeypatch):
@@ -196,9 +196,9 @@ def test_the_stamped_crop_follows_the_balloon_onto_a_differently_sized_sheet(
                     gold_label="x", transcription="x", predicted="Flatness",
                     parser_defaulted=True, scorer_reads_gold_as="none",
                     silent=True)
-    write_deck(root / "d.json", build_deck([row], "r", root / "originals",
+    write_deck(root / "reports" / "d.json", build_deck([row], "r", root / "originals",
                                            root / "stamped"))
-    app = ReviewApp(root / "d.json", tmp_path / "docs" / "tally.json")
+    app = ReviewApp(root / "reports" / "d.json", tmp_path / "docs" / "tally.json")
     assert _dark_pixels(app.crop("g1", "stamped")) > 50
     # Mapped exactly, so nothing about this crop is approximate any more.
     assert app.deck_payload()["rows"][0]["stamped_approx"] is False
@@ -218,8 +218,8 @@ def test_without_an_original_the_stamped_crop_is_marked_approximate(
                     transcription="x", predicted="Flatness",
                     parser_defaulted=True, scorer_reads_gold_as="none",
                     silent=True)
-    write_deck(root / "d.json", build_deck([row], "r", root / "originals",
+    write_deck(root / "reports" / "d.json", build_deck([row], "r", root / "originals",
                                            root / "stamped"))
-    app = ReviewApp(root / "d.json", tmp_path / "docs" / "tally.json")
+    app = ReviewApp(root / "reports" / "d.json", tmp_path / "docs" / "tally.json")
     assert app.deck_payload()["rows"][0]["stamped_approx"] is True
     assert app.crop("g1", "stamped").startswith(b"\x89PNG")

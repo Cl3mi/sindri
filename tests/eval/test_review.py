@@ -28,7 +28,7 @@ import pytest
 from app.eval.models import (GoldCharacteristic, GoldDoc, MatchParams,
                              PredictionDump, ReviewCostWeights, RunConfig)
 from app.eval.review import (KIND, ReviewRefused, build_deck, collect_gdt_rows,
-                             deck_sha, load_deck, write_deck)
+                             deck_sha, load_deck, write_deck, write_tally)
 from app.eval.score import score_doc
 from app.models import Characteristic, ExtractionResult
 
@@ -135,8 +135,8 @@ def test_a_deck_round_trips_and_its_sha_is_stable(tmp_path, monkeypatch):
     root.mkdir()
     _roots(tmp_path, monkeypatch, root)
     deck = build_deck(_rows3(), run="r", originals_dir="/o", stamped_dir="/s")
-    write_deck(root / "d.json", deck)
-    back = load_deck(root / "d.json")
+    write_deck(root / "reports" / "d.json", deck)
+    back = load_deck(root / "reports" / "d.json")
     assert deck_sha(back) == deck_sha(json.loads(json.dumps(deck)))
 
 
@@ -169,9 +169,58 @@ def test_a_deck_is_never_overwritten(tmp_path, monkeypatch):
     root.mkdir()
     _roots(tmp_path, monkeypatch, root)
     deck = build_deck(_rows3(), run="r", originals_dir="/o", stamped_dir="/s")
-    write_deck(root / "d.json", deck)
+    write_deck(root / "reports" / "d.json", deck)
     with pytest.raises(ReviewRefused, match="exists"):
-        write_deck(root / "d.json", deck)
+        write_deck(root / "reports" / "d.json", deck)
+
+
+def test_a_deck_lives_directly_under_reports(tmp_path, monkeypatch):
+    """Review round 2: 'anywhere inside the root' let a deck land in gold/
+    under a gold file's name, where the next score globs it as gold. It now
+    follows the class-B rule: a direct child of <root>/reports/."""
+    root = tmp_path / "client"
+    (root / "gold").mkdir(parents=True)
+    _roots(tmp_path, monkeypatch, root)
+    deck = build_deck(_rows3(), run="r", originals_dir="/o", stamped_dir="/s")
+    for bad in (root / "d.json", root / "gold" / "x.gold.json",
+                root / "reports" / "sub" / "d.json"):
+        with pytest.raises(ReviewRefused):
+            write_deck(bad, deck)
+        assert not bad.exists()
+
+
+def test_a_deck_never_follows_a_link_even_a_dangling_one(tmp_path, monkeypatch):
+    """A dangling link reads as 'does not exist', and write_text would then
+    create a NEW file wherever it points."""
+    root = tmp_path / "client"
+    (root / "reports").mkdir(parents=True)
+    (root / "gold").mkdir()
+    _roots(tmp_path, monkeypatch, root)
+    link = root / "reports" / "d.json"
+    link.symlink_to(root / "gold" / "new.gold.json")
+    deck = build_deck(_rows3(), run="r", originals_dir="/o", stamped_dir="/s")
+    with pytest.raises(ReviewRefused):
+        write_deck(link, deck)
+    assert not (root / "gold" / "new.gold.json").exists()
+
+
+def test_a_deck_is_written_owner_only(tmp_path, monkeypatch):
+    root = tmp_path / "client"
+    root.mkdir()
+    _roots(tmp_path, monkeypatch, root)
+    write_deck(root / "reports" / "d.json", _deck3())
+    assert (root / "reports" / "d.json").stat().st_mode & 0o777 == 0o600
+
+
+def test_the_tally_is_not_written_through_a_link(tmp_path):
+    keep = tmp_path / "keep.json"
+    keep.write_text("{}")
+    link = tmp_path / "docs" / "tally.json"
+    link.parent.mkdir()
+    link.symlink_to(keep)
+    with pytest.raises(ReviewRefused):
+        write_tally(link, {"kind": KIND})
+    assert keep.read_text() == "{}"
 
 
 def test_a_file_that_is_not_a_deck_is_refused(tmp_path):
@@ -256,8 +305,8 @@ def _saved(tmp_path, monkeypatch):
     root = tmp_path / "client"
     root.mkdir()
     _roots(tmp_path, monkeypatch, root)
-    write_deck(root / "d.json", _deck3())
-    return root / "d.json", load_deck(root / "d.json")
+    write_deck(root / "reports" / "d.json", _deck3())
+    return root / "reports" / "d.json", load_deck(root / "reports" / "d.json")
 
 
 def test_answers_persist_merge_and_canonicalise(tmp_path, monkeypatch):
@@ -351,11 +400,11 @@ def test_score_needs_pdfs_to_know_where_the_drawings_are(tmp_path,
     root = tmp_path / "client"
     root.mkdir()
     _roots(tmp_path, monkeypatch, root)
-    args = _score_args(tmp_path, run_dir, gold_dir, pdfs, root / "d.json")
+    args = _score_args(tmp_path, run_dir, gold_dir, pdfs, root / "reports" / "d.json")
     i = args.index("--pdfs")
     del args[i:i + 2]
     assert main(args) == 1
-    assert not (root / "d.json").exists()
+    assert not (root / "reports" / "d.json").exists()
 
 
 def test_score_writes_the_deck_and_prints_only_a_count(tmp_path, monkeypatch,
