@@ -17,14 +17,20 @@ client data (CLAUDE.md §1).
 
 ## Install
 
-1. Docker + compose plugin (compose >= 2.24, needed for `ports: !override`),
-   and Caddy from its official apt repository.
-2. `git clone` this repo to `~/sindri`, then `mkdir -p ~/sindri/data ~/sindri/import ~/sindri/export`.
+1. Docker Engine >= 28 (older engines let L2 neighbours reach
+   127.0.0.1-published ports) + compose plugin >= 2.24 (needed for
+   `ports: !override`), and Caddy from its official apt repository.
+2. `git clone` this repo to `~/sindri`, then `mkdir -p ~/sindri/data ~/sindri/import ~/sindri/export` and
+   `chmod 700 ~/sindri/data ~/sindri/import ~/sindri/export`. Make the VPS
+   override the default, so a habitual plain `docker compose up` cannot
+   re-publish 0.0.0.0:8000 past ufw, unauthenticated and not campaign-only:
+   `printf 'COMPOSE_FILE=docker-compose.yml:docker-compose.vps.yml\n' >> ~/sindri/.env`.
 3. `caddy hash-password` per reviewer account; fill `deploy/Caddyfile.example`
    into `/etc/caddy/Caddyfile`; `sudo systemctl reload caddy`.
-4. `cd ~/sindri && SINDRI_VERSION=$(git rev-parse --short HEAD) docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d --build`
+4. `cd ~/sindri && SINDRI_VERSION=$(git rev-parse --short HEAD) docker compose up -d --build`
 5. Check: `curl -s localhost:8000/api/health` shows `"campaign_only": true`;
-   `curl -sI https://<domain>/` answers 401 without credentials.
+   `curl -sI https://<domain>/` answers 401 without credentials; from ANOTHER machine
+   `curl -m5 http://<server-ip>:8000/api/health` must fail to connect.
 
 ## What campaign-only mode allows
 
@@ -72,5 +78,7 @@ is a few hundred KB) and events batches can be large too.
 
 ## After the campaign
 
-`docker compose down`, then delete `~/sindri/data`, `~/sindri/import` and
-`~/sindri/export` on the VPS once the final pull is safely in the protected root.
+`docker compose down`, then
+`sudo rm -rf ~/sindri/data ~/sindri/import ~/sindri/export` on the VPS (the
+container runs as root) once the final pull is safely in the protected root,
+and `docker builder prune -af` to drop build cache.

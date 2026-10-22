@@ -1,9 +1,20 @@
 # Copy to /etc/caddy/Caddyfile and replace the domain. Caddy gets the TLS
 # certificate itself. Create the hash with:  caddy hash-password
+# basic_auth needs Caddy >= 2.8 (older versions call it basicauth). Use long
+# random reviewer passwords: basic auth has no rate limit and is the only
+# guard on /api/read_region (CPU OCR).
 review.example.com {
 	basic_auth {
 		# one line per reviewer account: <user> <bcrypt hash>
 		reviewer $2a$14$REPLACE_WITH_CADDY_HASH_PASSWORD_OUTPUT
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		X-Frame-Options DENY
+		Content-Security-Policy "frame-ancestors 'none'"
+		-Server
 	}
 	request_body {
 		# A seal POST carries every row of a drawing and an events batch can
