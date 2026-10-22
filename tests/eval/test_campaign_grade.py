@@ -659,10 +659,45 @@ def test_pooled_values_say_why_they_are_unmeasured(tmp_path):
     p = [proposal_row("a")]
     rec = _tar(tmp_path, [drawing("aaaaaaaa", p, p, [], group="great"),
                           drawing("bbbbbbbb", p, p, [], group="odd")])
-    _, digest = grade_campaign(rec, manifest=_manifest({}))
+    # "odd" is a word the manifest's roles use, so it is allowed through
+    _, digest = grade_campaign(rec, manifest=_manifest({"bbbbbbbb": "odd"}))
     assert digest["pooled_unmeasured"] == {"unpooled_groups": ["odd"],
                                            "pool_groups_missing": ["problem"]}
     assert digest["pooled"]["precision"] is None
+
+
+def test_word_shaped_group_and_run_must_be_on_an_allowlist(tmp_path):
+    """A part number passes any word-shape check. Group and source run reach
+    the digest only if the manifest (or, failing that, our own run naming)
+    vouches for them."""
+    p = [proposal_row("a")]
+    d = drawing("aaaaaaaa", p, p, [], group="PartNo-4711-LEAK",
+                source_run="Bracket_LEAK_rev3")
+    _, digest = grade_campaign(_tar(tmp_path, [d]))
+    blob = json.dumps(digest)
+    assert "LEAK" not in blob
+    assert set(digest["groups"]) == {"unknown"}
+    assert digest["by_source_run"] == {"unknown": 1}
+
+
+def test_manifest_runs_are_the_source_run_allowlist(tmp_path):
+    p = [proposal_row("a")]
+    ds = [drawing("aaaaaaaa", p, p, [], source_run="r5-control"),
+          drawing("bbbbbbbb", p, p, [], source_run="r4-controltest")]
+    man = {"runs": [{"run": "r4-controltest", "hashes": ["bbbbbbbb"]}], "roles": {}}
+    _, digest = grade_campaign(_tar(tmp_path, ds), manifest=man)
+    assert digest["by_source_run"] == {"r4-controltest": 1, "unknown": 1}
+    _, digest = grade_campaign(_tar(tmp_path, ds))
+    assert digest["by_source_run"] == {"r4-controltest": 1, "r5-control": 1}
+
+
+@pytest.mark.parametrize("net_events", [{"x": LEAK}, 4711])
+def test_a_non_list_net_events_is_ungradable_without_leaking(tmp_path, net_events):
+    p = [proposal_row("a")]
+    d = drawing("aaaaaaaa", p, p, net_events, events_lines=[])
+    _, digest = grade_campaign(_tar(tmp_path, [d]))
+    assert digest["drawings"]["ungradable_reasons"] == {"replay_error": 1}
+    assert "LEAK" not in json.dumps(digest)
 
 
 def test_exact_levers_beat_prefixes_and_mixed_signatures_stay_generic():

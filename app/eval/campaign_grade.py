@@ -492,25 +492,44 @@ def _num_ok(w) -> bool:
 
 
 def _manifest_parts(manifest):
-    """(roles, pool), refusing any shape the grader cannot use. The manifest is
-    the operator's own file, so a bad one is an operator error to fix, not a
-    drawing to skip -- but the message is still fixed words."""
+    """(roles, pool, runs), refusing any shape the grader cannot use. The
+    manifest is the operator's own file, so a bad one is an operator error to
+    fix, not a drawing to skip -- but the message is still fixed words."""
     if manifest is None:
-        return {}, {}
+        return {}, {}, set()
     try:
         if not isinstance(manifest, dict):
             raise TypeError
         roles = manifest.get("roles", {}) or {}
         pool = manifest.get("pool", {}) or {}
-        if not (isinstance(roles, dict) and isinstance(pool, dict)):
+        runs = manifest.get("runs", []) or []
+        if not (isinstance(roles, dict) and isinstance(pool, dict)
+                and isinstance(runs, list)):
             raise TypeError
         if not all(isinstance(k, str) and isinstance(v, str) for k, v in roles.items()):
             raise TypeError
         if not all(_token(k) and _num_ok(w) for k, w in pool.items()):
             raise TypeError
+        if not all(isinstance(r, dict) and isinstance(r.get("run"), str) for r in runs):
+            raise TypeError
     except TypeError:
         raise ValueError("manifest: bad roles/pool") from None
-    return roles, pool
+    return roles, pool, {r["run"] for r in runs}
+
+
+# Our own predict-run naming (r5-control, r4-controltest, r3-trainpredict):
+# the fallback allowlist for a source run when no manifest names its runs.
+_RUN_NAME = re.compile(r"\Ar\d+-[a-z0-9]+(?:-[a-z0-9]+)*\Z")
+# The share_select roles; any further group must be vouched for by a manifest.
+_BASE_GROUPS = frozenset({"great", "problem"})
+
+
+def _allowed(s, allow) -> Optional[str]:
+    """A part number ('PartNo-4711') is word-shaped, so a shape check cannot
+    keep client text out of the digest; group and source run must instead be
+    words WE chose, i.e. on an allowlist. isinstance first: a list or dict is
+    unhashable and would raise on the membership test."""
+    return s if isinstance(s, str) and s in allow else None
 
 
 def _grade_one(d, facts) -> dict:
@@ -578,7 +597,15 @@ def grade_campaign(records, gold_by_hash: Optional[Dict[str, GoldDoc]] = None,
     reproduce its seal, it has no usable render_scale, or grading raised
     (`grade_error`). A cross-check failure alone keeps the client's grade.
     Raises ValueError only for a malformed manifest."""
-    roles, pool = _manifest_parts(manifest)
+    roles, pool, manifest_runs = _manifest_parts(manifest)
+    # Roles and pool are the operator's words; _token still guards them because
+    # the group also keys the digest and the pooled_unmeasured lists.
+    group_allow = _BASE_GROUPS | {g for g in set(pool) | set(roles.values()) if _token(g)}
+
+    def source_run(s) -> str:
+        if manifest_runs:
+            return _allowed(s, manifest_runs) or "unknown"
+        return s if isinstance(s, str) and _RUN_NAME.match(s) else "unknown"
     gold_by_hash = gold_by_hash or {}
     status = {"approved": 0, "pending": 0, "ungradable": 0}
     reasons: Dict[str, int] = {}
@@ -607,12 +634,13 @@ def grade_campaign(records, gold_by_hash: Optional[Dict[str, GoldDoc]] = None,
         header = d.header if isinstance(d.header, dict) else {}
         facts = header.get("campaign")
         facts = facts if isinstance(facts, dict) else {}
-        group = _token(facts.get("group")) or _token(d.index.get("group")) or "unknown"
+        group = (_allowed(facts.get("group"), group_allow)
+                 or _allowed(d.index.get("group"), group_allow) or "unknown")
         if primary and h in roles and roles[h] != group:
             problems.append(f"group_differs:{skey}")
         revision_mismatch += bool(d.revision_mismatch)
         doc = {"doc_hash": skey, "group": group,
-               "source_run": _token(facts.get("source_run"), "unknown"),
+               "source_run": source_run(facts.get("source_run")),
                "status": None, "reason": None, "rows": None, "missed": None,
                "scale": None, "time_ms": None, "proposal": None, "final": None,
                "cross": None, "note": None}
@@ -664,6 +692,11 @@ def grade_campaign(records, gold_by_hash: Optional[Dict[str, GoldDoc]] = None,
         report_docs.append(doc)
 
     groups = {grp: group_metrics(ds) for grp, ds in sorted(by_group.items())}
+    # STRUCTURAL GUARD, not reconciliation: group_metrics counts the same rows
+    # it is checked against, so no input can make this fire today. It only
+    # catches group_metrics drifting from grade_session's GRADES (a new grade
+    # it does not count). Do not cite it as evidence that the digest adds up;
+    # group_drawings, gold_coverage and the cross_* checks are the real ones.
     for grp, ds in sorted(by_group.items()):
         c = groups[grp]["counts"]
         if (sum(c[g] for g in VALUE_GRADES + SUGGESTION_GRADES)
@@ -690,11 +723,11 @@ def grade_campaign(records, gold_by_hash: Optional[Dict[str, GoldDoc]] = None,
         # A hashless record cannot be in the manifest either.
         extra_in_records = len([d for d in records.drawings.values()
                                 if doc_hash(d) not in roles])
-        covered = (len([h for h in roles if h in in_records])
-                   + len([h for h in roles if h not in in_records and h in in_skipped])
-                   + not_in_records)
-        if covered != len(roles):
-            problems.append("manifest_coverage")
+        # Coverage needs no check of its own: not_in_records is DEFINED as the
+        # roles found nowhere, so "recorded + skipped + not_in_records ==
+        # roles" is arithmetic, not evidence (a former manifest_coverage check
+        # could never fire and was removed). The falsifiable half is
+        # skipped_and_recorded above.
 
     # No pool -> nothing to reweight to: None, never a guessed mix; and say
     # which groups made a pooled value None, since reweight() cannot.

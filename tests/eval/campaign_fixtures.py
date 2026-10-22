@@ -51,7 +51,9 @@ def drawing(doc_hash, proposal, final, net_events, *, group="great",
             "proposal": {"rows": proposal},
             "sealed": {"revision": 1, "rows": final, "net_events": net_events,
                        "reviewed_ids": [], "replay_mismatch_ids": list(mismatch),
-                       "final_seq": len(net_events), "sealed_at": "t"},
+                       # A non-list net_events plants a malformed seal.
+                       "final_seq": len(net_events) if isinstance(net_events, list) else 0,
+                       "sealed_at": "t"},
             "events_lines": events_lines if events_lines is not None else
                             [json.dumps(e) for e in net_events]}
 
@@ -91,7 +93,10 @@ def write_tar(path, drawings, skipped=(), campaign="pilot-1"):
             docs.append({"doc_hash": d["doc_hash"], "dir": base, "group": d["group"],
                          "state": "finished" if d["approved"] else "in_review",
                          "final_revision": 1 if d["approved"] else None,
-                         "sealed_seq": len(d["sealed"]["net_events"]) if d["approved"] else 0,
+                         "sealed_seq": (len(d["sealed"]["net_events"])
+                                        if d["approved"]
+                                        and isinstance(d["sealed"]["net_events"], list)
+                                        else 0),
                          "sealed_revision": 1 if d["approved"] else None})
         add("index.json", json.dumps({"campaign": campaign, "documents": docs,
                                       "skipped": list(skipped)}).encode())
