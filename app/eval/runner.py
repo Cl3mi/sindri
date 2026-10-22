@@ -30,6 +30,10 @@ from app.eval.balloon_cv import cv_report
 from app.eval.dump import load_dump, save_dump
 from app.eval.excel_gold import dump_headers, sheet_vocabulary
 from app.eval.ingest import build_gold_doc
+from app.eval.outputs import (CLIENT_FILE_MODE, OutputRefused,
+                              check_client_dir_out, check_client_file_out,
+                              check_digest_out, claim_dir, prepare_parent,
+                              write_atomic, write_json_digest)
 from app.eval.models import (GoldDoc, MatchParams, PredictionDump,
                              ReviewCostWeights, RunConfig, RunReport)
 from app.eval.report import aggregate, compare_runs, per_doc_rows, summarize
@@ -654,6 +658,38 @@ def _write_checked(target: Path, text: str, mode: int) -> None:
     write_atomic(target, text, mode=mode, expect_parent=target.parent)
 
 
+# Class A (counts-only digest) flags of `score`, with the kind marker each
+# digest carries as its first key. A re-run may replace only a file that
+# carries the same kind (outputs.check_digest_out).
+_SCORE_DIGEST_FLAGS = (("policy_out", "policy-check-digest"),
+                       ("gentol_out", "gentol-check-digest"),
+                       ("phantom_out", "phantom-profile-digest"),
+                       ("drop_out", "drop-check-digest"))
+
+
+def _inputs(args, *names):
+    """The run's inputs named on the command line, for a checker's `avoid`:
+    an output may never be one of them, nor (for a directory) inside one."""
+    return [getattr(args, n, None) for n in names]
+
+
+def _check_score_digests(args) -> dict:
+    """Every --*-out digest of a plain score, checked BEFORE anything is
+    loaded or scored: a bad path fails in seconds, holding no client value.
+    Each also avoids the others, so two flags cannot share one file."""
+    from app.eval.outputs import check_digest_out
+    given = {a: getattr(args, a, None) for a, _ in _SCORE_DIGEST_FLAGS}
+    targets = {}
+    for attr, kind in _SCORE_DIGEST_FLAGS:
+        if given[attr]:
+            others = [p for a, p in given.items() if a != attr]
+            targets[attr] = check_digest_out(
+                given[attr], kind,
+                avoid=_inputs(args, "run", "out", "gold", "splits", "weights",
+                              "pdfs", "manifest", "review_deck") + others)
+    return targets
+
+
 def _cmd_reviewer_grade(args):
     """Grade a pulled review campaign (C2 design §Outputs). Client-primary;
     gold is a cross-check.
@@ -793,6 +829,9 @@ def _cmd_score(args):
         print("ERROR: --run is required (except with --reviewer-grade)",
               file=sys.stderr)
         return 1
+    # Output paths first (H1): OutputRefused propagates to main(), which
+    # prints its fixed sentence and exits 1.
+    digest_targets = _check_score_digests(args)
     if getattr(args, "reapply_policy", False) and getattr(args, "policy_check", False):
         # --reapply-policy re-parses and re-flags every dump under the ACTIVE
         # rules before scoring, so --policy-check would then price a rule on
@@ -1019,9 +1058,9 @@ def _cmd_score(args):
         from app.eval.policy_check import policy_report
         pr = policy_report(dumps, gold, doc_ids, weights, params, joint=joint)
         blob = json.dumps(pr, indent=1)
-        if args.policy_out:
-            Path(args.policy_out).parent.mkdir(parents=True, exist_ok=True)
-            Path(args.policy_out).write_text(blob, encoding="utf-8")
+        if "policy_out" in digest_targets:
+            write_json_digest(digest_targets["policy_out"],
+                              "policy-check-digest", pr)
         print(blob)
     # The general-tolerance gate (registration 2026-10-05 §4): counts and
     # salted ids only, to a file, because '>' redirects are denied.
@@ -1029,10 +1068,9 @@ def _cmd_score(args):
         from app.eval.gentol_check import gentol_report
         gr = gentol_report(original_dumps, gold, doc_ids, weights, params,
                            anonymizer=_anon(args))
-        blob = json.dumps(gr, indent=1)
-        if args.gentol_out:
-            Path(args.gentol_out).parent.mkdir(parents=True, exist_ok=True)
-            Path(args.gentol_out).write_text(blob, encoding="utf-8")
+        if "gentol_out" in digest_targets:
+            write_json_digest(digest_targets["gentol_out"],
+                              "gentol-check-digest", gr)
         print(f"gentol-check: would_fix={gr['would_fix']} "
               f"would_break={gr['would_break']} "
               f"gate={gr['verdict']} reconciles={gr['reconciles']}")
@@ -1043,10 +1081,9 @@ def _cmd_score(args):
     if getattr(args, "phantom_profile", False):
         from app.eval.phantom_profile import phantom_profile
         pp = phantom_profile(dumps, scores, doc_ids)
-        blob = json.dumps(pp, indent=1)
-        if args.phantom_out:
-            Path(args.phantom_out).parent.mkdir(parents=True, exist_ok=True)
-            Path(args.phantom_out).write_text(blob, encoding="utf-8")
+        if "phantom_out" in digest_targets:
+            write_json_digest(digest_targets["phantom_out"],
+                              "phantom-profile-digest", pp)
         t = pp["totals"]
         print(f"phantom-profile: delivered={t['delivered']} "
               f"correct={t['correct']} escaped={t['escaped']} "
@@ -1058,10 +1095,9 @@ def _cmd_score(args):
         from app.eval.drop_check import drop_report
         dr = drop_report(original_dumps, gold, doc_ids, weights, params,
                          configs=drop_configs, family=args.drop_family)
-        blob = json.dumps(dr, indent=1)
-        if args.drop_out:
-            Path(args.drop_out).parent.mkdir(parents=True, exist_ok=True)
-            Path(args.drop_out).write_text(blob, encoding="utf-8")
+        if "drop_out" in digest_targets:
+            write_json_digest(digest_targets["drop_out"],
+                              "drop-check-digest", dr)
         print(f"drop-check: control delivered_precision="
               f"{dr['control']['delivered_precision']} selected={dr['selected']}")
     # The review deck holds client text, so it goes to a file inside a
@@ -1084,13 +1120,19 @@ def _cmd_review_tally(args):
     not in the agent guard's allowlist -- the deck lives in a protected root.
     Its output is closed-vocabulary counts only, so it is the one thing from
     the review that may be shared or committed."""
-    from app.eval.review import (ReviewRefused, load_answers, load_deck,
-                                 tally, write_tally)
+    from app.eval.review import (KIND, ReviewRefused, load_answers, load_deck,
+                                 tally)
     try:
+        # The tally's first key is already `"kind": <the deck's kind>` (load_deck
+        # refuses any other), and review-serve's Finish writes the same file;
+        # that kind is therefore its marker, so the two may replace each
+        # other's output and nothing else.
+        target = (check_digest_out(args.out, KIND, avoid=_inputs(args, "deck"))
+                  if args.out else None)
         deck = load_deck(args.deck)
         t = tally(deck, load_answers(args.deck, deck))
-        if args.out:
-            write_tally(args.out, t)
+        if target is not None:
+            write_json_digest(target, KIND, t)
     except ReviewRefused as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 1
@@ -1124,6 +1166,9 @@ def _cmd_campaign_deck(args):
 
 
 def _cmd_compare(args):
+    target = (check_digest_out(args.out, "run-comparison-digest",
+                               avoid=_inputs(args, "report_a", "report_b"))
+              if args.out else None)
     a = RunReport.model_validate_json(Path(args.report_a).read_text())
     b = RunReport.model_validate_json(Path(args.report_b).read_text())
     # Built BEFORE the comparison: compare_runs raises on incomparability, and
@@ -1136,8 +1181,8 @@ def _cmd_compare(args):
         return 1
     cmp["per_doc_deltas"] = {anon(k): v for k, v in cmp["per_doc_deltas"].items()}
     out = json.dumps(cmp, indent=1, ensure_ascii=False)
-    if args.out:
-        Path(args.out).write_text(out, encoding="utf-8")
+    if target is not None:
+        write_json_digest(target, "run-comparison-digest", cmp)
     print(out)
     for w in cmp["warnings"]:
         print(f"WARNING: {w}", file=sys.stderr)
@@ -1147,6 +1192,9 @@ def _cmd_compare(args):
 def _cmd_summary(args):
     """The ONLY sanctioned way to look at a run: aggregate metrics, hashed ids,
     no client values. Safe to show an AI agent, commit, or paste in a ticket."""
+    target = (check_digest_out(args.out, "run-summary-digest",
+                               avoid=_inputs(args, "report"))
+              if args.out else None)
     report = RunReport.model_validate_json(
         Path(args.report).read_text(encoding="utf-8"))
     anon = _anon(args)
@@ -1154,9 +1202,8 @@ def _cmd_summary(args):
     if args.per_doc:
         digest["per_doc"] = per_doc_rows(report, anon)
     out = json.dumps(digest, indent=1, ensure_ascii=False)
-    if args.out:
-        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.out).write_text(out, encoding="utf-8")
+    if target is not None:
+        write_json_digest(target, "run-summary-digest", digest)
     print(out)
     return 0
 
@@ -1421,7 +1468,15 @@ def main(argv=None) -> int:
     p.set_defaults(fn=_cmd_compare)
 
     args = ap.parse_args(argv)
-    return args.fn(args)
+    from app.eval.review import ReviewRefused
+    try:
+        return args.fn(args)
+    except (OutputRefused, ReviewRefused) as e:
+        # Fixed sentences by construction (outputs.py, review.py): no path,
+        # no value, no traceback -- this stderr is read by agents. A
+        # ProtectedRootsError (a broken roots file) is a ReviewRefused.
+        print(f"ERROR: output refused: {e}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
