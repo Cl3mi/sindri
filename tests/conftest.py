@@ -23,6 +23,15 @@ def _isolated_runtime(tmp_path, monkeypatch):
     # Auth is opt-in; an ambient SINDRI_ACCESS_TOKEN in a developer's shell
     # must not gate the ~1940 existing tests that never set it themselves.
     monkeypatch.delenv("SINDRI_ACCESS_TOKEN", raising=False)
+    # The runner's output checks (H1) consult the protected-roots file. A test
+    # must never depend on -- or read -- this machine's real one, so by
+    # default every test runs in the no-roots mode the GPU container and CI
+    # use; a test about roots points this at its own synthetic file. The
+    # once-per-process "no protected roots" notice is pre-silenced so it
+    # cannot land in whichever test happens to trigger it first.
+    monkeypatch.setenv("SINDRI_PROTECTED_PATHS",
+                       str(tmp_path / "no-protected-roots-in-tests"))
+    monkeypatch.setattr("app.eval.outputs._NO_ROOTS_ANNOUNCED", True)
     mod = sys.modules.get("app.main")
     if mod is not None:
         monkeypatch.setattr(mod, "_RUNTIME", None)

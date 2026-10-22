@@ -13,6 +13,7 @@ text (a part number in a file name)."""
 import fnmatch
 import json
 import os
+import stat
 import sys
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -160,33 +161,76 @@ def check_client_file_out(path, *, subdir: str, suffix: str, kind=None,
     return target
 
 
+_ENTRY_REFUSED = ("the output directory holds a link, a hardlinked file, a "
+                  "special file or an unexpected subdirectory; refusing to "
+                  "write into it")
+
+
+def _plain_file(st) -> bool:
+    """A regular file with ONE name. A second name (hardlink) is how a write
+    could reach gold with no link to see, so it is refused outright rather
+    than trusting every writer to replace atomically; a `cp -al` copy of a
+    run is refused with it -- copy normally instead."""
+    return stat.S_ISREG(st.st_mode) and st.st_nlink == 1
+
+
+def _scan_work_dir(work: Path) -> None:
+    """Everything under the work dir: real directories and single-named
+    regular files only, at any depth. Not followed through links: a link
+    anywhere is itself the refusal."""
+    for dirpath, dirnames, filenames in os.walk(work, followlinks=False,
+                                                onerror=_raise):
+        for name in dirnames + filenames:
+            st = os.lstat(os.path.join(dirpath, name))
+            if not (stat.S_ISDIR(st.st_mode) or _plain_file(st)):
+                raise OutputRefused(_ENTRY_REFUSED)
+
+
+def _raise(err):
+    raise err
+
+
 def check_client_dir_out(path, *, subdir: str, legacy: Sequence[str],
-                         avoid: Sequence = ()) -> Path:
+                         avoid: Sequence = (), work_dir=None,
+                         subdir_itself: bool = False) -> Path:
     """Class C: a directory of client-value files, directly under
     <root>/<subdir>. Absent, empty, or ours: it holds our marker, OR it is a
-    legacy run whose every entry matches `legacy` -- runs written before this
-    check carry no marker, and predict resume on the GPU host depends on
-    them. A link or subdirectory refuses it even when marked: nothing we
-    write is one, and a link entry is how a write would reach gold."""
+    legacy run whose every TOP-LEVEL entry matches `legacy` -- runs written
+    before this check carry no marker, and predict resume on the GPU host
+    depends on them. A link, a hardlinked or special file, or a
+    subdirectory refuses it even when marked: nothing we write is one, and
+    each is a way for a write to reach gold.
+
+    `work_dir`: predict and verify render into `<out>/_work/<doc>/` and never
+    remove it, so for them that one real subdirectory is allowed (and
+    scanned to any depth by the same entry rules). `subdir_itself`: ingest's
+    documented target is `<root>/gold/` itself, so it may write there as
+    well as into a direct child."""
     target = _target(path, "output directory", avoid)
     try:
-        if not _in_subdir(target.parent, subdir):
+        if not (_in_subdir(target.parent, subdir)
+                or (subdir_itself and _in_subdir(target, subdir))):
             raise OutputRefused("this output holds client data; it may only be "
                                 "written directly under <protected root>/"
                                 f"{subdir}/")
-        if not target.exists():
+        if not os.path.lexists(target):
             return target
         if not target.is_dir():
             raise OutputRefused("the output directory path is not a directory")
         entries = list(target.iterdir())
+        names = []
         for e in entries:
-            if e.is_symlink() or not e.is_file():
-                raise OutputRefused("the output directory holds a link or "
-                                    "subdirectory; refusing to write into it")
-        if not entries or _carries_marker(target / DIR_MARKER, DIR_KIND):
+            st = os.lstat(e)
+            if work_dir and e.name == work_dir and stat.S_ISDIR(st.st_mode):
+                _scan_work_dir(e)
+                continue
+            if not _plain_file(st):
+                raise OutputRefused(_ENTRY_REFUSED)
+            names.append(e.name)
+        if not names or _carries_marker(target / DIR_MARKER, DIR_KIND):
             return target
-        if not all(any(fnmatch.fnmatchcase(e.name, g) for g in legacy)
-                   for e in entries):
+        if not all(any(fnmatch.fnmatchcase(n, g) for g in legacy)
+                   for n in names):
             raise OutputRefused("the output directory holds files that are "
                                 "not this tool's output")
     except _CHECK_ERRORS:

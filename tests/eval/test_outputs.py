@@ -624,6 +624,97 @@ def test_dir_out_refuses_symlink_entry_subdir_and_symlink_dir(roots, tmp_path):
         check_client_dir_out(link, subdir="runs", legacy=LEG)
 
 
+def test_dir_out_accepts_predicts_work_dir_and_scans_it(roots):
+    """predict and verify render into <out>/_work/<doc>/ and never remove it,
+    so every real run holds that one subdirectory -- refusing it would refuse
+    every resume on the GPU host. Only that exact name, only a real
+    directory, and everything under it is scanned like the top level."""
+    r = roots / "runs" / "r"
+    (r / "_work" / "DOC1").mkdir(parents=True)
+    (r / "_work" / "DOC1" / "page.png").write_bytes(b"png")
+    (r / "a.pred.json").write_text("{}")
+    assert check_client_dir_out(r, subdir="runs", legacy=LEG, work_dir="_work")
+    # Without the opt-in (ingest) a subdirectory is still refused.
+    with pytest.raises(OutputRefused):
+        check_client_dir_out(r, subdir="runs", legacy=LEG)
+    # Another name is refused even with the opt-in.
+    (r / "_work2").mkdir()
+    with pytest.raises(OutputRefused):
+        check_client_dir_out(r, subdir="runs", legacy=LEG, work_dir="_work")
+
+
+def test_dir_out_refuses_links_and_specials_anywhere_under_work(roots):
+    gold = roots / "gold" / "x.gold.json"
+    gold.write_text("GOLD")
+    r = roots / "runs" / "r"
+    (r / "_work" / "DOC1").mkdir(parents=True)
+    (r / "_work" / "DOC1" / "page.png").symlink_to(gold)
+    with pytest.raises(OutputRefused):
+        check_client_dir_out(r, subdir="runs", legacy=LEG, work_dir="_work")
+    (r / "_work" / "DOC1" / "page.png").unlink()
+    (r / "_work" / "DOC2").symlink_to(roots / "gold")       # a linked subdir
+    with pytest.raises(OutputRefused):
+        check_client_dir_out(r, subdir="runs", legacy=LEG, work_dir="_work")
+    (r / "_work" / "DOC2").unlink()
+    os.mkfifo(r / "_work" / "DOC1" / "fifo")
+    with pytest.raises(OutputRefused):
+        check_client_dir_out(r, subdir="runs", legacy=LEG, work_dir="_work")
+
+
+def test_dir_out_refuses_a_work_dir_that_is_a_link(roots):
+    r = roots / "runs" / "r"
+    r.mkdir()
+    (r / "_work").symlink_to(roots / "gold")
+    with pytest.raises(OutputRefused):
+        check_client_dir_out(r, subdir="runs", legacy=LEG, work_dir="_work")
+
+
+@pytest.mark.parametrize("where", ["top", "work"])
+def test_dir_out_refuses_any_hardlinked_file(roots, where):
+    """A second name for a file is how a write could reach gold without any
+    link to see; refusing st_nlink > 1 outright means the safety no longer
+    rests on every writer replacing atomically. A `cp -al` copy of a run is
+    refused too -- the operator copies normally instead."""
+    gold = roots / "gold" / "x.gold.json"
+    gold.write_text("GOLD")
+    r = roots / "runs" / "r"
+    (r / "_work" / "DOC1").mkdir(parents=True)
+    claim_dir(r)
+    name = (r / "a.pred.json") if where == "top" else (r / "_work" / "DOC1" / "a.png")
+    os.link(gold, name)
+    with pytest.raises(OutputRefused):
+        check_client_dir_out(r, subdir="runs", legacy=LEG, work_dir="_work")
+    assert gold.read_text() == "GOLD"
+
+
+def test_legacy_rule_judges_top_level_names_only(roots):
+    """`_work` holds renders, not dumps: its contents are scanned for links
+    and hardlinks, but they need not match the dump patterns."""
+    r = roots / "runs" / "legacy"
+    (r / "_work" / "DOC1").mkdir(parents=True)
+    (r / "_work" / "DOC1" / "anything.png").write_bytes(b"x")
+    (r / "a.pred.json").write_text("{}")
+    (r / ".complete").write_text("")
+    assert check_client_dir_out(r, subdir="runs", legacy=LEG, work_dir="_work")
+
+
+def test_ingest_may_write_the_gold_folder_itself(roots):
+    """The documented layout ingests straight into <root>/gold/ (DATA-HANDLING
+    and every score script read `--gold $ROOT/gold`), so for ingest the
+    subfolder itself is allowed as well as a direct child of it."""
+    g = roots / "gold"
+    (g / "a.gold.json").write_text("{}")
+    (g / "doc_id_map.json").write_text("{}")
+    gl = ("*.gold.json", "doc_id_map.json")
+    assert check_client_dir_out(g, subdir="gold", legacy=gl, subdir_itself=True)
+    assert check_client_dir_out(g / "originals", subdir="gold", legacy=gl,
+                                subdir_itself=True)
+    with pytest.raises(OutputRefused):
+        check_client_dir_out(g, subdir="gold", legacy=gl)
+    with pytest.raises(OutputRefused):
+        check_client_dir_out(roots, subdir="gold", legacy=gl, subdir_itself=True)
+
+
 def test_dir_out_existing_file_at_target_refused(roots):
     f = roots / "runs" / "r"
     f.write_text("x")
