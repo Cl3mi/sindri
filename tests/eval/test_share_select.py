@@ -80,6 +80,7 @@ def test_train_digest_is_allowed_only_when_asked(tmp_path):
 
 def test_end_to_end_manifest_to_files(tmp_path, monkeypatch):
     monkeypatch.setenv("SINDRI_DOC_SALT", "testsalt")
+    monkeypatch.delenv("CLAUDECODE", raising=False)   # main() refuses under an agent
     root = tmp_path / "root"
     (root / "runs" / "r1").mkdir(parents=True)
     (root / "corpus" / "originals").mkdir(parents=True)
@@ -110,6 +111,7 @@ def test_end_to_end_manifest_to_files(tmp_path, monkeypatch):
 
 def test_unknown_hash_fails_loudly(tmp_path, monkeypatch):
     monkeypatch.setenv("SINDRI_DOC_SALT", "testsalt")
+    monkeypatch.delenv("CLAUDECODE", raising=False)   # main() refuses under an agent
     # The out dir sits beside the root, never inside it (check_out_dir).
     (tmp_path / "root" / "runs" / "r1").mkdir(parents=True)
     man = tmp_path / "m.json"

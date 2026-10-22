@@ -154,6 +154,8 @@ def test_duplicate_or_empty_row_ids_refuse_the_entry(tmp_path, sample_pdf):
 
 def _root(tmp_path, sample_pdf, monkeypatch):
     monkeypatch.setenv("SINDRI_DOC_SALT", "testsalt")
+    # pytest runs inside an agent session here; main() refuses under one.
+    monkeypatch.delenv("CLAUDECODE", raising=False)
     root = tmp_path / "root"
     run = root / "runs" / "r5-control"
     run.mkdir(parents=True)
@@ -213,6 +215,19 @@ def test_an_incomplete_entry_is_named_not_overwritten(tmp_path, sample_pdf,
     assert rc == 1
     assert f"SKIP {hg}: incomplete entry exists -- delete it" in err
     assert [p.name for p in (out / hg).iterdir()] == ["page.png"]
+
+
+@pytest.mark.parametrize("tool", [campaign_build, export_share])
+def test_operator_tools_refuse_to_run_under_an_agent(tool, tmp_path, monkeypatch, capsys):
+    """Both tools open client drawings and dumps, which CLAUDE.md §1 keeps
+    from every agent; the Bash guard is the first line, this the second. An
+    agent session sets CLAUDECODE, so the tool refuses before reading its
+    arguments, let alone a file."""
+    monkeypatch.setenv("CLAUDECODE", "1")
+    assert tool.main(["--manifest", str(tmp_path / "m.json"), "--name", "p",
+                      "--out", str(tmp_path / "o")]) == 2
+    assert "operator tool: run it in your own terminal" in capsys.readouterr().err
+    assert not (tmp_path / "o").exists()
 
 
 # --- the output folder guard (shared with export_share) ----------------------

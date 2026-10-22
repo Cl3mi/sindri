@@ -178,6 +178,12 @@ def export_run(run_dir: Path, pdfs: Path, out_dir: Path, ids=(), hashes=(),
 
 
 def main(argv=None) -> int:
+    # Second line behind the Bash guard: an agent session sets CLAUDECODE,
+    # and this tool opens client drawings (CLAUDE.md §1). Before argparse,
+    # so not even the arguments are looked at.
+    if os.environ.get("CLAUDECODE"):
+        print("operator tool: run it in your own terminal", file=sys.stderr)
+        return 2
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=os.environ.get("SINDRI_CLIENT_ROOT",
                                                      str(Path.home() / "sindri-client-data")))
