@@ -87,3 +87,12 @@ def test_campaign_only_still_serves_the_review(sample_pdf, monkeypatch):
     load_campaign_doc(sample_pdf)
     monkeypatch.setenv("SINDRI_CAMPAIGN_ONLY", "1")
     assert approve(DOC)["revision"] == 1
+
+
+def test_campaign_only_hides_the_api_schema(monkeypatch):
+    """Off campaign-only, /openapi.json is a developer convenience; on the
+    public host it is a map of every route, and must answer 403."""
+    assert client.get("/openapi.json").status_code == 200
+    monkeypatch.setenv("SINDRI_CAMPAIGN_ONLY", "1")
+    for path in ("/openapi.json", "/docs", "/redoc"):
+        assert client.get(path).status_code == 403, path

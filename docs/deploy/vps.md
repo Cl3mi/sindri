@@ -37,7 +37,8 @@ client data (CLAUDE.md §1).
 `SINDRI_CAMPAIGN_ONLY=1` permits only: GET/HEAD `/api/health`,
 `/api/documents`, `/api/documents/{id}`, `/api/image/{id}`, `/api/batches`,
 `/api/batches/{id}`; POST `/api/auth`, `/open`, `/events`, `/seal`,
-`/read_region`. Everything else answers 403 (no upload, export, start, delete).
+`/read_region`. Everything else answers 403 (no upload, export, start, delete),
+including FastAPI's `/docs`, `/redoc` and `/openapi.json`.
 
 `/api/read_region` (CPU OCR) has no rate limit of its own; the proxy's basic
 auth limits it to reviewers. Caddy's `request_body max_size` is 10MB: a seal

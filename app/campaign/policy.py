@@ -24,7 +24,15 @@ def campaign_only() -> bool:
     return os.environ.get("SINDRI_CAMPAIGN_ONLY", "").lower() in ("1", "true", "yes")
 
 
+# FastAPI's route schema and its two viewers live OUTSIDE /api, where the
+# static-UI rule below would admit them: on the public host a map of every
+# closed route, and in front of no access token. A local instance keeps them.
+_SCHEMA = re.compile(r"\A/(docs|redoc|openapi\.json)(/|\Z)")
+
+
 def allowed(method: str, path: str) -> bool:
+    if _SCHEMA.match(path):
+        return False
     if not path.startswith("/api/"):
         return method in ("GET", "HEAD")      # the static UI
     if method in ("GET", "HEAD"):

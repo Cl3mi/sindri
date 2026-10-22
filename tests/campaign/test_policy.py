@@ -41,6 +41,19 @@ def test_near_misses_are_closed(method, path):
     assert not allowed(method, path)
 
 
+@pytest.mark.parametrize("method,path", [
+    ("GET", "/docs"), ("HEAD", "/docs"), ("GET", "/docs/"),
+    ("GET", "/docs/oauth2-redirect"), ("GET", "/redoc"), ("GET", "/openapi.json"),
+    ("HEAD", "/openapi.json"),
+])
+def test_the_api_schema_and_its_viewers_are_closed(method, path):
+    """FastAPI serves its route schema and two viewers OUTSIDE /api, where
+    the static-UI rule would admit them: on the public host that is a map
+    of every closed route, and /docs sits in front of no access token.
+    Nothing a reviewer runs needs them; a local instance keeps them."""
+    assert not allowed(method, path)
+
+
 def test_every_registered_route_is_classified():
     """Walks the real route table, so a NEW /api route fails here until
     someone decides whether a reviewer on the public host needs it (and adds
