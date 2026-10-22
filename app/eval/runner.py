@@ -754,17 +754,20 @@ def _cmd_reviewer_grade(args):
     # PermissionError's text IS the path -- so it is caught here, by type,
     # and never printed. ReviewRefused messages are our own fixed words.
     try:
-        out = check_report_path(args.out, avoid=[args.reviewer_grade, args.manifest])
+        # --gold is an input DIRECTORY: neither output may be inside it
+        # (review round 2); the pull may be a directory too.
+        inputs = [args.reviewer_grade, args.manifest, args.gold]
+        out = check_report_path(args.out, avoid=inputs)
         grade_out = None
         if args.grade_out:
             try:
-                grade_out = check_digest_path(
-                    args.grade_out, avoid=[args.out, args.reviewer_grade, args.manifest])
+                grade_out = check_digest_path(args.grade_out,
+                                              avoid=[args.out] + inputs)
             except ReviewRefused as e:
                 return fail(f"--grade-out refused: {e}")
     except ReviewRefused as e:
         return fail(f"--out refused: {e}")
-    except (OSError, RuntimeError):     # RuntimeError: a symlink loop in resolve()
+    except (OSError, RuntimeError, ValueError):  # a symlink loop; a NUL byte
         return fail("output path refused")
     try:
         # A fresh salt would hash no gold id to any record's hash: every join

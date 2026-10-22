@@ -441,19 +441,46 @@ def test_review_serve_refuses_a_tally_path_inside_a_root(tmp_path, monkeypatch):
 # neither may be aimed at gold, a dump, the pull it grades, or a link to one.
 
 def _croot(tmp_path, monkeypatch):
+    """The root's reports/ folder: since review round 2 a grading report,
+    like every class-B file, is a direct child of <root>/reports/."""
     root = tmp_path / "client"
-    root.mkdir()
+    (root / "reports").mkdir(parents=True)
     _roots(tmp_path, monkeypatch, root)
-    return root
+    return root / "reports"
 
 
-def test_a_report_path_must_be_inside_a_protected_root(tmp_path, monkeypatch):
+def test_a_report_path_must_be_directly_under_reports(tmp_path, monkeypatch):
     from app.eval.review import check_report_path
-    root = _croot(tmp_path, monkeypatch)
-    want = (root / "sub" / "r.grade.json").resolve()
-    assert check_report_path(root / "sub" / "r.grade.json") == want
+    reports = _croot(tmp_path, monkeypatch)
+    want = (reports / "r.grade.json").resolve()
+    assert check_report_path(reports / "r.grade.json") == want
+    for bad in (tmp_path / "r.grade.json",                 # outside the root
+                reports / "sub" / "r.grade.json",          # grandchild
+                reports.parent / "r.grade.json",           # root top level
+                reports.parent / "gold" / "r.grade.json"):  # another subfolder
+        with pytest.raises(ReviewRefused):
+            check_report_path(bad)
+
+
+def test_a_report_is_never_inside_an_input_directory(tmp_path, monkeypatch):
+    """--gold is a directory the grader reads; `avoid` compared exact paths
+    only, so the report could be written inside it."""
+    from app.eval.review import check_report_path
+    reports = _croot(tmp_path, monkeypatch)
     with pytest.raises(ReviewRefused):
-        check_report_path(tmp_path / "r.grade.json")
+        check_report_path(reports / "r.grade.json", avoid=[reports])
+
+
+@pytest.mark.parametrize("which", ["report", "digest"])
+def test_a_nul_byte_is_a_fixed_refusal(tmp_path, monkeypatch, which):
+    from app.eval.review import check_digest_path, check_report_path
+    reports = _croot(tmp_path, monkeypatch)
+    check, p = ((check_report_path, f"{reports}/a\x00.grade.json")
+                if which == "report" else
+                (check_digest_path, f"{tmp_path}/a\x00-grade.json"))
+    with pytest.raises(ReviewRefused) as e:
+        check(p)
+    assert str(tmp_path) not in str(e.value)
 
 
 def test_no_protected_roots_means_no_report(tmp_path, monkeypatch):

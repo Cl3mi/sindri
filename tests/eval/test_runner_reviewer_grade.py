@@ -27,17 +27,18 @@ H = doc_hash("PART-9", SALT)
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
-    """A protected root for the report, a gold dir holding one gold file, and
-    a fixed salt so the Anonymizer never mints a real ~/.claude/sindri-doc-salt
-    in a test."""
+    """A protected root's reports/ folder for the report (since review round
+    2 a grading report is a direct child of <root>/reports/, like every
+    class-B file), a gold dir holding one gold file, and a fixed salt so the
+    Anonymizer never mints a real ~/.claude/sindri-doc-salt in a test."""
     prot = tmp_path / "prot"
-    prot.mkdir()
+    (prot / "reports").mkdir(parents=True)
     roots = tmp_path / "protected-paths"
     roots.write_text(f"{prot}\n")
     monkeypatch.setenv("SINDRI_PROTECTED_PATHS", str(roots))
     monkeypatch.setenv("SINDRI_DOC_SALT", SALT)
     _gold(tmp_path, "PART-9")
-    return prot
+    return prot / "reports"
 
 
 def _gold(tmp_path, doc_id):
@@ -376,7 +377,11 @@ def test_an_oserror_from_the_real_path_probe_is_a_fixed_refusal(tmp_path, env, c
     monkeypatch.setattr(pathlib.Path, "is_symlink", boom)
     assert _run(tmp_path, env) == 1
     cap = _no_leak(capsys)
-    assert cap.err == "ERROR: output path refused\n" and MARKER not in cap.out
+    # Since review round 2 the checker itself turns the OSError into its own
+    # fixed sentence (it used to escape to the runner's catch-all).
+    assert cap.err == ("ERROR: --out refused: the grading report path cannot "
+                       "be checked\n")
+    assert MARKER not in cap.out + cap.err
 
 
 def test_an_oserror_probing_the_inputs_is_a_fixed_refusal(tmp_path, env, capsys,

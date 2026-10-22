@@ -220,7 +220,9 @@ def test_the_cli_writes_the_same_grade_inside_and_a_safe_digest_outside(
     (gold_dir / f"{DOC_ID}.gold.json").write_text(chain["gold"].model_dump_json())
     man = tmp / "manifest.json"
     man.write_text(json.dumps(_manifest(h)))
-    out, gout = prot / "pilot-1.grade.json", tmp / "eval" / "pilot-1-grade.json"
+    # Since review round 2 the report is a direct child of <root>/reports/.
+    out = prot / "reports" / "pilot-1.grade.json"
+    gout = tmp / "eval" / "pilot-1-grade.json"
     rc = runner.main(["score", "--reviewer-grade", str(chain["tar"]), "--gold", str(gold_dir),
                       "--manifest", str(man), "--name", "pilot-1", "--out", str(out),
                       "--grade-out", str(gout)])

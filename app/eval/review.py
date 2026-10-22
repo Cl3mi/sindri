@@ -267,18 +267,27 @@ def _check_grade_output(path, suffix: str, kind: str, avoid, what: str) -> Path:
     another file's name, not over a file that is not a previous output of
     this same kind, and not over the inputs being graded. Fixed messages
     only: they are printed where an agent reads, and a path can be client
-    text."""
-    if Path(path).is_symlink():
-        raise ReviewRefused(f"the {what} path is a symbolic link")
-    target = Path(path).resolve()
-    if not target.name.endswith(suffix) or target.name == suffix:
-        raise ReviewRefused(f"the {what} file name must end in {suffix}")
-    if any(target == Path(a).resolve() for a in avoid if a):
-        raise ReviewRefused(f"the {what} path is one of the run's inputs")
-    if target.exists() and not _carries_marker(target, kind):
-        raise ReviewRefused(
-            f"a file that is not a previous {what} already exists there; "
-            "move it away deliberately")
+    text.
+
+    `avoid` is compared the way outputs.py compares it (`_same`): by any
+    spelling, as a hardlink, and -- for an input DIRECTORY such as --gold --
+    as anything inside it. ValueError (a NUL byte) joins OSError and a
+    symlink loop's RuntimeError as a fixed refusal, never a traceback."""
+    from app.eval.outputs import _same
+    try:
+        if Path(path).is_symlink():
+            raise ReviewRefused(f"the {what} path is a symbolic link")
+        target = Path(path).resolve()
+        if not target.name.endswith(suffix) or target.name == suffix:
+            raise ReviewRefused(f"the {what} file name must end in {suffix}")
+        if any(a and _same(target, a) for a in avoid):
+            raise ReviewRefused(f"the {what} path is one of the run's inputs")
+        if target.exists() and not _carries_marker(target, kind):
+            raise ReviewRefused(
+                f"a file that is not a previous {what} already exists there; "
+                "move it away deliberately")
+    except (OSError, RuntimeError, ValueError):
+        raise ReviewRefused(f"the {what} path cannot be checked") from None
     return target
 
 
@@ -297,6 +306,12 @@ def check_report_path(path, avoid=()) -> Path:
             "written inside a protected root (one listed in "
             "~/.claude/sindri-protected-paths)" + ("" if _protected_roots()
             else " -- and no protected roots are configured on this machine"))
+    # The class-B subfolder rule (review round 2): a direct child of
+    # <root>/reports/, so it can never land in gold/ or a run dir.
+    if not any(target.parent == r / "reports" for r in _protected_roots()):
+        raise ReviewRefused(
+            "the grading report holds client values; it may only be written "
+            "directly under <protected root>/reports/")
     return target
 
 
