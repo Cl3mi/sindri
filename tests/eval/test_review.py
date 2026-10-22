@@ -377,3 +377,35 @@ def test_review_serve_refuses_a_tally_path_inside_a_root(tmp_path, monkeypatch):
     path, _ = _saved(tmp_path, monkeypatch)
     assert main(["review-serve", str(path),
                  "--tally-out", str(path.parent / "t.json")]) == 1
+
+
+# --- the campaign grading report (C2) -----------------------------------------
+
+def test_a_report_path_must_be_inside_a_protected_root(tmp_path, monkeypatch):
+    """The campaign report carries the client's per-row values and notes:
+    outside a protected root an agent could read it."""
+    from app.eval.review import check_report_path
+    root = tmp_path / "client"
+    root.mkdir()
+    _roots(tmp_path, monkeypatch, root)
+    assert check_report_path(root / "sub" / "r.json") == (root / "sub" / "r.json").resolve()
+    with pytest.raises(ReviewRefused):
+        check_report_path(tmp_path / "r.json")
+
+
+def test_a_report_may_be_regenerated(tmp_path, monkeypatch):
+    """Unlike a deck, nothing is keyed to a report: it is a pure function of
+    the pull tar, so re-grading overwrites it."""
+    from app.eval.review import check_report_path
+    root = tmp_path / "client"
+    root.mkdir()
+    _roots(tmp_path, monkeypatch, root)
+    (root / "r.json").write_text("{}")
+    assert check_report_path(root / "r.json") == (root / "r.json").resolve()
+
+
+def test_no_protected_roots_means_no_report(tmp_path, monkeypatch):
+    from app.eval.review import check_report_path
+    monkeypatch.setenv("SINDRI_PROTECTED_PATHS", str(tmp_path / "missing"))
+    with pytest.raises(ReviewRefused):
+        check_report_path(tmp_path / "r.json")

@@ -192,6 +192,22 @@ def check_deck_path(path) -> Path:
     return target
 
 
+def check_report_path(path) -> Path:
+    """The campaign grading report (C2) carries the client's per-row values
+    and notes, so it goes inside a protected root like a deck. Unlike a deck
+    it MAY be overwritten: nothing is keyed to it, and it is a pure function
+    of the pull tar, so re-grading regenerates it. The message names no path:
+    the caller prints it where an agent reads."""
+    target = Path(path).resolve()
+    if not inside_protected(target):
+        raise ReviewRefused(
+            "the grading report holds client values, so it may only be "
+            "written inside a protected root (one listed in "
+            "~/.claude/sindri-protected-paths)" + ("" if _protected_roots()
+            else " -- and no protected roots are configured on this machine"))
+    return target
+
+
 def write_deck(path, deck: Dict) -> int:
     target = check_deck_path(path)
     target.parent.mkdir(parents=True, exist_ok=True)

@@ -627,7 +627,99 @@ def _serving_backend(env=None):
     return choice.lower() if choice.lower() not in ("", "vlm") else None
 
 
+def _cmd_reviewer_grade(args):
+    """Grade a pulled review campaign (C2 design §Outputs). Client-primary;
+    gold is a cross-check.
+
+    Three surfaces, split along the data boundary: the full report (per-row
+    values, notes) goes ONLY inside a protected root; the --grade-out digest
+    (counts, fixed words, salted hashes) and one stdout line are what an agent
+    reads. So every error below is a FIXED sentence -- an exception message or
+    a path can quote a part number, and stderr is read by agents too."""
+    from app.eval.campaign_grade import grade_campaign
+    from app.eval.campaign_records import read_records
+    from app.eval.review import ReviewRefused, check_report_path
+    if getattr(args, "show_ids", False):
+        # The records are keyed by 8-hex salted hashes; real ids would join to
+        # nothing, and the digest must stay salted regardless.
+        print("ERROR: --show-ids cannot be used with --reviewer-grade",
+              file=sys.stderr)
+        return 1
+    if not args.manifest:
+        print("ERROR: --reviewer-grade needs --manifest (roles + pool)",
+              file=sys.stderr)
+        return 1
+    # Checked BEFORE anything is read, so a bad path fails in seconds and no
+    # client value is ever held in memory on the way to a refusal.
+    try:
+        out = check_report_path(args.out)
+    except ReviewRefused as e:
+        print(f"ERROR: --out refused: {e}", file=sys.stderr)
+        return 1
+    try:
+        records = read_records(args.reviewer_grade)
+    except Exception:  # noqa: BLE001 -- not a tar, missing, torn: one fixed line
+        print("ERROR: --reviewer-grade: not a readable campaign pull",
+              file=sys.stderr)
+        return 1
+    try:
+        manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 -- missing or not JSON
+        print("ERROR: --manifest: not a readable JSON manifest", file=sys.stderr)
+        return 1
+    try:
+        gold = _load_gold_dir(args.gold)
+    except Exception:  # noqa: BLE001 -- a validation message quotes gold values
+        print("ERROR: --gold: a gold file could not be read", file=sys.stderr)
+        return 1
+    # gold is keyed by real part number, the records by salted hash: join
+    # through the same salt, and only for drawings the pull actually holds.
+    in_records = {d.index.get("doc_hash") for d in records.drawings.values()}
+    gold_by_hash = {h: gold[d] for h, d in _anon(args).mapping(gold).items()
+                    if h in in_records}
+    try:
+        report, digest = grade_campaign(records, gold_by_hash, manifest)
+    except ValueError:  # grade_campaign raises it only for a bad manifest
+        print("ERROR: --manifest: bad roles/pool", file=sys.stderr)
+        return 1
+    # Report first, digest second: a digest whose report failed to write
+    # could never be checked against it.
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(report, indent=1, ensure_ascii=False),
+                       encoding="utf-8")
+    except OSError:
+        print("ERROR: --out: the report could not be written", file=sys.stderr)
+        return 1
+    if args.grade_out:
+        try:
+            Path(args.grade_out).parent.mkdir(parents=True, exist_ok=True)
+            Path(args.grade_out).write_text(json.dumps(digest, indent=1),
+                                            encoding="utf-8")
+        except OSError:
+            print("ERROR: --grade-out: the digest could not be written",
+                  file=sys.stderr)
+            return 1
+    s = digest["drawings"]
+    nir = "n/a" if s["not_in_records"] is None else s["not_in_records"]
+    print(f"reviewer-grade: approved={s['approved']} pending={s['pending']} "
+          f"ungradable={s['ungradable']} skipped={s['skipped']} "
+          f"not_in_records={nir} reconciles={digest['reconciles']}")
+    if digest["reconcile_problems"]:
+        # The count only: the problem keys carry hashes and belong in the
+        # digest. Nonzero so a script chaining on the exit code stops here.
+        print(f"reviewer-grade: PROBLEMS {len(digest['reconcile_problems'])}")
+        return 2
+    return 0
+
+
 def _cmd_score(args):
+    if getattr(args, "reviewer_grade", None):
+        return _cmd_reviewer_grade(args)
+    if not args.run:
+        print("ERROR: --run is required (except with --reviewer-grade)",
+              file=sys.stderr)
+        return 1
     if getattr(args, "reapply_policy", False) and getattr(args, "policy_check", False):
         # --reapply-policy re-parses and re-flags every dump under the ACTIVE
         # rules before scoring, so --policy-check would then price a rule on
@@ -1063,8 +1155,29 @@ def main(argv=None) -> int:
     p.set_defaults(fn=_cmd_predict)
 
     p = sub.add_parser("score", parents=[common])
-    p.add_argument("--run", required=True); p.add_argument("--gold", required=True)
-    p.add_argument("--name", required=True); p.add_argument("--out", required=True)
+    # --run is required in every mode except --reviewer-grade, which grades a
+    # pull tar instead of a predict run; _cmd_score enforces it.
+    p.add_argument("--run", default=None)
+    p.add_argument("--gold", required=True,
+                   help="gold directory. With --reviewer-grade it MUST be the "
+                        "gold ingested with --originals: the campaign renders "
+                        "the clean original, and stamped-sheet gold of the "
+                        "same page size passes the frame check with every "
+                        "position wrong")
+    p.add_argument("--name", required=True)
+    p.add_argument("--out", required=True,
+                   help="the report. With --reviewer-grade it holds the "
+                        "client's per-row values and notes, so it must be "
+                        "inside a protected root")
+    p.add_argument("--reviewer-grade", default=None, metavar="PULL_TAR",
+                   help="grade a pulled review campaign (C2) instead of a "
+                        "predict run: needs --manifest; prints one count line")
+    p.add_argument("--manifest", default=None,
+                   help="with --reviewer-grade: the share_select manifest "
+                        "(roles + pool)")
+    p.add_argument("--grade-out", default=None,
+                   help="with --reviewer-grade: write the counts-only digest "
+                        "here (for docs/eval/)")
     p.add_argument("--splits", default=None); p.add_argument("--split", default="dev")
     p.add_argument("--weights", default=None)
     p.add_argument("--pdfs", default=None,
