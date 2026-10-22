@@ -13,6 +13,8 @@ from app.eval.matching import Cand, match_candidates
 from app.eval.models import GoldDoc, MatchParams
 from app.eval.score import _compare_fields
 from app.models import Characteristic
+from app.review.grading import grade_session
+from app.review.replay import note_of
 
 MM_PER_PT = 25.4 / 72.0
 IDLE_MS = 5 * 60 * 1000          # a gap longer than this is the reviewer away
@@ -338,3 +340,262 @@ def gold_cross_check(proposal: List[dict], final: List[dict], grades: Dict[str, 
             "matched_final": len(found),
             "neither_found": len(set(by_num) - found),
             "n_gold": len(gold_chars)}
+
+
+# --- ranked findings and the campaign grade ----------------------------------
+
+# Correction bucket -> the lever that could move it and that lever's status
+# (C1 design §6, CLAUDE.md §2-3). Prefix match, FIRST wins, so the list runs
+# most-specific first: a reason-specific phantom before phantoms in general.
+# A `fields:` signature is ordered as VALUE_FIELDS, so any edit that touched
+# char_type lands on the char_type lever even when other fields moved too.
+LEVERS = [
+    ("phantom:unballooned_real_dimension",
+     "ballooning-policy classifier learned on train gold", "open (verifier closed)"),
+    ("phantom:", "phantom drops / ballooning policy", "stage-2 drops shipped"),
+    ("fields:char_type", "read stage (Ø Diameter↔Distance)", "open"),
+    ("fields:", "read input / box framing; render_target + adapter retrain for tolerances",
+     "open"),
+    ("missed", "detector weights", "open (Rung 3 moved isolated misses)"),
+    ("suggestion_", "suggestion tray thresholds (drop stage 2)", "shipped; graded here"),
+    ("bubble_moved", "whitespace balloon placement (fa1cb6f)", "new, unmeasured"),
+    ("anchor_", "box framing (detect_regions)", "open; framing dominates read accuracy"),
+]
+
+
+def _lever(bucket):
+    for prefix, lever, status in LEVERS:
+        if bucket.startswith(prefix):
+            return lever, status
+    return "unmapped", "unmapped"
+
+
+def _value_bucket(r) -> Optional[str]:
+    g = r["grade"]
+    if g == "edited":
+        return "fields:" + "+".join(r["fields"])
+    if g == "phantom":
+        return f"phantom:{r.get('reason') or 'none'}"
+    if g in ("suggestion_confirmed", "suggestion_edited"):
+        return g          # a dropped value the client wanted back
+    return None
+
+
+def ranked_findings(per_drawing: List[dict]) -> dict:
+    """One table per kind (value / placement), each bucket with its count,
+    share within its kind, distinct drawings and lever. `per_drawing`:
+    [{"rows", "missed", "scale"}] for gradable drawings only.
+
+    A deleted suggestion is NOT a correction -- the client agreed with the
+    drop -- so it is kept out of the value table as `tray_drop_right`;
+    ranking it would make a working drop rule look like a problem."""
+    tables: Dict[str, Dict[str, dict]] = {"value": {}, "placement": {}}
+    drop_right = 0
+
+    def add(kind, bucket, di):
+        b = tables[kind].setdefault(bucket, {"count": 0, "drawings": set()})
+        b["count"] += 1
+        b["drawings"].add(di)
+
+    for di, d in enumerate(per_drawing):
+        for r in d["rows"]:
+            vb = _value_bucket(r)
+            if vb:
+                add("value", vb, di)
+            drop_right += r["grade"] == "suggestion_deleted"
+            # Same thresholds as group_metrics, so the two never disagree on
+            # what counts as a moved bubble or a nudged anchor.
+            if (r.get("bubble_px") is not None
+                    and px_to_mm(r["bubble_px"], d["scale"]) > BUBBLE_MOVED_MM):
+                add("placement", "bubble_moved", di)
+            # anchor_moved with no IoU is unmeasurable, not a known move.
+            if r.get("anchor_moved") and r.get("anchor_iou") is not None:
+                add("placement", "anchor_nudged" if r["anchor_iou"] >= NUDGE_IOU
+                    else "anchor_repointed", di)
+        for _ in d["missed"]:
+            add("value", "missed", di)
+    out: Dict[str, object] = {}
+    for kind, t in tables.items():
+        total = sum(b["count"] for b in t.values())
+        rows = []
+        for bucket, b in t.items():
+            lever, status = _lever(bucket)
+            rows.append({"bucket": bucket, "count": b["count"],
+                         "share": _ratio(b["count"], total),
+                         "drawings": len(b["drawings"]), "lever": lever,
+                         "lever_status": status})
+        out[kind] = sorted(rows, key=lambda r: (-r["count"], r["bucket"]))
+    out["tray_drop_right"] = drop_right
+    return out
+
+
+POOLED_METRICS = ("precision", "unflagged_precision", "flag_precision",
+                  "recall_shipped_vs_client_known", "recall_with_tray_vs_client_known")
+
+
+def _scale_ok(s) -> bool:
+    return (not isinstance(s, bool) and isinstance(s, (int, float))
+            and math.isfinite(s) and s > 0)
+
+
+def _grade_one(d) -> dict:
+    """The per-drawing work that can trip over a damaged record. Raises on
+    anything unexpected; the caller turns that into a fixed word."""
+    facts = d.header.get("campaign") or {}
+    scale = facts.get("render_scale")
+    if not _scale_ok(scale):
+        return {"status": "ungradable", "reason": "no_render_scale"}
+    # The session's OWN proposal (suggestions included): it is what the
+    # journal was replayed on, and any other list disagrees on every drawing.
+    g = grade_session(d.proposal_rows, d.sealed)
+    if g["ungradable"]:
+        return {"status": "ungradable", "reason": g["ungradable"]}
+    note = note_of(d.sealed.get("net_events", []))
+    return {"status": "approved", "reason": None, "rows": g["rows"], "missed": g["missed"],
+            "scale": scale, "time_ms": review_time_ms(d.events),
+            "note": note if isinstance(note, str) else ""}
+
+
+def grade_campaign(records, gold_by_hash: Optional[Dict[str, GoldDoc]] = None,
+                   manifest: Optional[dict] = None, *,
+                   params: Optional[MatchParams] = None):
+    """-> (report, digest).
+
+    `report` holds per-row grades, proposed/final values and notes: it goes
+    ONLY inside the protected root. `digest` is counts, rates, fixed words and
+    salted doc hashes, for docs/eval/.
+
+    `gold_by_hash` maps doc_hash -> GoldDoc and MUST come from the
+    `--originals` gold ingest: the campaign renders the clean original, and a
+    stamped-sheet gold of the same page size passes the frame check while
+    every position is wrong (see _same_frame).
+
+    A drawing is ungradable (with a fixed word, never exception text, which
+    can quote client values) when its record is damaged, its replay does not
+    reproduce its seal, it has no usable render_scale, or grading raised
+    (`grade_error`). A cross-check failure alone keeps the client's grade."""
+    gold_by_hash = gold_by_hash or {}
+    roles = (manifest or {}).get("roles") or {}
+    pool = (manifest or {}).get("pool") or {}
+    status = {"approved": 0, "pending": 0, "ungradable": 0}
+    reasons: Dict[str, int] = {}
+    by_group: Dict[str, List[dict]] = {}
+    report_docs, problems = [], []
+    cross_done: List[dict] = []
+    not_computed: Dict[str, int] = {}
+    revision_mismatch = 0
+    for key, d in sorted(records.drawings.items()):
+        h = d.index.get("doc_hash") or key
+        facts = d.header.get("campaign") or {}
+        group = facts.get("group") or d.index.get("group") or "unknown"
+        if roles and h in roles and roles[h] != group:
+            problems.append(f"group_differs:{key}")
+        revision_mismatch += bool(d.revision_mismatch)
+        doc = {"doc_hash": key, "group": group,
+               "source_run": facts.get("source_run") or "unknown",
+               "status": None, "reason": None, "rows": None, "missed": None,
+               "scale": None, "time_ms": None, "proposal": None, "final": None,
+               "cross": None, "note": None}
+        if d.error:
+            res = {"status": "ungradable", "reason": d.error}
+        elif d.sealed is None:
+            res = {"status": "pending", "reason": None}
+        else:
+            try:
+                res = _grade_one(d)
+            except Exception:  # noqa: BLE001 -- one bad drawing must not sink the run
+                res = {"status": "ungradable", "reason": "grade_error"}
+        doc.update(res)
+        status[doc["status"]] += 1
+        if doc["status"] == "ungradable":
+            reasons[doc["reason"]] = reasons.get(doc["reason"], 0) + 1
+        if doc["status"] != "approved":
+            report_docs.append(doc)
+            continue
+        if len(doc["rows"]) != len(d.proposal_rows):
+            problems.append(f"partition:{key}")
+        doc["proposal"], doc["final"] = d.proposal_rows, d.sealed.get("rows", [])
+        by_group.setdefault(group, []).append(doc)
+        gold = gold_by_hash.get(h)
+        if gold is None:
+            cross = {"computed": False, "reason": "no_gold"}
+        else:
+            try:
+                cross = gold_cross_check(
+                    d.proposal_rows, doc["final"], {r["id"]: r["grade"] for r in doc["rows"]},
+                    gold, render_scale=doc["scale"], page_rect=facts.get("page_rect"),
+                    params=params)
+            except Exception:  # noqa: BLE001 -- gold is a second lens; keep the grade
+                cross = {"computed": False, "reason": "cross_check_error"}
+        doc["cross"] = cross
+        if cross.get("computed"):
+            cross_done.append(cross)
+        else:
+            not_computed[cross["reason"]] = not_computed.get(cross["reason"], 0) + 1
+        report_docs.append(doc)
+
+    groups = {grp: group_metrics(ds) for grp, ds in sorted(by_group.items())}
+    # Identity: the per-grade counts partition the rows each group graded.
+    for grp, ds in sorted(by_group.items()):
+        c = groups[grp]["counts"]
+        if (sum(c[g] for g in VALUE_GRADES + SUGGESTION_GRADES)
+                != sum(len(e["rows"]) for e in ds)):
+            problems.append(f"group_counts:{grp}")
+    if sum(status.values()) != len(records.drawings):
+        problems.append("status_counts")
+
+    not_in_records = extra_in_records = None
+    if roles:
+        in_records = {d.index.get("doc_hash") or k for k, d in records.drawings.items()}
+        in_skipped = {s.get("doc_hash") for s in records.skipped if isinstance(s, dict)}
+        missing = [h for h in roles if h not in in_records and h not in in_skipped]
+        not_in_records = len(missing)
+        extra_in_records = len([h for h in in_records if h not in roles])
+        # Every role must land in exactly one place; checked as an identity
+        # rather than assumed from how `missing` was built.
+        covered = (len([h for h in roles if h in in_records])
+                   + len([h for h in roles if h not in in_records and h in in_skipped])
+                   + not_in_records)
+        if covered != len(roles):
+            problems.append("manifest_coverage")
+
+    # No pool -> nothing to reweight to: None, never a guessed mix.
+    pooled = {k: (reweight({grp: m[k] for grp, m in groups.items()}, pool) if pool else None)
+              for k in POOLED_METRICS}
+    matrix: Dict[str, int] = {}
+    for c in cross_done:
+        for k, v in c["matrix"].items():
+            matrix[k] = matrix.get(k, 0) + v
+    approved_docs = [e for ds in by_group.values() for e in ds]
+    runs = sorted({e["source_run"] for e in approved_docs})
+    digest = {
+        "campaign": records.campaign,
+        "drawings": {**status, "ungradable_reasons": dict(sorted(reasons.items())),
+                     "skipped": len(records.skipped),
+                     "not_in_records": not_in_records,
+                     "extra_in_records": extra_in_records},
+        "revision_mismatch": revision_mismatch,
+        "groups": groups,
+        "pooled": pooled,
+        "pool": pool,
+        # Counts only: the per-row verdicts stay in the report.
+        "gold_cross_check": {
+            "n_drawings_computed": len(cross_done),
+            "not_computed": dict(sorted(not_computed.items())),
+            "matrix": dict(sorted(matrix.items())),
+            "n_gold": sum(c["n_gold"] for c in cross_done),
+            "neither_found": sum(c["neither_found"] for c in cross_done),
+            "matched_final": sum(c["matched_final"] for c in cross_done),
+            "unlocatable": sum(c["unlocatable"] for c in cross_done),
+            "row_invalid": sum(c["row_invalid"] for c in cross_done)},
+        "findings": ranked_findings(approved_docs),
+        # The FINAL note only (a cleared note is no note), and only as a count:
+        # note text is client prose.
+        "notes_written": sum(1 for e in approved_docs if e["note"]),
+        "by_source_run": {r: sum(1 for e in approved_docs if e["source_run"] == r)
+                          for r in runs},
+        "reconcile_problems": problems,
+        "reconciles": not problems,
+    }
+    report = {"campaign": records.campaign, "drawings": report_docs, "digest": digest}
+    return report, digest

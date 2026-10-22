@@ -344,3 +344,213 @@ def test_reconciled_frames_are_unsupported():
     gold = _gold([_g(1, (30, 20), "10")])
     out = _check([], [], {}, gold, params=MatchParams(reconcile_frames="scale"))
     assert out == {"computed": False, "reason": "unsupported_params"}
+
+
+# --- ranked findings and the campaign grade (Task 7) -------------------------
+# End to end through write_tar/read_records, so the grader is exercised on the
+# exact record shapes a pull produces, never on hand-built DrawingRecords.
+import json
+
+import app.eval.campaign_grade as campaign_grade
+from app.eval.campaign_grade import LEVERS, grade_campaign, ranked_findings
+from app.eval.campaign_records import read_records
+from tests.eval.campaign_fixtures import drawing, event, proposal_row, write_tar
+
+
+def test_ranked_findings_by_kind_with_levers():
+    per_drawing = [
+        {"rows": [graded("edited", fields=["nominal"]), graded("edited", fields=["nominal"]),
+                  {**graded("phantom"), "reason": "unballooned_real_dimension"}],
+         "missed": [{}], "scale": 300 / 72.0},
+        {"rows": [graded("edited", fields=["nominal", "upper_tol"]),
+                  graded("confirmed", bubble_px=100.0)], "missed": [], "scale": 300 / 72.0}]
+    f = ranked_findings(per_drawing)
+    value = f["value"]
+    assert value[0]["bucket"] == "fields:nominal" and value[0]["count"] == 2
+    assert value[0]["drawings"] == 1 and math.isclose(value[0]["share"], 2 / 5)
+    assert {b["bucket"] for b in value} == {"fields:nominal", "fields:nominal+upper_tol",
+                                           "phantom:unballooned_real_dimension", "missed"}
+    assert f["placement"][0]["bucket"] == "bubble_moved"
+    assert all(b["lever"] and b["lever"] != "unmapped" for b in value + f["placement"])
+    ph = next(b for b in value if b["bucket"].startswith("phantom:"))
+    assert ph["lever"] == LEVERS[0][1]          # most specific entry wins
+
+
+def test_tray_outcomes_split_corrections_from_drops_that_were_right():
+    """A confirmed or edited suggestion is a value the client wanted back: a
+    correction. A deleted suggestion means the drop was RIGHT, so it must not
+    rank as a finding; it is reported as its own count."""
+    rows = [graded("suggestion_confirmed"), graded("suggestion_edited", fields=["nominal"]),
+            graded("suggestion_deleted"), graded("suggestion_deleted"),
+            graded("suggestion_left")]
+    f = ranked_findings([{"rows": rows, "missed": [], "scale": 1.0}])
+    assert {b["bucket"] for b in f["value"]} == {"suggestion_confirmed", "suggestion_edited"}
+    assert f["tray_drop_right"] == 2
+
+
+def test_anchor_buckets_need_a_measured_move_and_ties_sort_by_name():
+    rows = [graded("confirmed", anchor_iou=0.8, moved=True),     # nudged
+            graded("confirmed", anchor_iou=0.1, moved=True),     # repointed
+            graded("confirmed", anchor_iou=None, moved=True),    # unmeasurable: no bucket
+            graded("confirmed", anchor_iou=0.9, moved=False)]
+    f = ranked_findings([{"rows": rows, "missed": [], "scale": 1.0}])
+    assert [b["bucket"] for b in f["placement"]] == ["anchor_nudged", "anchor_repointed"]
+    assert all(math.isclose(b["share"], 0.5) for b in f["placement"])
+    assert f["value"] == []
+
+
+def _manifest(roles, pool=None):
+    return {"runs": [], "roles": roles, "pool": pool or {"great": 30, "problem": 20}}
+
+
+NOTE = "PLANTED-CLIENT-NOTE-7"
+
+
+def _campaign(tmp_path, extra=()):
+    p = [proposal_row("a"), proposal_row("b")]
+    return write_tar(tmp_path / "r.tar", [
+        drawing("aaaaaaaa", p, p, [event(1, "set_note", text=NOTE)], group="great"),
+        drawing("bbbbbbbb", p, [proposal_row("a")],
+                [event(1, "delete_row", id="b", reason="duplicate")], group="problem"),
+        drawing("cccccccc", p, p, [], group="problem", approved=False),
+        *extra])
+
+
+def test_grade_campaign_end_to_end_and_reconciles(tmp_path):
+    report, digest = grade_campaign(read_records(_campaign(tmp_path)), gold_by_hash={},
+                                    manifest=_manifest({"aaaaaaaa": "great",
+                                                        "bbbbbbbb": "problem",
+                                                        "cccccccc": "problem",
+                                                        "dddddddd": "great"}))
+    assert digest["drawings"] == {"approved": 2, "pending": 1, "ungradable": 0,
+                                  "ungradable_reasons": {}, "skipped": 0,
+                                  "not_in_records": 1, "extra_in_records": 0}
+    assert digest["groups"]["great"]["counts"]["confirmed"] == 2
+    assert digest["groups"]["problem"]["counts"]["phantom"] == 1
+    assert digest["reconciles"] is True and digest["reconcile_problems"] == []
+    assert digest["pooled"]["precision"] is not None
+    assert set(digest["pooled"]) == {"precision", "unflagged_precision", "flag_precision",
+                                     "recall_shipped_vs_client_known",
+                                     "recall_with_tray_vs_client_known"}
+    assert digest["findings"]["value"][0]["bucket"] == "phantom:duplicate"
+    assert digest["by_source_run"] == {"r5-control": 2}
+    by = {d["doc_hash"]: d for d in report["drawings"]}
+    assert by["cccccccc"]["status"] == "pending"
+    assert by["aaaaaaaa"]["status"] == "approved" and by["aaaaaaaa"]["scale"] == 300 / 72.0
+
+
+def test_notes_count_the_final_note_only_and_never_reach_the_digest(tmp_path):
+    """The drill-down shows the client's note, so the protected report keeps
+    it; the digest goes to docs/eval/ and may only count notes. A note typed
+    and then cleared is no note: counting set_note events would say there is."""
+    p = [proposal_row("a")]
+    cleared = drawing("eeeeeeee", p, p, [event(1, "set_note", text="tmp"),
+                                         event(2, "set_note", text="")])
+    report, digest = grade_campaign(read_records(_campaign(tmp_path, [cleared])),
+                                    gold_by_hash={}, manifest=None)
+    assert digest["notes_written"] == 1
+    by = {d["doc_hash"]: d for d in report["drawings"]}
+    assert by["aaaaaaaa"]["note"] == NOTE and by["eeeeeeee"]["note"] == ""
+
+
+def test_digest_carries_no_value_name_or_note(tmp_path):
+    _, digest = grade_campaign(read_records(_campaign(tmp_path)), gold_by_hash={},
+                               manifest=_manifest({"aaaaaaaa": "great"}))
+    blob = json.dumps(digest)
+    file_name = read_records(_campaign(tmp_path)).drawings["aaaaaaaa"] \
+        .header["campaign"]["file_name"]
+    for forbidden in ('"upper_tol"', '"lower_tol"', '"characteristics"', '"position_pt"',
+                      file_name, NOTE):
+        assert forbidden not in blob, forbidden
+
+
+def test_damaged_pending_and_ungradable_drawings_are_counted_not_fatal(tmp_path):
+    """One bad drawing must not sink the campaign. A record error keeps its
+    type word; a crash inside grading becomes the fixed word grade_error (the
+    exception text could quote a client value); a header without a usable
+    render_scale cannot be put in mm and is ungradable too."""
+    p = [proposal_row("a")]
+    noid = [{k: v for k, v in proposal_row("SECRET-ID-VALUE").items() if k != "id"}]
+    tar = _campaign(tmp_path, [
+        drawing("dddddddd", p, p, [], header=False),
+        drawing("eeeeeeee", noid, p, []),
+        drawing("ffffffff", p, p, [], render_scale=None)])
+    report, digest = grade_campaign(read_records(tar), gold_by_hash={}, manifest=None)
+    d = digest["drawings"]
+    assert d["approved"] == 2 and d["pending"] == 1 and d["ungradable"] == 3
+    assert d["ungradable_reasons"] == {"header_missing": 1, "grade_error": 1,
+                                       "no_render_scale": 1}
+    assert d["not_in_records"] is None and d["extra_in_records"] is None
+    assert digest["reconciles"] is True
+    by = {r["doc_hash"]: r for r in report["drawings"]}
+    assert by["eeeeeeee"]["reason"] == "grade_error"
+    assert "SECRET" not in json.dumps(digest)
+
+
+def test_group_differing_from_the_manifest_is_named(tmp_path):
+    report, digest = grade_campaign(
+        read_records(_campaign(tmp_path)), gold_by_hash={},
+        manifest=_manifest({"aaaaaaaa": "problem", "bbbbbbbb": "problem",
+                            "cccccccc": "problem", "zzzzzzzz": "great"}))
+    assert "group_differs:aaaaaaaa" in digest["reconcile_problems"]
+    assert digest["reconciles"] is False
+    assert digest["drawings"]["not_in_records"] == 1
+
+
+def test_records_outside_the_manifest_and_skipped_ones_are_accounted(tmp_path):
+    p = [proposal_row("a")]
+    tar = write_tar(tmp_path / "r.tar", [drawing("aaaaaaaa", p, p, [])],
+                    skipped=[{"id8": "deadbeef", "state": "ready", "reason": "no_proposal",
+                              "doc_hash": "bbbbbbbb", "group": "great"}])
+    _, digest = grade_campaign(read_records(tar), gold_by_hash={},
+                               manifest=_manifest({"bbbbbbbb": "great"}))
+    d = digest["drawings"]
+    assert d["skipped"] == 1 and d["not_in_records"] == 0 and d["extra_in_records"] == 1
+
+
+def test_missing_pool_leaves_pooled_values_unmeasured(tmp_path):
+    _, digest = grade_campaign(read_records(_campaign(tmp_path)), gold_by_hash={},
+                               manifest={"runs": [], "roles": {}})
+    assert digest["pooled"] and all(v is None for v in digest["pooled"].values())
+
+
+def _gold_at_fixture_row():
+    # proposal_row's target_region [10,10,50,30] px at 300 dpi, in points.
+    s = 300 / 72.0
+    return GoldDoc(doc_id="D", pdf="x", excel="y", page_rect=(0.0, 0.0, 842.0, 595.0),
+                   characteristics=[_g(1, (30 / s, 20 / s), "10"),
+                                    _g(2, (400.0, 400.0), "99")])
+
+
+def test_gold_cross_check_is_summed_as_counts_only(tmp_path):
+    bad_frame = GoldDoc(doc_id="D", pdf="x", excel="y", page_rect=(0, 0, 1191, 842),
+                        characteristics=[])
+    report, digest = grade_campaign(
+        read_records(_campaign(tmp_path)),
+        gold_by_hash={"aaaaaaaa": _gold_at_fixture_row(), "bbbbbbbb": bad_frame},
+        manifest=None)
+    g = digest["gold_cross_check"]
+    assert g["n_drawings_computed"] == 1
+    assert g["not_computed"] == {"frame_mismatch": 1}
+    assert sum(g["matrix"].values()) == 2            # both delivered rows of aaaaaaaa
+    assert g["matched_final"] == 1 and g["neither_found"] == 1
+    assert g["unlocatable"] == 0 and g["row_invalid"] == 0
+    assert "verdicts" not in json.dumps(digest)
+    by = {d["doc_hash"]: d for d in report["drawings"]}
+    assert by["aaaaaaaa"]["cross"]["computed"] is True
+
+
+def test_a_failing_cross_check_keeps_the_client_grade(tmp_path, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("SECRET-GOLD-VALUE")
+    monkeypatch.setattr(campaign_grade, "gold_cross_check", boom)
+    report, digest = grade_campaign(read_records(_campaign(tmp_path)),
+                                    gold_by_hash={"aaaaaaaa": _gold_at_fixture_row()},
+                                    manifest=None)
+    assert digest["drawings"]["approved"] == 2
+    # bbbbbbbb has no gold at all: said so, so coverage is never overstated
+    assert digest["gold_cross_check"]["not_computed"] == {"cross_check_error": 1,
+                                                          "no_gold": 1}
+    by = {d["doc_hash"]: d for d in report["drawings"]}
+    assert by["aaaaaaaa"]["cross"] == {"computed": False, "reason": "cross_check_error"}
+    assert "SECRET" not in json.dumps(report)
