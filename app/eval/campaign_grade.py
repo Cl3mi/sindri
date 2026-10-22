@@ -430,6 +430,31 @@ def _value_bucket(r) -> Optional[str]:
     return None
 
 
+def row_buckets(row, scale) -> List[tuple]:
+    """The (kind, bucket) pairs ONE graded row falls in; kind is "value" or
+    "placement". The single definition of what a bucket is: ranked_findings
+    counts with it and the operator's example deck picks rows with it, so a
+    bucket's examples can never disagree with its count. The missed bucket
+    belongs to no graded row (the client added it), so callers add it.
+
+    One row can sit in several buckets (an edit whose bubble also moved), and
+    a deleted suggestion sits in none -- the client agreed with the drop."""
+    out = []
+    vb = _value_bucket(row)
+    if vb:
+        out.append(("value", vb))
+    # Same thresholds as group_metrics, so the two never disagree on what
+    # counts as a moved bubble or a nudged anchor.
+    if (row.get("bubble_px") is not None
+            and px_to_mm(row["bubble_px"], scale) > BUBBLE_MOVED_MM):
+        out.append(("placement", "bubble_moved"))
+    # anchor_moved with no IoU is unmeasurable, not a known move.
+    if row.get("anchor_moved") and row.get("anchor_iou") is not None:
+        out.append(("placement", "anchor_nudged" if row["anchor_iou"] >= NUDGE_IOU
+                    else "anchor_repointed"))
+    return out
+
+
 def ranked_findings(per_drawing: List[dict]) -> dict:
     """One table per kind (value / placement), each bucket with its count,
     share within its kind, distinct drawings and lever. `per_drawing`:
@@ -451,19 +476,9 @@ def ranked_findings(per_drawing: List[dict]) -> dict:
 
     for di, d in enumerate(per_drawing):
         for r in d["rows"]:
-            vb = _value_bucket(r)
-            if vb:
-                add("value", vb, di)
+            for kind, bucket in row_buckets(r, d["scale"]):
+                add(kind, bucket, di)
             drop_right += r["grade"] == "suggestion_deleted"
-            # Same thresholds as group_metrics, so the two never disagree on
-            # what counts as a moved bubble or a nudged anchor.
-            if (r.get("bubble_px") is not None
-                    and px_to_mm(r["bubble_px"], d["scale"]) > BUBBLE_MOVED_MM):
-                add("placement", "bubble_moved", di)
-            # anchor_moved with no IoU is unmeasurable, not a known move.
-            if r.get("anchor_moved") and r.get("anchor_iou") is not None:
-                add("placement", "anchor_nudged" if r["anchor_iou"] >= NUDGE_IOU
-                    else "anchor_repointed", di)
         for _ in d["missed"]:
             add("value", "missed", di)
     out: Dict[str, object] = {}
