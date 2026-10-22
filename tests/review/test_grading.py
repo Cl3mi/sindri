@@ -68,3 +68,58 @@ def test_flagged_is_carried_for_flag_precision():
     g = grade_session([row("a", needs_review=True)],
                       sealed([row("a", needs_review=True)], []))
     assert g["rows"][0]["flagged"] is True
+
+
+def _edit(seq, field, old, new, reason=None):
+    e = {"seq": seq, "type": "edit_cell", "id": "a", "field": field,
+         "old": old, "new": new}
+    if reason:
+        e["reason"] = reason
+    return e
+
+
+def test_a_reason_given_on_an_undone_edit_is_not_blamed_on_another_field():
+    """nominal 10 -> 12 (misread_digit) -> 10, then upper_tol edited with no
+    reason: the tolerance change must not be recorded as a digit misread."""
+    ev = [_edit(1, "nominal", "10", "12", "misread_digit"),
+          _edit(2, "nominal", "12", "10"),
+          _edit(3, "upper_tol", "+0.1", "+0.2")]
+    g = grade_session([row("a")], sealed([row("a", upper_tol="+0.2")], ev))
+    r = g["rows"][0]
+    assert r["grade"] == "edited" and r["fields"] == ["upper_tol"]
+    assert r["reason"] is None
+
+
+def test_a_single_explained_edit_keeps_its_reason():
+    ev = [_edit(1, "nominal", "10", "12", "misread_digit")]
+    g = grade_session([row("a")], sealed([row("a", nominal="12")], ev))
+    assert g["rows"][0]["reason"] == "misread_digit"
+
+
+def test_with_two_edited_fields_the_last_explained_edit_gives_the_reason():
+    ev = [_edit(1, "nominal", "10", "12"),
+          _edit(2, "upper_tol", "+0.1", "+0.2", "wrong_tolerance")]
+    g = grade_session([row("a")], sealed([row("a", nominal="12", upper_tol="+0.2")], ev))
+    assert g["rows"][0]["reason"] == "wrong_tolerance"
+
+
+def test_suggestion_edit_reason_belongs_to_its_field_too():
+    s = row("s", suggested=True, pos=0)
+    ev = [{"seq": 1, "type": "edit_cell", "id": "s", "field": "nominal",
+           "old": "10", "new": "12", "reason": "misread_digit"},
+          {"seq": 2, "type": "edit_cell", "id": "s", "field": "nominal",
+           "old": "12", "new": "10"},
+          {"seq": 3, "type": "edit_cell", "id": "s", "field": "lower_tol",
+           "old": "-0.1", "new": "-0.2"},
+          {"seq": 4, "type": "confirm_suggestions", "ids": ["s"]}]
+    g = grade_session([s], sealed([row("s", lower_tol="-0.2")], ev, reviewed=["s"]))
+    r = g["rows"][0]
+    assert r["grade"] == "suggestion_edited" and r["reason"] is None
+
+
+def test_explicit_review_is_recorded_apart_from_silence():
+    ev = [{"seq": 1, "type": "accept", "ids": ["a"]}]
+    g = grade_session([row("a"), row("b")],
+                      sealed([row("a"), row("b")], ev, reviewed=["a"]))
+    by = {r["id"]: r for r in g["rows"]}
+    assert by["a"]["reviewed"] is True and by["b"]["reviewed"] is False
