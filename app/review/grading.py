@@ -12,7 +12,8 @@ is the reviewer's act, and an edit undone by a later edit nets to unchanged."""
 import math
 from typing import Dict, List, Optional
 
-from app.review.journal import VALUE_FIELDS
+from app.review.journal import JournalError, VALUE_FIELDS
+from app.review.replay import mismatches, replay
 
 GRADES = ("confirmed", "edited", "phantom", "suggestion_confirmed",
           "suggestion_edited", "suggestion_deleted", "suggestion_left")
@@ -82,9 +83,31 @@ def _placement(p: dict, f: Optional[dict]) -> dict:
     return {"bubble_px": bubble, "anchor_iou": iou(pa, fa), "anchor_moved": moved}
 
 
+def _ungradable(proposal_rows: List[dict], sealed: dict) -> Optional[str]:
+    """Why this record cannot be graded, or None. A record whose rows cannot be
+    reproduced from its own journal is reported and never graded (design
+    §Reconciliation). Only an error TYPE is ever reported, as a fixed word:
+    exception text can quote a client value."""
+    if sealed.get("replay_mismatch_ids"):
+        return "replay_mismatch"
+    try:
+        bad = mismatches(replay(proposal_rows, sealed.get("net_events", [])),
+                         sealed.get("rows", []), sealed.get("reviewed_ids", []))
+    except (JournalError, KeyError, TypeError, ValueError):
+        # Sealed net_events are already net, so a retract or a keyless event
+        # means a malformed session; one bad drawing must not crash the grade.
+        return "replay_error"
+    return "replay_disagrees" if bad else None
+
+
 def grade_session(proposal_rows: List[dict], sealed: dict) -> dict:
+    ungradable = _ungradable(proposal_rows, sealed)
     final = {r["id"]: r for r in sealed.get("rows", [])}
-    reasons = _last_reasons(sealed.get("net_events", []))
+    # Reasons come from the same events replay just refused: skip them rather
+    # than crash. The rows are still listed (callers exclude ungradable ones),
+    # so per-drawing counts reconcile.
+    reasons = ({} if ungradable == "replay_error"
+               else _last_reasons(sealed.get("net_events", [])))
     reviewed = set(sealed.get("reviewed_ids", []))
     graded = []
     for p in proposal_rows:
@@ -115,4 +138,4 @@ def grade_session(proposal_rows: List[dict], sealed: dict) -> dict:
         graded.append(rec)
     proposed = {p["id"] for p in proposal_rows}
     missed = [r for i, r in final.items() if i not in proposed]
-    return {"rows": graded, "missed": missed, "ungradable": None}
+    return {"rows": graded, "missed": missed, "ungradable": ungradable}

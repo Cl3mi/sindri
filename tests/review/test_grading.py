@@ -190,3 +190,38 @@ def test_a_moved_unconfirmed_suggestion_has_no_placement():
     assert r["grade"] == "suggestion_left"
     assert r["bubble_px"] is None and r["anchor_iou"] is None
     assert r["anchor_moved"] is False
+
+
+def test_a_seal_that_recorded_a_replay_mismatch_is_ungradable():
+    g = grade_session([row("a")], sealed([row("a")], [], mismatch=["a"]))
+    assert g["ungradable"] == "replay_mismatch"
+
+
+def test_a_seal_whose_rows_disagree_with_replay_is_ungradable():
+    """The sealed rows say 12, but no event changed the value: a record we
+    cannot explain is never graded (design §Reconciliation)."""
+    g = grade_session([row("a")], sealed([row("a", nominal="12")], []))
+    assert g["ungradable"] == "replay_disagrees"
+
+
+def test_ungradable_still_lists_rows_so_counts_reconcile():
+    g = grade_session([row("a")], sealed([row("a")], [], mismatch=["a"]))
+    assert len(g["rows"]) == 1
+
+
+def test_a_consistent_seal_is_gradable():
+    ev = [{"seq": 1, "type": "accept", "ids": ["a"]}]
+    g = grade_session([row("a")], sealed([row("a")], ev, reviewed=["a"]))
+    assert g["ungradable"] is None
+
+
+def test_a_malformed_journal_is_reported_not_raised():
+    """An event missing its keys (or a retract that should have been netted
+    away) must not crash a whole campaign grade. Only the exception TYPE is
+    kept: its text can quote a client value."""
+    for ev in ([{"seq": 1, "type": "edit_cell"}],
+               [{"seq": 1, "type": "retract", "target": 0}],
+               [{"seq": 1}]):
+        g = grade_session([row("a")], sealed([row("a")], ev))
+        assert g["ungradable"] == "replay_error"
+        assert len(g["rows"]) == 1
