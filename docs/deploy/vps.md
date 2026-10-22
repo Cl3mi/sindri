@@ -46,9 +46,19 @@ is a few hundred KB) and events batches can be large too.
 
 ## Run a campaign
 
-1. Agent: selects drawings (`share_select ... --allow-train --great 30 --problem 20`;
-   the campaign draws from train + dev digests, never test) and hands you the
-   build command.
+1. Agent: selects drawings and hands you the build command. The great /
+   problem labels must reflect TODAY's policy, since that is what the bundle
+   shows (plan C1 decision 4), so the digests are:
+   - **train**: `r3-trainpredict` was predicted under an older policy, so it is
+     first re-scored as today's code would deliver it --
+     `python3 -m app.eval.runner score --run <protected root>/runs/r3-trainpredict --gold <protected root>/gold --pdfs <protected root>/corpus/originals --max-pages 1 --dpi 300 --exclude-clamped --splits <protected root>/meta/splits.json --split train --weights docs/eval/weights.json --name reapply-trainpredict-scoped --out <protected root>/reports/reapply-trainpredict-scoped.report.json --reapply-policy`
+     -- then `python3 -m app.eval.runner summary <protected root>/reports/reapply-trainpredict-scoped.report.json --per-doc --out <scratchpad>/train.json`.
+   - **dev**: `r5-control-scoped` (native, today's policy) --
+     `python3 -m app.eval.runner summary <protected root>/reports/r5-control-scoped.report.json --per-doc --out <scratchpad>/dev.json`.
+   - then `python -m app.eval.share_select --digest r3-trainpredict=<scratchpad>/train.json --digest r5-control=<scratchpad>/dev.json --allow-train --great 30 --problem 20 --out ~/campaign-manifest.json`.
+     Under `--allow-train` it refuses any digest whose split is not train or
+     dev: test stays held out. The manifest holds salted hashes and roles
+     only -- no client value -- but keep it out of git anyway.
 2. You: `python campaign_build.py --manifest ~/campaign-manifest.json --name pilot-1 --out ~/campaign-pilot-1`
    - It refuses an `--out` inside the protected root or inside any git work
      tree, and prints hashes only.
@@ -64,6 +74,9 @@ is a few hundred KB) and events batches can be large too.
      then shows as failed. Remedy: re-run the load; it re-queues failed drawings.
    - Loaded drawings become ready within about 2 s each (the worker polls); no
      restart is needed.
+   - Once the load reports success, delete the local bundle
+     (`rm -rf ~/campaign-<name>`): it is client data and can be rebuilt from
+     the manifest, which holds hashes only.
 5. Open the domain yourself, review one drawing end to end, then send the
    client the link and their credentials.
 6. Progress at any time: the work list, or a pull (below).

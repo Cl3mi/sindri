@@ -78,6 +78,31 @@ def test_train_digest_is_allowed_only_when_asked(tmp_path):
     assert json.loads(out.read_text())["roles"] == {"a": "great"}
 
 
+@pytest.mark.parametrize("split", ["test", "all", "", None])
+def test_the_campaign_never_draws_from_test(tmp_path, split):
+    """--allow-train is the review campaign's flag, and the campaign keeps
+    test held out (decision 5): the client's grades must not have touched
+    the split every later arm is confirmed on. "all" (an unsplit score)
+    contains test drawings, and a digest that does not say its split cannot
+    prove it holds none, so under --allow-train only train and dev pass."""
+    f = tmp_path / "t.json"
+    digest = {"per_doc": [_row("a", .9)]}
+    if split is not None:
+        digest["split"] = split
+    f.write_text(json.dumps(digest))
+    with pytest.raises(SystemExit):
+        select_main(["--digest", f"r={f}", "--out", str(tmp_path / "m.json"),
+                     "--allow-train"])
+    assert not (tmp_path / "m.json").exists()
+
+
+def test_a_dev_digest_still_passes_with_allow_train(tmp_path):
+    f = tmp_path / "d.json"
+    f.write_text(json.dumps({"split": "dev", "per_doc": [_row("a", .9)]}))
+    assert select_main(["--digest", f"r={f}", "--out", str(tmp_path / "m.json"),
+                        "--great", "1", "--problem", "0", "--allow-train"]) == 0
+
+
 def test_end_to_end_manifest_to_files(tmp_path, monkeypatch):
     monkeypatch.setenv("SINDRI_DOC_SALT", "testsalt")
     monkeypatch.delenv("CLAUDECODE", raising=False)   # main() refuses under an agent

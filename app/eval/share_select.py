@@ -10,7 +10,8 @@ safe to run in an agent session. Writes a manifest of HASHES that
 `--digest RUN=FILE`: RUN is the predict run directory under <root>/runs, FILE is
 a `summary --per-doc` output for that run. Dev/test digests only: a train
 drawing was seen in adapter training and would flatter the result.
-`--allow-train` lifts that for the review campaign only (plan C1 decision 5).
+`--allow-train` lifts that for the review campaign only (plan C1 decision 5),
+and then accepts train and dev digests ONLY: the campaign keeps test held out.
 
 Criteria (defaults; every one is a flag):
   eligible  n_gold >= --min-gold (a demo needs a drawing with substance)
@@ -103,6 +104,13 @@ def load_rows(specs: List[str], allow_train: bool = False) -> List[Dict]:
         # may opt in to train. Test stays held out either way.
         if digest.get("split") == "train" and not allow_train:
             raise SystemExit(f"{path}: train split -- the adapter saw these drawings")
+        # Under --allow-train (the campaign) test must stay unseen by the
+        # client's grades: it is where every later arm is confirmed. "all"
+        # holds test drawings, and a digest that names no split cannot prove
+        # it holds none, so only train and dev pass.
+        if allow_train and digest.get("split") not in ("train", "dev"):
+            raise SystemExit(f"{path}: split {digest.get('split')!r} -- the review "
+                             f"campaign draws from train and dev only; test stays held out")
         rows += [{**r, "run": run} for r in digest["per_doc"]]
     return rows
 
