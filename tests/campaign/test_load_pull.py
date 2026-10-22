@@ -185,7 +185,7 @@ def test_pull_packs_the_campaigns_review_records_and_an_index(tmp_path, sample_p
     load.load_bundle(bundle(tmp_path, sample_pdf), data, repo)
     drain(worker)
     tar_path = tmp_path / "out.tar"
-    n = pull.pull_campaign("pilot-1", repo, store, tar_path)
+    n = pull.pull_campaign("pilot-1", repo, store, data, tar_path)
     assert n == 2
     with tarfile.open(tar_path) as t:
         names = t.getnames()
@@ -206,7 +206,7 @@ def test_pull_records_the_latest_sealed_revision(tmp_path, sample_pdf, env):
     for _ in range(2):
         o = store.open(aa)
         store.seal(aa, o["writer"], o["last_seq"], o["proposal"], [])
-    pull.pull_campaign("pilot-1", repo, store, tmp_path / "out.tar")
+    pull.pull_campaign("pilot-1", repo, store, data, tmp_path / "out.tar")
     with tarfile.open(tmp_path / "out.tar") as t:
         index = json.load(t.extractfile("pilot-1/index.json"))
     revs = {e["doc_hash"]: e["sealed_revision"] for e in index["documents"]}
@@ -223,7 +223,7 @@ def test_pull_skips_a_drawing_without_a_header_and_counts_it(tmp_path, sample_pd
     bb = next(d["id"] for d in repo.list_documents() if d["file_name"] == f"{HB}.pdf")
     (store.root / bb / "header.json").unlink()
     skipped = []
-    n = pull.pull_campaign("pilot-1", repo, store, tmp_path / "out.tar", skipped=skipped)
+    n = pull.pull_campaign("pilot-1", repo, store, data, tmp_path / "out.tar", skipped=skipped)
     assert n == 1 and len(skipped) == 1
     with tarfile.open(tmp_path / "out.tar") as t:
         index = json.load(t.extractfile("pilot-1/index.json"))
@@ -239,7 +239,7 @@ def test_pull_keeps_two_drawings_with_one_hash_apart(tmp_path, sample_pdf, env):
     load.load_bundle(bundle(tmp_path, sample_pdf, hashes=(HA,), root_name="b2",
                             salt=b"v2"), data, repo)
     drain(worker)
-    assert pull.pull_campaign("pilot-1", repo, store, tmp_path / "out.tar") == 3
+    assert pull.pull_campaign("pilot-1", repo, store, data, tmp_path / "out.tar") == 3
     with tarfile.open(tmp_path / "out.tar") as t:
         index = json.load(t.extractfile("pilot-1/index.json"))
         names = t.getnames()
@@ -347,7 +347,7 @@ def test_pull_survives_a_corrupt_revision_and_a_vanished_file(tmp_path, sample_p
     (store.root / ids[HB] / "events.jsonl").unlink(missing_ok=True)
     (store.root / ids[HB] / "events.jsonl").symlink_to(tmp_path / "gone")
     skipped = []
-    assert pull.pull_campaign("pilot-1", repo, store, tmp_path / "out.tar",
+    assert pull.pull_campaign("pilot-1", repo, store, data, tmp_path / "out.tar",
                               skipped=skipped) == 1
     assert [s[0] for s in skipped] == [ids[HB][:8]]
     with tarfile.open(tmp_path / "out.tar") as t:
@@ -366,7 +366,7 @@ def test_pull_skips_a_review_dir_without_its_proposal(tmp_path, sample_pdf, env)
     bb = next(d["id"] for d in repo.list_documents() if d["file_name"].startswith(HB))
     (store.root / bb / "proposal.json").unlink()
     skipped = []
-    assert pull.pull_campaign("pilot-1", repo, store, tmp_path / "out.tar",
+    assert pull.pull_campaign("pilot-1", repo, store, data, tmp_path / "out.tar",
                               skipped=skipped) == 1
     assert len(skipped) == 1
 
@@ -381,7 +381,7 @@ def test_a_failed_pull_leaves_no_archive_behind(tmp_path, sample_pdf, env, monke
         raise RuntimeError("index failed")
     monkeypatch.setattr(pull, "_sealed_revisions", boom)
     with pytest.raises(RuntimeError):
-        pull.pull_campaign("pilot-1", repo, store, tmp_path / "out.tar")
+        pull.pull_campaign("pilot-1", repo, store, data, tmp_path / "out.tar")
     assert list(tmp_path.glob("out.tar*")) == []
 
 
@@ -391,6 +391,61 @@ def test_pull_leaves_temp_files_out(tmp_path, sample_pdf, env):
     drain(worker)
     for d in repo.list_documents():
         (store.root / d["id"] / "events.jsonl.tmp").write_text("half")
-    pull.pull_campaign("pilot-1", repo, store, tmp_path / "out.tar")
+    pull.pull_campaign("pilot-1", repo, store, data, tmp_path / "out.tar")
     with tarfile.open(tmp_path / "out.tar") as t:
         assert not any(n.endswith(".tmp") for n in t.getnames())
+
+
+def _index(tar_path):
+    with tarfile.open(tar_path) as t:
+        return json.load(t.extractfile("pilot-1/index.json")), t.getnames()
+
+
+def test_a_header_without_a_doc_hash_is_packed_under_a_name_no_hash_can_take(
+        tmp_path, sample_pdf, env):
+    """The doc id's first 8 hex look exactly like a salted doc hash; filed
+    under it, grading would join the review to whatever drawing that 'hash'
+    names, or to none, silently. So no doc_hash means doc_hash None and a
+    dir that cannot be mistaken for one."""
+    data, repo, store, worker = env
+    load.load_bundle(bundle(tmp_path, sample_pdf), data, repo)
+    drain(worker)
+    bb = next(d["id"] for d in repo.list_documents() if d["file_name"].startswith(HB))
+    hp = store.root / bb / "header.json"
+    header = json.loads(hp.read_text())
+    del header["campaign"]["doc_hash"]
+    hp.write_text(json.dumps(header))
+    pull.pull_campaign("pilot-1", repo, store, data, tmp_path / "out.tar")
+    index, names = _index(tmp_path / "out.tar")
+    [e] = [e for e in index["documents"] if e["doc_hash"] != HA]
+    assert e["doc_hash"] is None and e["dir"] == f"nohash-{bb[:8]}"
+    assert f"pilot-1/nohash-{bb[:8]}/header.json" in names
+
+
+def test_index_accounts_for_every_skipped_drawing(tmp_path, sample_pdf, env):
+    """A pull mid-campaign skips drawings without a complete record; grading
+    must know WHICH ones (by doc hash and group, read from the drawing's
+    campaign.json since there is no header to read them from) and why,
+    rather than infer it from a count printed to someone's terminal."""
+    data, repo, store, worker = env
+    load.load_bundle(bundle(tmp_path, sample_pdf), data, repo)
+    drain(worker)
+    bb = next(d["id"] for d in repo.list_documents() if d["file_name"].startswith(HB))
+    (store.root / bb / "proposal.json").unlink()
+    pull.pull_campaign("pilot-1", repo, store, data, tmp_path / "out.tar")
+    index, _ = _index(tmp_path / "out.tar")
+    assert index["skipped"] == [{"id8": bb[:8], "state": "ready", "reason": "NoReviewRecord",
+                                 "doc_hash": HB, "group": "great"}]
+
+
+def test_a_skipped_drawing_without_campaign_facts_is_still_listed(tmp_path, sample_pdf, env):
+    data, repo, store, worker = env
+    load.load_bundle(bundle(tmp_path, sample_pdf), data, repo)
+    drain(worker)
+    bb = next(d["id"] for d in repo.list_documents() if d["file_name"].startswith(HB))
+    (store.root / bb / "proposal.json").unlink()
+    (data.doc_dir(bb) / "campaign.json").write_text("{not json")
+    pull.pull_campaign("pilot-1", repo, store, data, tmp_path / "out.tar")
+    index, _ = _index(tmp_path / "out.tar")
+    assert index["skipped"] == [{"id8": bb[:8], "state": "ready", "reason": "NoReviewRecord",
+                                 "doc_hash": None, "group": None}]
