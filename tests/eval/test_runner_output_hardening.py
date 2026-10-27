@@ -369,6 +369,38 @@ def test_ingest_into_the_gold_folder_itself(tmp_path, roots):
     assert (roots / "gold" / "SYNA.gold.json").is_file()
 
 
+def test_an_empty_ingest_writes_nothing(tmp_path, roots, capsys):
+    """Review round 2 (D): with no pdf/excel pair an ingest used to stamp
+    the directory and rewrite doc_id_map.json as {} -- silently erasing
+    the hash-to-drawing trace of a populated gold dir."""
+    out = roots / "gold" / "g1"
+    assert _ingest(tmp_path, out) == 0
+    before = {p.name: p.read_bytes() for p in out.iterdir()}
+    empty = tmp_path / "empty"
+    (empty / "pdfs").mkdir(parents=True)
+    (empty / "excel").mkdir()
+    capsys.readouterr()
+    for target in (out, roots / "gold" / "fresh"):
+        assert runner.main(["ingest", "--pdfs", str(empty / "pdfs"),
+                            "--excel", str(empty / "excel"),
+                            "--out", str(target)]) == 1
+    assert {p.name: p.read_bytes() for p in out.iterdir()} == before
+    assert not (roots / "gold" / "fresh").exists()
+    cap = _no_leak(capsys, out, empty)
+    assert "no drawing/sheet pair" in cap.err
+
+
+def test_the_gold_folder_keeps_marked_sub_ingests(tmp_path, roots, capsys):
+    """`ingest --out <root>/gold/<name>` leaves a marked subdirectory in
+    <root>/gold; ingesting into <root>/gold itself must still work. An
+    UNMARKED subdirectory is still foreign and refuses it."""
+    assert _ingest(tmp_path, roots / "gold" / "originals") == 0
+    assert _ingest(tmp_path, roots / "gold") == 0
+    (roots / "gold" / "stray").mkdir()
+    assert _ingest(tmp_path, roots / "gold") == 1
+    _no_leak(capsys, roots)
+
+
 def test_ingest_refusals_leave_everything_untouched(tmp_path, roots, capsys):
     standin = _gold_standin(roots)
     before = standin.read_bytes()

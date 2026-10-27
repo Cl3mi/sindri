@@ -352,9 +352,18 @@ def _cmd_ingest(args):
     out = check_client_dir_out(
         args.out, subdir="gold", legacy=_GOLD_DIR_SHAPES, subdir_itself=True,
         avoid=_inputs(args, "pdfs", "excel", "originals", "variants"))
-    claim_dir(out)
     pdfs = {p.stem: p for p in Path(args.pdfs).glob(_PDF_GLOB)}
     excels = {p.stem: p for p in Path(args.excel).glob("*.xlsx")}
+    if not set(pdfs) & set(excels):
+        # Before anything is written: an empty ingest would otherwise stamp
+        # the directory and rewrite doc_id_map.json as {}, erasing the
+        # hash-to-drawing trace of a populated gold dir. (Re-ingesting a
+        # REAL corpus over a populated dir stays allowed -- the operator's
+        # call, not a flag here.)
+        print("ERROR: no drawing/sheet pair found in --pdfs and --excel; "
+              "nothing was written", file=sys.stderr)
+        return 1
+    claim_dir(out)
     variants = set(Path(args.variants).read_text().split()) if args.variants else set()
     anon = _anon(args)
     unpaired = sorted(set(pdfs) ^ set(excels))

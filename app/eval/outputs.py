@@ -208,8 +208,12 @@ def check_client_dir_out(path, *, subdir: str, legacy: Sequence[str],
     well as into a direct child."""
     target = _target(path, "output directory", avoid)
     try:
-        if not (_in_subdir(target.parent, subdir)
-                or (subdir_itself and _in_subdir(target, subdir))):
+        # `<root>/<subdir>` itself (ingest's documented `--out <root>/gold`)
+        # holds the dirs a `--out <root>/gold/<name>` ingest claimed, so a
+        # subdirectory carrying OUR marker is allowed there -- only there,
+        # and never an unmarked one. Nothing is written into it.
+        is_subdir_itself = subdir_itself and _in_subdir(target, subdir)
+        if not (_in_subdir(target.parent, subdir) or is_subdir_itself):
             raise OutputRefused("this output holds client data; it may only be "
                                 "written directly under <protected root>/"
                                 f"{subdir}/")
@@ -223,6 +227,9 @@ def check_client_dir_out(path, *, subdir: str, legacy: Sequence[str],
             st = os.lstat(e)
             if work_dir and e.name == work_dir and stat.S_ISDIR(st.st_mode):
                 _scan_work_dir(e)
+                continue
+            if (is_subdir_itself and stat.S_ISDIR(st.st_mode)
+                    and _carries_marker(e / DIR_MARKER, DIR_KIND)):
                 continue
             if not _plain_file(st):
                 raise OutputRefused(_ENTRY_REFUSED)
