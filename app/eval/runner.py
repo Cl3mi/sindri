@@ -27,6 +27,7 @@ import fitz
 from pydantic import ValidationError
 
 from app.eval.anon import Anonymizer, salt_is_persistent
+from app.eval.errors import RunnerError
 from app.eval.balloons import probe_pdf, shape_report
 from app.eval.balloon_cv import cv_report
 from app.eval.dump import load_dump, save_dump
@@ -1093,7 +1094,9 @@ def _cmd_score(args):
                dumps[d].config.git_sha, dumps[d].config.prompt_sha256)
               for d in doc_ids}
     if len(configs) > 1:
-        raise ValueError(f"mixed configs in run dir: {sorted(configs)} — "
+        # Model ids, dpi, git sha, prompt hash: no client value, and the
+        # operator needs them to see which arm leaked in.
+        raise RunnerError(f"mixed configs in run dir: {sorted(configs)} — "
                          f"re-predict the full split with one config")
     config = dumps[doc_ids[0]].config
     report = aggregate(args.name, config, weights, params, scores,
@@ -1541,6 +1544,10 @@ def main(argv=None) -> int:
         # ProtectedRootsError (a broken roots file) is a ReviewRefused.
         print(f"ERROR: output refused: {e}", file=sys.stderr)
         return 1
+    except RunnerError as e:
+        # A deliberate message, safe by construction (app/eval/errors.py).
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
     except (ValidationError, json.JSONDecodeError, UnicodeDecodeError,
             OSError) as e:
         # An INPUT file that is missing, unreadable or not what this command
@@ -1551,6 +1558,13 @@ def main(argv=None) -> int:
         # intentional messages (mixed configs, ...) must survive.
         print(f"ERROR: could not read or parse an input file "
               f"({type(e).__name__})", file=sys.stderr)
+        return 1
+    except Exception as e:  # noqa: BLE001 -- the last resort, by design
+        # Anything else (PyMuPDF's FileDataError quoting the path, a
+        # ValueError quoting a sheet title, ...) is reported by TYPE only:
+        # this stderr is read by agents, and a library's text can be client
+        # data. KeyboardInterrupt/SystemExit are not Exceptions and pass.
+        print(f"ERROR: {args.cmd} failed ({type(e).__name__})", file=sys.stderr)
         return 1
 
 
