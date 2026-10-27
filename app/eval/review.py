@@ -493,25 +493,30 @@ def tally(deck: Dict, answers: Dict[str, Dict]) -> Dict:
     return out
 
 
-def check_tally_out(path) -> Path:
-    # Checked BEFORE resolving: resolving would follow a link at the name,
-    # and the atomic writer would then replace the link's target.
+def check_tally_out(path, avoid=()) -> Path:
+    """Class-A semantics (outputs.check_digest_out, review round 3): `.json`,
+    never a link (checked before resolving, or the atomic rename would
+    replace the link's target), never under .git/.claude, outside every
+    root, never an input (the deck), and replacing only a previous tally --
+    whose marker is its existing first key, the deck kind, unchanged."""
+    from app.eval.outputs import OutputRefused, check_digest_out
     try:
-        if Path(path).is_symlink():
-            raise ReviewRefused("the tally path is a symbolic link")
-        target = Path(path).resolve()
+        if inside_protected(path):
+            raise ReviewRefused(
+                "the tally is the output meant for the agent; inside a "
+                "protected root it could never be read -- write it under "
+                "docs/eval/")
     except (OSError, RuntimeError, ValueError):
         raise ReviewRefused("the tally path cannot be resolved") from None
-    if inside_protected(target):
-        raise ReviewRefused(
-            "the tally is the output meant for the agent; inside a protected "
-            "root it could never be read -- write it under docs/eval/")
-    return target
+    try:
+        return check_digest_out(path, KIND, avoid=avoid)
+    except OutputRefused as e:
+        raise ReviewRefused(f"the tally: {e}") from None
 
 
-def write_tally(path, t: Dict) -> Path:
+def write_tally(path, t: Dict, avoid=()) -> Path:
     from app.eval.outputs import DIGEST_FILE_MODE
-    target = check_tally_out(path)
+    target = check_tally_out(path, avoid=avoid)
     _write_through_the_one_writer(
         target, json.dumps(t, indent=1, ensure_ascii=False) + "\n",
         DIGEST_FILE_MODE)

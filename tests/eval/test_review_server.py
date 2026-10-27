@@ -131,6 +131,70 @@ def test_finish_writes_the_counts_only_tally(running):
     assert "SECRET" not in json.dumps(written)
 
 
+def test_finish_refuses_a_link_planted_after_start_and_spares_its_target(
+        running):
+    """Review round 3: Finish re-checks the tally path when it writes. A
+    link planted there after the app started must be refused, never
+    written through -- a mutation back to mkdir + write_text fails this."""
+    app, base, _, tmp_path = running
+    keep = tmp_path / "keep.json"
+    keep.write_text('{"keep": 1}')
+    tally = tmp_path / "docs" / "tally.json"
+    tally.parent.mkdir(exist_ok=True)
+    tally.symlink_to(keep)
+    with pytest.raises(urllib.error.HTTPError):
+        _post(f"{base}/api/finish?t={app.token}", {})
+    assert keep.read_text() == '{"keep": 1}' and tally.is_symlink()
+
+
+def test_finish_refuses_a_foreign_file_but_replaces_its_own_tally(running):
+    app, base, _, tmp_path = running
+    tally = tmp_path / "docs" / "tally.json"
+    _post(f"{base}/api/finish?t={app.token}", {})
+    _post(f"{base}/api/finish?t={app.token}", {})       # its own: replaced
+    tally.write_text('{"someone": "else"}')
+    with pytest.raises(urllib.error.HTTPError):
+        _post(f"{base}/api/finish?t={app.token}", {})
+    assert tally.read_text() == '{"someone": "else"}'
+
+
+def test_finish_goes_through_the_one_writer(running, monkeypatch):
+    from app.eval import outputs
+    app, base, _, tmp_path = running
+    calls = []
+    real = outputs.write_atomic
+
+    def spy(path, data, **kw):
+        calls.append(kw.get("mode"))
+        return real(path, data, **kw)
+    monkeypatch.setattr(outputs, "write_atomic", spy)
+    _post(f"{base}/api/finish?t={app.token}", {})
+    assert calls == [outputs.DIGEST_FILE_MODE]
+
+
+@pytest.mark.parametrize("bad", ["symlink", "foreign", "suffix", "dotgit"])
+def test_the_app_refuses_a_bad_tally_path_at_start(tmp_path, monkeypatch, bad):
+    """check_tally_out has class-A semantics: .json, never a link, never a
+    foreign file, never under .git/.claude, never the deck."""
+    root = tmp_path / "client"
+    root.mkdir()
+    _roots(tmp_path, monkeypatch, root)
+    deck = root / "reports" / "d.json"
+    write_deck(deck, build_deck(_rows3(), "r", "/o", "/s"))
+    keep = tmp_path / "keep.json"
+    keep.write_text("{}")
+    t = {"symlink": tmp_path / "t.json", "foreign": tmp_path / "f.json",
+         "suffix": tmp_path / "t.txt",
+         "dotgit": tmp_path / "repo" / ".git" / "t.json"}[bad]
+    if bad == "symlink":
+        t.symlink_to(keep)
+    if bad == "foreign":
+        t.write_text('{"x": 1}')
+    with pytest.raises(ReviewRefused):
+        ReviewApp(deck, t)
+    assert keep.read_text() == "{}"
+
+
 def test_the_app_refuses_a_tally_path_inside_a_protected_root(tmp_path,
                                                              monkeypatch):
     root = tmp_path / "client"
