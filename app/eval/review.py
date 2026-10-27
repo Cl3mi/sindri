@@ -321,8 +321,14 @@ def check_digest_path(path, avoid=()) -> Path:
     read, and an agent-picked path there could replace client data. Named
     `-grade.json`, distinct from the report's `.grade.json`."""
     from app.eval.campaign_grade import DIGEST_KIND
+    from app.eval.outputs import _FORBIDDEN_COMPONENTS
     target = _check_grade_output(path, "-grade.json", DIGEST_KIND, avoid,
                                  "grading digest")
+    # Class A's rule (review round 3), on the RESOLVED path, so a link
+    # named anything else that leads into .git still counts.
+    if _FORBIDDEN_COMPONENTS.intersection(target.parts):
+        raise ReviewRefused("the grading digest may not be written inside a "
+                            ".git or .claude directory")
     if inside_protected(target):
         raise ReviewRefused(
             "the grading digest is the output meant for the agent; it may "

@@ -534,6 +534,23 @@ def test_a_report_never_replaces_its_own_inputs(tmp_path, monkeypatch):
                           avoid=[root / "." / "pull.grade.json"])
 
 
+@pytest.mark.parametrize("parts", [(".git", "hooks", "x-grade.json"),
+                                   (".claude", "x-grade.json"),
+                                   ("repo", ".git", "x-grade.json")])
+def test_a_grading_digest_never_lands_in_git_or_claude_config(
+        tmp_path, monkeypatch, parts):
+    """Review round 3: the C2 digest is class A like every digest, so the
+    same .git/.claude component refusal applies -- through a link too."""
+    from app.eval.review import check_digest_path
+    _croot(tmp_path, monkeypatch)
+    with pytest.raises(ReviewRefused):
+        check_digest_path(tmp_path.joinpath(*parts))
+    (tmp_path / "repo" / ".git").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "innocent").symlink_to(tmp_path / "repo" / ".git")
+    with pytest.raises(ReviewRefused):
+        check_digest_path(tmp_path / "innocent" / "x-grade.json")
+
+
 def test_a_digest_goes_outside_the_root_named_grade_json(tmp_path, monkeypatch):
     from app.eval.review import check_digest_path
     root = _croot(tmp_path, monkeypatch)
