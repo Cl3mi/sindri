@@ -11,7 +11,7 @@
   (untracked root fixtures absent in a worktree) + 6 caused by an empty `/tmp/.git`
   (`test_share_select` x2, `test_campaign_build` x4; they fail identically on untouched main;
   `rmdir /tmp/.git` fixes them — it is the operator's directory, not deleted).
-- node 298/298; guard 32/0 (guard untouched).
+- node 298/298; guard 32/0 at the time (tightened afterwards: 41/0, see the guard plan).
 
 ## Milestones
 - A (outputs.py, RunReport.kind) + review round 1 (roots-file comment parsing blocker, parent

@@ -1,4 +1,4 @@
-# Guard: tighten the sanctioned-command shape (plan, NOT executed)
+# Guard: tighten the sanctioned-command shape -- DONE 2026-10-27 (41 cases; see the end note)
 
 Found by H1's branch-wide security review (2026-10-27). The Bash guard
 (`~/.claude/hooks/sindri-guard.py`, outside the repo) clears a command as
@@ -61,3 +61,19 @@ The agent can edit `app/eval/*.py` inside the repo and then run the sanctioned s
 so the CLI checks only constrain a MISTAKEN agent, not a malicious one. The repo-side
 defences are code review of the diff, the pre-commit hook, and the operator running
 anything that reads client PDFs. This plan closes the cheap bypass outside the repo.
+
+## End note: as built (2026-10-27)
+
+Operator approved with Decision A = yes (repo `.venv/bin/python` allowed) and B = one
+script. Built exactly the three rules above, plus one the plan missed: the Bash tool's
+cwd PERSISTS between calls, so a separate earlier `cd /tmp/scratch` made the bare
+`python -m app.eval.runner ...` shape import from the scratch directory. The hook payload
+carries `cwd`; a sanctioned command now also needs that cwd (and any `cd` target, with
+`$`/backticks refused and relative targets resolved against it) inside the repo. A payload
+with no `cwd` (the self-test's) keeps the old behaviour for that one check only.
+Test count is 41, not 37: the plan's list had seven cases, not five, and the cwd rule
+added two. Written red first (5 of the 9 failed: fake python, `./python`, cd scratch,
+fake setup script, cwd scratch), green after. The 32 original cases are unchanged; the
+diff of `sindri-guard.py` only adds AND-conditions and narrows two regexes (every path
+the new regex accepts matched the old one). Backups of both files before the change are
+in the session scratchpad.

@@ -45,7 +45,7 @@ advisory, and it has been right every single time it fired.
   `meta/`, `runs/<name>`, `gold`; see §2, "RUNNER OUTPUT FLAGS ARE HARDENED"). A
   refusal is a fixed sentence and exit 1 — fix the path, never the checker.
 * **Never widen the guard.** Re-verify after any change:
-  `bash ~/.claude/hooks/test-sindri-guard.sh` → `32 passed, 0 failed`.
+  `bash ~/.claude/hooks/test-sindri-guard.sh` → `41 passed, 0 failed`.
 
 ### Showing the client some drawings
 
@@ -388,9 +388,16 @@ exception text (it used to echo client file content). `tests/eval/
 test_runner_output_exploits.py` probes every flag; its completeness test fails when a
 new `--*out` flag is added without a probe. **Known limits:** the check-to-write
 race on parent dirs and `_work` (agent-only threat model); re-ingest over a populated
-gold dir is allowed. **Open, the operator's call:** the guard's `_RUNNER_RE` accepts a
-spoofed `python` path or a `cd X &&` prefix, which would bypass everything the CLI
-enforces — tighten it, never widen it.
+gold dir is allowed. **The guard's sanctioned shape was tightened too (2026-10-27,
+`docs/plans/2026-10-27-guard-runner-shape-tightening-plan.md`; guard self-test now 41
+cases):** the interpreter must be a bare `python`/`python3`, `/usr/{,local/}bin/python3`
+or the repo's `.venv/bin/python`; the setup script only `setup_client_data.py`,
+`./setup_client_data.py` or the repo's own path; and the hook payload's cwd and any
+`cd` target must be inside the repo, because `python -m` imports from the cwd first
+(the Bash tool's cwd persists between calls). An agent-written `python`, setup script
+or scratch directory used to run as "the reviewed CLI" and bypass every CLI check.
+**Inherent limit:** an agent can still edit `app/eval/*.py` inside the repo and run
+that; the defences there are code review, the pre-commit hook and the operator.
 
 **`read-lora-v1` IS NOW HARMFUL UNDER THE SHIPPED POLICY — deployment CLOSED**
 (2026-10-05, `docs/plans/2026-10-05-read-adapter-repricing-result.md`;
@@ -1183,7 +1190,7 @@ GPU days.
 
 ```bash
 python -m pytest -q                          # 1946 passed, 2 skipped
-bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
+bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 41 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```
 
