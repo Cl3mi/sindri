@@ -130,3 +130,47 @@ path. Plus: old report (no marker) loads and is refused as an overwrite target;
 no-roots mode passes the legitimate cases; the full suite and the guard (32/0, not
 widened) are re-run. A separate opus security reviewer re-checks after the
 implementer, and again after fixes.
+
+## 8. As built (2026-10-27) — where it differs from §3
+
+Code: `app/eval/outputs.py` (checkers + the ONE writer, `write_atomic`);
+probes: `tests/eval/test_runner_output_exploits.py` (no xfails).
+
+* **Roots file.** Parsed like the guard: `#` comments, `~` expands. A line
+  that is still relative, an unreadable/undecodable file, or an EXPLICIT
+  `SINDRI_PROTECTED_PATHS` naming no regular file fails closed
+  (`ProtectedRootsError`); only the default path may be absent. An empty
+  file means "no roots" (tests use one). Skipping the root rule prints one
+  stderr line per process.
+* **Class A** also refuses a resolved path with a `.git` or `.claude`
+  component, and a target inside an input directory. `review-tally` keeps
+  the tally's existing first key, the deck kind `gdt-char-type-only`, as
+  its marker (review-serve writes the same file).
+* **Class B** files are a direct child of `<root>/reports/` or `meta/`,
+  written 0600. The **review deck** and the **C2 grading report** follow
+  the same rule under `reports/` (the deck: `.json`, never overwritten;
+  both still refuse when no roots are configured).
+* **Class C.** predict/verify may hold one real `_work/` subdirectory,
+  scanned to any depth; any file with `st_nlink > 1`, link, special file or
+  other subdirectory refuses the dir. The legacy-name rule judges top-level
+  names only. Ingest may write `<root>/gold` itself (the documented layout)
+  or a direct child; in `<root>/gold` itself, subdirectories carrying our
+  `.sindri-output` marker are allowed. An ingest with no drawing/sheet pair
+  refuses before writing anything.
+* **score** refuses a `--*-out` digest flag whose check flag is absent.
+* **runner.main** prints OutputRefused/ReviewRefused as
+  `ERROR: output refused: <fixed sentence>`, and any ValidationError,
+  JSONDecodeError, UnicodeDecodeError or OSError from an input as
+  `ERROR: could not read or parse an input file (<TypeName>)` -- never the
+  exception text (pydantic quotes the input's content). ValueError is not
+  caught.
+
+**Accepted limitations** (agent-only threat model: an agent chooses paths
+on the command line and cannot race a running command):
+1. Check-to-write race on parent directories: `write_atomic` re-resolves
+   the approved parent before creating the partial and before the rename,
+   which narrows but does not close it (that would need dir fds).
+2. `_work/` is scanned at start-up only; the renderer writes into it with
+   ordinary writes afterwards.
+3. Re-ingesting a real corpus over a populated gold dir is allowed (no
+   `--replace` flag); whether to keep it so is the operator's decision.

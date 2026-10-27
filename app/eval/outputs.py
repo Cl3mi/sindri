@@ -177,7 +177,13 @@ def _plain_file(st) -> bool:
 def _scan_work_dir(work: Path) -> None:
     """Everything under the work dir: real directories and single-named
     regular files only, at any depth. Not followed through links: a link
-    anywhere is itself the refusal."""
+    anywhere is itself the refusal.
+
+    ACCEPTED LIMITATION (design §8): this is a check at start-up. The
+    renderer then writes into _work/<doc>/ with ordinary file writes, so a
+    link planted there AFTER the scan is not seen. The threat model is an
+    agent choosing paths on the command line, which cannot race a running
+    command; the parent-dir race in write_atomic is the same trade."""
     for dirpath, dirnames, filenames in os.walk(work, followlinks=False,
                                                 onerror=_raise):
         for name in dirnames + filenames:
