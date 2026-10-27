@@ -18,14 +18,15 @@ import sys
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from app.eval.review import (ProtectedRootsError, _carries_marker,
-                             _protected_roots, inside_protected)
+from app.eval.review import _carries_marker, _protected_roots, inside_protected
 
 # What a check may raise that must become a fixed refusal: a filesystem
-# error, a path the OS rejects outright (ValueError: an embedded NUL byte),
-# or a roots file that cannot be trusted (which fails CLOSED -- it is never
-# read as "no roots").
-_CHECK_ERRORS = (OSError, ValueError, ProtectedRootsError)
+# error, or a path the OS rejects outright (ValueError: an embedded NUL
+# byte). A broken roots file (ProtectedRootsError) is deliberately NOT here:
+# it already is a fixed sentence and fails closed, and folding it into
+# "cannot be checked" hid the one thing the operator must fix (review round
+# 3). It propagates to runner.main, which prints it as a refusal.
+_CHECK_ERRORS = (OSError, ValueError)
 
 # Client values (class B/C) are readable by their owner only; a digest is
 # counts-only and meant to be shared, so it keeps the usual mode.

@@ -88,7 +88,7 @@ def test_a_relative_line_is_a_config_error_that_fails_closed(tmp_path, monkeypat
                                           subdir="reports", suffix=".report.json"),
             lambda: outputs.check_client_dir_out(tmp_path / "r", subdir="runs",
                                                  legacy=("*.pred.json",))):
-        with pytest.raises(OutputRefused) as e:
+        with pytest.raises(ProtectedRootsError) as e:
             call()
         assert str(tmp_path) not in str(e.value)
 
@@ -99,7 +99,7 @@ def test_an_undecodable_roots_file_fails_closed(tmp_path, monkeypatch):
     monkeypatch.setenv("SINDRI_PROTECTED_PATHS", str(f))
     with pytest.raises(ProtectedRootsError):
         _protected_roots()
-    with pytest.raises(OutputRefused):
+    with pytest.raises(ProtectedRootsError):
         check_digest_out(tmp_path / "d.json", "run-summary-digest")
 
 
@@ -130,9 +130,39 @@ def test_an_explicit_override_that_is_not_a_file_fails_closed(
     with pytest.raises(ProtectedRootsError) as e:
         _protected_roots()
     assert str(tmp_path) not in str(e.value)
-    with pytest.raises(OutputRefused):
+    with pytest.raises(ProtectedRootsError):
         check_client_file_out(tmp_path / "a.report.json", subdir="reports",
                               suffix=".report.json")
+
+
+def test_the_operator_sees_the_roots_sentence_not_cannot_be_checked(
+        tmp_path, monkeypatch, capsys):
+    """Review round 3: the checkers' generic catch turned a broken roots
+    file into 'the digest path cannot be checked', hiding the actual fix.
+    It now reaches main() as itself."""
+    from app.eval import runner
+    from tests.eval.test_runner_output_hardening import _report
+    reports_root = tmp_path / "client"
+    (reports_root / "reports").mkdir(parents=True)
+    good = tmp_path / "good-roots"
+    good.write_text(f"{reports_root}\n")
+    monkeypatch.setenv("SINDRI_PROTECTED_PATHS", str(good))
+    report = _report(tmp_path, reports_root)
+    broken = tmp_path / "roots-dir"
+    broken.mkdir()
+    monkeypatch.setenv("SINDRI_PROTECTED_PATHS", str(broken))
+    capsys.readouterr()
+    for mk in (lambda: check_digest_out(tmp_path / "d.json", "k"),
+               lambda: check_client_file_out(tmp_path / "a.report.json",
+                                             subdir="reports",
+                                             suffix=".report.json")):
+        with pytest.raises(ProtectedRootsError):
+            mk()
+    assert runner.main(["summary", str(report),
+                        "--out", str(tmp_path / "d.json")]) == 1
+    err = capsys.readouterr().err
+    assert "protected-roots file cannot be used" in err
+    assert "cannot be checked" not in err and str(tmp_path) not in err
 
 
 def test_an_empty_roots_file_means_no_roots(tmp_path, monkeypatch):

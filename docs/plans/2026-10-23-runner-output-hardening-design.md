@@ -159,11 +159,17 @@ probes: `tests/eval/test_runner_output_exploits.py` (no xfails).
   refuses before writing anything.
 * **score** refuses a `--*-out` digest flag whose check flag is absent.
 * **runner.main** prints OutputRefused/ReviewRefused as
-  `ERROR: output refused: <fixed sentence>`, and any ValidationError,
-  JSONDecodeError, UnicodeDecodeError or OSError from an input as
-  `ERROR: could not read or parse an input file (<TypeName>)` -- never the
-  exception text (pydantic quotes the input's content). ValueError is not
-  caught.
+  `ERROR: output refused: <fixed sentence>` (a broken roots file shows its
+  own sentence, never "cannot be checked"); a deliberate `RunnerError`
+  (`app/eval/errors.py`, e.g. "mixed configs") as `ERROR: <message>`; any
+  ValidationError, JSONDecodeError, UnicodeDecodeError or OSError from an
+  input as `ERROR: could not read or parse an input file (<TypeName>)`; and
+  ANY other exception as `ERROR: <subcommand> failed (<TypeName>)` -- never
+  the exception text (pydantic quotes the input, PyMuPDF quotes the path,
+  excel_gold quotes the sheet title).
+* **Tally** (review-tally and review-serve's Finish): class-A rules incl.
+  `.git`/`.claude`, the deck as an input. The **C2 grading digest** also
+  refuses `.git`/`.claude`.
 
 **Accepted limitations** (agent-only threat model: an agent chooses paths
 on the command line and cannot race a running command):
