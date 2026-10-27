@@ -156,7 +156,8 @@ counts-only digest for agents, an operator-only drill-down). The next work is
    BEFORE pushing.
 2. Start the hardening below (the operator already said yes: "plan it next").
 
-### 3.2 HARDENING — H1 (IMPORTANT, pre-existing, found by the C2 security reviews)
+### 3.2 HARDENING — H1 — **DONE 2026-10-27** (branch `feature/runner-output-hardening`; design/plan/state in `docs/plans/2026-10-23-runner-output-hardening-*`; the text below is the original brief, kept for context. What was built, and the one open guard item, is in CLAUDE.md §2 "RUNNER OUTPUT FLAGS ARE HARDENED")
+(IMPORTANT, pre-existing, found by the C2 security reviews)
 **The hole:** the guard allowlists `python -m app.eval.runner
 <probe|headers|ingest|split|predict|score|compare|summary|variants>`, but several of
 those subcommands write to ANY path the caller gives with no suffix, symlink or
