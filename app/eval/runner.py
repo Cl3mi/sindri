@@ -24,12 +24,19 @@ from pathlib import Path
 
 import fitz
 
+from pydantic import ValidationError
+
 from app.eval.anon import Anonymizer, salt_is_persistent
+from app.eval.errors import RunnerError
 from app.eval.balloons import probe_pdf, shape_report
 from app.eval.balloon_cv import cv_report
 from app.eval.dump import load_dump, save_dump
 from app.eval.excel_gold import dump_headers, sheet_vocabulary
 from app.eval.ingest import build_gold_doc
+from app.eval.outputs import (CLIENT_FILE_MODE, OutputRefused,
+                              check_client_dir_out, check_client_file_out,
+                              check_digest_out, claim_dir, prepare_parent,
+                              write_atomic, write_json_digest)
 from app.eval.models import (GoldDoc, MatchParams, PredictionDump,
                              ReviewCostWeights, RunConfig, RunReport)
 from app.eval.report import aggregate, compare_runs, per_doc_rows, summarize
@@ -235,6 +242,10 @@ def _atypical_traits(rec) -> list:
 
 
 def _cmd_variants(args):
+    # Part numbers, and the split is built from them: directly under
+    # <root>/meta/, never overwriting an existing list.
+    out = check_client_file_out(args.out, subdir="meta", suffix=".txt",
+                                avoid=_inputs(args, "pdfs"))
     anon = _anon(args)
     scored, trait_counts = [], {}
     for pdf in sorted(Path(args.dir if hasattr(args, "dir") else args.pdfs)
@@ -250,10 +261,8 @@ def _cmd_variants(args):
     limit = args.limit if args.limit is not None else max(1, len(scored))
     chosen = scored[:limit]
 
-    out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text("\n".join(stem for _, stem, _ in chosen) + "\n",
-                   encoding="utf-8")
+    _write_checked(out, "\n".join(stem for _, stem, _ in chosen) + "\n",
+                   CLIENT_FILE_MODE)
 
     n_docs = len(list(Path(args.pdfs).glob(_PDF_GLOB)))
     print(json.dumps({
@@ -328,11 +337,34 @@ def _cmd_headers(args):
     return 0
 
 
+# What a class-C directory written before H1 holds, by tool: such a dir
+# carries no .sindri-output marker but is still ours (predict resume on the
+# GPU host depends on it). Top-level names only.
+_GOLD_DIR_SHAPES = ("*.gold.json", "doc_id_map.json")
+_RUN_DIR_SHAPES = ("*.pred.json", ".complete")
+# predict/verify render into <out>/_work/<doc>/ and never remove it.
+_WORK_DIR = "_work"
+
+
 def _cmd_ingest(args):
+    # Checked and claimed before anything is read: gold holds client values,
+    # so the dir is <root>/gold itself or a direct child of it, and it is
+    # absent, empty, ours, or a pre-H1 ingest.
+    out = check_client_dir_out(
+        args.out, subdir="gold", legacy=_GOLD_DIR_SHAPES, subdir_itself=True,
+        avoid=_inputs(args, "pdfs", "excel", "originals", "variants"))
     pdfs = {p.stem: p for p in Path(args.pdfs).glob(_PDF_GLOB)}
     excels = {p.stem: p for p in Path(args.excel).glob("*.xlsx")}
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
+    if not set(pdfs) & set(excels):
+        # Before anything is written: an empty ingest would otherwise stamp
+        # the directory and rewrite doc_id_map.json as {}, erasing the
+        # hash-to-drawing trace of a populated gold dir. (Re-ingesting a
+        # REAL corpus over a populated dir stays allowed -- the operator's
+        # call, not a flag here.)
+        print("ERROR: no drawing/sheet pair found in --pdfs and --excel; "
+              "nothing was written", file=sys.stderr)
+        return 1
+    claim_dir(out)
     variants = set(Path(args.variants).read_text().split()) if args.variants else set()
     anon = _anon(args)
     unpaired = sorted(set(pdfs) ^ set(excels))
@@ -358,15 +390,16 @@ def _cmd_ingest(args):
                               is_variant=stem in variants, use_cv=args.cv,
                               target_pdf=originals.get(stem),
                               require_target=bool(originals))
-        (out / f"{stem}.gold.json").write_text(gold.model_dump_json(indent=1),
-                                               encoding="utf-8")
+        write_atomic(out / f"{stem}.gold.json", gold.model_dump_json(indent=1),
+                     mode=CLIENT_FILE_MODE, expect_parent=out)
         provenance.append(gold.provenance)
         if gold.provenance["join_rate"] < 0.95:
             low_join.append((anon(stem), gold.provenance["join_rate"]))
     # Local-only trace file so a human can map a hash back to a drawing. Never
     # committed (gitignored + blocked by .git/hooks/pre-commit).
-    (out / "doc_id_map.json").write_text(
-        json.dumps(anon.mapping(paired), indent=1), encoding="utf-8")
+    write_atomic(out / "doc_id_map.json",
+                 json.dumps(anon.mapping(paired), indent=1),
+                 mode=CLIENT_FILE_MODE, expect_parent=out)
     if args.summary:
         print(json.dumps(_ingest_summary(provenance), indent=1,
                          ensure_ascii=False))
@@ -427,10 +460,15 @@ def _load_gold_dir(gold_dir):
 
 
 def _cmd_split(args):
+    # The split is FROZEN (6d174d5e4f1b9228) and lists part numbers: it goes
+    # only directly under <root>/meta/, and kind=None means an existing file
+    # is never replaced -- re-splitting is a deliberate act of moving it.
+    target = check_client_file_out(args.out, subdir="meta", suffix=".json",
+                                   avoid=_inputs(args, "gold"))
     gold = _load_gold_dir(args.gold)
     variants = [d for d, g in gold.items() if g.is_variant]
     splits = make_splits(sorted(gold), variants, seed=args.seed)
-    path = save_splits(splits, args.out)
+    path = save_splits(splits, target, expect_parent=target.parent)
     # The hash is the committable proof that a split is frozen: every report
     # embeds it, and compare refuses runs whose splits differ. The file itself
     # lists part numbers and stays outside the repo.
@@ -534,6 +572,13 @@ def _cmd_verify(args):
 
 def _cmd_predict(args):
     import os
+    # Before the backend loads (minutes, on the GPU host): the run dir holds
+    # client values, so it is a direct child of <root>/runs/ and absent,
+    # empty, ours, or a pre-H1 run -- and claimed before the first dump.
+    out = check_client_dir_out(args.out, subdir="runs", legacy=_RUN_DIR_SHAPES,
+                               work_dir=_WORK_DIR,
+                               avoid=_inputs(args, "pdfs", "splits"))
+    claim_dir(out)
     from app.pipeline.ocr import get_backend
     backend = get_backend()
     config = RunConfig(
@@ -550,7 +595,6 @@ def _cmd_predict(args):
               "Read per-document facts from `runner summary` instead.",
               file=sys.stderr)
     anon = _anon(args)
-    out = Path(args.out)
     predicted = skipped = 0
     failures, effective_dpi = [], {}
     for i, doc_id in enumerate(doc_ids, 1):
@@ -563,7 +607,7 @@ def _cmd_predict(args):
             continue
         try:
             dump = predict_one(pdfs[doc_id], doc_id, args.dpi, backend, config,
-                               out / "_work",
+                               out / _WORK_DIR,
                                detect_only=getattr(args, "detect_only", False))
         except Exception as e:
             # One unreadable drawing must cost one document, not the run. The
@@ -573,7 +617,7 @@ def _cmd_predict(args):
             failures.append({"doc": anon(doc_id), "error": type(e).__name__})
             print(f"{tag} FAILED {type(e).__name__}", file=sys.stderr)
             continue
-        save_dump(dump, out)
+        save_dump(dump, out, expect_parent=out)
         predicted += 1
         effective_dpi[doc_id] = dump.scale * 72.0
         print(f"{tag} dpi={dump.scale * 72.0:.0f}", file=sys.stderr)
@@ -644,27 +688,51 @@ _NOT_WITH_REVIEWER_GRADE = (
     ("assignment", "greedy"), ("reconcile_frames", "none"), ("dpi", 300))
 
 
-def _write_atomic(target: Path, text: str, mode: int) -> None:
-    """<name>.partial, fsync, rename: a crash never leaves a half report that
-    reads as a whole one. The partial is created O_EXCL, so a link planted
-    under its name is refused rather than followed; on failure it is removed."""
-    import os
-    partial = target.with_name(target.name + ".partial")
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        partial.unlink(missing_ok=True)     # a stale partial, or a planted link
-        fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(partial, target)
-    except OSError:
-        try:
-            partial.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
+def _write_checked(target: Path, text: str, mode: int) -> None:
+    """Write a checker-approved file target through THE atomic writer
+    (outputs.write_atomic: partial, fsync, rename; a link at the partial
+    name refused, the approved parent re-checked before the rename), after
+    creating its parent if needed. Raises OutputRefused only."""
+    from app.eval.outputs import prepare_parent, write_atomic
+    prepare_parent(target)
+    write_atomic(target, text, mode=mode, expect_parent=target.parent)
+
+
+# Class A (counts-only digest) flags of `score`, with the kind marker each
+# digest carries as its first key. A re-run may replace only a file that
+# carries the same kind (outputs.check_digest_out).
+_SCORE_DIGEST_FLAGS = (("policy_out", "policy-check-digest"),
+                       ("gentol_out", "gentol-check-digest"),
+                       ("phantom_out", "phantom-profile-digest"),
+                       ("drop_out", "drop-check-digest"))
+# The flag that fills each of those digests, in the same order.
+_SCORE_DIGEST_NEEDS = (("--policy-out", "policy_check", "--policy-check"),
+                       ("--gentol-out", "gentol_check", "--gentol-check"),
+                       ("--phantom-out", "phantom_profile", "--phantom-profile"),
+                       ("--drop-out", "drop_check", "--drop-check"))
+
+
+def _inputs(args, *names):
+    """The run's inputs named on the command line, for a checker's `avoid`:
+    an output may never be one of them, nor (for a directory) inside one."""
+    return [getattr(args, n, None) for n in names]
+
+
+def _check_score_digests(args) -> dict:
+    """Every --*-out digest of a plain score, checked BEFORE anything is
+    loaded or scored: a bad path fails in seconds, holding no client value.
+    Each also avoids the others, so two flags cannot share one file."""
+    from app.eval.outputs import check_digest_out
+    given = {a: getattr(args, a, None) for a, _ in _SCORE_DIGEST_FLAGS}
+    targets = {}
+    for attr, kind in _SCORE_DIGEST_FLAGS:
+        if given[attr]:
+            others = [p for a, p in given.items() if a != attr]
+            targets[attr] = check_digest_out(
+                given[attr], kind,
+                avoid=_inputs(args, "run", "out", "gold", "splits", "weights",
+                              "pdfs", "manifest", "review_deck") + others)
+    return targets
 
 
 def _cmd_reviewer_grade(args):
@@ -703,17 +771,20 @@ def _cmd_reviewer_grade(args):
     # PermissionError's text IS the path -- so it is caught here, by type,
     # and never printed. ReviewRefused messages are our own fixed words.
     try:
-        out = check_report_path(args.out, avoid=[args.reviewer_grade, args.manifest])
+        # --gold is an input DIRECTORY: neither output may be inside it
+        # (review round 2); the pull may be a directory too.
+        inputs = [args.reviewer_grade, args.manifest, args.gold]
+        out = check_report_path(args.out, avoid=inputs)
         grade_out = None
         if args.grade_out:
             try:
-                grade_out = check_digest_path(
-                    args.grade_out, avoid=[args.out, args.reviewer_grade, args.manifest])
+                grade_out = check_digest_path(args.grade_out,
+                                              avoid=[args.out] + inputs)
             except ReviewRefused as e:
                 return fail(f"--grade-out refused: {e}")
     except ReviewRefused as e:
         return fail(f"--out refused: {e}")
-    except (OSError, RuntimeError):     # RuntimeError: a symlink loop in resolve()
+    except (OSError, RuntimeError, ValueError):  # a symlink loop; a NUL byte
         return fail("output path refused")
     try:
         # A fresh salt would hash no gold id to any record's hash: every join
@@ -751,15 +822,18 @@ def _cmd_reviewer_grade(args):
             return fail("--manifest: bad roles/pool")
         # Report first, digest second: a digest whose report failed to write
         # could never be checked against it.
+        from app.eval.outputs import (CLIENT_FILE_MODE, DIGEST_FILE_MODE,
+                                      OutputRefused)
         try:
-            _write_atomic(out, json.dumps(report, indent=1, ensure_ascii=False),
-                          0o600)
-        except OSError:
+            _write_checked(out, json.dumps(report, indent=1, ensure_ascii=False),
+                           CLIENT_FILE_MODE)
+        except OutputRefused:
             return fail("--out: the report could not be written")
         if grade_out is not None:
             try:
-                _write_atomic(grade_out, json.dumps(digest, indent=1) + "\n", 0o644)
-            except OSError:
+                _write_checked(grade_out, json.dumps(digest, indent=1) + "\n",
+                               DIGEST_FILE_MODE)
+            except OutputRefused:
                 return fail("--grade-out: the digest could not be written")
         s = digest["drawings"]
         nir = "n/a" if s["not_in_records"] is None else s["not_in_records"]
@@ -803,6 +877,23 @@ def _cmd_score(args):
         print("ERROR: --run is required (except with --reviewer-grade)",
               file=sys.stderr)
         return 1
+    # A digest flag without the check that fills it used to be silently
+    # ignored, which reads as if a digest had been written -- the same trap
+    # as --manifest without --reviewer-grade, refused just above.
+    for (out_attr, _), (out_flag, check_attr, check_flag) in zip(
+            _SCORE_DIGEST_FLAGS, _SCORE_DIGEST_NEEDS):
+        if getattr(args, out_attr, None) and not getattr(args, check_attr, False):
+            print(f"ERROR: {out_flag} needs {check_flag}", file=sys.stderr)
+            return 1
+    # Output paths first (H1): OutputRefused propagates to main(), which
+    # prints its fixed sentence and exits 1. The report holds client values:
+    # directly under <root>/reports/, replacing only a previous run report.
+    report_target = check_client_file_out(
+        args.out, subdir="reports", suffix=".report.json", kind="run-report",
+        avoid=_inputs(args, "run", "gold", "splits", "weights", "pdfs",
+                      "review_deck") + [p for a, _ in _SCORE_DIGEST_FLAGS
+                                        if (p := getattr(args, a, None))])
+    digest_targets = _check_score_digests(args)
     if getattr(args, "reapply_policy", False) and getattr(args, "policy_check", False):
         # --reapply-policy re-parses and re-flags every dump under the ACTIVE
         # rules before scoring, so --policy-check would then price a rule on
@@ -850,8 +941,11 @@ def _cmd_score(args):
                   "cut from the drawings, and --pdfs is where they are",
                   file=sys.stderr)
             return 1
+        deck_avoid = (_inputs(args, "run", "out", "gold", "splits", "weights",
+                              "pdfs", "manifest", "reviewer_grade")
+                      + [getattr(args, a, None) for a, _ in _SCORE_DIGEST_FLAGS])
         try:
-            check_deck_path(deck_out)
+            check_deck_path(deck_out, avoid=deck_avoid)
         except ReviewRefused as e:
             print(f"ERROR: --review-deck refused: {e}", file=sys.stderr)
             return 1
@@ -1000,7 +1094,9 @@ def _cmd_score(args):
                dumps[d].config.git_sha, dumps[d].config.prompt_sha256)
               for d in doc_ids}
     if len(configs) > 1:
-        raise ValueError(f"mixed configs in run dir: {sorted(configs)} — "
+        # Model ids, dpi, git sha, prompt hash: no client value, and the
+        # operator needs them to see which arm leaked in.
+        raise RunnerError(f"mixed configs in run dir: {sorted(configs)} — "
                          f"re-predict the full split with one config")
     config = dumps[doc_ids[0]].config
     report = aggregate(args.name, config, weights, params, scores,
@@ -1009,9 +1105,8 @@ def _cmd_score(args):
                        exclude_clamped=getattr(args, "exclude_clamped", False),
                        missing_dumps=len(missing_preds))
     report.reapplied_policy = reapplied
-    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.out).write_text(report.model_dump_json(indent=1),
-                              encoding="utf-8")
+    _write_checked(report_target, report.model_dump_json(indent=1),
+                   CLIENT_FILE_MODE)
     print(f"{args.name}: docs={len(scores)} "
           f"mean_review_cost={report.mean_review_cost:.2f} "
           f"recall={report.micro_recall:.3f} "
@@ -1029,9 +1124,9 @@ def _cmd_score(args):
         from app.eval.policy_check import policy_report
         pr = policy_report(dumps, gold, doc_ids, weights, params, joint=joint)
         blob = json.dumps(pr, indent=1)
-        if args.policy_out:
-            Path(args.policy_out).parent.mkdir(parents=True, exist_ok=True)
-            Path(args.policy_out).write_text(blob, encoding="utf-8")
+        if "policy_out" in digest_targets:
+            write_json_digest(digest_targets["policy_out"],
+                              "policy-check-digest", pr)
         print(blob)
     # The general-tolerance gate (registration 2026-10-05 §4): counts and
     # salted ids only, to a file, because '>' redirects are denied.
@@ -1039,10 +1134,9 @@ def _cmd_score(args):
         from app.eval.gentol_check import gentol_report
         gr = gentol_report(original_dumps, gold, doc_ids, weights, params,
                            anonymizer=_anon(args))
-        blob = json.dumps(gr, indent=1)
-        if args.gentol_out:
-            Path(args.gentol_out).parent.mkdir(parents=True, exist_ok=True)
-            Path(args.gentol_out).write_text(blob, encoding="utf-8")
+        if "gentol_out" in digest_targets:
+            write_json_digest(digest_targets["gentol_out"],
+                              "gentol-check-digest", gr)
         print(f"gentol-check: would_fix={gr['would_fix']} "
               f"would_break={gr['would_break']} "
               f"gate={gr['verdict']} reconciles={gr['reconciles']}")
@@ -1053,10 +1147,9 @@ def _cmd_score(args):
     if getattr(args, "phantom_profile", False):
         from app.eval.phantom_profile import phantom_profile
         pp = phantom_profile(dumps, scores, doc_ids)
-        blob = json.dumps(pp, indent=1)
-        if args.phantom_out:
-            Path(args.phantom_out).parent.mkdir(parents=True, exist_ok=True)
-            Path(args.phantom_out).write_text(blob, encoding="utf-8")
+        if "phantom_out" in digest_targets:
+            write_json_digest(digest_targets["phantom_out"],
+                              "phantom-profile-digest", pp)
         t = pp["totals"]
         print(f"phantom-profile: delivered={t['delivered']} "
               f"correct={t['correct']} escaped={t['escaped']} "
@@ -1068,10 +1161,9 @@ def _cmd_score(args):
         from app.eval.drop_check import drop_report
         dr = drop_report(original_dumps, gold, doc_ids, weights, params,
                          configs=drop_configs, family=args.drop_family)
-        blob = json.dumps(dr, indent=1)
-        if args.drop_out:
-            Path(args.drop_out).parent.mkdir(parents=True, exist_ok=True)
-            Path(args.drop_out).write_text(blob, encoding="utf-8")
+        if "drop_out" in digest_targets:
+            write_json_digest(digest_targets["drop_out"],
+                              "drop-check-digest", dr)
         print(f"drop-check: control delivered_precision="
               f"{dr['control']['delivered_precision']} selected={dr['selected']}")
     # The review deck holds client text, so it goes to a file inside a
@@ -1082,7 +1174,8 @@ def _cmd_score(args):
         pdfs = Path(args.pdfs)
         n = write_deck(deck_out, build_deck(
             collect_gdt_rows(dumps, gold, scores), args.name,
-            originals_dir=pdfs, stamped_dir=pdfs.parent / "stamped"))
+            originals_dir=pdfs, stamped_dir=pdfs.parent / "stamped"),
+            avoid=deck_avoid)
         print(f"review deck: {n} row(s) for a human reviewer. It contains "
               f"client data -- the operator opens it with review-serve, "
               f"never an agent.")
@@ -1094,13 +1187,19 @@ def _cmd_review_tally(args):
     not in the agent guard's allowlist -- the deck lives in a protected root.
     Its output is closed-vocabulary counts only, so it is the one thing from
     the review that may be shared or committed."""
-    from app.eval.review import (ReviewRefused, load_answers, load_deck,
-                                 tally, write_tally)
+    from app.eval.review import (KIND, ReviewRefused, load_answers, load_deck,
+                                 tally)
     try:
+        # The tally's first key is already `"kind": <the deck's kind>` (load_deck
+        # refuses any other), and review-serve's Finish writes the same file;
+        # that kind is therefore its marker, so the two may replace each
+        # other's output and nothing else.
+        target = (check_digest_out(args.out, KIND, avoid=_inputs(args, "deck"))
+                  if args.out else None)
         deck = load_deck(args.deck)
         t = tally(deck, load_answers(args.deck, deck))
-        if args.out:
-            write_tally(args.out, t)
+        if target is not None:
+            write_json_digest(target, KIND, t)
     except ReviewRefused as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 1
@@ -1134,6 +1233,9 @@ def _cmd_campaign_deck(args):
 
 
 def _cmd_compare(args):
+    target = (check_digest_out(args.out, "run-comparison-digest",
+                               avoid=_inputs(args, "report_a", "report_b"))
+              if args.out else None)
     a = RunReport.model_validate_json(Path(args.report_a).read_text())
     b = RunReport.model_validate_json(Path(args.report_b).read_text())
     # Built BEFORE the comparison: compare_runs raises on incomparability, and
@@ -1146,8 +1248,8 @@ def _cmd_compare(args):
         return 1
     cmp["per_doc_deltas"] = {anon(k): v for k, v in cmp["per_doc_deltas"].items()}
     out = json.dumps(cmp, indent=1, ensure_ascii=False)
-    if args.out:
-        Path(args.out).write_text(out, encoding="utf-8")
+    if target is not None:
+        write_json_digest(target, "run-comparison-digest", cmp)
     print(out)
     for w in cmp["warnings"]:
         print(f"WARNING: {w}", file=sys.stderr)
@@ -1157,6 +1259,9 @@ def _cmd_compare(args):
 def _cmd_summary(args):
     """The ONLY sanctioned way to look at a run: aggregate metrics, hashed ids,
     no client values. Safe to show an AI agent, commit, or paste in a ticket."""
+    target = (check_digest_out(args.out, "run-summary-digest",
+                               avoid=_inputs(args, "report"))
+              if args.out else None)
     report = RunReport.model_validate_json(
         Path(args.report).read_text(encoding="utf-8"))
     anon = _anon(args)
@@ -1164,9 +1269,8 @@ def _cmd_summary(args):
     if args.per_doc:
         digest["per_doc"] = per_doc_rows(report, anon)
     out = json.dumps(digest, indent=1, ensure_ascii=False)
-    if args.out:
-        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.out).write_text(out, encoding="utf-8")
+    if target is not None:
+        write_json_digest(target, "run-summary-digest", digest)
     print(out)
     return 0
 
@@ -1431,7 +1535,37 @@ def main(argv=None) -> int:
     p.set_defaults(fn=_cmd_compare)
 
     args = ap.parse_args(argv)
-    return args.fn(args)
+    from app.eval.review import ReviewRefused
+    try:
+        return args.fn(args)
+    except (OutputRefused, ReviewRefused) as e:
+        # Fixed sentences by construction (outputs.py, review.py): no path,
+        # no value, no traceback -- this stderr is read by agents. A
+        # ProtectedRootsError (a broken roots file) is a ReviewRefused.
+        print(f"ERROR: output refused: {e}", file=sys.stderr)
+        return 1
+    except RunnerError as e:
+        # A deliberate message, safe by construction (app/eval/errors.py).
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+    except (ValidationError, json.JSONDecodeError, UnicodeDecodeError,
+            OSError) as e:
+        # An INPUT file that is missing, unreadable or not what this command
+        # reads. Never str(e): a pydantic ValidationError quotes the
+        # offending input_value, so `summary <a gold file>` used to print
+        # the head and tail of client data; an OSError's text is the path.
+        # The type name alone. ValueError is deliberately NOT caught: the
+        # intentional messages (mixed configs, ...) must survive.
+        print(f"ERROR: could not read or parse an input file "
+              f"({type(e).__name__})", file=sys.stderr)
+        return 1
+    except Exception as e:  # noqa: BLE001 -- the last resort, by design
+        # Anything else (PyMuPDF's FileDataError quoting the path, a
+        # ValueError quoting a sheet title, ...) is reported by TYPE only:
+        # this stderr is read by agents, and a library's text can be client
+        # data. KeyboardInterrupt/SystemExit are not Exceptions and pass.
+        print(f"ERROR: {args.cmd} failed ({type(e).__name__})", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

@@ -32,10 +32,19 @@ def splits_hash(splits: Dict) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
-def save_splits(splits: Dict, path) -> Path:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(splits, indent=1), encoding="utf-8")
+def save_splits(splits: Dict, path, expect_parent=None) -> Path:
+    """Atomically, owner-only (it lists part numbers): a crash never leaves
+    half a split, and a link at the name is replaced, never written
+    through. `split --out` checks the path first (outputs.
+    check_client_file_out, which never lets an existing split be replaced)
+    and passes the parent it approved as `expect_parent`."""
+    from app.eval.outputs import CLIENT_FILE_MODE, prepare_parent, write_atomic
+    # The PARENT resolved (prepare_parent judges resolved paths), never the
+    # name itself: resolving that would follow a link planted there.
+    path = Path(path).parent.resolve() / Path(path).name
+    prepare_parent(path)
+    write_atomic(path, json.dumps(splits, indent=1), mode=CLIENT_FILE_MODE,
+                 expect_parent=expect_parent)
     return path
 
 

@@ -34,7 +34,7 @@ class ReviewApp:
                 "the deck must be inside a protected root")
         self.deck = review.load_deck(self.deck_path)
         review.load_answers(self.deck_path, self.deck)   # fail fast on mismatch
-        self.tally_out = review.check_tally_out(tally_out)
+        self.tally_out = review.check_tally_out(tally_out, avoid=[self.deck_path])
         self.token = secrets.token_urlsafe(18)
         self.rows = {r["id"]: r for r in self.deck["rows"]}
         self.approx = {d: self._unmappable(d)
@@ -158,7 +158,7 @@ def make_handler(app: ReviewApp):
                 elif path == "/api/finish":
                     t = review.tally(app.deck, review.load_answers(
                         app.deck_path, app.deck))
-                    review.write_tally(app.tally_out, t)
+                    review.write_tally(app.tally_out, t, avoid=[app.deck_path])
                     self._json(200, {"tally": t,
                                      "written_to": str(app.tally_out)})
                 else:

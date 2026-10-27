@@ -28,7 +28,7 @@ import pytest
 from app.eval.models import (GoldCharacteristic, GoldDoc, MatchParams,
                              PredictionDump, ReviewCostWeights, RunConfig)
 from app.eval.review import (KIND, ReviewRefused, build_deck, collect_gdt_rows,
-                             deck_sha, load_deck, write_deck)
+                             deck_sha, load_deck, write_deck, write_tally)
 from app.eval.score import score_doc
 from app.models import Characteristic, ExtractionResult
 
@@ -135,8 +135,8 @@ def test_a_deck_round_trips_and_its_sha_is_stable(tmp_path, monkeypatch):
     root.mkdir()
     _roots(tmp_path, monkeypatch, root)
     deck = build_deck(_rows3(), run="r", originals_dir="/o", stamped_dir="/s")
-    write_deck(root / "d.json", deck)
-    back = load_deck(root / "d.json")
+    write_deck(root / "reports" / "d.json", deck)
+    back = load_deck(root / "reports" / "d.json")
     assert deck_sha(back) == deck_sha(json.loads(json.dumps(deck)))
 
 
@@ -169,9 +169,58 @@ def test_a_deck_is_never_overwritten(tmp_path, monkeypatch):
     root.mkdir()
     _roots(tmp_path, monkeypatch, root)
     deck = build_deck(_rows3(), run="r", originals_dir="/o", stamped_dir="/s")
-    write_deck(root / "d.json", deck)
+    write_deck(root / "reports" / "d.json", deck)
     with pytest.raises(ReviewRefused, match="exists"):
-        write_deck(root / "d.json", deck)
+        write_deck(root / "reports" / "d.json", deck)
+
+
+def test_a_deck_lives_directly_under_reports(tmp_path, monkeypatch):
+    """Review round 2: 'anywhere inside the root' let a deck land in gold/
+    under a gold file's name, where the next score globs it as gold. It now
+    follows the class-B rule: a direct child of <root>/reports/."""
+    root = tmp_path / "client"
+    (root / "gold").mkdir(parents=True)
+    _roots(tmp_path, monkeypatch, root)
+    deck = build_deck(_rows3(), run="r", originals_dir="/o", stamped_dir="/s")
+    for bad in (root / "d.json", root / "gold" / "x.gold.json",
+                root / "reports" / "sub" / "d.json"):
+        with pytest.raises(ReviewRefused):
+            write_deck(bad, deck)
+        assert not bad.exists()
+
+
+def test_a_deck_never_follows_a_link_even_a_dangling_one(tmp_path, monkeypatch):
+    """A dangling link reads as 'does not exist', and write_text would then
+    create a NEW file wherever it points."""
+    root = tmp_path / "client"
+    (root / "reports").mkdir(parents=True)
+    (root / "gold").mkdir()
+    _roots(tmp_path, monkeypatch, root)
+    link = root / "reports" / "d.json"
+    link.symlink_to(root / "gold" / "new.gold.json")
+    deck = build_deck(_rows3(), run="r", originals_dir="/o", stamped_dir="/s")
+    with pytest.raises(ReviewRefused):
+        write_deck(link, deck)
+    assert not (root / "gold" / "new.gold.json").exists()
+
+
+def test_a_deck_is_written_owner_only(tmp_path, monkeypatch):
+    root = tmp_path / "client"
+    root.mkdir()
+    _roots(tmp_path, monkeypatch, root)
+    write_deck(root / "reports" / "d.json", _deck3())
+    assert (root / "reports" / "d.json").stat().st_mode & 0o777 == 0o600
+
+
+def test_the_tally_is_not_written_through_a_link(tmp_path):
+    keep = tmp_path / "keep.json"
+    keep.write_text("{}")
+    link = tmp_path / "docs" / "tally.json"
+    link.parent.mkdir()
+    link.symlink_to(keep)
+    with pytest.raises(ReviewRefused):
+        write_tally(link, {"kind": KIND})
+    assert keep.read_text() == "{}"
 
 
 def test_a_file_that_is_not_a_deck_is_refused(tmp_path):
@@ -256,8 +305,8 @@ def _saved(tmp_path, monkeypatch):
     root = tmp_path / "client"
     root.mkdir()
     _roots(tmp_path, monkeypatch, root)
-    write_deck(root / "d.json", _deck3())
-    return root / "d.json", load_deck(root / "d.json")
+    write_deck(root / "reports" / "d.json", _deck3())
+    return root / "reports" / "d.json", load_deck(root / "reports" / "d.json")
 
 
 def test_answers_persist_merge_and_canonicalise(tmp_path, monkeypatch):
@@ -322,40 +371,48 @@ from tests.eval.test_score_scope_policy import _corpus  # noqa: E402
 def _score_args(tmp_path, run_dir, gold_dir, pdfs, deck):
     return ["score", "--run", str(run_dir), "--gold", str(gold_dir),
             "--pdfs", str(pdfs), "--name", "ws",
-            "--out", str(tmp_path / "scored.json"), "--review-deck", str(deck)]
+            # The report holds client values: since H1 it must sit directly
+            # under <root>/reports/ whenever roots are configured.
+            "--out", str(_scored(tmp_path)), "--review-deck", str(deck)]
+
+
+def _scored(tmp_path):
+    return tmp_path / "client" / "reports" / "scored.report.json"
 
 
 def test_score_refuses_a_deck_outside_a_protected_root_before_scoring(
         tmp_path, monkeypatch):
     """Fail in seconds, not after a full re-score, and write nothing either:
     a refusal that still did the work would teach the operator to ignore it."""
-    _roots(tmp_path, monkeypatch, tmp_path / "client")
+    # The synthetic corpus is built first: its ingest goes to tmp_path/gold,
+    # which H1 refuses once roots are configured (gold belongs in <root>/gold).
     pdfs, gold_dir, run_dir = _corpus(tmp_path)
+    _roots(tmp_path, monkeypatch, tmp_path / "client")
     assert main(_score_args(tmp_path, run_dir, gold_dir, pdfs,
                             tmp_path / "d.json")) == 1
     assert not (tmp_path / "d.json").exists()
-    assert not (tmp_path / "scored.json").exists()
+    assert not _scored(tmp_path).exists()
 
 
 def test_score_needs_pdfs_to_know_where_the_drawings_are(tmp_path,
                                                          monkeypatch):
+    pdfs, gold_dir, run_dir = _corpus(tmp_path)    # before roots, as above
     root = tmp_path / "client"
     root.mkdir()
     _roots(tmp_path, monkeypatch, root)
-    pdfs, gold_dir, run_dir = _corpus(tmp_path)
-    args = _score_args(tmp_path, run_dir, gold_dir, pdfs, root / "d.json")
+    args = _score_args(tmp_path, run_dir, gold_dir, pdfs, root / "reports" / "d.json")
     i = args.index("--pdfs")
     del args[i:i + 2]
     assert main(args) == 1
-    assert not (root / "d.json").exists()
+    assert not (root / "reports" / "d.json").exists()
 
 
 def test_score_writes_the_deck_and_prints_only_a_count(tmp_path, monkeypatch,
                                                        capsys):
+    pdfs, gold_dir, run_dir = _corpus(tmp_path)    # before roots, as above
     root = tmp_path / "client"
     root.mkdir()
     _roots(tmp_path, monkeypatch, root)
-    pdfs, gold_dir, run_dir = _corpus(tmp_path)
     deck = root / "reports" / "d.json"
     assert main(_score_args(tmp_path, run_dir, gold_dir, pdfs, deck)) == 0
     d = load_deck(deck)
@@ -384,19 +441,46 @@ def test_review_serve_refuses_a_tally_path_inside_a_root(tmp_path, monkeypatch):
 # neither may be aimed at gold, a dump, the pull it grades, or a link to one.
 
 def _croot(tmp_path, monkeypatch):
+    """The root's reports/ folder: since review round 2 a grading report,
+    like every class-B file, is a direct child of <root>/reports/."""
     root = tmp_path / "client"
-    root.mkdir()
+    (root / "reports").mkdir(parents=True)
     _roots(tmp_path, monkeypatch, root)
-    return root
+    return root / "reports"
 
 
-def test_a_report_path_must_be_inside_a_protected_root(tmp_path, monkeypatch):
+def test_a_report_path_must_be_directly_under_reports(tmp_path, monkeypatch):
     from app.eval.review import check_report_path
-    root = _croot(tmp_path, monkeypatch)
-    want = (root / "sub" / "r.grade.json").resolve()
-    assert check_report_path(root / "sub" / "r.grade.json") == want
+    reports = _croot(tmp_path, monkeypatch)
+    want = (reports / "r.grade.json").resolve()
+    assert check_report_path(reports / "r.grade.json") == want
+    for bad in (tmp_path / "r.grade.json",                 # outside the root
+                reports / "sub" / "r.grade.json",          # grandchild
+                reports.parent / "r.grade.json",           # root top level
+                reports.parent / "gold" / "r.grade.json"):  # another subfolder
+        with pytest.raises(ReviewRefused):
+            check_report_path(bad)
+
+
+def test_a_report_is_never_inside_an_input_directory(tmp_path, monkeypatch):
+    """--gold is a directory the grader reads; `avoid` compared exact paths
+    only, so the report could be written inside it."""
+    from app.eval.review import check_report_path
+    reports = _croot(tmp_path, monkeypatch)
     with pytest.raises(ReviewRefused):
-        check_report_path(tmp_path / "r.grade.json")
+        check_report_path(reports / "r.grade.json", avoid=[reports])
+
+
+@pytest.mark.parametrize("which", ["report", "digest"])
+def test_a_nul_byte_is_a_fixed_refusal(tmp_path, monkeypatch, which):
+    from app.eval.review import check_digest_path, check_report_path
+    reports = _croot(tmp_path, monkeypatch)
+    check, p = ((check_report_path, f"{reports}/a\x00.grade.json")
+                if which == "report" else
+                (check_digest_path, f"{tmp_path}/a\x00-grade.json"))
+    with pytest.raises(ReviewRefused) as e:
+        check(p)
+    assert str(tmp_path) not in str(e.value)
 
 
 def test_no_protected_roots_means_no_report(tmp_path, monkeypatch):
@@ -448,6 +532,23 @@ def test_a_report_never_replaces_its_own_inputs(tmp_path, monkeypatch):
     with pytest.raises(ReviewRefused):
         check_report_path(root / "pull.grade.json",
                           avoid=[root / "." / "pull.grade.json"])
+
+
+@pytest.mark.parametrize("parts", [(".git", "hooks", "x-grade.json"),
+                                   (".claude", "x-grade.json"),
+                                   ("repo", ".git", "x-grade.json")])
+def test_a_grading_digest_never_lands_in_git_or_claude_config(
+        tmp_path, monkeypatch, parts):
+    """Review round 3: the C2 digest is class A like every digest, so the
+    same .git/.claude component refusal applies -- through a link too."""
+    from app.eval.review import check_digest_path
+    _croot(tmp_path, monkeypatch)
+    with pytest.raises(ReviewRefused):
+        check_digest_path(tmp_path.joinpath(*parts))
+    (tmp_path / "repo" / ".git").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "innocent").symlink_to(tmp_path / "repo" / ".git")
+    with pytest.raises(ReviewRefused):
+        check_digest_path(tmp_path / "innocent" / "x-grade.json")
 
 
 def test_a_digest_goes_outside_the_root_named_grade_json(tmp_path, monkeypatch):

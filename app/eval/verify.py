@@ -73,9 +73,17 @@ def cmd_verify(args) -> int:
     import sys
     from pathlib import Path
     from app.eval.dump import load_dump, save_dump
-    from app.eval.runner import _PDF_GLOB, _anon, _select_docs
+    from app.eval.outputs import check_client_dir_out, claim_dir
+    from app.eval.runner import (_PDF_GLOB, _RUN_DIR_SHAPES, _WORK_DIR, _anon,
+                                 _inputs, _select_docs)
 
-    src, out = Path(args.run), Path(args.out)
+    # The same class-C rule as predict, checked before anything loads; and
+    # --run is an input, so --out can be neither it nor inside it.
+    out = check_client_dir_out(args.out, subdir="runs", legacy=_RUN_DIR_SHAPES,
+                               work_dir=_WORK_DIR,
+                               avoid=_inputs(args, "run", "pdfs", "splits"))
+    claim_dir(out)
+    src = Path(args.run)
     dumps = {p.name[:-len(_DUMP_SUFFIX)]: p
              for p in sorted(src.glob("*" + _DUMP_SUFFIX))}
     pdfs = {p.stem: p for p in Path(args.pdfs).glob(_PDF_GLOB)}
@@ -94,7 +102,7 @@ def cmd_verify(args) -> int:
         try:
             dump = load_dump(dumps[doc_id])
             page, scale = render_for_verify(pdfs[doc_id], dump.config.dpi,
-                                            out / "_work" / doc_id)
+                                            out / _WORK_DIR / doc_id)
             # Loaded lazily, after the first page renders: a missing drawing
             # should fail in seconds, not after a ten-minute model load.
             backend = backend or get_backend()
@@ -104,7 +112,7 @@ def cmd_verify(args) -> int:
             failures.append({"doc": anon(doc_id), "error": type(e).__name__})
             print(f"{tag} FAILED {type(e).__name__}", file=sys.stderr)
             continue
-        save_dump(new, out)
+        save_dump(new, out, expect_parent=out)
         verified += 1
         asked += stats["asked"]
         no_answer += stats["no_answer"]

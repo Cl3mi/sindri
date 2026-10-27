@@ -319,7 +319,8 @@ def test_score_with_no_gold_dump_overlap_exits_1(tmp_path, capsys):
     assert "ERROR: no documents scored" in err
 
 
-def test_score_mixed_configs_raises(tmp_path):
+def mixed_config_run(tmp_path):
+    """A run whose two dumps were predicted under different model ids."""
     pdfs, excel = _setup_corpus(tmp_path)
     gold_dir, run_dir = tmp_path / "gold", tmp_path / "runs" / "mixed"
     assert main(["ingest", "--pdfs", str(pdfs), "--excel", str(excel),
@@ -331,10 +332,19 @@ def test_score_mixed_configs_raises(tmp_path):
             dump = dump.model_copy(
                 update={"config": RunConfig(model_id="other-model")})
         save_dump(dump, run_dir)
-    report_path = tmp_path / "mixed.report.json"
-    with pytest.raises(ValueError, match="mixed configs"):
-        main(["score", "--run", str(run_dir), "--gold", str(gold_dir),
-             "--name", "mixed", "--out", str(report_path)])
+    return ["score", "--run", str(run_dir), "--gold", str(gold_dir),
+            "--name", "mixed", "--out", str(tmp_path / "mixed.report.json")]
+
+
+def test_score_mixed_configs_is_refused_with_its_message(tmp_path, capsys):
+    """An intentional RunnerError: exit 1 and its own (client-value-free)
+    message on stderr, never swallowed by main()'s last-resort catch."""
+    capsys.readouterr()
+    assert main(mixed_config_run(tmp_path)) == 1
+    err = capsys.readouterr().err
+    assert "mixed configs in run dir" in err and "other-model" in err
+    assert "re-predict the full split with one config" in err
+    assert not (tmp_path / "mixed.report.json").exists()
 
 
 def test_compare_incomparable_runs_exits_1(tmp_path, capsys):

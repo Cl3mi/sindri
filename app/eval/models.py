@@ -8,9 +8,9 @@ Geometry convention: ALL positions/boxes in these models are PDF points
 """
 import hashlib
 import json
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_serializer
 
 from app.models import ExtractionResult
 
@@ -288,6 +288,16 @@ class DocScore(_Versioned):
 
 
 class RunReport(_Versioned):
+    # The overwrite marker (H1, 2026-10-23): `score --out` may replace an
+    # existing file only if it is a previous run report, judged by
+    # `review._carries_marker`, which peeks at the opening bytes for
+    # `{"kind": "run-report"` and never parses a large report. So it must
+    # SERIALISE first -- see `_kind_first` -- or the marker is never found.
+    # Defaulted, so every report written before it still loads (and simply
+    # cannot be overwritten); SCHEMA_VERSION stays 1 because nothing about
+    # reading a report changed. A Literal, not a str: a file labelled as
+    # another kind (a grade report) is rejected loudly, never misread.
+    kind: Literal["run-report"] = "run-report"
     run_name: str
     config: RunConfig
     weights: ReviewCostWeights
@@ -322,3 +332,14 @@ class RunReport(_Versioned):
     micro_precision: float = 0.0
     escaped_rate: float = 0.0
     taxonomy: Dict[str, int] = {}
+
+    @model_serializer(mode="wrap")
+    def _kind_first(self, handler):
+        # Pydantic orders a subclass's fields AFTER its base's, and
+        # `schema_version` is declared on `_Versioned`, so declaring `kind`
+        # first is not enough: move it to the front of every dump (dict and
+        # JSON alike) here.
+        data = handler(self)
+        if isinstance(data, dict) and "kind" in data:
+            data = {"kind": data.pop("kind"), **data}
+        return data

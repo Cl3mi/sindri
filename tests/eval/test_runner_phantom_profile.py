@@ -19,18 +19,18 @@ def _write(tmp_path):
 
 def _score(tmp_path, run, gold_dir, *extra):
     return runner.main(["score", "--run", str(run), "--gold", str(gold_dir),
-                        "--name", "t", "--out", str(tmp_path / "r.json"),
+                        "--name", "t", "--out", str(tmp_path / "r.report.json"),
                         *extra])
 
 
 def test_phantom_profile_writes_counts_and_keeps_the_report(tmp_path):
     run, gold_dir = _write(tmp_path)
     assert _score(tmp_path, run, gold_dir) == 0
-    plain = (tmp_path / "r.json").read_text()
+    plain = (tmp_path / "r.report.json").read_text()
     out = tmp_path / "profile.json"
     assert _score(tmp_path, run, gold_dir, "--phantom-profile",
                   "--phantom-out", str(out)) == 0
-    assert (tmp_path / "r.json").read_text() == plain
+    assert (tmp_path / "r.report.json").read_text() == plain
     r = json.loads(out.read_text())
     assert r["totals"]["phantom"] == 1 and r["reconciles"] is True
 

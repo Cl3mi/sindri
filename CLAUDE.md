@@ -40,8 +40,12 @@ advisory, and it has been right every single time it fired.
   `corpus/{originals,stamped,excel}` + `gold/ runs/ reports/ meta/`.
   `originals` = clean drawings the pipeline reads. `stamped` = ballooned
   drawings gold positions come from. **They are different files.**
+* **The runner refuses unsafe `--out` paths itself** (digests outside the root with
+  their own `kind` marker; client-value files only in the root's `reports/`,
+  `meta/`, `runs/<name>`, `gold`; see §2, "RUNNER OUTPUT FLAGS ARE HARDENED"). A
+  refusal is a fixed sentence and exit 1 — fix the path, never the checker.
 * **Never widen the guard.** Re-verify after any change:
-  `bash ~/.claude/hooks/test-sindri-guard.sh` → `32 passed, 0 failed`.
+  `bash ~/.claude/hooks/test-sindri-guard.sh` → `41 passed, 0 failed`.
 
 ### Showing the client some drawings
 
@@ -363,10 +367,37 @@ reconcile (`reconcile_problems`). `runner campaign-deck` (§1) is the
 operator's drill-down over the report. `tests/eval/test_campaign_c2_seam.py`
 runs builder → loader → worker → real store/seal → pull → grader → CLI →
 deck examples on records the real code wrote; if it breaks, a seam drifted.
-**KNOWN OPEN:** plain `score --out`, `--policy-out`, `--gentol-out`,
-`--phantom-out` and `--drop-out` still write to any agent-chosen path while
-the guard allowlists `runner score` — harden them like `check_report_path`
-(suffix, no symlink, kind marker) in a task of their own.
+**RUNNER OUTPUT FLAGS ARE HARDENED (H1, 2026-10-27,
+`docs/plans/2026-10-23-runner-output-hardening-{design,plan}.md`, §8 "As built").**
+The guard allowlists runner subcommands by SHAPE, so the CLI itself refuses bad
+output paths (`app/eval/outputs.py`, one writer: atomic `.partial` + `os.replace`).
+Class A, the counts-only digests (`summary`/`compare`/`--policy-out`/`--gentol-out`/
+`--phantom-out`/`--drop-out`/`review-tally --out`): `.json`, outside every protected
+root, no `.git`/`.claude` component, and an existing file is replaced ONLY if it
+carries the digest's own leading `"kind"` marker — **a digest already in `docs/eval/`
+has no marker, so delete it before regenerating it.** Class B, client-value files:
+direct children of the root's `reports/` (`score --out`, marked `run-report`; the
+review deck; the C2 grading report) or `meta/` (`split`, `variants`: never
+overwritten, the split is frozen). Class C, directories (`predict`/`verify` →
+`runs/<name>`, `ingest` → `gold` or `gold/<name>`): absent, empty, or ours (marker, or
+legacy dump names), `_work` allowed, no links, no hardlinked files. With no protected
+roots configured (GPU container, CI) only the "inside the root" rule is skipped; an
+explicit `SINDRI_PROTECTED_PATHS` that names no regular file fails closed. `main`
+prints a fixed sentence plus the exception TYPE for any input-read failure, never the
+exception text (it used to echo client file content). `tests/eval/
+test_runner_output_exploits.py` probes every flag; its completeness test fails when a
+new `--*out` flag is added without a probe. **Known limits:** the check-to-write
+race on parent dirs and `_work` (agent-only threat model); re-ingest over a populated
+gold dir is allowed. **The guard's sanctioned shape was tightened too (2026-10-27,
+`docs/plans/2026-10-27-guard-runner-shape-tightening-plan.md`; guard self-test now 41
+cases):** the interpreter must be a bare `python`/`python3`, `/usr/{,local/}bin/python3`
+or the repo's `.venv/bin/python`; the setup script only `setup_client_data.py`,
+`./setup_client_data.py` or the repo's own path; and the hook payload's cwd and any
+`cd` target must be inside the repo, because `python -m` imports from the cwd first
+(the Bash tool's cwd persists between calls). An agent-written `python`, setup script
+or scratch directory used to run as "the reviewed CLI" and bypass every CLI check.
+**Inherent limit:** an agent can still edit `app/eval/*.py` inside the repo and run
+that; the defences there are code review, the pre-commit hook and the operator.
 
 **`read-lora-v1` IS NOW HARMFUL UNDER THE SHIPPED POLICY — deployment CLOSED**
 (2026-10-05, `docs/plans/2026-10-05-read-adapter-repricing-result.md`;
@@ -1159,7 +1190,7 @@ GPU days.
 
 ```bash
 python -m pytest -q                          # 1946 passed, 2 skipped
-bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 32 passed, 0 failed
+bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 41 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```
 

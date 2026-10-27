@@ -160,14 +160,55 @@ def build_deck(rows: List[ReviewRow], run: str, originals_dir,
             "rows": [asdict(r) for r in rows]}
 
 
+class ProtectedRootsError(ReviewRefused):
+    """The roots file exists but cannot be trusted (unreadable, undecodable,
+    or a line that is not an absolute path). A ReviewRefused, so every caller
+    that already refuses on one refuses on this too: a broken roots file
+    must fail CLOSED, never read as "no roots" or as a root nobody meant."""
+
+
+_ROOTS_BROKEN = ("the protected-roots file cannot be used (unreadable, or a "
+                 "line that is not an absolute path); fix it before writing "
+                 "any output")
+
+
 def _protected_roots() -> List[Path]:
-    f = Path(os.environ.get("SINDRI_PROTECTED_PATHS",
-                            Path.home() / ".claude" / "sindri-protected-paths"))
-    if not f.is_file():
-        return []
-    return [Path(line.strip()).resolve()
-            for line in f.read_text(encoding="utf-8").splitlines()
-            if line.strip()]
+    """Parsed exactly as the Bash guard parses the same file: `#` starts a
+    comment, `~` expands. Before this, every non-blank line counted, so the
+    file's own comment lines resolved against the cwd into roots like
+    `<cwd>/# ...` -- and a path under them passed the inside-a-root checks.
+    The guard would accept a relative line by anchoring it at ITS cwd, which
+    is not ours; here it is a config error, raised with a fixed sentence
+    (no path: the message prints where an agent reads)."""
+    override = os.environ.get("SINDRI_PROTECTED_PATHS")
+    f = Path(override if override is not None else
+             Path.home() / ".claude" / "sindri-protected-paths")
+    try:
+        if not f.is_file():
+            # Only the DEFAULT file may be absent (the GPU container has no
+            # ~/.claude). An explicit override that names no regular file is
+            # a typo or a broken setup: reading it as "no roots" would skip
+            # the root rule on a machine that has client data, so fail
+            # closed. An empty file is how to say "no roots" on purpose.
+            if override is not None:
+                raise ProtectedRootsError(_ROOTS_BROKEN)
+            return []
+        text = f.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError, ValueError):
+        raise ProtectedRootsError(_ROOTS_BROKEN) from None
+    roots = []
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        expanded = os.path.expanduser(line)
+        if not os.path.isabs(expanded):
+            raise ProtectedRootsError(_ROOTS_BROKEN)
+        try:
+            roots.append(Path(expanded).resolve())
+        except (OSError, RuntimeError, ValueError):
+            raise ProtectedRootsError(_ROOTS_BROKEN) from None
+    return roots
 
 
 def inside_protected(path) -> bool:
@@ -175,22 +216,30 @@ def inside_protected(path) -> bool:
     return any(target.is_relative_to(root) for root in _protected_roots())
 
 
-def check_deck_path(path) -> Path:
-    """Inside a protected root and not already there. Called before scoring
-    too, so a bad path fails in seconds rather than after a re-score."""
-    target = Path(path).resolve()
-    if not inside_protected(target):
+def check_deck_path(path, avoid=()) -> Path:
+    """The class-B file rule (outputs.check_client_file_out): directly under
+    <root>/reports/, `.json`, never a link (dangling ones included), never
+    one of the run's inputs, and never replacing anything -- answers are
+    keyed to the deck. Before review round 2 it was "anywhere inside a
+    root", which let a deck land in gold/ under a gold file's name. Unlike
+    class B it also refuses when NO roots are configured: a deck is only
+    ever safe inside one. Called before scoring too, so a bad path fails in
+    seconds rather than after a re-score."""
+    from app.eval.outputs import OutputRefused, check_client_file_out
+    if not _protected_roots():
         raise ReviewRefused(
             "the review deck holds client text, so it may only be written "
-            "inside a protected root (one listed in "
-            "~/.claude/sindri-protected-paths, e.g. the client-data reports/ "
-            "folder)" + ("" if _protected_roots() else " -- and no protected "
-                         "roots are configured on this machine"))
-    if target.exists():
-        raise ReviewRefused(
-            "a deck already exists at that path and its answers are keyed to "
-            "it; move it away deliberately to regenerate")
-    return target
+            "inside a protected root -- and no protected roots are "
+            "configured on this machine")
+    try:
+        return check_client_file_out(path, subdir="reports", suffix=".json",
+                                     kind=None, avoid=avoid)
+    except OutputRefused as e:
+        if "already exists" in str(e):
+            raise ReviewRefused(
+                "a deck already exists at that path and its answers are "
+                "keyed to it; move it away deliberately to regenerate") from None
+        raise ReviewRefused(f"the review deck: {e}") from None
 
 
 _MARKER_PEEK = 4096
@@ -218,18 +267,27 @@ def _check_grade_output(path, suffix: str, kind: str, avoid, what: str) -> Path:
     another file's name, not over a file that is not a previous output of
     this same kind, and not over the inputs being graded. Fixed messages
     only: they are printed where an agent reads, and a path can be client
-    text."""
-    if Path(path).is_symlink():
-        raise ReviewRefused(f"the {what} path is a symbolic link")
-    target = Path(path).resolve()
-    if not target.name.endswith(suffix) or target.name == suffix:
-        raise ReviewRefused(f"the {what} file name must end in {suffix}")
-    if any(target == Path(a).resolve() for a in avoid if a):
-        raise ReviewRefused(f"the {what} path is one of the run's inputs")
-    if target.exists() and not _carries_marker(target, kind):
-        raise ReviewRefused(
-            f"a file that is not a previous {what} already exists there; "
-            "move it away deliberately")
+    text.
+
+    `avoid` is compared the way outputs.py compares it (`_same`): by any
+    spelling, as a hardlink, and -- for an input DIRECTORY such as --gold --
+    as anything inside it. ValueError (a NUL byte) joins OSError and a
+    symlink loop's RuntimeError as a fixed refusal, never a traceback."""
+    from app.eval.outputs import _same
+    try:
+        if Path(path).is_symlink():
+            raise ReviewRefused(f"the {what} path is a symbolic link")
+        target = Path(path).resolve()
+        if not target.name.endswith(suffix) or target.name == suffix:
+            raise ReviewRefused(f"the {what} file name must end in {suffix}")
+        if any(a and _same(target, a) for a in avoid):
+            raise ReviewRefused(f"the {what} path is one of the run's inputs")
+        if target.exists() and not _carries_marker(target, kind):
+            raise ReviewRefused(
+                f"a file that is not a previous {what} already exists there; "
+                "move it away deliberately")
+    except (OSError, RuntimeError, ValueError):
+        raise ReviewRefused(f"the {what} path cannot be checked") from None
     return target
 
 
@@ -248,6 +306,12 @@ def check_report_path(path, avoid=()) -> Path:
             "written inside a protected root (one listed in "
             "~/.claude/sindri-protected-paths)" + ("" if _protected_roots()
             else " -- and no protected roots are configured on this machine"))
+    # The class-B subfolder rule (review round 2): a direct child of
+    # <root>/reports/, so it can never land in gold/ or a run dir.
+    if not any(target.parent == r / "reports" for r in _protected_roots()):
+        raise ReviewRefused(
+            "the grading report holds client values; it may only be written "
+            "directly under <protected root>/reports/")
     return target
 
 
@@ -257,8 +321,14 @@ def check_digest_path(path, avoid=()) -> Path:
     read, and an agent-picked path there could replace client data. Named
     `-grade.json`, distinct from the report's `.grade.json`."""
     from app.eval.campaign_grade import DIGEST_KIND
+    from app.eval.outputs import _FORBIDDEN_COMPONENTS
     target = _check_grade_output(path, "-grade.json", DIGEST_KIND, avoid,
                                  "grading digest")
+    # Class A's rule (review round 3), on the RESOLVED path, so a link
+    # named anything else that leads into .git still counts.
+    if _FORBIDDEN_COMPONENTS.intersection(target.parts):
+        raise ReviewRefused("the grading digest may not be written inside a "
+                            ".git or .claude directory")
     if inside_protected(target):
         raise ReviewRefused(
             "the grading digest is the output meant for the agent; it may "
@@ -267,11 +337,22 @@ def check_digest_path(path, avoid=()) -> Path:
     return target
 
 
-def write_deck(path, deck: Dict) -> int:
-    target = check_deck_path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(deck, indent=1, ensure_ascii=False),
-                      encoding="utf-8")
+def _write_through_the_one_writer(target: Path, text: str, mode: int) -> None:
+    """outputs.write_atomic (partial, fsync, rename; the approved parent
+    re-checked), with its refusal turned into ours."""
+    from app.eval.outputs import OutputRefused, prepare_parent, write_atomic
+    try:
+        prepare_parent(target)
+        write_atomic(target, text, mode=mode, expect_parent=target.parent)
+    except OutputRefused as e:
+        raise ReviewRefused(str(e)) from None
+
+
+def write_deck(path, deck: Dict, avoid=()) -> int:
+    from app.eval.outputs import CLIENT_FILE_MODE
+    target = check_deck_path(path, avoid=avoid)
+    _write_through_the_one_writer(
+        target, json.dumps(deck, indent=1, ensure_ascii=False), CLIENT_FILE_MODE)
     return len(deck["rows"])
 
 
@@ -418,18 +499,31 @@ def tally(deck: Dict, answers: Dict[str, Dict]) -> Dict:
     return out
 
 
-def check_tally_out(path) -> Path:
-    target = Path(path).resolve()
-    if inside_protected(target):
-        raise ReviewRefused(
-            "the tally is the output meant for the agent; inside a protected "
-            "root it could never be read -- write it under docs/eval/")
-    return target
+def check_tally_out(path, avoid=()) -> Path:
+    """Class-A semantics (outputs.check_digest_out, review round 3): `.json`,
+    never a link (checked before resolving, or the atomic rename would
+    replace the link's target), never under .git/.claude, outside every
+    root, never an input (the deck), and replacing only a previous tally --
+    whose marker is its existing first key, the deck kind, unchanged."""
+    from app.eval.outputs import OutputRefused, check_digest_out
+    try:
+        if inside_protected(path):
+            raise ReviewRefused(
+                "the tally is the output meant for the agent; inside a "
+                "protected root it could never be read -- write it under "
+                "docs/eval/")
+    except (OSError, RuntimeError, ValueError):
+        raise ReviewRefused("the tally path cannot be resolved") from None
+    try:
+        return check_digest_out(path, KIND, avoid=avoid)
+    except OutputRefused as e:
+        raise ReviewRefused(f"the tally: {e}") from None
 
 
-def write_tally(path, t: Dict) -> Path:
-    target = check_tally_out(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(t, indent=1, ensure_ascii=False) + "\n",
-                      encoding="utf-8")
+def write_tally(path, t: Dict, avoid=()) -> Path:
+    from app.eval.outputs import DIGEST_FILE_MODE
+    target = check_tally_out(path, avoid=avoid)
+    _write_through_the_one_writer(
+        target, json.dumps(t, indent=1, ensure_ascii=False) + "\n",
+        DIGEST_FILE_MODE)
     return target
