@@ -4,6 +4,25 @@ Design: `docs/plans/2026-10-21-client-review-campaign-design.md`. Every step
 that touches drawings or review records is the **operator's**: they are
 client data (CLAUDE.md §1).
 
+## No VPS yet: run it locally, move it later
+
+`./campaign_ops.sh` (operator-only; refuses an agent session) wraps every
+step below with the same bundle on both sides:
+
+- Now: `./campaign_ops.sh local-up ~/campaign-pilot-1` loads the bundle into
+  `~/campaign-local` (outside the repo, mode 700) and serves the review app
+  on `http://127.0.0.1:8000` in the SAME campaign-only mode the VPS uses.
+  Review there yourself; `local-pull pilot-1 <out.tar>` packs the records for
+  grading, `local-wipe` deletes everything.
+- The client cannot reach a localhost server, so a local run is for your own
+  walk-through and dry run. Reviewing on a different machine needs the VPS.
+- When the VPS exists: finish the checklist and "Install" steps 1 and 3
+  (Docker, Caddy, ufw, passwords), then
+  `./campaign_ops.sh vps-init <host>`, then
+  `./campaign_ops.sh vps-load <host> pilot-1 ~/campaign-pilot-1`. Later code
+  changes: `vps-update <host>`; records: `vps-pull <host> pilot-1 <reviews dir>`.
+  The bundle is the same one: rebuild nothing.
+
 ## Before the first upload (manual checklist)
 
 - [ ] The client NDA allows hosting their drawings at Hetzner (EU).
