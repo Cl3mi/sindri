@@ -510,3 +510,20 @@ def test_verify_claims_its_dir_and_never_writes_its_input(tmp_path, roots,
     assert sorted((p.name, p.read_bytes()) for p in src.iterdir()) == before
     assert runner.main(argv + [str(roots / "gold" / "v")]) == 1
     _no_leak(capsys, out, src)
+
+
+@pytest.mark.parametrize("out_flag,check_flag", [
+    ("--policy-out", "--policy-check"), ("--gentol-out", "--gentol-check"),
+    ("--phantom-out", "--phantom-profile"), ("--drop-out", "--drop-check")])
+def test_a_digest_flag_without_its_check_is_refused(out_flag, check_flag,
+                                                    tmp_path, roots, capsys):
+    """Review round 2 (F): `--phantom-out x` without `--phantom-profile`
+    used to be silently ignored -- it reads as if a digest had been written,
+    exactly like --manifest without --reviewer-grade, which already fails."""
+    out = tmp_path / "scratch" / "x.json"
+    argv = _score_argv(tmp_path, roots, "phantom", out_flag, str(out))
+    assert runner.main(argv) == 1
+    assert not out.exists()
+    assert not (roots / "reports" / "t.report.json").exists()
+    cap = _no_leak(capsys, out)
+    assert f"{out_flag} needs {check_flag}" in cap.err

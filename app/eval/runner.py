@@ -704,6 +704,11 @@ _SCORE_DIGEST_FLAGS = (("policy_out", "policy-check-digest"),
                        ("gentol_out", "gentol-check-digest"),
                        ("phantom_out", "phantom-profile-digest"),
                        ("drop_out", "drop-check-digest"))
+# The flag that fills each of those digests, in the same order.
+_SCORE_DIGEST_NEEDS = (("--policy-out", "policy_check", "--policy-check"),
+                       ("--gentol-out", "gentol_check", "--gentol-check"),
+                       ("--phantom-out", "phantom_profile", "--phantom-profile"),
+                       ("--drop-out", "drop_check", "--drop-check"))
 
 
 def _inputs(args, *names):
@@ -871,6 +876,14 @@ def _cmd_score(args):
         print("ERROR: --run is required (except with --reviewer-grade)",
               file=sys.stderr)
         return 1
+    # A digest flag without the check that fills it used to be silently
+    # ignored, which reads as if a digest had been written -- the same trap
+    # as --manifest without --reviewer-grade, refused just above.
+    for (out_attr, _), (out_flag, check_attr, check_flag) in zip(
+            _SCORE_DIGEST_FLAGS, _SCORE_DIGEST_NEEDS):
+        if getattr(args, out_attr, None) and not getattr(args, check_attr, False):
+            print(f"ERROR: {out_flag} needs {check_flag}", file=sys.stderr)
+            return 1
     # Output paths first (H1): OutputRefused propagates to main(), which
     # prints its fixed sentence and exits 1. The report holds client values:
     # directly under <root>/reports/, replacing only a previous run report.
