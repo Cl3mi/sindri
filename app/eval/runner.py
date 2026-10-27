@@ -24,6 +24,8 @@ from pathlib import Path
 
 import fitz
 
+from pydantic import ValidationError
+
 from app.eval.anon import Anonymizer, salt_is_persistent
 from app.eval.balloons import probe_pdf, shape_report
 from app.eval.balloon_cv import cv_report
@@ -1516,6 +1518,17 @@ def main(argv=None) -> int:
         # no value, no traceback -- this stderr is read by agents. A
         # ProtectedRootsError (a broken roots file) is a ReviewRefused.
         print(f"ERROR: output refused: {e}", file=sys.stderr)
+        return 1
+    except (ValidationError, json.JSONDecodeError, UnicodeDecodeError,
+            OSError) as e:
+        # An INPUT file that is missing, unreadable or not what this command
+        # reads. Never str(e): a pydantic ValidationError quotes the
+        # offending input_value, so `summary <a gold file>` used to print
+        # the head and tail of client data; an OSError's text is the path.
+        # The type name alone. ValueError is deliberately NOT caught: the
+        # intentional messages (mixed configs, ...) must survive.
+        print(f"ERROR: could not read or parse an input file "
+              f"({type(e).__name__})", file=sys.stderr)
         return 1
 
 
