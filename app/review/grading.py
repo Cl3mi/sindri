@@ -112,6 +112,46 @@ def _ungradable(proposal_rows: List[dict], sealed: dict) -> Optional[str]:
     return "replay_disagrees" if bad else None
 
 
+def _grade_scans(events: List[dict], final: Dict[str, dict], reasons: Dict[str, dict]) -> List[dict]:
+    """One record per scan-rectangle attempt (review UX plan task 5), derived
+    from what the reviewer did next rather than asked of them. The outcomes
+    partition the attempts: `failed` (the request never produced a row),
+    `undone` (the add was retracted, so it is gone from the net journal while
+    the scan_read stays -- the attempt that missed), `deleted` (with the
+    reviewer's reason), `edited` (which fields) or `untouched`. `empty` is a
+    separate fact about the read, not an outcome: a kept empty read that was
+    then typed over is an edit."""
+    added = {e["row"]["id"]: e["row"] for e in events if e["type"] == "add_row"}
+    deleted = {e["id"] for e in events if e["type"] == "delete_row"}
+    out = []
+    for e in events:
+        if e["type"] != "scan_read":
+            continue
+        rid = e.get("row_id")
+        rec = {"row_id": rid, "empty": bool(e.get("empty")), "fields": [], "reason": None,
+               "box_iou": None, "box_moved": False, "ms": e.get("ms")}
+        f = final.get(rid) if rid is not None else None
+        if e.get("failed"):
+            rec["outcome"] = "failed"
+        elif rid not in added:
+            rec["outcome"] = "undone"
+        elif rid in deleted or f is None:
+            rec["outcome"] = "deleted"
+            rec["reason"] = reasons.get(rid, {}).get("delete")
+        else:
+            a = added[rid]
+            rec["fields"] = _changed_fields(a, f)
+            rec["outcome"] = "edited" if rec["fields"] else "untouched"
+            rec["reason"] = _edit_reason(reasons.get(rid, {}), rec["fields"])
+            pa, fa = a.get("target_region"), f.get("target_region")
+            rec["box_moved"] = (pa is not None and fa is not None
+                                and any(abs(x - y) > ANCHOR_MOVED_PX for x, y in zip(pa, fa)))
+            overlap = iou(pa, fa)
+            rec["box_iou"] = overlap if overlap is not None and math.isfinite(overlap) else None
+        out.append(rec)
+    return out
+
+
 def grade_session(proposal_rows: List[dict], sealed: dict) -> dict:
     """`missed` is meaningless when `ungradable` is set (the sealed rows could
     not be trusted or even read); callers exclude such sessions. `rows` always
@@ -131,6 +171,14 @@ def grade_session(proposal_rows: List[dict], sealed: dict) -> dict:
     except (KeyError, TypeError):
         reasons, ungradable = {}, ungradable or "replay_error"
     reviewed = set(sealed.get("reviewed_ids", []))
+    # Rows the reviewer moved to Review by hand: their own doubt, kept apart
+    # from `flagged` (the pipeline's) so flag precision still measures the
+    # policy. Balloons only, as in replay.
+    try:
+        manual = {i for e in sealed.get("net_events", []) if e["type"] == "flag"
+                  for i in e["ids"]}
+    except (KeyError, TypeError):
+        manual, ungradable = set(), ungradable or "replay_error"
     graded = []
     for p in proposal_rows:
         f = final.get(p["id"])
@@ -138,6 +186,7 @@ def grade_session(proposal_rows: List[dict], sealed: dict) -> dict:
         rec = {"id": p["id"], "flagged": bool(p.get("needs_review")),
                "suggested": bool(p.get("suggested")),
                "reviewed": p["id"] in reviewed, "kind": p.get("kind") or "",
+               "manual_flag": p["id"] in manual and not p.get("suggested"),
                "fields": [], "reason": None}
         if p.get("suggested"):
             if f is None:
@@ -159,5 +208,14 @@ def grade_session(proposal_rows: List[dict], sealed: dict) -> dict:
         rec.update(_placement(p, f))
         graded.append(rec)
     proposed = {p["id"] for p in proposal_rows}
-    missed = [r for i, r in final.items() if i not in proposed]
-    return {"rows": graded, "missed": missed, "ungradable": ungradable}
+    try:
+        scans = _grade_scans(sealed.get("net_events", []), final, reasons)
+    except (KeyError, TypeError):
+        scans, ungradable = [], ungradable or "replay_error"
+    # How each manual add got there: a scan that produced a row (it may have
+    # been edited since) or typed by hand. Kept on the row so the digest can
+    # split `missed` into the two without a second pass.
+    scanned = {s["row_id"] for s in scans if s["outcome"] in ("untouched", "edited")}
+    missed = [{**r, "via": "scan" if i in scanned else "typed"}
+              for i, r in final.items() if i not in proposed]
+    return {"rows": graded, "missed": missed, "scans": scans, "ungradable": ungradable}

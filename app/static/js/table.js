@@ -3,10 +3,11 @@
 
 import {
   state, on, emit,
-  apply, opEditCell, opBulkReview, opConfirmSuggestions, isVisibleRow, counts, progress,
+  apply, opEditCell, opBulkReview, opFlagRows, opConfirmSuggestions, isVisibleRow, counts, progress,
 } from './state.js';
 import { flashAndCenter } from './viewer.js';
 import { commitWithReason, askReason } from './reasons.js';
+import { moveTargets, targetIds, rowAction } from './moverows.js';
 
 const COLS = ['char_type', 'nominal', 'upper_tol', 'lower_tol'];
 const NUMERIC = new Set(['nominal', 'upper_tol', 'lower_tol']);
@@ -36,6 +37,7 @@ export function initTable() {
   bindSearch();
   bindSelectAll();
   bindBulkAccept();
+  bindMoveButtons();
   bindNotesToggle();
   bindMarksToggle();
   bindTitleToggle();
@@ -109,6 +111,26 @@ function bindBulkAccept() {
   document.getElementById('bulk-accept').addEventListener('click', () => {
     const selectedIds = [...body.querySelectorAll('.row-check:checked')].map((cb) => cb.dataset.id);
     acceptRows(selectedIds);
+  });
+}
+
+// Move to OK / Move to Review for the ticked rows, else the selected row
+// (review UX plan task 3). OK is the existing accept; Review is the new
+// `flag`, so the reviewer's doubt is journaled and blocks Approve until
+// resolved. One op per button press, so one undo reverses the whole move.
+function moveSelection() {
+  const ticked = [...body.querySelectorAll('.row-check:checked')].map((cb) => cb.dataset.id);
+  return moveTargets(state.rows, targetIds(ticked, state.selectedId));
+}
+
+function bindMoveButtons() {
+  document.getElementById('move-ok').addEventListener('click', () => {
+    const { toOk } = moveSelection();
+    if (toOk.length) apply(opBulkReview(toOk, true));
+  });
+  document.getElementById('move-review').addEventListener('click', () => {
+    const { toReview } = moveSelection();
+    if (toReview.length) apply(opFlagRows(toReview));
   });
 }
 
@@ -295,6 +317,25 @@ function renderRowsInto() {
       }
     });
 
+    // per-row action: flip this row to the other side
+    const tdA = document.createElement('td');
+    tdA.className = 'row-act';
+    const act = rowAction(r);
+    if (act) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = `row-move ${act.kind}`;
+      b.title = act.label;
+      b.setAttribute('aria-label', `${act.label} (balloon ${r.pos})`);
+      b.textContent = act.kind === 'ok' ? '✓' : '⚑';
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        apply(act.kind === 'ok' ? opBulkReview([r.id], true) : opFlagRows([r.id]));
+      });
+      tdA.appendChild(b);
+    }
+    tr.appendChild(tdA);
+
     body.appendChild(tr);
   }
 }
@@ -446,6 +487,14 @@ function updateBulkAvailability() {
   btn.disabled = checked === 0 && visibleUnreviewed === 0;
   const label = document.getElementById('bulk-accept-label');
   if (label) label.textContent = checked > 0 ? `Accept ${checked}` : 'Accept all';
+  updateMoveAvailability();
+}
+
+function updateMoveAvailability() {
+  const { toOk, toReview } = moveSelection();
+  // Read-only (another tab holds the writer): apply() would drop the move.
+  document.getElementById('move-ok').disabled = state.readOnly || toOk.length === 0;
+  document.getElementById('move-review').disabled = state.readOnly || toReview.length === 0;
 }
 
 // ===== sync from viewer =============================================
@@ -470,6 +519,7 @@ function syncSelectFromViewer(id) {
   const tr = body.querySelector(`tr[data-id="${cssEsc(id)}"]`);
   if (tr) tr.classList.add('selected');
   renderCounts();
+  updateBulkAvailability();
 }
 
 function cssEsc(id) {

@@ -10,7 +10,8 @@ export const EDIT_REASONS = new Set([
   'misread_digit', 'wrong_tolerance', 'wrong_char_type', 'wrong_sign_or_unit', 'other',
 ]);
 export const DELETE_REASONS = new Set([
-  'duplicate', 'not_a_characteristic', 'unballooned_real_dimension', 'wrong_region', 'other',
+  'duplicate', 'not_a_characteristic', 'unballooned_real_dimension', 'wrong_region',
+  'empty_extraction', 'other',
 ]);
 
 export const REASON_LABELS = {
@@ -26,6 +27,7 @@ export const REASON_LABELS = {
     ['not_a_characteristic', 'Not a characteristic (text, title block…)'],
     ['unballooned_real_dimension', "Real dimension, but we don't balloon it"],
     ['wrong_region', 'Wrong region / misplaced box'],
+    ['empty_extraction', 'Empty extraction (nothing read)'],
     ['other', 'Other'],
   ],
 };

@@ -4,6 +4,8 @@
 // the direct setters defined here, so undo/redo stays consistent.  Subscribers
 // receive a `change` event after each apply() and react idempotently.
 
+import { LOG_ONLY_TYPES } from './scanlog.js';
+
 const listeners = new Map();   // event -> Set<fn>
 
 export function on(event, fn) {
@@ -30,6 +32,7 @@ export const state = {
   marks: null,
   title_block: [],
   selectedId: null,  // selected marker / row id
+  anchorId: null,    // row whose anchor handles were asked for (a balloon click)
   hoverId: null,
   filter: 'all',     // 'all' | 'review' | 'ok' | 'suggested'
   search: '',
@@ -55,11 +58,28 @@ export function setSession(payload) {
   state.title_block = payload.title_block ?? [];
   state.fileName  = payload.fileName ?? state.fileName;
   state.selectedId = null;
+  state.anchorId  = null;
   state.readOnly  = false;
   undoStack.length = 0;
   redoStack.length = 0;
   emit('session', state);
   emit('change');
+}
+
+// The selection outlives the moment that made it (a scan adds and selects its
+// row), so it needs a way out: an empty-canvas click or Esc (viewer.js). The
+// anchor box and its handles draw only for a row the reviewer clicked the
+// balloon of, never merely for the selected one.
+export function clearSelection() {
+  if (state.selectedId === null && state.anchorId === null) return;
+  state.selectedId = null;
+  state.anchorId = null;
+  emit('select', null);
+  emit('change');
+}
+
+export function showAnchorFor(id) {
+  return id != null && state.selectedId === id && state.anchorId === id;
 }
 
 export function clearSession() {
@@ -73,6 +93,7 @@ export function clearSession() {
   state.marks     = null;
   state.title_block = [];
   state.selectedId = null;
+  state.anchorId  = null;
   state.readOnly  = false;
   undoStack.length = 0;
   redoStack.length = 0;
@@ -117,6 +138,14 @@ export function redo() {
   emit('change');
   emit('history');
 }
+// What the next undo / redo will do, for the buttons' tooltip and the toast
+// (main.js). An op names itself with describe() where the balloon number
+// matters; the number is captured when the op runs, because a deleted row is
+// no longer in state.rows to ask.
+const describeOp = (op) => (op.describe ? op.describe() : op.label);
+export const undoLabel = () => (undoStack.length ? describeOp(undoStack[undoStack.length - 1]) : null);
+export const redoLabel = () => (redoStack.length ? describeOp(redoStack[redoStack.length - 1]) : null);
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 export const canUndo = () => undoStack.length > 0;
 export const canRedo = () => redoStack.length > 0;
 
@@ -143,6 +172,7 @@ export function opAddRow(row) {
   const snapshot = { row };
   return {
     label: 'add balloon',
+    describe: () => `add balloon ${row.pos}`,
     do() {
       state.rows.push(row);
       renumber();
@@ -162,6 +192,7 @@ export function opDeleteRow(id, reason) {
   let removed = null;
   return {
     label: 'delete balloon',
+    describe: () => `delete balloon ${removed ? removed.pos : ''}`.trim(),
     do() {
       removed = state.rows.find((r) => r.id === id) || null;
       state.rows = state.rows.filter((r) => r.id !== id);
@@ -181,12 +212,14 @@ export function opDeleteRow(id, reason) {
 }
 
 export function opMoveRow(id, newXY) {
-  let oldXY = null;
+  let oldXY = null, pos = null;
   return {
     label: 'move balloon',
+    describe: () => `move balloon ${pos ?? ''}`.trim(),
     do() {
       const r = state.rows.find((x) => x.id === id);
       if (!r) return;
+      pos = r.pos;
       oldXY = r.balloon_xy ? [...r.balloon_xy] : null;
       r.balloon_xy = [...newXY];
     },
@@ -203,12 +236,14 @@ export function opMoveRow(id, newXY) {
 // target_region drives reading order; replay.py need not, since `pos` is
 // derived and replay.mismatches never compares it.
 export function opMoveTarget(id, newBox) {
-  let oldBox = null;
+  let oldBox = null, pos = null;
   return {
     label: 'move anchor',
+    describe: () => `move anchor of balloon ${pos ?? ''}`.trim(),
     do() {
       const r = state.rows.find((x) => x.id === id);
       if (!r) return;
+      pos = r.pos;
       oldBox = r.target_region ? [...r.target_region] : null;
       r.target_region = [...newBox];
       renumber();
@@ -234,12 +269,14 @@ export function opSetNote(text) {
 }
 
 export function opEditCell(id, field, newValue, reason) {
-  let oldValue = null;
+  let oldValue = null, pos = null;
   return {
     label: `edit ${field}`,
+    describe: () => `edit ${field} on balloon ${pos ?? ''}`.trim(),
     do() {
       const r = state.rows.find((x) => x.id === id);
       if (!r) return;
+      pos = r.pos;
       oldValue = r[field];
       r[field] = newValue;
     },
@@ -297,6 +334,7 @@ export function opBulkReview(ids, target /* true|false */) {
   const prev = new Map();
   return {
     label: target ? 'accept rows' : 'unaccept rows',
+    describe: () => `${target ? 'accept' : 'unaccept'} ${plural(prev.size || ids.length, 'row')}`,
     do() {
       for (const id of ids) {
         const r = state.rows.find((x) => x.id === id);
@@ -310,6 +348,39 @@ export function opBulkReview(ids, target /* true|false */) {
       }
     },
     event: () => ({ type: target ? 'accept' : 'unaccept', ids: [...ids] }),
+  };
+}
+
+// Move to Review: the reviewer's own flag (review UX plan task 2). Balloons
+// only, like replay.py's `flag`, and persistent -- the row blocks Approve until
+// it is resolved, exactly as a pipeline-flagged one does. Undo restores the
+// flag state, reasons and accepted bit each row had.
+export function opFlagRows(ids) {
+  ids = [...new Set(ids)];
+  const prev = new Map();
+  return {
+    label: 'move to review',
+    describe: () => `move ${plural(prev.size || ids.length, 'row')} to review`,
+    do() {
+      for (const id of ids) {
+        const r = state.rows.find((x) => x.id === id);
+        if (!r || r.suggested) continue;
+        prev.set(id, { needs_review: r.needs_review, review_reasons: r.review_reasons,
+                       reviewed: r.reviewed });
+        r.needs_review = true;
+        const reasons = [...(r.review_reasons || [])];
+        if (!reasons.includes('manual')) reasons.push('manual');
+        r.review_reasons = reasons;
+        r.reviewed = false;
+      }
+    },
+    undo() {
+      for (const [id, p] of prev) {
+        const r = state.rows.find((x) => x.id === id);
+        if (r) Object.assign(r, p);
+      }
+    },
+    event: () => ({ type: 'flag', ids: [...ids] }),
   };
 }
 
@@ -330,6 +401,7 @@ export function opFromEvent(e) {
     case 'accept': return opBulkReview(e.ids, true);
     case 'unaccept': return opBulkReview(e.ids, false);
     case 'confirm_suggestions': return opConfirmSuggestions(e.ids);
+    case 'flag': return opFlagRows(e.ids);
     default: throw new Error(`cannot restore a ${e.type} event`);
   }
 }
@@ -344,7 +416,8 @@ export function restoreSession(payload, events) {
   // so an event that cannot be rebuilt throws with the previous session
   // still intact -- not a half-built table while the journal still points
   // at the old session.
-  const pairs = events.map((e) => [opFromEvent(e), e.seq]);
+  // Log-only events are not operations: nothing to rebuild, nothing to undo.
+  const pairs = events.filter((e) => !LOG_ONLY_TYPES.has(e.type)).map((e) => [opFromEvent(e), e.seq]);
   setSession(payload);
   for (const [op] of pairs) {
     op.do();

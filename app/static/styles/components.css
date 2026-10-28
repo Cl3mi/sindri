@@ -603,6 +603,20 @@ table.inspection td .review-dot {
 }
 table.inspection tr.reviewed td .review-dot { background: var(--ok); }
 
+/* Per-row Move to OK / Review: quiet until the row is hovered or selected. */
+table.inspection td.row-act { width: 28px; text-align: center; }
+table.inspection .row-move {
+  border: 1px solid transparent; background: transparent; color: var(--text-muted, inherit);
+  border-radius: 6px; width: 22px; height: 22px; line-height: 1; cursor: pointer;
+  opacity: 0;
+}
+table.inspection tr:hover .row-move,
+table.inspection tr.selected .row-move,
+table.inspection .row-move:focus-visible { opacity: 1; }
+table.inspection .row-move:hover { background: var(--bg-hover); border-color: var(--border); }
+table.inspection .row-move.ok:hover { color: var(--ok); }
+table.inspection .row-move.review:hover { color: var(--warn); }
+
 /* Checkboxes ---------------------------------------------------- */
 .checkbox {
   appearance: none;
@@ -756,6 +770,12 @@ table.notes tr.target { background: var(--accent-bg); }
   display: inline-grid; place-items: center; border-radius: 3px;
 }
 .toast .close:hover { background: var(--bg-hover); color: var(--fg); }
+.toast .toast-action {
+  display: block; margin-top: 3px; padding: 0; border: 0; background: transparent;
+  color: var(--accent); font: inherit; font-size: var(--fs-xs); font-weight: 500;
+  cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+}
+.toast .toast-action:hover { color: var(--fg); }
 
 @keyframes toast-in {
   from { opacity: 0; transform: translateX(20px); }
@@ -911,12 +931,44 @@ input[type="file"].sr {
 .scroll-thin::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
 
 /* ===== Work list (batch design §3) ================================= */
-.wl-toolbar { display: flex; gap: 8px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+/* Work list = the workbench's shell: a list pane (the same .toolbar and
+   table.inspection rows, same left-bar row states) beside a preview pane that
+   takes the right pane's panel colour. Only layout and the few list-specific
+   bits live here; density, colours and states come from the shared rules. */
+#screen-worklist { min-height: 0; overflow: hidden; }
+.wl-layout { height: 100%; display: grid; grid-template-columns: minmax(0, 1fr) 340px; min-height: 0; }
+.wl-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg-base); }
+.wl-table-wrap { flex: 1; overflow: auto; min-height: 0; }
 .wl-toolbar .spacer { flex: 1; min-width: 0; }
+.wl-toolbar select { height: 26px; padding: 0 8px; background: var(--bg-input); color: var(--fg);
+  border: 1px solid var(--border); border-radius: var(--radius-md); font: inherit; font-size: var(--fs-sm); }
+.wl-toolbar select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
 .wl-queue-header { color: var(--fg-muted); font-size: var(--fs-xs); }
-.wl-table { width: 100%; border-collapse: collapse; }
-.wl-table th, .wl-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; font-size: var(--fs-sm); }
-.wl-bulk { display: flex; gap: 8px; align-items: center; padding: 8px 14px; border-top: 1px solid var(--border); }
+.wl-table td { height: var(--row-h, 30px); white-space: nowrap; }
+.wl-table td.wl-file { max-width: 28ch; overflow: hidden; text-overflow: ellipsis; }
+.wl-table td.wl-file a { color: var(--fg); text-decoration: none; font-weight: 500; }
+.wl-table td.wl-file a:hover { color: var(--accent-strong); text-decoration: underline; }
+.wl-table tbody tr { cursor: pointer; }
+/* Row states borrow the inspection table's vocabulary (see rowTone). */
+.wl-table tbody tr.failed { box-shadow: inset 2px 0 0 var(--err); }
+.wl-table tbody tr.busy { box-shadow: inset 2px 0 0 var(--fg-faint); }
+.wl-table tbody tr.inert td { color: var(--fg-muted); }
+.wl-bulk { display: flex; gap: 8px; align-items: center; padding: 8px 14px; border-top: 1px solid var(--border); background: var(--bg-elevated); }
+
+.wl-preview { display: flex; flex-direction: column; gap: 12px; padding: 14px; min-height: 0; overflow: auto;
+  background: var(--bg-panel); border-left: 1px solid var(--border); }
+.wl-preview-empty { margin: auto; color: var(--fg-faint); font-size: var(--fs-sm); }
+.wl-thumb { aspect-ratio: 4 / 3; display: grid; place-items: center; overflow: hidden;
+  background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius-md);
+  color: var(--fg-faint); font-size: var(--fs-sm); }
+.wl-thumb img { width: 100%; height: 100%; object-fit: contain; }
+.wl-preview-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.wl-preview-title { flex: 1; min-width: 0; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wl-facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: var(--fs-sm); }
+.wl-facts dt { color: var(--fg-muted); }
+.wl-facts dd { margin: 0; font-family: var(--font-mono); }
+.wl-preview .btn { align-self: flex-start; text-decoration: none; }
+@media (max-width: 900px) { .wl-layout { grid-template-columns: minmax(0, 1fr); } .wl-preview { display: none; } }
 .state-chip { padding: 1px 8px; border-radius: 10px; background: var(--bg-hover); font-size: var(--fs-xs); }
 /* A purged row is a tombstone, not an active state -- it reads as inert
    (muted text, no background fill) rather than drawing the eye like a live
@@ -956,6 +1008,10 @@ input[type="file"].sr {
 /* The selected balloon's anchor box (campaign plan C1 Task 12): solid accent,
    unlike the dashed violet suggest-box, because this one is editable. The
    layer itself ignores the pointer, so the box opts back in. */
+/* Leader lines: the export's thin blue (0, .3, .8) line, balloon rim to value. */
+#marker-layer svg.leaders { position: absolute; inset: 0; width: 100%; height: 100%;
+  overflow: visible; pointer-events: none; }
+#marker-layer svg.leaders line { stroke: rgb(0, 77, 204); stroke-width: 1; stroke-linecap: round; }
 #marker-layer .anchor-box { position: absolute; border: 2px solid var(--accent, #2563eb);
   background: var(--accent-bg, rgba(37, 99, 235, .06)); cursor: move; pointer-events: auto;
   box-sizing: border-box; }

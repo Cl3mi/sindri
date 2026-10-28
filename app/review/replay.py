@@ -33,6 +33,20 @@ def replay(proposal_rows: Iterable[dict], events: Iterable[dict]) -> Dict[str, d
             for i in e["ids"]:
                 if i in rows:
                     rows[i]["reviewed"] = t == "accept"
+        elif t == "flag":
+            # Move to Review (review UX plan task 2): the reviewer's own flag,
+            # as persistent as a pipeline one -- it blocks Approve until the
+            # row is resolved. Mirrors opFlagRows in state.js: balloons only
+            # (a suggestion is not one), "manual" appended once.
+            for i in e["ids"]:
+                r = rows.get(i)
+                if r is not None and not r.get("suggested"):
+                    r["needs_review"] = True
+                    reasons = list(r.get("review_reasons") or [])
+                    if "manual" not in reasons:
+                        reasons.append("manual")
+                    r["review_reasons"] = reasons
+                    r["reviewed"] = False
         elif t == "confirm_suggestions":
             for i in e["ids"]:
                 r = rows.get(i)
@@ -42,6 +56,8 @@ def replay(proposal_rows: Iterable[dict], events: Iterable[dict]) -> Dict[str, d
         elif t == "move_target":
             if e["id"] in rows:
                 rows[e["id"]]["target_region"] = list(e["box"])
+        elif t == "scan_read":
+            pass   # a log entry (journal.LOG_ONLY_TYPES): the add it led to is its own event
         elif t == "set_note":
             pass   # a drawing-level fact, not a row's: read with note_of()
         else:
@@ -85,6 +101,7 @@ def mismatches(replayed: Dict[str, dict], final_rows: Iterable[dict],
         a, b = replayed[i], final[i]
         if (any((a.get(f) or "") != (b.get(f) or "") for f in VALUE_FIELDS)
                 or bool(a.get("suggested")) != bool(b.get("suggested"))
+                or bool(a.get("needs_review")) != bool(b.get("needs_review"))
                 or _xy(a) != _xy(b)
                 or _box(a) != _box(b)
                 or a["reviewed"] != (i in reviewed)):

@@ -379,3 +379,27 @@ test('resume refuses a last_seq that is not a non-negative integer', () => {
   j.resume('s', 'w', 0, []);
   assert.equal(j.lastSeq, 0);
 });
+
+test('a log event is numbered and sent but never registered for undo', async () => {
+  const { createJournal } = await import('../../app/static/js/journal.js');
+  const sent = [];
+  const j = createJournal({ send: async (s, w, b) => { sent.push(...b); return { contiguous: b.at(-1).seq }; },
+                            now: () => 5, wallNow: () => 'w' });
+  j.start('s', 'w');
+  const scan = { type: 'scan_read', row_id: 'r1', box: [0, 0, 1, 1], text: '1', conf: 0.9, ms: 3, empty: false };
+  j.record({ kind: 'log', event: scan });
+  const op = S.opAddRow(row('r1', { source: 'manual' }));
+  j.record({ kind: 'do', op: (op.do(), op) });
+  j.record({ kind: 'undo', op });
+  await j.flush();
+  assert.deepEqual(sent.map((e) => [e.seq, e.type, e.target]),
+    [[1, 'scan_read', undefined], [2, 'add_row', undefined], [3, 'retract', 2]]);
+  assert.equal(sent[0].t_ms, 0);
+});
+
+test('a reload skips log-only events instead of refusing the whole session', () => {
+  S.restoreSession({ session_id: 's', image_url: '', rows: [row('a')], notes: null },
+    [{ seq: 1, type: 'scan_read', row_id: 'x', box: [0, 0, 1, 1], text: '', conf: null, ms: 1, empty: true },
+     { seq: 2, type: 'edit_cell', id: 'a', field: 'nominal', old: '1', new: '9' }]);
+  assert.equal(S.state.rows[0].nominal, '9');
+});

@@ -10,7 +10,8 @@ const STORAGE = {
 let toastsEl;
 const TOAST_TIMEOUT = 4200;
 
-export function toast({ kind = 'info', title = '', msg = '', timeout = TOAST_TIMEOUT } = {}) {
+// `action` ({ label, onClick }) adds one link to the toast (the undo toast's Redo).
+export function toast({ kind = 'info', title = '', msg = '', timeout = TOAST_TIMEOUT, action = null } = {}) {
   if (!toastsEl) toastsEl = document.getElementById('toasts');
   const t = document.createElement('div');
   t.className = `toast ${kind}`;
@@ -35,6 +36,13 @@ export function toast({ kind = 'info', title = '', msg = '', timeout = TOAST_TIM
     t.classList.add('exiting');
     setTimeout(() => t.remove(), 220);
   };
+  if (action) {
+    const a = document.createElement('button');
+    a.className = 'toast-action';
+    a.textContent = action.label;
+    a.addEventListener('click', () => { action.onClick(); close(); });
+    t.querySelector('.body').appendChild(a);
+  }
   t.querySelector('.close').addEventListener('click', close);
   if (timeout) setTimeout(close, timeout);
   return close;

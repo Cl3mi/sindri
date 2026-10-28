@@ -2,7 +2,7 @@
 // reopening a drawing from its link, and Finish & Export.
 
 import { state, on, restoreSession, clearSession, undo, redo,
-         canUndo, canRedo, progress, canFinish, apply, opSetNote } from './state.js';
+         canUndo, canRedo, undoLabel, redoLabel, progress, canFinish, apply, opSetNote } from './state.js';
 import { approvedCount, finishCopy, isCampaignDoc, noteToCommit } from './campaign.js';
 import { getDocument, cancelDocument, openDocument, deleteDocument, downloadExport,
          health, postEvents, beaconEvents, sealSession, createBatch, getBatch,
@@ -1598,9 +1598,27 @@ function wireUndoRedo() {
   const r = document.getElementById('redo-btn');
   u.addEventListener('click', undo);
   r.addEventListener('click', redo);
-  on('history', () => {
+  // The buttons say what a click will do ("Undo: delete balloon 5"), so a
+  // reviewer never has to guess which of several quick edits goes first.
+  const sync = () => {
     u.disabled = !canUndo();
     r.disabled = !canRedo();
+    u.title = canUndo() ? `Undo: ${undoLabel()} (Ctrl+Z)` : 'Nothing to undo';
+    r.title = canRedo() ? `Redo: ${redoLabel()} (Ctrl+Shift+Z)` : 'Nothing to redo';
+  };
+  on('history', sync);
+  sync();
+  // A short-lived toast after an undo, with a Redo link: the button and the
+  // keyboard both land here, and a mis-click on a balloon's x is the usual
+  // reason to undo. One at a time, so ten Ctrl+Z do not stack ten toasts.
+  let closeUndoToast = null;
+  on('op', ({ kind }) => {
+    if (kind !== 'undo') return;
+    if (closeUndoToast) closeUndoToast();
+    closeUndoToast = toast({
+      kind: 'info', title: `Undid: ${redoLabel()}`, timeout: 2200,
+      action: { label: 'Redo', onClick: redo },
+    });
   });
 }
 

@@ -87,18 +87,56 @@ def _pct(values, q):
     return s[lo] + (s[hi] - s[lo]) * (k - lo)
 
 
+_SCAN_OUTCOMES = ("untouched", "edited", "deleted", "undone", "failed")
+
+
+def _scan_section(scans: List[dict]) -> dict:
+    """Counts only (a digest never carries OCR text or ids): the outcomes
+    partition `attempts`, so the section reconciles against itself and against
+    the manual adds that came from a scan (`missed_scan`)."""
+    out = {"attempts": len(scans)}
+    for o in _SCAN_OUTCOMES:
+        out[o] = sum(1 for s in scans if s["outcome"] == o)
+    out["empty"] = sum(1 for s in scans if s.get("empty"))
+    survivors = [s for s in scans if s["outcome"] in ("untouched", "edited")]
+    out["box_moved"] = sum(1 for s in survivors if s.get("box_moved"))
+    edits: Dict[str, int] = {}
+    for s in scans:
+        if s["outcome"] == "edited":
+            key = "fields:" + "+".join(s["fields"])
+            edits[key] = edits.get(key, 0) + 1
+    out["edits"] = dict(sorted(edits.items()))
+    deleted: Dict[str, int] = {}
+    for s in scans:
+        if s["outcome"] == "deleted":
+            word = _phantom_reason(s.get("reason"))
+            deleted[word] = deleted.get(word, 0) + 1
+    out["deleted_by_reason"] = dict(sorted(deleted.items()))
+    ms = [s["ms"] for s in scans if isinstance(s.get("ms"), (int, float)) and math.isfinite(s["ms"])]
+    out["ms_median"] = statistics.median(ms) if ms else None
+    out["ms_max"] = max(ms) if ms else None
+    return out
+
+
 def group_metrics(drawings: List[dict]) -> dict:
     """drawings: [{"rows": grade_session rows, "missed": [...], "scale": render_scale,
     "time_ms": int}] for ONE group, gradable drawings only."""
     counts: Dict[str, int] = {g: 0 for g in VALUE_GRADES + SUGGESTION_GRADES}
     counts["missed"] = 0
+    counts["missed_scan"] = counts["missed_typed"] = counts["missed_via_unknown"] = 0
     counts["confirmed_explicit"] = counts["unflagged_confirmed_explicit"] = 0
     flagged = flagged_wrong = 0
+    manual = {g: 0 for g in VALUE_GRADES}
     unflagged = {g: 0 for g in VALUE_GRADES}
     moves_mm, moved, far, placed = [], 0, 0, 0
     nudged = repointed = anchor_measured = anchor_unmeasurable = 0
+    scans: List[dict] = []
     for d in drawings:
         counts["missed"] += len(d["missed"])
+        scans += d.get("scans") or []
+        for m in d["missed"]:
+            # A row graded before `via` existed is unknown, never 'typed'.
+            counts[f"missed_{m.get('via') if m.get('via') in ('scan', 'typed') else 'via_unknown'}"] += 1
         for r in d["rows"]:
             g = r["grade"]
             counts[g] += 1
@@ -110,6 +148,9 @@ def group_metrics(drawings: List[dict]) -> dict:
                     flagged_wrong += g != "confirmed"
                 else:
                     unflagged[g] += 1
+                # .get: a row graded before the field existed was not flagged.
+                if r.get("manual_flag"):
+                    manual[g] += 1
             if g == "confirmed" and r.get("reviewed"):
                 counts["confirmed_explicit"] += 1
                 counts["unflagged_confirmed_explicit"] += not r["flagged"]
@@ -152,6 +193,10 @@ def group_metrics(drawings: List[dict]) -> dict:
     counts["flagged"], counts["flagged_wrong"] = flagged, flagged_wrong
     for g in VALUE_GRADES:
         counts[f"unflagged_{g}"] = unflagged[g]
+    # Rows the reviewer moved to Review themselves, by outcome (partition).
+    counts["manual_flagged"] = sum(manual.values())
+    for g in VALUE_GRADES:
+        counts[f"manual_flagged_{g}"] = manual[g]
     times = [d["time_ms"] / 60000 for d in drawings if d.get("time_ms")]
     # One shared denominator for both recalls: everything the client is known
     # to have wanted. These are UPPER bounds whenever the client's manual
@@ -161,6 +206,7 @@ def group_metrics(drawings: List[dict]) -> dict:
     return {
         "n_drawings": len(drawings),
         "counts": counts,
+        "scans": _scan_section(scans),
         # precision / unflagged_precision include SILENT confirmations: approval
         # only requires the FLAGGED rows to be resolved, so an unflagged row
         # the client never looked at counts as confirmed. They are upper
@@ -421,6 +467,9 @@ EXACT_LEVERS = {
     "fields:nominal": ("read input / box framing (crop context)", "open"),
     "phantom:duplicate": ("stage-1 contained_duplicate drop", "shipped"),
     "phantom:wrong_region": ("box framing (detect_regions)", "open"),
+    # The reader returned nothing: a non-text region was ballooned, which is a
+    # detection fault, not a read one.
+    "phantom:empty_extraction": ("non-text region detected (detect_regions)", "open"),
 }
 # Prefix match, FIRST wins, so most-specific first.
 LEVERS = [
@@ -592,7 +641,7 @@ def _grade_one(d, facts) -> dict:
     if g["ungradable"]:
         return {"status": "ungradable", "reason": g["ungradable"]}
     return {"status": "approved", "reason": None, "rows": g["rows"], "missed": g["missed"],
-            "scale": scale, "time_ms": review_time_ms(d.events)}
+            "scans": g["scans"], "scale": scale, "time_ms": review_time_ms(d.events)}
 
 
 def _note(sealed) -> Optional[str]:
@@ -696,7 +745,7 @@ def grade_campaign(records, gold_by_hash: Optional[Dict[str, GoldDoc]] = None,
         revision_mismatch += bool(d.revision_mismatch)
         doc = {"doc_hash": skey, "group": group,
                "source_run": source_run(facts.get("source_run")),
-               "status": None, "reason": None, "rows": None, "missed": None,
+               "status": None, "reason": None, "rows": None, "missed": None, "scans": None,
                "scale": None, "time_ms": None, "proposal": None, "final": None,
                "cross": None, "note": None,
                # Report only: the digest is built from counts and never sees it.
@@ -768,6 +817,19 @@ def grade_campaign(records, gold_by_hash: Optional[Dict[str, GoldDoc]] = None,
             problems.append(f"group_flag_partition:{grp}")
         if not (c["unflagged_confirmed_explicit"] <= c["confirmed_explicit"] <= c["confirmed"]):
             problems.append(f"group_explicit:{grp}")
+        if c["missed_scan"] + c["missed_typed"] + c["missed_via_unknown"] != c["missed"]:
+            problems.append(f"group_missed_via:{grp}")
+        sc = groups[grp]["scans"]
+        if sum(sc[o] for o in _SCAN_OUTCOMES) != sc["attempts"]:
+            problems.append(f"group_scans:{grp}")
+        # Every manual add that came from a scan is a scan that survived, so
+        # the survivors bound it (a survivor can still be missing from `missed`
+        # if the client deleted it later, hence <=, not ==).
+        if c["missed_scan"] > sc["untouched"] + sc["edited"]:
+            problems.append(f"group_scan_adds:{grp}")
+        if (sum(c[f"manual_flagged_{g}"] for g in VALUE_GRADES) != c["manual_flagged"]
+                or c["manual_flagged"] > graded):
+            problems.append(f"group_manual_flag:{grp}")
     if sum(m["n_drawings"] for m in groups.values()) != status["approved"]:
         problems.append("group_drawings")
     if sum(status.values()) != len(records.drawings):

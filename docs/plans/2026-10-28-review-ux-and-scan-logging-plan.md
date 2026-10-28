@@ -22,7 +22,7 @@ no record.
 | Worklist | Takes the workbench's panels/tokens, table density and row states, and a preview pane (drawing thumbnail and counts beside the list). Filters keep working as today. |
 | Verification | Node tests, replay parity fuzz, and a headless-browser pass on a synthetic bundle through `campaign_ops.sh local-up`, with screenshots. |
 
-## 1. Batch B1: records (before the pilot)
+## 1. Batch B1: records (before the pilot) -- DONE 2026-10-28, branch `feature/review-records`
 
 Every task is TDD, one commit each. Mirrors that must move together:
 `app/review/journal.py`, `app/review/replay.py`, `app/static/js/state.js`,
@@ -66,7 +66,7 @@ Every task is TDD, one commit each. Mirrors that must move together:
    one edited, one undone, one empty, plus a manual flag, driven through the
    real store, seal, pull and grader.
 
-## 2. Batch B2: UI polish (no record change)
+## 2. Batch B2: UI polish (no record change) -- DONE 2026-10-28, branch `feature/review-records`
 
 7. **Selection after add** (`state.js` `opAddRow`, `viewer.js`): clear on empty
    canvas click and Esc; hide anchor handles until the balloon is clicked.
@@ -96,6 +96,43 @@ Every task is TDD, one commit each. Mirrors that must move together:
   (41 cases). Update CLAUDE.md §6 counts and the handoff when a batch lands.
 - Branching: merge `feature/campaign-smoke` first (operator's go), then one
   branch per batch off `main` in `.worktrees/`. Commit trailer per CLAUDE.md.
+
+## 3b. As built (B1)
+
+Tasks 1-6 landed as planned, one commit each, plus: `replay.mismatches` now
+compares `needs_review` (a flag changes nothing else, so a replay that lost it
+would still have 'reproduced' the export); `net_events` refuses a retract of a
+log-only event; the digest gained `manual_flagged*`, `missed_scan|typed|via_unknown`
+and a per-group `scans` section, all reconciled in `grade_campaign`. The seam test
+runs a kept, an edited, an undone and a failed scan plus a flag through the real
+store and seal. Suite 2938 (2907 + the 31 title-block tests, which need the ignored
+local sample in the worktree), node green, guard 41/0. Mutation checks: the parity
+fuzz fails if replay forgets to un-accept on `flag`, and if reload does not skip
+log-only events. **B2 (UI polish) is next; the pilot bundle can be built from B1.**
+
+## 3c. As built (B2)
+
+Tasks 7-10 as planned: `state.js` `clearSelection()`/`anchorId`/`showAnchorFor()` (handles
+only after a balloon click; a scan-added selection lets go after 2.5 s; Esc or an
+empty-canvas click clears); ops carry `describe()` with their balloon number, `undoLabel()`
+/`redoLabel()` feed the button tooltips and a 2 s "Undid: ..." toast with a Redo link
+(`ui.toast` gained an `action`); `leader.js` ports `_leader_segment` (node test pinned to the
+Python's numbers) and `viewer.js` draws a thin blue SVG layer, selected/hovered plus a "Lines"
+toggle in localStorage; the work list is a two-pane layout on the workbench's `.toolbar`,
+`table.inspection` and left-bar row states (`rowTone`), with a preview pane
+(`previewFacts`, `/api/image/<id>`, already campaign-safe) and a short timestamp.
+
+Task 11 was run with a scratch Playwright (installed outside the repo) driving Chromium
+against the campaign-only app started with `campaign_ops.sh`'s env switches on a synthetic
+3-drawing bundle (not the script itself: it refuses an agent session). Verified: 3 rows and a
+loaded thumbnail; balloon click gives one handle set and one leader; Esc and empty click clear;
+Lines draws all 8; delete gives "Undo: delete balloon 3", undo shows the toast and
+"Redo: delete balloon 3"; a ticked row moves to Review and the tooltip reads "move 1 row
+to review". Findings fixed: unstyled filter selects, raw ISO timestamps. Not changed: the
+selected-row fallback for the Move buttons only follows a balloon click (a table click does
+not select a row). The loader dedupes by drawing bytes, so a synthetic bundle needs distinct
+PDFs per entry. The operator should still eyeball one real drawing before the pilot.
+Suite 2907 passed, 2 skipped (+31 title-block tests in the main checkout), node 321.
 
 ## 4. Open questions
 

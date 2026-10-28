@@ -17,7 +17,7 @@ def test_vocabulary_is_exactly_the_known_operations():
     assert EVENT_TYPES == {
         "add_row", "delete_row", "move_row", "edit_cell",
         "accept", "unaccept", "confirm_suggestions", "retract",
-        "move_target", "set_note"}
+        "move_target", "set_note", "flag", "scan_read"}
 
 
 @pytest.mark.parametrize("bad", [
@@ -59,6 +59,8 @@ def test_validate_event_accepts_a_wellformed_retract():
     {"seq": 1, "type": "accept", "ids": 5},                        # ids not a list
     {"seq": 1, "type": "unaccept", "ids": ["a", 5]},                # element not str
     {"seq": 1, "type": "confirm_suggestions", "ids": "a"},          # ids not a list
+    {"seq": 1, "type": "flag", "ids": "a"},                         # ids not a list
+    {"seq": 1, "type": "flag", "ids": ["a", 5]},                    # element not str
     {"seq": 1, "type": "add_row"},                                  # no row
     {"seq": 1, "type": "add_row", "row": "not a dict"},             # row not a dict
     {"seq": 1, "type": "add_row", "row": {}},                       # row missing id
@@ -83,6 +85,7 @@ def test_validate_event_accepts_wellformed_events_of_every_type():
     validate_event(ev(1, "add_row", row={"id": "r1"}))
     validate_event(ev(1, "accept", ids=["a", "b"]))
     validate_event(ev(1, "unaccept", ids=[]))
+    validate_event(ev(1, "flag", ids=["a"]))
     validate_event(ev(1, "confirm_suggestions", ids=["a"]))
 
 
@@ -154,7 +157,9 @@ def test_reasons_are_closed_vocabularies_and_optional():
     assert EDIT_REASONS == {"misread_digit", "wrong_tolerance", "wrong_char_type",
                             "wrong_sign_or_unit", "other"}
     assert DELETE_REASONS == {"duplicate", "not_a_characteristic",
-                              "unballooned_real_dimension", "wrong_region", "other"}
+                              "unballooned_real_dimension", "wrong_region",
+                              "empty_extraction", "other"}
+    validate_event({**delete, "reason": "empty_extraction"})
 
 
 def test_coordinates_must_be_finite():
@@ -168,3 +173,42 @@ def test_coordinates_must_be_finite():
     for xy in ([inf, 1], [nan, 1]):
         with pytest.raises(JournalError):
             validate_event({"seq": 1, "type": "move_row", "id": "r1", "xy": xy})
+
+
+SCAN = {"type": "scan_read", "row_id": "r1", "box": [10, 20, 110, 60],
+        "text": "12 +0.1", "conf": 0.93, "ms": 412, "empty": False}
+
+
+def test_scan_read_is_a_log_only_event_with_a_checked_shape():
+    validate_event({**SCAN, "seq": 1})
+    # An empty read and a failed request are attempts too: no row, no text.
+    validate_event({**SCAN, "seq": 2, "row_id": None, "text": "", "conf": None,
+                    "empty": True, "failed": True})
+
+
+@pytest.mark.parametrize("bad", [
+    {"row_id": 5},                       # id must be a string or null
+    {"box": [1, 2, 3]},                  # not 4 numbers
+    {"box": [1, 2, 3, "x"]},
+    {"text": None},                      # text is a string
+    {"text": "x" * 501},                 # bounded, so one event cannot bloat the journal
+    {"conf": float("nan")},              # non-finite breaks /open's serialisation
+    {"conf": "high"},
+    {"ms": -1},
+    {"ms": True},
+    {"empty": "no"},                     # a real bool
+    {"failed": 1},
+])
+def test_scan_read_refuses_a_malformed_shape(bad):
+    with pytest.raises(JournalError):
+        validate_event({**SCAN, **bad, "seq": 1})
+
+
+def test_a_scan_read_survives_its_rows_undo_but_can_never_be_retracted():
+    """The log-only exception to 'net operations only': an undone scan is the
+    attempt that missed, so the add is compacted away and the attempt stays."""
+    events = [ev(1, "scan_read", **{k: v for k, v in SCAN.items() if k != "type"}),
+              ev(2, "add_row", row={"id": "r1"}), ev(3, "retract", target=2)]
+    assert [e["seq"] for e in net_events(events)] == [1]
+    with pytest.raises(JournalError):
+        net_events([*events[:1], ev(4, "retract", target=1)])

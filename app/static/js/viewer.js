@@ -12,13 +12,15 @@
 // transformed.
 
 import {
-  state, on, emit,
+  state, on, emit, clearSelection, showAnchorFor,
   apply, opAddRow, opDeleteRow, opMoveRow, opMoveTarget,
 } from './state.js';
 import { readRegion } from './api.js';
 import { dragBox, settleBox, beyondDeadZone } from './anchor.js';
 import { commitWithReason, askReason } from './reasons.js';
 import { toast } from './ui.js';
+import { scanEvent } from './scanlog.js';
+import { leaderSegment, leadersToDraw } from './leader.js';
 
 const ZOOM_MIN = 0.1;
 const ZOOM_MAX = 8;
@@ -29,6 +31,14 @@ let zoom = 1, tx = 0, ty = 0;
 let panning = false, spaceDown = false, altDown = false, panStart = null;
 let addMode = false, panMode = false;
 let drawing = null;        // { startView }
+let bgClick = null;        // { x, y } mousedown on empty canvas, resolved on mouseup
+// Leader lines: the export's thin blue line from balloon rim to value. Marker
+// is 22 px across (components.css), so its rim is 11 px out; the margin keeps
+// the line off the callout's glyphs as the export's 2.5 pt does.
+const LEADER_RADIUS_PX = 11, LEADER_MARGIN_PX = 3;
+const LEADERS_KEY = 'sindri.leaders';
+let leadersAll = false;    // toolbar toggle: every balloon's line, not just the selected/hovered
+const SCAN_SELECT_MS = 2500;   // how long a scan-added row stays selected
 let dragging = null;       // { id, lastView, startClient, moved }
 let anchorDrag = null;     // { id, handle, startClient, startPlan, origin, box, active }
 
@@ -45,8 +55,10 @@ export function initViewer() {
   // click or a moved drag), so the anchor box would otherwise lag a
   // selection until the next unrelated re-render.
   on('select', () => renderMarkers());
+  on('hover', () => syncLeaders());
 
   bindZoomControls();
+  bindLeaderToggle();
   bindMouse();
   bindKeys();
   bindResize();
@@ -187,7 +199,7 @@ function bindMouse() {
     const handleEl = !onMarker && e.target.closest('.anchor-box, .anchor-handle');
     // Read-only (another tab holds the writer): apply() would drop the edit,
     // so a drag would only show a box that snaps back.
-    if (handleEl && e.button === 0 && state.selectedId && !state.readOnly) {
+    if (handleEl && e.button === 0 && showAnchorFor(state.selectedId) && !state.readOnly) {
       const row = state.rows.find((x) => x.id === state.selectedId);
       if (row && row.target_region && !row.suggested) {
         const v = viewportPoint(e.clientX, e.clientY);
@@ -208,9 +220,17 @@ function bindMouse() {
       dragging = { id, lastView: v, moved: false,
                    startClient: { x: e.clientX, y: e.clientY } };
       state.selectedId = id;
+      state.anchorId = id;      // a balloon click is what asks for the handles
       onMarker.classList.add('selected');
       emit('select', id);
       e.preventDefault();
+      return;
+    }
+
+    // EMPTY CANVAS: a click that does not become a drag ends the selection
+    // (mouseup decides, so a pan or a stray tremble keeps it).
+    if (!onMarker && !handleEl && e.button === 0) {
+      bgClick = { x: e.clientX, y: e.clientY };
     }
   });
 
@@ -269,10 +289,16 @@ function bindMouse() {
         m.style.top  = v.y + 'px';
       }
       dragging.lastView = v;
+      syncLeaders();
     }
   });
 
   window.addEventListener('mouseup', async (e) => {
+    if (bgClick) {
+      const start = bgClick;
+      bgClick = null;
+      if (!beyondDeadZone(start, { x: e.clientX, y: e.clientY })) clearSelection();
+    }
     if (panning) {
       panning = false;
       viewport.classList.remove('panning');
@@ -343,6 +369,7 @@ function bindMouse() {
     const m = e.target.closest('.marker');
     if (m) {
       state.selectedId = m.dataset.id;
+      state.anchorId = m.dataset.id;
       emit('select', state.selectedId);
       emit('change');
     }
@@ -366,6 +393,7 @@ function bindKeys() {
     if (e.key.toLowerCase() === 'f') { fitPage(); }
     if (e.key.toLowerCase() === 'a') { toggleAdd(); }
     if (e.key.toLowerCase() === 'h') { togglePan(); }
+    if (e.key === 'Escape' && state.selectedId) { clearSelection(); }
     if (e.key === 'Delete' || e.key === 'Backspace') {
       if (state.selectedId) {
         // Captured now: the selection can move while the prompt is open.
@@ -432,14 +460,31 @@ function setPan(on) {
 }
 
 async function runReadRegion(planBox) {
+  const t0 = performance.now();
+  // Every attempt is logged BEFORE its add (so the event's row id is in the
+  // journal ahead of the row), including a failed request: the hit rate is
+  // only honest if the misses are in it (journal.py LOG_ONLY_TYPES). A
+  // read-only tab (another tab holds the writer) records nothing, as apply().
+  const log = (extra) => {
+    if (state.readOnly) return;
+    emit('op', { kind: 'log', event: scanEvent({ box: planBox, ms: performance.now() - t0, ...extra }) });
+  };
+  let row;
   try {
-    const row = await readRegion(state.sessionId, planBox);
-    row.reviewed = false;
-    apply(opAddRow(row));
-    toast({ kind: 'ok', title: `Added Pos ${row.pos}`, msg: row.char_type || row.raw_text || 'manual region' });
+    row = await readRegion(state.sessionId, planBox);
   } catch (err) {
+    log({ failed: true });
     toast({ kind: 'error', title: 'Could not read region', msg: String(err.message || err) });
+    return;
   }
+  row.reviewed = false;
+  log({ row });
+  apply(opAddRow(row));
+  // Selected so the reviewer sees what the scan made, then let go: a row
+  // that stayed selected kept its box and handles on screen indefinitely.
+  setTimeout(() => { if (state.selectedId === row.id && !state.anchorId) clearSelection(); },
+             SCAN_SELECT_MS);
+  toast({ kind: 'ok', title: `Added Pos ${row.pos}`, msg: row.char_type || row.raw_text || 'manual region' });
 }
 
 // ----- marker rendering ----------------------------------------------
@@ -495,6 +540,53 @@ function renderMarkers() {
     if (!r || !r.suggested) b.remove();
   });
   syncAnchorBox();
+  syncLeaders();
+}
+
+// ----- leader lines ---------------------------------------------------
+function bindLeaderToggle() {
+  try { leadersAll = localStorage.getItem(LEADERS_KEY) === '1'; } catch { /* private window */ }
+  const btn = document.getElementById('leaders-btn');
+  if (!btn) return;
+  const paint = () => btn.classList.toggle('active', leadersAll);
+  paint();
+  btn.addEventListener('click', () => {
+    leadersAll = !leadersAll;
+    try { localStorage.setItem(LEADERS_KEY, leadersAll ? '1' : '0'); } catch { /* per-viewer nicety only */ }
+    paint();
+    syncLeaders();
+  });
+}
+
+function leaderLayer() {
+  let svg = markerLayer.querySelector('svg.leaders');
+  if (!svg) {
+    svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', 'leaders');
+    markerLayer.prepend(svg);     // under every marker and the anchor box
+  }
+  return svg;
+}
+
+function syncLeaders() {
+  if (!markerLayer || !img) return;
+  const svg = leaderLayer();
+  const rows = leadersToDraw(state.rows, { selectedId: state.selectedId,
+                                           hoverId: state.hoverId, all: leadersAll });
+  svg.replaceChildren();
+  for (const r of rows) {
+    // A balloon mid-drag follows the pointer; its row only updates on mouseup.
+    const b = dragging && dragging.id === r.id ? dragging.lastView
+      : planToView(r.balloon_xy[0], r.balloon_xy[1]);
+    const a = planToView(r.target_region[0], r.target_region[1]);
+    const c = planToView(r.target_region[2], r.target_region[3]);
+    const seg = leaderSegment(b, [a.x, a.y, c.x, c.y], LEADER_RADIUS_PX, LEADER_MARGIN_PX);
+    if (!seg) continue;
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', seg.x1); line.setAttribute('y1', seg.y1);
+    line.setAttribute('x2', seg.x2); line.setAttribute('y2', seg.y2);
+    svg.appendChild(line);
+  }
 }
 
 function syncSuggestBox(r) {
@@ -521,7 +613,8 @@ function syncSuggestBox(r) {
 // its dashed suggest-box and is confirmed, not re-anchored, in the tray.
 function syncAnchorBox() {
   let box = markerLayer.querySelector('.anchor-box');
-  const r = state.rows.find((x) => x.id === state.selectedId);
+  const r = showAnchorFor(state.selectedId)
+    ? state.rows.find((x) => x.id === state.selectedId) : null;
   if (!r || !r.target_region || r.suggested) {
     if (box) box.remove();
     // The row went away mid-drag (undo, a delete): drop the drag rather

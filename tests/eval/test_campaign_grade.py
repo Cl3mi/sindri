@@ -914,3 +914,58 @@ def test_the_name_is_recorded_after_the_kind(tmp_path):
     assert digest["name"] == "unnamed"
     _, digest = grade_campaign(read_records(_campaign(tmp_path)))
     assert digest["name"] == "unnamed"
+
+
+def test_an_empty_extraction_delete_is_its_own_phantom_bucket_with_a_lever():
+    """A box the reader returned nothing for is not "other": the reviewer named
+    it, and the fix lives in detection (a non-text region was ballooned), not
+    in the read."""
+    f = ranked_findings([{"rows": [{**graded("phantom"), "reason": "empty_extraction"}],
+                          "missed": [], "scale": 300 / 72.0}])
+    [b] = f["value"]
+    assert b["bucket"] == "phantom:empty_extraction"
+    assert b["lever"] != "unmapped" and "detect" in b["lever"]
+
+
+def test_reviewer_flags_are_counted_by_what_became_of_the_row():
+    """The reviewer moving a row to Review is signal about the rows they
+    doubted: how many, and whether the doubt was right (edited/deleted) or not
+    (confirmed). The three outcomes partition the flagged rows."""
+    rows = [{**graded("confirmed"), "manual_flag": True},
+            {**graded("edited", fields=["nominal"]), "manual_flag": True},
+            {**graded("phantom"), "manual_flag": True},
+            {**graded("confirmed"), "manual_flag": False},
+            graded("confirmed")]       # a row graded before the field existed
+    c = group_metrics([{"rows": rows, "missed": [], "scale": 300 / 72.0}])["counts"]
+    assert (c["manual_flagged"], c["manual_flagged_confirmed"],
+            c["manual_flagged_edited"], c["manual_flagged_phantom"]) == (3, 1, 1, 1)
+
+
+def _scan(outcome, empty=False, fields=(), reason=None, moved=False, ms=100):
+    return {"row_id": "x", "outcome": outcome, "empty": empty, "fields": list(fields),
+            "reason": reason, "box_iou": 0.5 if moved else 1.0, "box_moved": moved, "ms": ms}
+
+
+def test_scan_outcomes_are_counted_per_group_and_partition_the_attempts():
+    scans = [_scan("untouched"), _scan("edited", fields=["nominal"], moved=True, ms=300),
+             _scan("deleted", empty=True, reason="empty_extraction", ms=500),
+             _scan("undone", empty=True), _scan("failed", empty=True, ms=900)]
+    d = {"rows": [], "missed": [{"via": "scan"}, {"via": "scan"}, {"via": "typed"}],
+         "scale": 300 / 72.0, "scans": scans}
+    m = group_metrics([d])
+    s = m["scans"]
+    assert (s["attempts"], s["untouched"], s["edited"], s["deleted"], s["undone"],
+            s["failed"]) == (5, 1, 1, 1, 1, 1)
+    assert s["empty"] == 3 and s["box_moved"] == 1
+    assert s["edits"] == {"fields:nominal": 1}
+    assert s["deleted_by_reason"] == {"empty_extraction": 1}
+    assert (s["ms_median"], s["ms_max"]) == (300, 900)
+    c = m["counts"]
+    assert (c["missed"], c["missed_scan"], c["missed_typed"], c["missed_via_unknown"]) == (3, 2, 1, 0)
+
+
+def test_a_drawing_with_no_scans_reports_zero_attempts_not_a_missing_section():
+    m = group_metrics([{"rows": [], "missed": [{}], "scale": 300 / 72.0, "scans": []}])
+    assert m["scans"]["attempts"] == 0 and m["scans"]["ms_median"] is None
+    # A missed row graded before `via` existed is unknown, never typed.
+    assert m["counts"]["missed_via_unknown"] == 1 and m["counts"]["missed_typed"] == 0

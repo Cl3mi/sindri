@@ -89,3 +89,37 @@ def test_note_of_refuses_a_raw_journal_like_replay_does():
               {"seq": 2, "type": "retract", "target_seq": 1}]
     with pytest.raises(JournalError):
         note_of(events)
+
+
+def test_flag_puts_a_row_back_in_the_review_queue_with_a_manual_reason():
+    """Move-to-Review (review UX plan task 2). The reviewer's own flag is a
+    fact the grader reads: the row needs review again, is no longer accepted,
+    and says WHY (`manual`, never one of the pipeline's reasons)."""
+    proposal = [row("a"), row("b", needs_review=True, review_reasons=["no_tolerance"]),
+                row("s", suggested=True)]
+    out = replay(proposal, [ev(1, "accept", ids=["a", "b"]),
+                            ev(2, "flag", ids=["a", "b", "s", "ghost"])])
+    assert out["a"]["needs_review"] is True and out["a"]["reviewed"] is False
+    assert out["a"]["review_reasons"] == ["manual"]
+    # An existing reason stays; "manual" is appended once, never duplicated.
+    assert out["b"]["review_reasons"] == ["no_tolerance", "manual"]
+    # A suggestion is not a balloon: nothing to flag (state.js agrees).
+    assert out["s"].get("needs_review") is False and out["s"].get("review_reasons") is None
+    again = replay(proposal, [ev(1, "flag", ids=["b"]), ev(2, "flag", ids=["b"])])
+    assert again["b"]["review_reasons"] == ["no_tolerance", "manual"]
+
+
+def test_scan_read_is_ignored_by_replay():
+    """A scan is a log entry, not an operation on a row: the add it leads to
+    is its own event."""
+    out = replay([row("a")], [ev(1, "scan_read", row_id="a", box=[0, 0, 1, 1], text="",
+                                 conf=None, ms=1, empty=True)])
+    assert out == replay([row("a")], [])
+
+
+def test_mismatches_compares_whether_a_row_needs_review():
+    """A flag changes needs_review and nothing else, so without this a replay
+    that dropped it would still 'reproduce' the exported rows."""
+    replayed = replay([row("a")], [ev(1, "flag", ids=["a"])])
+    assert mismatches(replayed, [row("a", needs_review=True)], []) == []
+    assert mismatches(replayed, [row("a", needs_review=False)], []) == ["a"]

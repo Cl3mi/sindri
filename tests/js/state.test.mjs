@@ -164,3 +164,96 @@ test('opFromEvent restores move_target, set_note and reasons', () => {
   assert.equal(S.state.note, 'n');
   assert.equal(S.state.rows[0].nominal, '3');
 });
+
+test('opFlagRows moves rows to Review as a manual flag and undo restores them exactly', () => {
+  load([row('a', 0, 0),
+        row('b', 50, 0, { needs_review: true, review_reasons: ['no_tolerance'] }),
+        row('s', 90, 0, { suggested: true })]);
+  S.apply(S.opBulkReview(['a', 'b'], true));   // setSession resets reviewed; accept for real
+  const op = S.opFlagRows(['a', 'b', 's', 'a', 'ghost']);
+  S.apply(op);
+  const get = (id) => S.state.rows.find((r) => r.id === id);
+  assert.equal(get('a').needs_review, true);
+  assert.equal(get('a').reviewed, false);
+  assert.deepEqual(get('a').review_reasons, ['manual']);
+  assert.deepEqual(get('b').review_reasons, ['no_tolerance', 'manual']);
+  assert.equal(get('s').needs_review, false);          // a suggestion is not a balloon
+  assert.deepEqual(op.event(), { type: 'flag', ids: ['a', 'b', 's', 'ghost'] });
+  assert.equal(S.progress().outstanding, 2);          // blocks Approve until resolved
+  S.undo();                                            // undoes the flag, not the accept
+  assert.equal(get('a').needs_review, false);
+  assert.equal(get('a').reviewed, true);
+  assert.deepEqual(get('a').review_reasons, []);
+  assert.deepEqual(get('b').review_reasons, ['no_tolerance']);
+  assert.equal(get('b').reviewed, true);
+});
+
+test('a flag event rebuilds the same op after a reload', () => {
+  load([row('a', 0, 0)]);
+  const op = S.opFromEvent({ type: 'flag', ids: ['a'] });
+  S.apply(op);
+  assert.equal(S.state.rows[0].needs_review, true);
+});
+
+// Review UX round, task 7: a freshly scanned row is selected so the reviewer
+// sees what was added, but that selection used to stay forever and drew the
+// anchor box and handles around it. Only a click on the balloon asks for the
+// handles, and an empty-canvas click or Esc ends the selection.
+test('clearSelection drops the selection and the anchor-handle request', () => {
+  load([row('a', 0, 0)]);
+  S.state.selectedId = 'a';
+  S.state.anchorId = 'a';
+  let selected = 'unset';
+  const off = S.on('select', (id) => { selected = id; });
+  S.clearSelection();
+  off();
+  assert.equal(S.state.selectedId, null);
+  assert.equal(S.state.anchorId, null);
+  assert.equal(selected, null);
+});
+
+test('an added row is selected but does not request anchor handles', () => {
+  load([row('a', 0, 0)]);
+  S.apply(S.opAddRow(row('n', 50, 0)));
+  assert.equal(S.state.selectedId, 'n');
+  assert.equal(S.showAnchorFor('n'), false);
+  S.state.anchorId = 'n';
+  assert.equal(S.showAnchorFor('n'), true);
+  S.clearSelection();
+  assert.equal(S.showAnchorFor('n'), false);
+});
+
+test('a loaded session starts with no anchor request', () => {
+  S.state.anchorId = 'x';
+  load([row('a', 0, 0)]);
+  assert.equal(S.state.anchorId, null);
+});
+
+// Review UX round, task 8: the undo and redo buttons say what they will do.
+test('undoLabel and redoLabel name the operation and its balloon number', () => {
+  load([row('a', 0, 0), row('b', 100, 0), row('c', 200, 0)]);
+  S.renumber();
+  assert.equal(S.undoLabel(), null);
+  assert.equal(S.redoLabel(), null);
+  S.apply(S.opDeleteRow('b'));
+  assert.equal(S.undoLabel(), 'delete balloon 2');   // the row is gone, its number is not
+  S.undo();
+  assert.equal(S.undoLabel(), null);
+  assert.equal(S.redoLabel(), 'delete balloon 2');
+  S.redo();
+  S.apply(S.opEditCell('c', 'nominal', '9'));
+  assert.equal(S.undoLabel(), 'edit nominal on balloon 2');   // c became number 2
+  S.apply(S.opMoveRow('a', [5, 5]));
+  assert.equal(S.undoLabel(), 'move balloon 1');
+});
+
+test('undoLabel covers bulk and add operations', () => {
+  load([row('a', 0, 0), row('b', 100, 0)]);
+  S.renumber();
+  S.apply(S.opFlagRows(['a', 'b']));
+  assert.equal(S.undoLabel(), 'move 2 rows to review');
+  S.apply(S.opBulkReview(['a'], true));
+  assert.equal(S.undoLabel(), 'accept 1 row');
+  S.apply(S.opAddRow(row('n', 300, 0)));
+  assert.equal(S.undoLabel(), 'add balloon 3');
+});
