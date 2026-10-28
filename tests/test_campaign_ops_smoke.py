@@ -163,3 +163,112 @@ def test_an_agent_session_is_refused(tmp_path):
     env = {**_env(tmp_path), "CLAUDECODE": "1"}
     res = _ops("local-wipe", env=env)
     assert res.returncode == 2 and "operator tool" in res.stderr
+
+
+# --- the move to the VPS, without a VPS -------------------------------------
+# ssh and rsync are replaced by stubs that log what they were asked to do (and
+# keep what was piped into ssh). That pins the exact commands the operator's
+# first real vps-* run will send, which is the part that has never run. Real
+# git: `git archive HEAD | ssh ... tar -x` is part of what is under test.
+
+_STUB = """#!/usr/bin/env bash
+# {name}: log argv one per line between markers; save stdin if it is a pipe.
+{{ echo "--- {name}"; printf '%s\\n' "$@"; }} >> "$STUB_LOG"
+if [[ ! -t 0 ]]; then cat >> "$STUB_STDIN.{name}"; fi
+"""
+
+
+@pytest.fixture
+def stubs(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ("ssh", "rsync"):
+        f = bin_dir / name
+        f.write_text(_STUB.format(name=name))
+        f.chmod(0o755)
+    env = _env(tmp_path, PATH=f"{bin_dir}:{os.environ['PATH']}",
+               STUB_LOG=str(tmp_path / "calls.log"), STUB_STDIN=str(tmp_path / "stdin"))
+
+    def calls():
+        log = Path(env["STUB_LOG"])
+        text = log.read_text() if log.exists() else ""
+        out, cur = [], None
+        for line in text.splitlines():
+            if line.startswith("--- "):
+                cur = [line[4:]]
+                out.append(cur)
+            else:
+                cur.append(line)
+        return out
+    return env, calls
+
+
+def test_vps_load_sends_the_bundle_then_loads_it_inside_the_container(
+        tmp_path, bundle, stubs):
+    env, calls = stubs
+    res = _ops("vps-load", "box", "pilot-1", str(bundle) + "/", env=env)
+    assert res.returncode == 0, res.stderr
+    rsync, ssh = calls()
+    # Trailing slash on the source: the bundle's CONTENTS land in import/<name>/,
+    # not a nested bundle/ directory the loader would not find.
+    assert rsync[:3] == ["rsync", "-a", "--"] and rsync[3] == f"{bundle}/"
+    assert rsync[4] == "box:~/sindri/import/pilot-1/"
+    assert ssh[1] == "box" and ssh[2].endswith(
+        "docker compose exec -T sindri python -m app.campaign.load /import/pilot-1")
+
+
+def test_vps_load_refuses_a_missing_bundle_before_touching_the_network(
+        tmp_path, stubs):
+    env, calls = stubs
+    res = _ops("vps-load", "box", "pilot-1", str(tmp_path / "nope"), env=env)
+    assert res.returncode == 1 and "no such bundle" in res.stderr
+    assert calls() == []
+
+
+def test_vps_pull_packs_remotely_then_fetches_the_tar(tmp_path, stubs):
+    env, calls = stubs
+    dest = tmp_path / "reviews"
+    dest.mkdir()
+    res = _ops("vps-pull", "box", "pilot-1", str(dest), env=env)
+    assert res.returncode == 0, res.stderr
+    ssh, rsync = calls()
+    assert ssh[2].endswith(
+        "docker compose exec -T sindri python -m app.campaign.pull pilot-1 /export/pilot-1.tar")
+    assert rsync[-2:] == ["box:~/sindri/export/pilot-1.tar", f"{dest}/"]
+
+
+def test_vps_pull_refuses_a_missing_destination_before_touching_the_network(
+        tmp_path, stubs):
+    env, calls = stubs
+    res = _ops("vps-pull", "box", "pilot-1", str(tmp_path / "nope"), env=env)
+    assert res.returncode == 1 and "no such directory" in res.stderr
+    assert calls() == []
+
+
+def test_vps_update_ships_the_committed_tree_and_rebuilds_with_its_sha(tmp_path, stubs):
+    env, calls = stubs
+    res = _ops("vps-update", "box", env=env)
+    assert res.returncode == 0, res.stderr
+    ship, rebuild = calls()
+    assert ship[1] == "box" and "tar -x -C ~/sindri" in ship[2]
+    listing = subprocess.run(["tar", "-t", "-f", env["STUB_STDIN"] + ".ssh"],
+                             capture_output=True, text=True)
+    names = listing.stdout.split()
+    assert "campaign_ops.sh" in names and "docker-compose.vps.yml" in names
+    assert not any(n.startswith((".git/", "data/", ".env")) for n in names)
+    sha = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"],
+                         capture_output=True, text=True).stdout.strip()
+    assert f"SINDRI_VERSION={sha} docker compose up -d --build" in rebuild[2]
+
+
+def test_vps_init_prepares_dirs_and_the_compose_override_once(tmp_path, stubs):
+    env, calls = stubs
+    res = _ops("vps-init", "box", env=env)
+    assert res.returncode == 0, res.stderr
+    prep = calls()[0][2]
+    assert "mkdir -p ~/sindri/data ~/sindri/import ~/sindri/export" in prep
+    assert "chmod 700" in prep
+    # Appended only when absent, so a rerun never duplicates or clobbers .env.
+    assert "grep -q '^COMPOSE_FILE='" in prep
+    assert "COMPOSE_FILE=docker-compose.yml:docker-compose.vps.yml" in prep
+    assert "docker compose ps" in calls()[-1][2]
