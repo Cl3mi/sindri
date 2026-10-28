@@ -20,6 +20,7 @@ import { dragBox, settleBox, beyondDeadZone } from './anchor.js';
 import { commitWithReason, askReason } from './reasons.js';
 import { toast } from './ui.js';
 import { scanEvent } from './scanlog.js';
+import { leaderSegment, leadersToDraw } from './leader.js';
 
 const ZOOM_MIN = 0.1;
 const ZOOM_MAX = 8;
@@ -31,6 +32,12 @@ let panning = false, spaceDown = false, altDown = false, panStart = null;
 let addMode = false, panMode = false;
 let drawing = null;        // { startView }
 let bgClick = null;        // { x, y } mousedown on empty canvas, resolved on mouseup
+// Leader lines: the export's thin blue line from balloon rim to value. Marker
+// is 22 px across (components.css), so its rim is 11 px out; the margin keeps
+// the line off the callout's glyphs as the export's 2.5 pt does.
+const LEADER_RADIUS_PX = 11, LEADER_MARGIN_PX = 3;
+const LEADERS_KEY = 'sindri.leaders';
+let leadersAll = false;    // toolbar toggle: every balloon's line, not just the selected/hovered
 const SCAN_SELECT_MS = 2500;   // how long a scan-added row stays selected
 let dragging = null;       // { id, lastView, startClient, moved }
 let anchorDrag = null;     // { id, handle, startClient, startPlan, origin, box, active }
@@ -48,8 +55,10 @@ export function initViewer() {
   // click or a moved drag), so the anchor box would otherwise lag a
   // selection until the next unrelated re-render.
   on('select', () => renderMarkers());
+  on('hover', () => syncLeaders());
 
   bindZoomControls();
+  bindLeaderToggle();
   bindMouse();
   bindKeys();
   bindResize();
@@ -280,6 +289,7 @@ function bindMouse() {
         m.style.top  = v.y + 'px';
       }
       dragging.lastView = v;
+      syncLeaders();
     }
   });
 
@@ -530,6 +540,53 @@ function renderMarkers() {
     if (!r || !r.suggested) b.remove();
   });
   syncAnchorBox();
+  syncLeaders();
+}
+
+// ----- leader lines ---------------------------------------------------
+function bindLeaderToggle() {
+  try { leadersAll = localStorage.getItem(LEADERS_KEY) === '1'; } catch { /* private window */ }
+  const btn = document.getElementById('leaders-btn');
+  if (!btn) return;
+  const paint = () => btn.classList.toggle('active', leadersAll);
+  paint();
+  btn.addEventListener('click', () => {
+    leadersAll = !leadersAll;
+    try { localStorage.setItem(LEADERS_KEY, leadersAll ? '1' : '0'); } catch { /* per-viewer nicety only */ }
+    paint();
+    syncLeaders();
+  });
+}
+
+function leaderLayer() {
+  let svg = markerLayer.querySelector('svg.leaders');
+  if (!svg) {
+    svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', 'leaders');
+    markerLayer.prepend(svg);     // under every marker and the anchor box
+  }
+  return svg;
+}
+
+function syncLeaders() {
+  if (!markerLayer || !img) return;
+  const svg = leaderLayer();
+  const rows = leadersToDraw(state.rows, { selectedId: state.selectedId,
+                                           hoverId: state.hoverId, all: leadersAll });
+  svg.replaceChildren();
+  for (const r of rows) {
+    // A balloon mid-drag follows the pointer; its row only updates on mouseup.
+    const b = dragging && dragging.id === r.id ? dragging.lastView
+      : planToView(r.balloon_xy[0], r.balloon_xy[1]);
+    const a = planToView(r.target_region[0], r.target_region[1]);
+    const c = planToView(r.target_region[2], r.target_region[3]);
+    const seg = leaderSegment(b, [a.x, a.y, c.x, c.y], LEADER_RADIUS_PX, LEADER_MARGIN_PX);
+    if (!seg) continue;
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', seg.x1); line.setAttribute('y1', seg.y1);
+    line.setAttribute('x2', seg.x2); line.setAttribute('y2', seg.y2);
+    svg.appendChild(line);
+  }
 }
 
 function syncSuggestBox(r) {

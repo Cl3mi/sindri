@@ -976,6 +976,10 @@ input[type="file"].sr {
 /* The selected balloon's anchor box (campaign plan C1 Task 12): solid accent,
    unlike the dashed violet suggest-box, because this one is editable. The
    layer itself ignores the pointer, so the box opts back in. */
+/* Leader lines: the export's thin blue (0, .3, .8) line, balloon rim to value. */
+#marker-layer svg.leaders { position: absolute; inset: 0; width: 100%; height: 100%;
+  overflow: visible; pointer-events: none; }
+#marker-layer svg.leaders line { stroke: rgb(0, 77, 204); stroke-width: 1; stroke-linecap: round; }
 #marker-layer .anchor-box { position: absolute; border: 2px solid var(--accent, #2563eb);
   background: var(--accent-bg, rgba(37, 99, 235, .06)); cursor: move; pointer-events: auto;
   box-sizing: border-box; }
