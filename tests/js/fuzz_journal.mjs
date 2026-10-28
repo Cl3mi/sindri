@@ -81,6 +81,12 @@ function randomSteps(steps, ids, log) {
       const sel = anyIds.filter(() => rnd() < 0.4); S.apply(S.opConfirmSuggestions(sel)); label = `confirm ${sel}`;
     } else if (r < 0.90) {
       const sel = anyIds.filter(() => rnd() < 0.4); S.apply(S.opFlagRows(sel)); label = `flag ${sel}`;
+    } else if (r < 0.94) {
+      // A log-only scan attempt: never an op, never undone, survives compaction.
+      S.emit('op', { kind: 'log', event: { type: 'scan_read', row_id: pick([null, 'a', 'm0']),
+        box: [1, 2, 30, 40], text: pick(['', '12 +0.1']), conf: pick([null, 0.9]),
+        ms: Math.floor(rnd() * 900), empty: rnd() < 0.3 } });
+      label = 'scan';
     } else {
       const sel = anyIds.filter(() => rnd() < 0.4); const t = rnd() < 0.6;
       S.apply(S.opBulkReview(sel, t)); label = `${t ? 'accept' : 'unaccept'} ${sel}`;

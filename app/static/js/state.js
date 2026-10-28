@@ -4,6 +4,8 @@
 // the direct setters defined here, so undo/redo stays consistent.  Subscribers
 // receive a `change` event after each apply() and react idempotently.
 
+import { LOG_ONLY_TYPES } from './scanlog.js';
+
 const listeners = new Map();   // event -> Set<fn>
 
 export function on(event, fn) {
@@ -377,7 +379,8 @@ export function restoreSession(payload, events) {
   // so an event that cannot be rebuilt throws with the previous session
   // still intact -- not a half-built table while the journal still points
   // at the old session.
-  const pairs = events.map((e) => [opFromEvent(e), e.seq]);
+  // Log-only events are not operations: nothing to rebuild, nothing to undo.
+  const pairs = events.filter((e) => !LOG_ONLY_TYPES.has(e.type)).map((e) => [opFromEvent(e), e.seq]);
   setSession(payload);
   for (const [op] of pairs) {
     op.do();

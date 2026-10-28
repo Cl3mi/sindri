@@ -35,6 +35,7 @@ _TYPE_KEYS = {
     "unaccept": {"ids"},
     "confirm_suggestions": {"ids"},
     "flag": {"ids"},
+    "scan_read": {"row_id", "box", "text", "conf", "ms", "empty"},
     "retract": {"target"},
     "move_target": {"id", "box"},
     "set_note": {"text"},

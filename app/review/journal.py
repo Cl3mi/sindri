@@ -4,15 +4,27 @@ An event is one reviewer operation, numbered by the UI (`seq` from 1) and
 self-contained enough to replay without the browser. An undo is not a deletion
 but a `retract` of the event it undid, so the server can stay append-only and
 a crashed tab loses nothing; only at seal are retracted pairs compacted away,
-which is the "net operations only" retention the operator chose."""
+which is the "net operations only" retention the operator chose. The one
+exception is a LOG_ONLY type (scan_read): never retracted, so it survives
+compaction -- see LOG_ONLY_TYPES."""
 import math
 from typing import Iterable, List, Set
 
 EVENT_TYPES = frozenset({
     "add_row", "delete_row", "move_row", "edit_cell",
     "accept", "unaccept", "confirm_suggestions", "retract",
-    "move_target", "set_note", "flag",
+    "move_target", "set_note", "flag", "scan_read",
 })
+
+# Events that record something the reviewer DID but are not operations on a
+# row: replay ignores them and, unlike every operation, they can never be
+# retracted. This is the one exception to "net operations only" retention --
+# an undone scan-rectangle read is exactly the attempt that missed, so
+# compacting it away would make every scan look like a hit.
+LOG_ONLY_TYPES = frozenset({"scan_read"})
+# A tolerance-bearing callout is a handful of characters; the bound keeps one
+# event from bloating a journal that is replayed on every seal.
+SCAN_TEXT_MAX = 500
 
 # The cells an edit_cell may touch. Defined here (not in replay.py) because
 # validate_event is the gate that must refuse a forbidden field BEFORE it
@@ -116,6 +128,27 @@ def validate_event(e) -> None:
                 or not all(_is_number(v) for v in box)
                 or not (box[0] < box[2] and box[1] < box[3])):
             raise JournalError("move_target needs box as [x0, y0, x1, y1] with x0<x1, y0<y1")
+    elif type_ == "scan_read":
+        row_id = e.get("row_id")
+        if row_id is not None and not _is_str(row_id):
+            raise JournalError("scan_read row_id must be a string or null")
+        box = e.get("box")
+        if not isinstance(box, list) or len(box) != 4 or not all(_is_number(v) for v in box):
+            raise JournalError("scan_read needs box as 4 numbers")
+        text = e.get("text")
+        if not _is_str(text) or len(text) > SCAN_TEXT_MAX:
+            raise JournalError(f"scan_read needs text as a string of at most {SCAN_TEXT_MAX} chars")
+        conf = e.get("conf")
+        if conf is not None and not _is_number(conf):
+            raise JournalError("scan_read conf must be a finite number or null")
+        ms = e.get("ms")
+        if not _is_number(ms) or ms < 0:
+            raise JournalError("scan_read needs ms as a non-negative number")
+        for flag in ("empty", "failed"):
+            if flag in e and not isinstance(e[flag], bool):
+                raise JournalError(f"scan_read {flag} must be a bool")
+        if not isinstance(e.get("empty"), bool):
+            raise JournalError("scan_read needs empty as a bool")
     elif type_ == "set_note":
         text = e.get("text")
         if not _is_str(text) or len(text) > NOTE_MAX:
@@ -144,6 +177,8 @@ def net_events(events: Iterable[dict]) -> List[dict]:
             target = e.get("target")
             if target not in live:
                 raise JournalError(f"retract of unknown or already retracted seq {target!r}")
+            if live[target]["type"] in LOG_ONLY_TYPES:
+                raise JournalError(f"{live[target]['type']} is log-only and cannot be retracted")
             del live[target]
         else:
             live[e["seq"]] = e

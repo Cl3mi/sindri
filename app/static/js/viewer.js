@@ -19,6 +19,7 @@ import { readRegion } from './api.js';
 import { dragBox, settleBox, beyondDeadZone } from './anchor.js';
 import { commitWithReason, askReason } from './reasons.js';
 import { toast } from './ui.js';
+import { scanEvent } from './scanlog.js';
 
 const ZOOM_MIN = 0.1;
 const ZOOM_MAX = 8;
@@ -432,14 +433,27 @@ function setPan(on) {
 }
 
 async function runReadRegion(planBox) {
+  const t0 = performance.now();
+  // Every attempt is logged BEFORE its add (so the event's row id is in the
+  // journal ahead of the row), including a failed request: the hit rate is
+  // only honest if the misses are in it (journal.py LOG_ONLY_TYPES). A
+  // read-only tab (another tab holds the writer) records nothing, as apply().
+  const log = (extra) => {
+    if (state.readOnly) return;
+    emit('op', { kind: 'log', event: scanEvent({ box: planBox, ms: performance.now() - t0, ...extra }) });
+  };
+  let row;
   try {
-    const row = await readRegion(state.sessionId, planBox);
-    row.reviewed = false;
-    apply(opAddRow(row));
-    toast({ kind: 'ok', title: `Added Pos ${row.pos}`, msg: row.char_type || row.raw_text || 'manual region' });
+    row = await readRegion(state.sessionId, planBox);
   } catch (err) {
+    log({ failed: true });
     toast({ kind: 'error', title: 'Could not read region', msg: String(err.message || err) });
+    return;
   }
+  row.reviewed = false;
+  log({ row });
+  apply(opAddRow(row));
+  toast({ kind: 'ok', title: `Added Pos ${row.pos}`, msg: row.char_type || row.raw_text || 'manual region' });
 }
 
 // ----- marker rendering ----------------------------------------------

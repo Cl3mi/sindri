@@ -56,6 +56,8 @@ def replay(proposal_rows: Iterable[dict], events: Iterable[dict]) -> Dict[str, d
         elif t == "move_target":
             if e["id"] in rows:
                 rows[e["id"]]["target_region"] = list(e["box"])
+        elif t == "scan_read":
+            pass   # a log entry (journal.LOG_ONLY_TYPES): the add it led to is its own event
         elif t == "set_note":
             pass   # a drawing-level fact, not a row's: read with note_of()
         else:

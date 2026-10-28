@@ -58,7 +58,16 @@ export function createJournal({ send, now = () => Date.now(),
     for (const [op, s] of opSeqs) seqOf.set(op, s);
   }
 
-  function record({ kind, op }) {
+  function record({ kind, op, event }) {
+    // A log-only event (scan_read): something the reviewer did that is not an
+    // operation on a row. Numbered and sent like any event, but never put in
+    // seqOf, so no undo can ever retract it -- an undone scan is exactly the
+    // attempt that missed (journal.py LOG_ONLY_TYPES).
+    if (kind === 'log') {
+      if (!writer || !event) return;
+      pending.push({ ...event, seq: ++seq, t_wall: wallNow(), t_ms: now() - t0 });
+      return;
+    }
     if (!writer || typeof op.event !== 'function') return;
     if (kind !== 'do' && kind !== 'undo') return;   // an unknown kind is a bus bug, not an op
     if (kind === 'undo' && !seqOf.has(op)) return;  // done before logging started, or already retracted

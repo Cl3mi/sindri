@@ -109,6 +109,14 @@ def test_flag_puts_a_row_back_in_the_review_queue_with_a_manual_reason():
     assert again["b"]["review_reasons"] == ["no_tolerance", "manual"]
 
 
+def test_scan_read_is_ignored_by_replay():
+    """A scan is a log entry, not an operation on a row: the add it leads to
+    is its own event."""
+    out = replay([row("a")], [ev(1, "scan_read", row_id="a", box=[0, 0, 1, 1], text="",
+                                 conf=None, ms=1, empty=True)])
+    assert out == replay([row("a")], [])
+
+
 def test_mismatches_compares_whether_a_row_needs_review():
     """A flag changes needs_review and nothing else, so without this a replay
     that dropped it would still 'reproduce' the exported rows."""
