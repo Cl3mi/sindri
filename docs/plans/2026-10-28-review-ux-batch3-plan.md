@@ -28,9 +28,9 @@ data only; no client data, no `campaign_build.py` / `campaign_ops.sh` / `review-
 
 ## Not measured
 
-The rotation search is tested against a stub reader, not the real VLM. Whether the real reader
-recovers 45° text is for the operator to see on a drawing; the logged `rotation` will tell
-later how often each orientation won.
+Written before building; superseded by "As built" below, which has the tesseract measurement.
+What is still unmeasured: the production VLM reader on rotated text, and a scan on a real
+drawing. The logged `rotation` will say later how often each orientation wins.
 
 ## As built (2026-10-29)
 
