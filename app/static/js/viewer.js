@@ -13,11 +13,11 @@
 
 import {
   state, on, emit, clearSelection, showAnchorFor,
-  apply, opAddRow, opDeleteRow, opMoveRow, opMoveTarget,
+  apply, opAddRow, opDeleteRow, opMoveRow, opMoveTarget, reasonIO,
 } from './state.js';
 import { readRegion } from './api.js';
 import { dragBox, settleBox, beyondDeadZone } from './anchor.js';
-import { commitWithReason, askReason } from './reasons.js';
+import { openReason } from './reasons.js';
 import { toast } from './ui.js';
 import { scanEvent } from './scanlog.js';
 import { leaderSegment, leadersToDraw } from './leader.js';
@@ -361,8 +361,8 @@ function bindMouse() {
     if (del) {
       const m = del.closest('.marker');
       const id = m?.dataset.id;
-      if (id) commitWithReason('delete', (reason) => opDeleteRow(id, reason),
-                               (kind) => askReason(kind, del), apply);
+      // Applied at once; the card stays for a late pick (reasons.js).
+      if (id) openReason('delete', (reason) => opDeleteRow(id, reason), del, reasonIO).commit();
       e.stopPropagation();
       return;
     }
@@ -401,8 +401,7 @@ function bindKeys() {
         // Anchored on the balloon being deleted, so the prompt sits next to
         // what it asks about rather than in a corner of the window.
         const marker = markerLayer.querySelector(`.marker[data-id="${cssEsc(id)}"]`);
-        commitWithReason('delete', (reason) => opDeleteRow(id, reason),
-                         (kind) => askReason(kind, marker), apply);
+        openReason('delete', (reason) => opDeleteRow(id, reason), marker, reasonIO).commit();
         e.preventDefault();
       }
     }

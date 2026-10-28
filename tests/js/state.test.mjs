@@ -257,3 +257,32 @@ test('undoLabel covers bulk and add operations', () => {
   S.apply(S.opAddRow(row('n', 300, 0)));
   assert.equal(S.undoLabel(), 'add balloon 3');
 });
+
+// ---- replaceTop: a late reason swaps the op it explains (reasons.js) ----------
+
+test('replaceTop swaps the top op for another and the journal sees undo then do', () => {
+  load([row('a', 0, 0)]);
+  const seen = [];
+  const off = S.on('op', (e) => seen.push([e.kind, e.op.event().reason]));
+  const first = S.opEditCell('a', 'nominal', '2');
+  S.apply(first);
+  const second = S.opEditCell('a', 'nominal', '2', 'misread_digit');
+  assert.equal(S.replaceTop(first, second), true);
+  off();
+  assert.equal(S.state.rows[0].nominal, '2');
+  assert.deepEqual(seen, [['do', undefined], ['undo', undefined], ['do', 'misread_digit']]);
+  // one undo reverts the whole edit, not just the reason
+  S.undo();
+  assert.equal(S.state.rows[0].nominal, '1');
+  assert.equal(S.canUndo(), false);
+});
+
+test('replaceTop refuses when the op is no longer on top, and changes nothing', () => {
+  load([row('a', 0, 0)]);
+  const first = S.opEditCell('a', 'nominal', '2');
+  S.apply(first);
+  S.apply(S.opEditCell('a', 'upper_tol', '+0,1'));
+  assert.equal(S.replaceTop(first, S.opEditCell('a', 'nominal', '2', 'other')), false);
+  assert.equal(S.state.rows[0].nominal, '2');
+  assert.equal(S.state.rows[0].upper_tol, '+0,1');
+});

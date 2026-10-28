@@ -224,3 +224,20 @@ def test_a_scan_read_survives_its_rows_undo_but_can_never_be_retracted():
     assert [e["seq"] for e in net_events(events)] == [1]
     with pytest.raises(JournalError):
         net_events([*events[:1], ev(4, "retract", target=1)])
+
+
+def test_a_late_reason_pick_nets_to_the_single_explained_edit():
+    """The reason card (batch 3) lets a reviewer pick a reason AFTER the edit
+    was applied: the client undoes the unexplained edit and applies the same
+    edit with the reason (state.js replaceTop). The journal holds edit,
+    retract, edit(reason); the net operations, and so the sealed revision and
+    the grade, are the one explained edit -- as if it had been picked up front."""
+    events = [
+        {"seq": 1, "type": "edit_cell", "id": "a", "field": "nominal", "old": "10", "new": "12"},
+        {"seq": 2, "type": "retract", "target": 1},
+        {"seq": 3, "type": "edit_cell", "id": "a", "field": "nominal", "old": "10", "new": "12",
+         "reason": "misread_digit"},
+    ]
+    net = net_events(events)
+    assert [e["seq"] for e in net] == [3]
+    assert net[0]["reason"] == "misread_digit"

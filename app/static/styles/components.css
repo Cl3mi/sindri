@@ -1046,3 +1046,11 @@ body.health-pending [data-campaign-hide] { display: none !important; }
 }
 #doc-note:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-ring); }
 #rb-approved { color: var(--ok); font-size: var(--fs-sm); }
+
+/* Reason card, batch 3: a header with a close X, and the picked chip marked. */
+.reason-popover .reason-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.reason-popover .reason-close { background: none; border: none; color: var(--fg-muted); cursor: pointer;
+  font-size: var(--fs-lg, 18px); line-height: 1; padding: 0 4px; border-radius: var(--radius-md); }
+.reason-popover .reason-close:hover, .reason-popover .reason-close:focus-visible { color: var(--fg);
+  background: var(--bg-hover); outline: none; }
+.reason-popover .chip.picked { border-color: var(--accent); background: var(--bg-hover); font-weight: 600; }

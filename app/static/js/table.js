@@ -3,10 +3,10 @@
 
 import {
   state, on, emit,
-  apply, opEditCell, opBulkReview, opFlagRows, opConfirmSuggestions, isVisibleRow, counts, progress,
+  apply, reasonIO, opEditCell, opBulkReview, opFlagRows, opConfirmSuggestions, isVisibleRow, counts, progress,
 } from './state.js';
 import { flashAndCenter } from './viewer.js';
-import { commitWithReason, askReason } from './reasons.js';
+import { openReason } from './reasons.js';
 import { attachTypeMenu } from './typemenu.js';
 import { moveTargets, targetIds, rowAction } from './moverows.js';
 
@@ -167,13 +167,11 @@ function renderAll() {
 }
 
 // A rebuild must not take the cell being edited with it. renderRows throws
-// every row away on each 'change', and since the reason prompt (reasons.js)
-// applies an edit only once it resolves, that 'change' now lands DURING the
-// next keystroke's dispatch: Tab to the next cell, type "5", the popover
-// dismisses, the op applies, the table rebuilds, and the focused cell the
-// "5" was meant for is gone -- the keystroke goes to <body> and is lost.
-// (Before the prompt, the synchronous apply-on-blur rebuilt during Tab's own
-// focus change and dropped focus to <body> the same way.) So the focused
+// every row away on each 'change', and an op can land -- and rebuild -- while
+// the reviewer is already typing in the next cell: a late reason pick swaps
+// the top op (reasons.js), and an apply-on-blur rebuilt during Tab's own focus
+// change and dropped focus to <body>, so the keystroke meant for the next
+// cell was lost. So the focused
 // cell is captured before the rebuild and handed to its replacement: same
 // row and field, any unsaved text, its _orig, and the caret.
 function captureEditFocus() {
@@ -216,6 +214,26 @@ function restoreEditFocus(saved) {
     const s = window.getSelection();
     s.setBaseAndExtent(node, at(saved.sel[0]), node, at(saved.sel[1]));
   }
+}
+
+// The edit in progress, per cell. Held here, not on the <td>, because every
+// table rebuild replaces the TDs (captureEditFocus/restoreEditFocus hand the
+// cell's text across, and this hands its reason session across).
+let editReason = null;   // { id, field, value, session }
+
+function liveEdit(id, field) {
+  const e = editReason;
+  return e && e.id === id && e.field === field && e.session.phase === 'editing' ? e : null;
+}
+
+function startEdit(id, field, value, td) {
+  const entry = { id, field, value, session: null };
+  // Reads entry.value at call time: the late-pick op (after commit) must carry
+  // the value the commit saw, and the commit updates it from the final text.
+  entry.session = openReason('edit', (reason) => opEditCell(id, field, entry.value, reason),
+                             td, reasonIO);
+  editReason = entry;
+  return entry;
 }
 
 function renderRows() {
@@ -281,13 +299,25 @@ function renderRowsInto() {
       // After the _orig listener above and before keydown below: the menu
       // reads _orig on focus and must see Enter before the cell's handler.
       if (k === 'char_type') attachTypeMenu(td);
+      td.addEventListener('input', () => {
+        // The reason card opens as soon as the value actually changes (batch 3:
+        // "pick a reason while editing"), not after the commit.
+        const text = td.textContent.trim();
+        const live = liveEdit(r.id, k);
+        if (text === td.dataset._orig) { live?.session.cancel(); return; }
+        if (live) { live.value = text; return; }
+        startEdit(r.id, k, text, td);
+      });
       td.addEventListener('blur', () => {
         const newVal = td.textContent.trim();
-        if (newVal === td.dataset._orig) return;
-        // The op is built only once the optional reason prompt resolves, so
-        // the reason rides on the very event the journal sends (decision 7).
-        commitWithReason('edit', (reason) => opEditCell(r.id, k, newVal, reason),
-                         (kind) => askReason(kind, td), apply);
+        const live = liveEdit(r.id, k);
+        if (newVal === td.dataset._orig) { live?.session.cancel(); return; }
+        // A pick (typemenu.js) sets the text without an input event, so the
+        // session may not exist yet. The op is applied now, never held for
+        // the card; the card stays open for a late pick (reasons.js).
+        const e = live ?? startEdit(r.id, k, newVal, td);
+        e.value = newVal;
+        e.session.commit();
       });
       td.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') { e.preventDefault(); td.blur(); }
