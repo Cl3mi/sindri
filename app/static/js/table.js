@@ -7,6 +7,7 @@ import {
 } from './state.js';
 import { flashAndCenter } from './viewer.js';
 import { commitWithReason, askReason } from './reasons.js';
+import { attachTypeMenu } from './typemenu.js';
 import { moveTargets, targetIds, rowAction } from './moverows.js';
 
 const COLS = ['char_type', 'nominal', 'upper_tol', 'lower_tol'];
@@ -277,6 +278,9 @@ function renderRowsInto() {
       td.textContent = r[k] ?? '';
 
       td.addEventListener('focus', () => { td.dataset._orig = td.textContent; });
+      // After the _orig listener above and before keydown below: the menu
+      // reads _orig on focus and must see Enter before the cell's handler.
+      if (k === 'char_type') attachTypeMenu(td);
       td.addEventListener('blur', () => {
         const newVal = td.textContent.trim();
         if (newVal === td.dataset._orig) return;

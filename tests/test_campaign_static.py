@@ -62,3 +62,19 @@ def test_the_ui_vocabularies_mirror_the_journal():
     m = re.search(r'<textarea[^>]*id="doc-note"[^>]*maxlength="(\d+)"', HTML) or \
         re.search(r'<textarea[^>]*maxlength="(\d+)"[^>]*id="doc-note"', HTML)
     assert int(m.group(1)) == journal.NOTE_MAX
+
+
+def test_the_char_type_choices_are_exactly_what_the_parser_can_emit():
+    """The Characteristic column offers a closed list (chartypes.js). A type
+    the parser never produces would be scored as a mislabel against gold; one
+    it does produce but the list lacks could only be typed by hand."""
+    from app.pipeline import parser
+    src = (STATIC / "js" / "chartypes.js").read_text(encoding="utf-8")
+    m = re.search(r"export const CHAR_TYPES = \[(.*?)\]", src, re.S)
+    assert m, "CHAR_TYPES not found"
+    offered = re.findall(r"'([^']+)'", m.group(1))
+    emitted = {parser.DIAMETER, parser.RADIUS, parser.FLATNESS, parser.DISTANCE,
+               parser.MATERIAL, parser.NOTE, parser.THEORETICAL, parser.REFERENCE,
+               *parser._GDT_SYMBOLS.values()}
+    assert set(offered) == emitted
+    assert len(offered) == len(set(offered))
