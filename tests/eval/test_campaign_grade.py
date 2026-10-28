@@ -925,3 +925,17 @@ def test_an_empty_extraction_delete_is_its_own_phantom_bucket_with_a_lever():
     [b] = f["value"]
     assert b["bucket"] == "phantom:empty_extraction"
     assert b["lever"] != "unmapped" and "detect" in b["lever"]
+
+
+def test_reviewer_flags_are_counted_by_what_became_of_the_row():
+    """The reviewer moving a row to Review is signal about the rows they
+    doubted: how many, and whether the doubt was right (edited/deleted) or not
+    (confirmed). The three outcomes partition the flagged rows."""
+    rows = [{**graded("confirmed"), "manual_flag": True},
+            {**graded("edited", fields=["nominal"]), "manual_flag": True},
+            {**graded("phantom"), "manual_flag": True},
+            {**graded("confirmed"), "manual_flag": False},
+            graded("confirmed")]       # a row graded before the field existed
+    c = group_metrics([{"rows": rows, "missed": [], "scale": 300 / 72.0}])["counts"]
+    assert (c["manual_flagged"], c["manual_flagged_confirmed"],
+            c["manual_flagged_edited"], c["manual_flagged_phantom"]) == (3, 1, 1, 1)

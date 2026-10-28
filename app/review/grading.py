@@ -131,6 +131,14 @@ def grade_session(proposal_rows: List[dict], sealed: dict) -> dict:
     except (KeyError, TypeError):
         reasons, ungradable = {}, ungradable or "replay_error"
     reviewed = set(sealed.get("reviewed_ids", []))
+    # Rows the reviewer moved to Review by hand: their own doubt, kept apart
+    # from `flagged` (the pipeline's) so flag precision still measures the
+    # policy. Balloons only, as in replay.
+    try:
+        manual = {i for e in sealed.get("net_events", []) if e["type"] == "flag"
+                  for i in e["ids"]}
+    except (KeyError, TypeError):
+        manual, ungradable = set(), ungradable or "replay_error"
     graded = []
     for p in proposal_rows:
         f = final.get(p["id"])
@@ -138,6 +146,7 @@ def grade_session(proposal_rows: List[dict], sealed: dict) -> dict:
         rec = {"id": p["id"], "flagged": bool(p.get("needs_review")),
                "suggested": bool(p.get("suggested")),
                "reviewed": p["id"] in reviewed, "kind": p.get("kind") or "",
+               "manual_flag": p["id"] in manual and not p.get("suggested"),
                "fields": [], "reason": None}
         if p.get("suggested"):
             if f is None:

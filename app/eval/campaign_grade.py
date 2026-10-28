@@ -94,6 +94,7 @@ def group_metrics(drawings: List[dict]) -> dict:
     counts["missed"] = 0
     counts["confirmed_explicit"] = counts["unflagged_confirmed_explicit"] = 0
     flagged = flagged_wrong = 0
+    manual = {g: 0 for g in VALUE_GRADES}
     unflagged = {g: 0 for g in VALUE_GRADES}
     moves_mm, moved, far, placed = [], 0, 0, 0
     nudged = repointed = anchor_measured = anchor_unmeasurable = 0
@@ -110,6 +111,9 @@ def group_metrics(drawings: List[dict]) -> dict:
                     flagged_wrong += g != "confirmed"
                 else:
                     unflagged[g] += 1
+                # .get: a row graded before the field existed was not flagged.
+                if r.get("manual_flag"):
+                    manual[g] += 1
             if g == "confirmed" and r.get("reviewed"):
                 counts["confirmed_explicit"] += 1
                 counts["unflagged_confirmed_explicit"] += not r["flagged"]
@@ -152,6 +156,10 @@ def group_metrics(drawings: List[dict]) -> dict:
     counts["flagged"], counts["flagged_wrong"] = flagged, flagged_wrong
     for g in VALUE_GRADES:
         counts[f"unflagged_{g}"] = unflagged[g]
+    # Rows the reviewer moved to Review themselves, by outcome (partition).
+    counts["manual_flagged"] = sum(manual.values())
+    for g in VALUE_GRADES:
+        counts[f"manual_flagged_{g}"] = manual[g]
     times = [d["time_ms"] / 60000 for d in drawings if d.get("time_ms")]
     # One shared denominator for both recalls: everything the client is known
     # to have wanted. These are UPPER bounds whenever the client's manual
@@ -771,6 +779,9 @@ def grade_campaign(records, gold_by_hash: Optional[Dict[str, GoldDoc]] = None,
             problems.append(f"group_flag_partition:{grp}")
         if not (c["unflagged_confirmed_explicit"] <= c["confirmed_explicit"] <= c["confirmed"]):
             problems.append(f"group_explicit:{grp}")
+        if (sum(c[f"manual_flagged_{g}"] for g in VALUE_GRADES) != c["manual_flagged"]
+                or c["manual_flagged"] > graded):
+            problems.append(f"group_manual_flag:{grp}")
     if sum(m["n_drawings"] for m in groups.values()) != status["approved"]:
         problems.append("group_drawings")
     if sum(status.values()) != len(records.drawings):

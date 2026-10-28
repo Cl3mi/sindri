@@ -256,3 +256,19 @@ def test_sealed_rows_without_an_id_are_reported_not_raised():
     g = grade_session([row("a"), row("b")], sealed([{"nominal": "10"}], []))
     assert g["ungradable"] == "replay_error"
     assert [r["id"] for r in g["rows"]] == ["a", "b"]
+
+
+def test_a_reviewer_flag_is_recorded_apart_from_the_pipelines():
+    """Move-to-Review is the reviewer's own doubt about a delivered row. It is
+    not the pipeline's flag (`flagged` stays the proposal's, or flag precision
+    would credit the reviewer's judgement to the policy), so it has its own
+    field, and it only ever marks balloons."""
+    proposal = [row("a"), row("b", needs_review=True), row("c"),
+                row("s", suggested=True)]
+    final = [row("a", needs_review=True), row("b", needs_review=True), row("c"),
+             row("s", suggested=True)]
+    g = grade_session(proposal, sealed(final, [
+        {"seq": 1, "type": "flag", "ids": ["a", "b", "s", "ghost"]}]))
+    by = {r["id"]: r for r in g["rows"]}
+    assert [by[i]["manual_flag"] for i in "abcs"] == [True, True, False, False]
+    assert [by[i]["flagged"] for i in "abcs"] == [False, True, False, False]
