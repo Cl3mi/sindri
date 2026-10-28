@@ -29,6 +29,7 @@ import {
 } from './ui.js';
 import { initShortcuts } from './shortcuts.js';
 import { settleReasonPrompt } from './reasons.js';
+import { autosize } from './autosize.js';
 import { installAuthGate, submitToken } from './auth.js';
 
 // The drawing this tab is waiting on (staged or extracting). Extraction runs
@@ -51,6 +52,7 @@ let pendingOpen = null;   // id
 let closePendingToast = null;
 let workList = null;      // initWorkList()'s handle; Task 13 reads it back via workList.getDocs()
 let routedDoc = null;     // { id, campaign } of the last GET /api/documents/{id} routed (currentDocIsCampaign)
+let noteRefit = null;     // autosize()'s refit for #doc-note: call after setting its value or unhiding it
 let noteSid = null;       // the drawing open when #doc-note took focus: its text belongs to that one
 
 // Journal the note box's text onto the drawing it was typed on, if it
@@ -175,6 +177,9 @@ function init() {
   const note = document.getElementById('doc-note');
   note?.addEventListener('focus', () => { noteSid = state.sessionId; });
   note?.addEventListener('blur', commitNote);
+  // Grows with its text; refit after every programmatic value change
+  // (renderFinish below) since no input event fires for those.
+  noteRefit = note ? autosize(note) : null;
   wireJournal();
   wireUndoRedo();
   pingHealth();
@@ -382,6 +387,7 @@ function syncCampaignChrome() {
       note.value = state.note || '';
       if (document.activeElement === note) note.blur();
     }
+    noteRefit?.();   // after hidden/value changed: a hidden box measures 0
   }
   const appr = document.getElementById('rb-approved');
   if (appr) {

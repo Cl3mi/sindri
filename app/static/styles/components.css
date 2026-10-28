@@ -1039,7 +1039,8 @@ body.campaign-only [data-campaign-hide] { display: none !important; }
    client never sees Import flash. pingHealth lifts it. */
 body.health-pending [data-campaign-hide] { display: none !important; }
 #doc-note {
-  width: 280px; resize: vertical; font: inherit; font-size: var(--fs-sm);
+  width: 320px; min-height: 28px; resize: vertical; overflow-y: hidden; box-sizing: border-box;
+  font: inherit; font-size: var(--fs-sm); line-height: 1.35;
   color: var(--fg); background: var(--bg-input);
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   padding: 4px 6px;
