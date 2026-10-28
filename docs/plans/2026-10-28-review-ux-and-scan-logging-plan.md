@@ -22,7 +22,7 @@ no record.
 | Worklist | Takes the workbench's panels/tokens, table density and row states, and a preview pane (drawing thumbnail and counts beside the list). Filters keep working as today. |
 | Verification | Node tests, replay parity fuzz, and a headless-browser pass on a synthetic bundle through `campaign_ops.sh local-up`, with screenshots. |
 
-## 1. Batch B1: records (before the pilot)
+## 1. Batch B1: records (before the pilot) -- DONE 2026-10-28, branch `feature/review-records`
 
 Every task is TDD, one commit each. Mirrors that must move together:
 `app/review/journal.py`, `app/review/replay.py`, `app/static/js/state.js`,
@@ -96,6 +96,19 @@ Every task is TDD, one commit each. Mirrors that must move together:
   (41 cases). Update CLAUDE.md §6 counts and the handoff when a batch lands.
 - Branching: merge `feature/campaign-smoke` first (operator's go), then one
   branch per batch off `main` in `.worktrees/`. Commit trailer per CLAUDE.md.
+
+## 3b. As built (B1)
+
+Tasks 1-6 landed as planned, one commit each, plus: `replay.mismatches` now
+compares `needs_review` (a flag changes nothing else, so a replay that lost it
+would still have 'reproduced' the export); `net_events` refuses a retract of a
+log-only event; the digest gained `manual_flagged*`, `missed_scan|typed|via_unknown`
+and a per-group `scans` section, all reconciled in `grade_campaign`. The seam test
+runs a kept, an edited, an undone and a failed scan plus a flag through the real
+store and seal. Suite 2938 (2907 + the 31 title-block tests, which need the ignored
+local sample in the worktree), node green, guard 41/0. Mutation checks: the parity
+fuzz fails if replay forgets to un-accept on `flag`, and if reload does not skip
+log-only events. **B2 (UI polish) is next; the pilot bundle can be built from B1.**
 
 ## 4. Open questions
 
