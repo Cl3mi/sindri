@@ -32,6 +32,7 @@ export const state = {
   marks: null,
   title_block: [],
   selectedId: null,  // selected marker / row id
+  anchorId: null,    // row whose anchor handles were asked for (a balloon click)
   hoverId: null,
   filter: 'all',     // 'all' | 'review' | 'ok' | 'suggested'
   search: '',
@@ -57,11 +58,28 @@ export function setSession(payload) {
   state.title_block = payload.title_block ?? [];
   state.fileName  = payload.fileName ?? state.fileName;
   state.selectedId = null;
+  state.anchorId  = null;
   state.readOnly  = false;
   undoStack.length = 0;
   redoStack.length = 0;
   emit('session', state);
   emit('change');
+}
+
+// The selection outlives the moment that made it (a scan adds and selects its
+// row), so it needs a way out: an empty-canvas click or Esc (viewer.js). The
+// anchor box and its handles draw only for a row the reviewer clicked the
+// balloon of, never merely for the selected one.
+export function clearSelection() {
+  if (state.selectedId === null && state.anchorId === null) return;
+  state.selectedId = null;
+  state.anchorId = null;
+  emit('select', null);
+  emit('change');
+}
+
+export function showAnchorFor(id) {
+  return id != null && state.selectedId === id && state.anchorId === id;
 }
 
 export function clearSession() {
@@ -75,6 +93,7 @@ export function clearSession() {
   state.marks     = null;
   state.title_block = [];
   state.selectedId = null;
+  state.anchorId  = null;
   state.readOnly  = false;
   undoStack.length = 0;
   redoStack.length = 0;

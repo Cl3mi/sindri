@@ -12,7 +12,7 @@
 // transformed.
 
 import {
-  state, on, emit,
+  state, on, emit, clearSelection, showAnchorFor,
   apply, opAddRow, opDeleteRow, opMoveRow, opMoveTarget,
 } from './state.js';
 import { readRegion } from './api.js';
@@ -30,6 +30,8 @@ let zoom = 1, tx = 0, ty = 0;
 let panning = false, spaceDown = false, altDown = false, panStart = null;
 let addMode = false, panMode = false;
 let drawing = null;        // { startView }
+let bgClick = null;        // { x, y } mousedown on empty canvas, resolved on mouseup
+const SCAN_SELECT_MS = 2500;   // how long a scan-added row stays selected
 let dragging = null;       // { id, lastView, startClient, moved }
 let anchorDrag = null;     // { id, handle, startClient, startPlan, origin, box, active }
 
@@ -188,7 +190,7 @@ function bindMouse() {
     const handleEl = !onMarker && e.target.closest('.anchor-box, .anchor-handle');
     // Read-only (another tab holds the writer): apply() would drop the edit,
     // so a drag would only show a box that snaps back.
-    if (handleEl && e.button === 0 && state.selectedId && !state.readOnly) {
+    if (handleEl && e.button === 0 && showAnchorFor(state.selectedId) && !state.readOnly) {
       const row = state.rows.find((x) => x.id === state.selectedId);
       if (row && row.target_region && !row.suggested) {
         const v = viewportPoint(e.clientX, e.clientY);
@@ -209,9 +211,17 @@ function bindMouse() {
       dragging = { id, lastView: v, moved: false,
                    startClient: { x: e.clientX, y: e.clientY } };
       state.selectedId = id;
+      state.anchorId = id;      // a balloon click is what asks for the handles
       onMarker.classList.add('selected');
       emit('select', id);
       e.preventDefault();
+      return;
+    }
+
+    // EMPTY CANVAS: a click that does not become a drag ends the selection
+    // (mouseup decides, so a pan or a stray tremble keeps it).
+    if (!onMarker && !handleEl && e.button === 0) {
+      bgClick = { x: e.clientX, y: e.clientY };
     }
   });
 
@@ -274,6 +284,11 @@ function bindMouse() {
   });
 
   window.addEventListener('mouseup', async (e) => {
+    if (bgClick) {
+      const start = bgClick;
+      bgClick = null;
+      if (!beyondDeadZone(start, { x: e.clientX, y: e.clientY })) clearSelection();
+    }
     if (panning) {
       panning = false;
       viewport.classList.remove('panning');
@@ -344,6 +359,7 @@ function bindMouse() {
     const m = e.target.closest('.marker');
     if (m) {
       state.selectedId = m.dataset.id;
+      state.anchorId = m.dataset.id;
       emit('select', state.selectedId);
       emit('change');
     }
@@ -367,6 +383,7 @@ function bindKeys() {
     if (e.key.toLowerCase() === 'f') { fitPage(); }
     if (e.key.toLowerCase() === 'a') { toggleAdd(); }
     if (e.key.toLowerCase() === 'h') { togglePan(); }
+    if (e.key === 'Escape' && state.selectedId) { clearSelection(); }
     if (e.key === 'Delete' || e.key === 'Backspace') {
       if (state.selectedId) {
         // Captured now: the selection can move while the prompt is open.
@@ -453,6 +470,10 @@ async function runReadRegion(planBox) {
   row.reviewed = false;
   log({ row });
   apply(opAddRow(row));
+  // Selected so the reviewer sees what the scan made, then let go: a row
+  // that stayed selected kept its box and handles on screen indefinitely.
+  setTimeout(() => { if (state.selectedId === row.id && !state.anchorId) clearSelection(); },
+             SCAN_SELECT_MS);
   toast({ kind: 'ok', title: `Added Pos ${row.pos}`, msg: row.char_type || row.raw_text || 'manual region' });
 }
 
@@ -535,7 +556,8 @@ function syncSuggestBox(r) {
 // its dashed suggest-box and is confirmed, not re-anchored, in the tray.
 function syncAnchorBox() {
   let box = markerLayer.querySelector('.anchor-box');
-  const r = state.rows.find((x) => x.id === state.selectedId);
+  const r = showAnchorFor(state.selectedId)
+    ? state.rows.find((x) => x.id === state.selectedId) : null;
   if (!r || !r.target_region || r.suggested) {
     if (box) box.remove();
     // The row went away mid-drag (undo, a delete): drop the drag rather

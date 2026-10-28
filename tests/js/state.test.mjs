@@ -194,3 +194,37 @@ test('a flag event rebuilds the same op after a reload', () => {
   S.apply(op);
   assert.equal(S.state.rows[0].needs_review, true);
 });
+
+// Review UX round, task 7: a freshly scanned row is selected so the reviewer
+// sees what was added, but that selection used to stay forever and drew the
+// anchor box and handles around it. Only a click on the balloon asks for the
+// handles, and an empty-canvas click or Esc ends the selection.
+test('clearSelection drops the selection and the anchor-handle request', () => {
+  load([row('a', 0, 0)]);
+  S.state.selectedId = 'a';
+  S.state.anchorId = 'a';
+  let selected = 'unset';
+  const off = S.on('select', (id) => { selected = id; });
+  S.clearSelection();
+  off();
+  assert.equal(S.state.selectedId, null);
+  assert.equal(S.state.anchorId, null);
+  assert.equal(selected, null);
+});
+
+test('an added row is selected but does not request anchor handles', () => {
+  load([row('a', 0, 0)]);
+  S.apply(S.opAddRow(row('n', 50, 0)));
+  assert.equal(S.state.selectedId, 'n');
+  assert.equal(S.showAnchorFor('n'), false);
+  S.state.anchorId = 'n';
+  assert.equal(S.showAnchorFor('n'), true);
+  S.clearSelection();
+  assert.equal(S.showAnchorFor('n'), false);
+});
+
+test('a loaded session starts with no anchor request', () => {
+  S.state.anchorId = 'x';
+  load([row('a', 0, 0)]);
+  assert.equal(S.state.anchorId, null);
+});
