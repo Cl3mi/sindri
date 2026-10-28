@@ -587,6 +587,36 @@ def test_read_region_applies_active_flag_rules_like_the_pipeline(monkeypatch):
     assert pr.FLAG_REASONS["diameter_sign"] in row["review_reasons"]
 
 
+def test_read_region_finds_a_value_printed_sideways(monkeypatch):
+    """The scan tool read at 0 degrees only, so a value printed at 90 degrees
+    came back empty (operator feedback 2026-10-28). The stub reads only a crop
+    taller than wide -- what a wide scan rectangle becomes once rotated -- so
+    the row is read only if the endpoint searched orientations. The winning
+    rotation is reported beside the row for the journal's scan_read event."""
+    import app.main as main
+    from PIL import Image
+    from app.pipeline.ocr.base import OcrResult
+
+    class SidewaysOnly:
+        def read_region(self, image):
+            if image.height > image.width:
+                return OcrResult(text="12.5", confidence=0.95)
+            return OcrResult(text="", confidence=0.1)
+
+    monkeypatch.setattr("app.main._BACKEND", SidewaysOnly())
+    session = "5e5537e7ae00000000000000000000b0"
+    work = main._doc_dir(session)
+    work.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (300, 200), "white").save(work / "page.png")
+
+    resp = client.post("/api/read_region",
+                       json={"session_id": session, "box": [10, 10, 150, 50]})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["nominal"] == "12,5"
+    assert body["scan_rotation"] in (-90, 90)
+
+
 def test_upload_returns_notes_field(monkeypatch, sample_pdf):
     """The upload endpoint now returns {rows, notes}; notes may be null."""
     from fastapi.testclient import TestClient

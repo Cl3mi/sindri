@@ -186,6 +186,14 @@ def test_scan_read_is_a_log_only_event_with_a_checked_shape():
                     "empty": True, "failed": True})
 
 
+def test_scan_read_may_log_the_rotation_that_read_it():
+    """Optional and log-only (2026-10-28): which orientation the scan tool
+    kept, so the grader can later say whether sideways scans work. Old events
+    have none, and replay ignores it either way."""
+    for rotation in (0, -90, 90, 180, -45):
+        validate_event({**SCAN, "seq": 1, "rotation": rotation})
+
+
 @pytest.mark.parametrize("bad", [
     {"row_id": 5},                       # id must be a string or null
     {"box": [1, 2, 3]},                  # not 4 numbers
@@ -198,6 +206,10 @@ def test_scan_read_is_a_log_only_event_with_a_checked_shape():
     {"ms": True},
     {"empty": "no"},                     # a real bool
     {"failed": 1},
+    {"rotation": "90"},                  # degrees applied to the crop: a finite number
+    {"rotation": float("nan")},
+    {"rotation": True},
+    {"rotation": 361},                   # a real orientation, not an arbitrary number
 ])
 def test_scan_read_refuses_a_malformed_shape(bad):
     with pytest.raises(JournalError):

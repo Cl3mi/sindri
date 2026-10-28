@@ -149,6 +149,9 @@ def validate_event(e) -> None:
                 raise JournalError(f"scan_read {flag} must be a bool")
         if not isinstance(e.get("empty"), bool):
             raise JournalError("scan_read needs empty as a bool")
+        rotation = e.get("rotation")
+        if rotation is not None and (not _is_number(rotation) or not -180 <= rotation <= 180):
+            raise JournalError("scan_read rotation must be a number of degrees in [-180, 180]")
     elif type_ == "set_note":
         text = e.get("text")
         if not _is_str(text) or len(text) > NOTE_MAX:

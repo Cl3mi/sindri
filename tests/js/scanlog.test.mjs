@@ -33,3 +33,18 @@ test('text is clamped and non-finite numbers become null/0 so the server never r
   assert.equal(e.conf, null);
   assert.equal(e.ms, 0);
 });
+
+test('the rotation that read the scan is logged when the server reports one', () => {
+  const e = scanEvent({ box: [0, 0, 5, 5], ms: 9, rotation: -90,
+    row: { id: 'r', raw_text: '12', nominal: '12', confidence: 0.9 } });
+  assert.equal(e.rotation, -90);
+});
+
+test('no rotation key when none was reported, and junk is dropped not sent', () => {
+  const plain = scanEvent({ box: [0, 0, 5, 5], ms: 9, failed: true });
+  assert.equal('rotation' in plain, false);
+  // The server refuses a malformed event and stalls the whole journal.
+  for (const bad of [NaN, '90', 400, null]) {
+    assert.equal('rotation' in scanEvent({ box: [0, 0, 5, 5], ms: 9, rotation: bad }), false, String(bad));
+  }
+});

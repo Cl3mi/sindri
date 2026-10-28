@@ -470,15 +470,20 @@ async function runReadRegion(planBox) {
     emit('op', { kind: 'log', event: scanEvent({ box: planBox, ms: performance.now() - t0, ...extra }) });
   };
   let row;
+  let rotation;
   try {
     row = await readRegion(state.sessionId, planBox);
+    // Not a row field: it only feeds the scan_read log, and must not reach
+    // the journaled add.
+    rotation = row.scan_rotation;
+    delete row.scan_rotation;
   } catch (err) {
     log({ failed: true });
     toast({ kind: 'error', title: 'Could not read region', msg: String(err.message || err) });
     return;
   }
   row.reviewed = false;
-  log({ row });
+  log({ row, rotation });
   apply(opAddRow(row));
   // Selected so the reviewer sees what the scan made, then let go: a row
   // that stayed selected kept its box and handles on screen indefinitely.
