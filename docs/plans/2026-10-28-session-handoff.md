@@ -29,7 +29,7 @@ Verified on merged main: pytest 2938 passed / 2 skipped, node 321, guard 41/0.
 - **Next:** operator builds the pilot bundle and eyeballs a real drawing (leader-line look, scan
   selection timing; the operator may send further UI changes), then §3 items 2-6.
 - **Operator feedback queue (batch 3): DONE 2026-10-29** on branch `feature/review-ux-batch3`
-  (worktree `.worktrees/review-ux-batch3`, NOT merged, NOT pushed; awaiting the operator's go).
+  (MERGED into main 2026-10-29, `a597d25`, NOT pushed; worktree and branch removed; newest state: `2026-10-29-session-handoff.md`).
   Plan and "As built": `docs/plans/2026-10-28-review-ux-batch3-plan.md`. Scan tool tries
   rotations (measured on synthetic text with tesseract: 18 -> 80 of 144 exact, no upright
   regression; the VLM backend is unmeasured); Characteristic column offers the closed vocabulary

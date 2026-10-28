@@ -90,8 +90,9 @@ The export folder and the manifest stay out of git and out of the repo.
 
 ## 2. Where things stand
 
-**Read `docs/plans/2026-10-28-session-handoff.md` first (newest: H1 done, pilot
-selected, smoke test next), then `docs/plans/2026-10-23-session-handoff.md`, the
+**Read `docs/plans/2026-10-29-session-handoff.md` first (newest: review UX batch 3
+merged, operator inspects the pilot, then H2/H3 and the HITL phase 2 refresh), then
+`docs/plans/2026-10-28-session-handoff.md`, then `docs/plans/2026-10-23-session-handoff.md`, the
 state of play before it: the client review campaign (C1 review app + VPS deploy, C2
 grading + findings digest) is built and merged, and it lists the hardening
 backlog (H1: old `runner` `--out` flags can write anywhere), the pilot
