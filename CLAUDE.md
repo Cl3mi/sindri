@@ -326,7 +326,14 @@ phase 2's keys; a digit picks a chip only outside an editor). Balloon and
 anchor drags need 3 screen px before anything is journaled, so a click is
 never graded as a correction. A table re-render now keeps the cell being
 edited (`table.js`), or the keystroke after a reason prompt was lost.
-Grading is plan C2. VPS runbook: `docs/deploy/vps.md`; `campaign_ops.sh` (operator-only,
+**Journal events added after C1** (`docs/plans/2026-10-28-review-ux-and-scan-logging-plan.md`):
+`flag` (Move to Review: a persistent manual flag, `needs_review` + reason `manual`,
+blocks Approve; Move to OK is the existing `accept`), the delete reason
+`empty_extraction`, and `scan_read`, the one LOG-ONLY event: every scan-rectangle
+attempt (empty, failed, or undone) is logged, never retracted (`net_events` refuses),
+ignored by replay, skipped on reload (`journal.LOG_ONLY_TYPES`). The grader derives
+each scan's outcome from what the reviewer did next (digest `scans`, counts only) and
+splits manual adds into scan-added and typed. Grading is plan C2. VPS runbook: `docs/deploy/vps.md`; `campaign_ops.sh` (operator-only,
 refuses an agent session) runs the same campaign-only app locally (`local-up`) and moves
 the same bundle to the VPS later (`vps-init|load|update|pull`). Newest state and next
 steps: `docs/plans/2026-10-28-session-handoff.md`. The page starts
@@ -1193,7 +1200,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 2904 passed, 2 skipped (2026-10-28)
+python -m pytest -q                          # 2938 passed, 2 skipped (2026-10-28, review-records)
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 41 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```
