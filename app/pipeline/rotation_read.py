@@ -50,9 +50,26 @@ def _read(backend, crop: Image.Image, angle: int) -> Tuple[str, float]:
         return "", 0.0
 
 
+def _plausibility(text: str) -> float:
+    """0..1: how much `text` looks like a dimension rather than OCR noise.
+    A real value is dense in digits and arrives as a few substantial tokens
+    ('120+0.30', '12 +0.1 -0.2'); noise from a wrong orientation is single
+    characters split by spaces ('2 X 0 90', 'X M - + .0 A - M'). Parsing a
+    nominal and a high confidence cannot tell these apart -- measured with
+    real tesseract on synthetic text, a correct upright read lost to noise
+    on exactly those two terms."""
+    tokens = text.split()
+    chars = sum(len(t) for t in tokens)
+    if not chars:
+        return 0.0
+    digits = sum(ch.isdigit() for t in tokens for ch in t)
+    avg = chars / len(tokens)
+    return (digits / chars) * min(1.0, avg / 3.0) ** 2
+
+
 def _score(text: str, conf: float) -> float:
     c = parse_value(text)
-    return (1.0 if c.nominal else 0.0) + (0.5 if c.upper_tol else 0.0) + conf
+    return (1.0 if c.nominal else 0.0) + (0.5 if c.upper_tol else 0.0) + conf + _plausibility(text)
 
 
 def _good(text: str, conf: float) -> bool:

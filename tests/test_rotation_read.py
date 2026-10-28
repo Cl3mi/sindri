@@ -109,3 +109,22 @@ def test_a_failing_backend_is_an_empty_read_not_an_exception():
 
     r = read_best_rotation(Broken(), _upright())
     assert r.text == "" and r.confidence == 0.0 and r.angle == 0
+
+
+def test_a_correct_but_unconfident_upright_read_is_not_replaced_by_fragmented_noise():
+    """Measured with real tesseract on synthetic text (2026-10-29): '120 +0.3 0'
+    printed upright read correctly as '120+0.30' with confidence 0.0 (that
+    backend reports none for some reads), and a -45 degree candidate returned
+    '2 X 0 90' at 0.745. Score alone swapped them. Noise looks like single characters split by spaces; a real
+    value is a few substantial tokens, so fragmentation must count against it."""
+    from app.pipeline.rotation_read import _score
+
+    class Noisy:
+        def read_region(self, image):
+            if image.size == (160, 60):
+                return OcrResult(text="120+0.30", confidence=0.0)
+            return OcrResult(text="2 X 0 90", confidence=0.745)
+
+    r = read_best_rotation(Noisy(), _upright())
+    assert (r.text, r.angle) == ("120+0.30", 0)
+    assert _score("120+0.30", 0.0) > _score("2 X 0 90", 0.745) + ROTATION_MARGIN
