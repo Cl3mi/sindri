@@ -272,3 +272,52 @@ def test_a_reviewer_flag_is_recorded_apart_from_the_pipelines():
     by = {r["id"]: r for r in g["rows"]}
     assert [by[i]["manual_flag"] for i in "abcs"] == [True, True, False, False]
     assert [by[i]["flagged"] for i in "abcs"] == [False, True, False, False]
+
+
+def _scan(seq, row_id, empty=False, failed=False, text="12", ms=300):
+    e = {"seq": seq, "type": "scan_read", "row_id": row_id, "box": [10, 10, 50, 30],
+         "text": text, "conf": 0.9, "ms": ms, "empty": empty}
+    if failed:
+        e["failed"] = True
+    return e
+
+
+def test_every_scan_attempt_is_graded_by_what_became_of_its_row():
+    """Hybrid scan logging (review UX plan task 5): the grade is derived from
+    what the reviewer did next, so no extra click is asked of them. The five
+    outcomes partition the attempts, and an UNDONE scan (its add compacted out
+    of the net journal, its scan_read kept) is the attempt that missed."""
+    add = lambda seq, rid: {"seq": seq, "type": "add_row",
+                            "row": row(rid, source="manual", nominal="12")}
+    events = [
+        _scan(1, "s1"), add(2, "s1"),                               # kept, untouched
+        _scan(3, "s2"), add(4, "s2"),                               # kept, edited + box moved
+        {"seq": 5, "type": "edit_cell", "id": "s2", "field": "nominal", "old": "12",
+         "new": "13", "reason": "misread_digit"},
+        {"seq": 6, "type": "move_target", "id": "s2", "box": [10, 10, 50, 60]},
+        _scan(7, "s3", empty=True, text=""), add(8, "s3"),          # kept, then deleted
+        {"seq": 9, "type": "delete_row", "id": "s3", "reason": "empty_extraction"},
+        _scan(10, "s4"),                                            # its add was undone
+        _scan(11, None, empty=True, failed=True, text="", ms=900),  # the request failed
+        add(12, "t1"),                                              # typed by hand, no scan
+    ]
+    final = [row("a"), row("s1", source="manual", nominal="12"),
+             row("s2", source="manual", nominal="13", target_region=[10, 10, 50, 60]),
+             row("t1", source="manual", nominal="12")]
+    g = grade_session([row("a")], sealed(final, events))
+    assert g["ungradable"] is None
+    scans = g["scans"]
+    assert [s["outcome"] for s in scans] == ["untouched", "edited", "deleted", "undone", "failed"]
+    s1, s2, s3, s4, s5 = scans
+    assert s2["fields"] == ["nominal"] and s2["reason"] == "misread_digit"
+    assert s2["box_moved"] is True and 0 < s2["box_iou"] < 1
+    assert s1["box_moved"] is False and s1["fields"] == []
+    assert s3["reason"] == "empty_extraction" and s3["empty"] is True
+    assert s4["row_id"] == "s4" and s5["row_id"] is None and s5["ms"] == 900
+    # The client's manual adds split by how they got there.
+    assert {m["id"]: m["via"] for m in g["missed"]} == {"s1": "scan", "s2": "scan", "t1": "typed"}
+
+
+def test_a_session_without_scans_grades_with_an_empty_scan_list():
+    g = grade_session([row("a")], sealed([row("a")], []))
+    assert g["scans"] == []
