@@ -28,25 +28,14 @@ Verified on merged main: pytest 2938 passed / 2 skipped, node 321, guard 41/0.
 - **Pilot bundle:** main holds everything (records and UI), so the operator builds it from main.
 - **Next:** operator builds the pilot bundle and eyeballs a real drawing (leader-line look, scan
   selection timing; the operator may send further UI changes), then §3 items 2-6.
-- **Operator feedback queue (batch 3, from the operator's own inspection; not started).** Brainstorm
-  the open points briefly, write a plan like the 2026-10-28 review-UX plan, then TDD each item:
-  1. **Scan tool (+ Add / scan rectangle) misreads values printed rotated 45 or 90 degrees.**
-     Improve the read. Check `app/pipeline` OCR/read path for the scan route (`runReadRegion` in
-     `viewer.js` posts the region); likely tries rotations (0/90/180/270, and 45 via deskew) and
-     keeps the most confident read. Measure on synthetic rotated text only, never client data.
-     The `scan_read` journal event already logs each attempt, so a rotation field may be worth adding
-     (log-only, keep JS/Python replay parity).
-  2. **Characteristic column of the right-hand table: preconfigured options** (the closed
-     char_type vocabulary) to pick from, while still allowing free text or manual adjustment
-     (a select with an "other / free text" entry, or a combobox).
-  3. **The "why was it wrong" card (reason prompt after an edit/delete) feels unintuitive.**
-     Rework how it opens and closes. The operator wants to pick a reason seamlessly while
-     editing a value or clicking on it, and a closing X on the card. Existing behaviour to keep or
-     consciously change: digit keys pick a chip only outside an editor, Esc dismisses, a dismissed
-     prompt applies the op with no reason (`reasons.js`, `table.js` keeps the edited cell).
-     Ask the operator which exact moments feel wrong before redesigning.
-  4. **Note input is too short: increase its height** so the whole text shows, not a truncated
-     single line (probably a growing textarea).
+- **Operator feedback queue (batch 3): DONE 2026-10-29** on branch `feature/review-ux-batch3`
+  (worktree `.worktrees/review-ux-batch3`, NOT merged, NOT pushed; awaiting the operator's go).
+  Plan and "As built": `docs/plans/2026-10-28-review-ux-batch3-plan.md`. Scan tool tries
+  rotations (measured on synthetic text with tesseract: 18 -> 80 of 144 exact, no upright
+  regression; the VLM backend is unmeasured); Characteristic column offers the closed vocabulary
+  plus free text; the reason card opens while editing, has an X and stays until used (late pick
+  = undo + re-apply with the reason); the note box grows. Left for the operator: look at a scan
+  on a real drawing and at the cards on real data, then merge.
 
 ## 0. State at the end of this session
 
