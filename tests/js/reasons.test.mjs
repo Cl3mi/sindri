@@ -6,7 +6,7 @@ test('vocabularies mirror journal.py exactly', () => {
   assert.deepEqual([...EDIT_REASONS].sort(),
     ['misread_digit', 'other', 'wrong_char_type', 'wrong_sign_or_unit', 'wrong_tolerance']);
   assert.deepEqual([...DELETE_REASONS].sort(),
-    ['duplicate', 'not_a_characteristic', 'other', 'unballooned_real_dimension', 'wrong_region']);
+    ['duplicate', 'empty_extraction', 'not_a_characteristic', 'other', 'unballooned_real_dimension', 'wrong_region']);
 });
 
 test('the op is applied once, with the chosen reason', async () => {

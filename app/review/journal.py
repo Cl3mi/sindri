@@ -32,7 +32,7 @@ EDIT_REASONS = frozenset({
 })
 DELETE_REASONS = frozenset({
     "duplicate", "not_a_characteristic", "unballooned_real_dimension",
-    "wrong_region", "other",
+    "wrong_region", "empty_extraction", "other",
 })
 # A per-drawing note is a sentence or two of policy ("we never balloon
 # chamfers"), not a document; the bound keeps one event from bloating a

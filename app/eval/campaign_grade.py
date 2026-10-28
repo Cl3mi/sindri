@@ -421,6 +421,9 @@ EXACT_LEVERS = {
     "fields:nominal": ("read input / box framing (crop context)", "open"),
     "phantom:duplicate": ("stage-1 contained_duplicate drop", "shipped"),
     "phantom:wrong_region": ("box framing (detect_regions)", "open"),
+    # The reader returned nothing: a non-text region was ballooned, which is a
+    # detection fault, not a read one.
+    "phantom:empty_extraction": ("non-text region detected (detect_regions)", "open"),
 }
 # Prefix match, FIRST wins, so most-specific first.
 LEVERS = [

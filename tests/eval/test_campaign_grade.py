@@ -914,3 +914,14 @@ def test_the_name_is_recorded_after_the_kind(tmp_path):
     assert digest["name"] == "unnamed"
     _, digest = grade_campaign(read_records(_campaign(tmp_path)))
     assert digest["name"] == "unnamed"
+
+
+def test_an_empty_extraction_delete_is_its_own_phantom_bucket_with_a_lever():
+    """A box the reader returned nothing for is not "other": the reviewer named
+    it, and the fix lives in detection (a non-text region was ballooned), not
+    in the read."""
+    f = ranked_findings([{"rows": [{**graded("phantom"), "reason": "empty_extraction"}],
+                          "missed": [], "scale": 300 / 72.0}])
+    [b] = f["value"]
+    assert b["bucket"] == "phantom:empty_extraction"
+    assert b["lever"] != "unmapped" and "detect" in b["lever"]

@@ -154,7 +154,9 @@ def test_reasons_are_closed_vocabularies_and_optional():
     assert EDIT_REASONS == {"misread_digit", "wrong_tolerance", "wrong_char_type",
                             "wrong_sign_or_unit", "other"}
     assert DELETE_REASONS == {"duplicate", "not_a_characteristic",
-                              "unballooned_real_dimension", "wrong_region", "other"}
+                              "unballooned_real_dimension", "wrong_region",
+                              "empty_extraction", "other"}
+    validate_event({**delete, "reason": "empty_extraction"})
 
 
 def test_coordinates_must_be_finite():
