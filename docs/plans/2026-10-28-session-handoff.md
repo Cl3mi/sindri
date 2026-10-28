@@ -7,17 +7,16 @@ The memory note `sindri-client-review-campaign.md` has the same state in short.
 
 ## 0. State at the end of this session
 
-- Branch `main`, 2 commits ahead of `origin/main` (UNPUSHED): `7153290` (campaign_ops.sh +
-  runbook section) and `82873a4` (export_share empty-`.git` fix). Everything before is pushed
-  (`18dc111` = merge of H1). Push needs the operator's go-ahead each time.
+- Branch `main`, PUSHED at the operator's go-ahead at the end of this session: `7153290`
+  (campaign_ops.sh + runbook section), `82873a4` (export_share empty-`.git` fix), the handoff
+  and CLAUDE.md updates, on top of `18dc111` (merge of H1). Each later push needs a fresh go-ahead.
 - Untracked and NOT ours, never add: `.agents/`, `.claude/settings.json`, `.codex/`,
   `AGENTS.md`, `AGENTS.md.before-workflow-update`.
-- Suite: 2896 passed, 2 skipped (before the last fix; the six `/tmp/.git` failures are gone
-  now, re-run the full suite once to confirm). Node 298. Guard self-test **41 passed, 0
-  failed** (`bash ~/.claude/hooks/test-sindri-guard.sh`; CLAUDE.md §1/§6 say 41, §6's pytest
-  count of 1946 is stale).
-- The merged worktree `.worktrees/runner-output-hardening` and its branch can be removed
-  (`git worktree remove`, then `git branch -d feature/runner-output-hardening`); not done.
+- Suite verified at the end of the session: **2904 passed, 2 skipped** (no failures; the six
+  `/tmp/.git` ones are gone). Guard self-test **41 passed, 0 failed**
+  (`bash ~/.claude/hooks/test-sindri-guard.sh`). CLAUDE.md §6 is updated to these numbers.
+- The merged worktree `.worktrees/runner-output-hardening` and its branch are removed.
+  Only `main` exists; start new work in a new worktree under `.worktrees/`.
 
 ## 1. What this session did
 
@@ -109,10 +108,7 @@ The memory note `sindri-client-review-campaign.md` has the same state in short.
 - Accepted limits (documented): check-to-write race on parent dirs and `_work`; re-ingest over
   a populated gold dir; an agent can still edit `app/eval/*.py` in the repo and run it.
 
-## 5. Housekeeping to fold in
+## 5. Housekeeping: already done
 
-- Update CLAUDE.md §6 pytest count (stale 1946) and add a line for `campaign_ops.sh` under the
-  C1 paragraph in §2 (keep the protected root's path out of new text where avoidable).
-- Update the memory note `sindri-client-review-campaign.md`: smaller campaign, campaign_ops.sh,
-  the `.git` fix, next = smoke test.
-- Push `7153290` and `82873a4` only on the operator's go-ahead.
+CLAUDE.md §2 points here first and mentions `campaign_ops.sh`; §6 counts are current; the
+memory note is updated; worktree and branch removed; everything pushed.

@@ -90,8 +90,9 @@ The export folder and the manifest stay out of git and out of the repo.
 
 ## 2. Where things stand
 
-**Read `docs/plans/2026-10-23-session-handoff.md` first — it is the newest
-state of play: the client review campaign (C1 review app + VPS deploy, C2
+**Read `docs/plans/2026-10-28-session-handoff.md` first (newest: H1 done, pilot
+selected, smoke test next), then `docs/plans/2026-10-23-session-handoff.md`, the
+state of play before it: the client review campaign (C1 review app + VPS deploy, C2
 grading + findings digest) is built and merged, and it lists the hardening
 backlog (H1: old `runner` `--out` flags can write anywhere), the pilot
 checklist and the roadmap.** Then read
@@ -325,7 +326,10 @@ phase 2's keys; a digit picks a chip only outside an editor). Balloon and
 anchor drags need 3 screen px before anything is journaled, so a click is
 never graded as a correction. A table re-render now keeps the cell being
 edited (`table.js`), or the keystroke after a reason prompt was lost.
-Grading is plan C2. VPS runbook: `docs/deploy/vps.md`. The page starts
+Grading is plan C2. VPS runbook: `docs/deploy/vps.md`; `campaign_ops.sh` (operator-only,
+refuses an agent session) runs the same campaign-only app locally (`local-up`) and moves
+the same bundle to the VPS later (`vps-init|load|update|pull`). Newest state and next
+steps: `docs/plans/2026-10-28-session-handoff.md`. The page starts
 `body.health-pending`, which hides the campaign-only chrome (and refuses a
 dropped file) until `/api/health` answers, retrying every 5 s, so a cold
 server never flashes Import at the client.
@@ -1189,7 +1193,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 1946 passed, 2 skipped
+python -m pytest -q                          # 2904 passed, 2 skipped (2026-10-28)
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 41 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```
