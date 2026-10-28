@@ -126,9 +126,103 @@ let _refreshing = false;   // an in-flight GET /api/documents
 let _refreshAgain = false; // a refresh was asked for while one was already running
 let _exportRunning = false; // a mass-export job is polling; only one per tab
 
+// The workbench table marks a row's standing with a coloured left bar
+// (table.inspection tr.review / .reviewed); the work list borrows the same
+// vocabulary so the two screens read alike: warn = needs you, ok = done.
+export function rowTone(d) {
+  switch (d.state) {
+    case 'ready': case 'in_review': return 'review';
+    case 'finished': return 'reviewed';
+    case 'failed': return 'failed';
+    case 'queued': case 'extracting': return 'busy';
+    case 'purged': return 'inert';
+    default: return '';
+  }
+}
+
+// What the preview pane shows for a drawing. Only a drawing the extraction
+// got through has a page image (GET /api/image/<id>, already in the
+// campaign-only allowlist); anything earlier would just be a broken <img>.
+const HAS_IMAGE = new Set(['ready', 'in_review', 'finished']);
+export function previewFacts(d) {
+  const facts = [];
+  if (d.flagged_total != null && d.flagged_open != null) {
+    facts.push(['Flagged', `${d.flagged_open} of ${d.flagged_total} open`]);
+  }
+  if (d.unchecked != null) facts.push(['Unchecked', String(d.unchecked)]);
+  if (d.batch_name) facts.push(['Batch', d.batch_name]);
+  return { title: d.file_name, imageUrl: HAS_IMAGE.has(d.state) ? `/api/image/${d.id}` : null, facts };
+}
+
+let _focusId = null;       // the row whose preview is showing (click or arrow keys)
+
+function setFocus(id) {
+  _focusId = id;
+  document.querySelectorAll('#wl-body tr').forEach((tr) => {
+    tr.classList.toggle('selected', tr.dataset.id === id);
+  });
+  renderPreview();
+}
+
+function renderPreview() {
+  const pane = document.getElementById('wl-preview');
+  if (!pane) return;
+  const d = _docs.find((x) => x.id === _focusId);
+  pane.replaceChildren();
+  if (!d) {
+    const hint = document.createElement('div');
+    hint.className = 'wl-preview-empty';
+    hint.textContent = 'Select a drawing to preview it';
+    pane.appendChild(hint);
+    return;
+  }
+  const f = previewFacts(d);
+  const frame = document.createElement('div');
+  frame.className = 'wl-thumb';
+  if (f.imageUrl) {
+    const img = document.createElement('img');
+    img.alt = `Preview of ${f.title}`;
+    img.loading = 'lazy';
+    img.src = f.imageUrl;
+    frame.appendChild(img);
+  } else {
+    frame.textContent = 'No preview yet';
+  }
+  const head = document.createElement('div');
+  head.className = 'wl-preview-head';
+  const name = document.createElement('div');
+  name.className = 'wl-preview-title';
+  name.textContent = f.title;
+  const chip = document.createElement('span');
+  chip.className = `state-chip state-${d.state}${d.state === 'purged' ? ' state-chip-muted' : ''}`;
+  chip.textContent = stateLabel(d.state);
+  head.append(name, chip);
+  const list = document.createElement('dl');
+  list.className = 'wl-facts';
+  for (const [k, v] of f.facts) {
+    const dt = document.createElement('dt'); dt.textContent = k;
+    const dd = document.createElement('dd'); dd.textContent = v;
+    list.append(dt, dd);
+  }
+  const open = document.createElement('a');
+  open.className = 'btn primary';
+  open.href = docUrlFor(d);
+  open.textContent = 'Open';
+  pane.append(frame, head, list, open);
+}
+
 function row(d) {
   const tr = document.createElement('tr');
   tr.dataset.id = d.id;
+  const tone = rowTone(d);
+  if (tone) tr.classList.add(tone);
+  if (d.id === _focusId) tr.classList.add('selected');
+  // A click anywhere on the row but its link and tick box picks it for the
+  // preview, as a click on a workbench row selects it.
+  tr.addEventListener('click', (e) => {
+    if (e.target.closest('a, input')) return;
+    setFocus(d.id);
+  });
   const checked = _selected.has(d.id) ? 'checked' : '';
   const badges = [...workListBadgesFor(d)].map((b) => b.text).join(' · ');
   const link = document.createElement('a');
@@ -183,6 +277,7 @@ function render() {
   const filtered = filterDocuments(_docs, currentFilters());
   body.innerHTML = '';
   for (const d of filtered) body.appendChild(row(d));
+  renderPreview();
   const header = document.getElementById('wl-queue-header');
   if (header) header.textContent = formatQueueHeader(_lastQueue || { queued: 0, extracting: 0, paused: false, eta_seconds: null });
   const pauseBtn = document.getElementById('wl-pause-resume');

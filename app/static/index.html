@@ -89,7 +89,9 @@
 
   <!-- ===== WORK LIST (batch design §3) ========================= -->
   <section id="screen-worklist" hidden>
-    <div class="wl-toolbar">
+   <div class="wl-layout">
+    <div class="wl-main">
+    <div class="toolbar wl-toolbar">
       <!-- data-campaign-hide: controls a SINDRI_CAMPAIGN_ONLY instance 403s
            (plan C1 decision 10); hidden under body.campaign-only. -->
       <button class="btn primary" id="wl-import" data-campaign-hide><svg class="icon" width="14" height="14"><use href="#i-plus"/></svg> Import</button>
@@ -120,7 +122,8 @@
       <span id="wl-queue-header" class="wl-queue-header">Queue idle</span>
       <button class="btn ghost" id="wl-pause-resume" data-campaign-hide>Pause</button>
     </div>
-    <table class="wl-table">
+    <div class="wl-table-wrap scroll-thin">
+    <table class="inspection wl-table">
       <thead>
         <tr>
           <th class="check" data-campaign-hide><input type="checkbox" id="wl-select-all" /></th>
@@ -130,6 +133,7 @@
       </thead>
       <tbody id="wl-body"></tbody>
     </table>
+    </div>
     <div class="wl-bulk" id="wl-bulk" data-campaign-hide hidden>
       <span id="wl-bulk-count">0 selected</span>
       <button class="btn ghost" id="wl-bulk-front">Move to front</button>
@@ -139,6 +143,9 @@
       <button class="btn ghost" id="wl-bulk-remove">Remove</button>
       <button class="btn ghost" id="wl-bulk-export">Export selected</button>
     </div>
+    </div>
+    <aside id="wl-preview" class="wl-preview" aria-label="Drawing preview"></aside>
+   </div>
   </section>
 
   <!-- ===== STAGING (batch design §2) ============================ -->
