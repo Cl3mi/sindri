@@ -79,6 +79,8 @@ function randomSteps(steps, ids, log) {
       S.apply(S.opSetNote(t)); label = `note ${t}`;
     } else if (r < 0.82) {
       const sel = anyIds.filter(() => rnd() < 0.4); S.apply(S.opConfirmSuggestions(sel)); label = `confirm ${sel}`;
+    } else if (r < 0.90) {
+      const sel = anyIds.filter(() => rnd() < 0.4); S.apply(S.opFlagRows(sel)); label = `flag ${sel}`;
     } else {
       const sel = anyIds.filter(() => rnd() < 0.4); const t = rnd() < 0.6;
       S.apply(S.opBulkReview(sel, t)); label = `${t ? 'accept' : 'unaccept'} ${sel}`;

@@ -164,3 +164,33 @@ test('opFromEvent restores move_target, set_note and reasons', () => {
   assert.equal(S.state.note, 'n');
   assert.equal(S.state.rows[0].nominal, '3');
 });
+
+test('opFlagRows moves rows to Review as a manual flag and undo restores them exactly', () => {
+  load([row('a', 0, 0),
+        row('b', 50, 0, { needs_review: true, review_reasons: ['no_tolerance'] }),
+        row('s', 90, 0, { suggested: true })]);
+  S.apply(S.opBulkReview(['a', 'b'], true));   // setSession resets reviewed; accept for real
+  const op = S.opFlagRows(['a', 'b', 's', 'a', 'ghost']);
+  S.apply(op);
+  const get = (id) => S.state.rows.find((r) => r.id === id);
+  assert.equal(get('a').needs_review, true);
+  assert.equal(get('a').reviewed, false);
+  assert.deepEqual(get('a').review_reasons, ['manual']);
+  assert.deepEqual(get('b').review_reasons, ['no_tolerance', 'manual']);
+  assert.equal(get('s').needs_review, false);          // a suggestion is not a balloon
+  assert.deepEqual(op.event(), { type: 'flag', ids: ['a', 'b', 's', 'ghost'] });
+  assert.equal(S.progress().outstanding, 2);          // blocks Approve until resolved
+  S.undo();                                            // undoes the flag, not the accept
+  assert.equal(get('a').needs_review, false);
+  assert.equal(get('a').reviewed, true);
+  assert.deepEqual(get('a').review_reasons, []);
+  assert.deepEqual(get('b').review_reasons, ['no_tolerance']);
+  assert.equal(get('b').reviewed, true);
+});
+
+test('a flag event rebuilds the same op after a reload', () => {
+  load([row('a', 0, 0)]);
+  const op = S.opFromEvent({ type: 'flag', ids: ['a'] });
+  S.apply(op);
+  assert.equal(S.state.rows[0].needs_review, true);
+});

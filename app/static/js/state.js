@@ -313,6 +313,38 @@ export function opBulkReview(ids, target /* true|false */) {
   };
 }
 
+// Move to Review: the reviewer's own flag (review UX plan task 2). Balloons
+// only, like replay.py's `flag`, and persistent -- the row blocks Approve until
+// it is resolved, exactly as a pipeline-flagged one does. Undo restores the
+// flag state, reasons and accepted bit each row had.
+export function opFlagRows(ids) {
+  ids = [...new Set(ids)];
+  const prev = new Map();
+  return {
+    label: 'move to review',
+    do() {
+      for (const id of ids) {
+        const r = state.rows.find((x) => x.id === id);
+        if (!r || r.suggested) continue;
+        prev.set(id, { needs_review: r.needs_review, review_reasons: r.review_reasons,
+                       reviewed: r.reviewed });
+        r.needs_review = true;
+        const reasons = [...(r.review_reasons || [])];
+        if (!reasons.includes('manual')) reasons.push('manual');
+        r.review_reasons = reasons;
+        r.reviewed = false;
+      }
+    },
+    undo() {
+      for (const [id, p] of prev) {
+        const r = state.rows.find((x) => x.id === id);
+        if (r) Object.assign(r, p);
+      }
+    },
+    event: () => ({ type: 'flag', ids: [...ids] }),
+  };
+}
+
 // ===== Rebuilding a review from the server (batch design §3) ==========
 // An op from its journal event: the same constructors the reviewer's own
 // actions use, so a restored op undoes and redoes exactly like a live one.
@@ -330,6 +362,7 @@ export function opFromEvent(e) {
     case 'accept': return opBulkReview(e.ids, true);
     case 'unaccept': return opBulkReview(e.ids, false);
     case 'confirm_suggestions': return opConfirmSuggestions(e.ids);
+    case 'flag': return opFlagRows(e.ids);
     default: throw new Error(`cannot restore a ${e.type} event`);
   }
 }

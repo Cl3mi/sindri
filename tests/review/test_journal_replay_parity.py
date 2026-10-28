@@ -34,6 +34,7 @@ _TYPE_KEYS = {
     "accept": {"ids"},
     "unaccept": {"ids"},
     "confirm_suggestions": {"ids"},
+    "flag": {"ids"},
     "retract": {"target"},
     "move_target": {"id", "box"},
     "set_note": {"text"},

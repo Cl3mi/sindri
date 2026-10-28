@@ -17,7 +17,7 @@ def test_vocabulary_is_exactly_the_known_operations():
     assert EVENT_TYPES == {
         "add_row", "delete_row", "move_row", "edit_cell",
         "accept", "unaccept", "confirm_suggestions", "retract",
-        "move_target", "set_note"}
+        "move_target", "set_note", "flag"}
 
 
 @pytest.mark.parametrize("bad", [
@@ -59,6 +59,8 @@ def test_validate_event_accepts_a_wellformed_retract():
     {"seq": 1, "type": "accept", "ids": 5},                        # ids not a list
     {"seq": 1, "type": "unaccept", "ids": ["a", 5]},                # element not str
     {"seq": 1, "type": "confirm_suggestions", "ids": "a"},          # ids not a list
+    {"seq": 1, "type": "flag", "ids": "a"},                         # ids not a list
+    {"seq": 1, "type": "flag", "ids": ["a", 5]},                    # element not str
     {"seq": 1, "type": "add_row"},                                  # no row
     {"seq": 1, "type": "add_row", "row": "not a dict"},             # row not a dict
     {"seq": 1, "type": "add_row", "row": {}},                       # row missing id
@@ -83,6 +85,7 @@ def test_validate_event_accepts_wellformed_events_of_every_type():
     validate_event(ev(1, "add_row", row={"id": "r1"}))
     validate_event(ev(1, "accept", ids=["a", "b"]))
     validate_event(ev(1, "unaccept", ids=[]))
+    validate_event(ev(1, "flag", ids=["a"]))
     validate_event(ev(1, "confirm_suggestions", ids=["a"]))
 
 

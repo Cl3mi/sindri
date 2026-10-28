@@ -11,7 +11,7 @@ from typing import Iterable, List, Set
 EVENT_TYPES = frozenset({
     "add_row", "delete_row", "move_row", "edit_cell",
     "accept", "unaccept", "confirm_suggestions", "retract",
-    "move_target", "set_note",
+    "move_target", "set_note", "flag",
 })
 
 # The cells an edit_cell may touch. Defined here (not in replay.py) because
@@ -104,7 +104,7 @@ def validate_event(e) -> None:
         row = e.get("row")
         if not isinstance(row, dict) or not _is_str(row.get("id")):
             raise JournalError("add_row needs a row object with a string id")
-    elif type_ in ("accept", "unaccept", "confirm_suggestions"):
+    elif type_ in ("accept", "unaccept", "confirm_suggestions", "flag"):
         ids = e.get("ids")
         if not isinstance(ids, list) or not all(_is_str(i) for i in ids):
             raise JournalError(f"{type_} needs ids as a list of strings")
