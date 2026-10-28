@@ -29,6 +29,7 @@ import {
 } from './ui.js';
 import { initShortcuts } from './shortcuts.js';
 import { settleReasonPrompt } from './reasons.js';
+import { autosize } from './autosize.js';
 import { installAuthGate, submitToken } from './auth.js';
 
 // The drawing this tab is waiting on (staged or extracting). Extraction runs
@@ -51,6 +52,7 @@ let pendingOpen = null;   // id
 let closePendingToast = null;
 let workList = null;      // initWorkList()'s handle; Task 13 reads it back via workList.getDocs()
 let routedDoc = null;     // { id, campaign } of the last GET /api/documents/{id} routed (currentDocIsCampaign)
+let noteRefit = null;     // autosize()'s refit for #doc-note: call after setting its value or unhiding it
 let noteSid = null;       // the drawing open when #doc-note took focus: its text belongs to that one
 
 // Journal the note box's text onto the drawing it was typed on, if it
@@ -175,6 +177,9 @@ function init() {
   const note = document.getElementById('doc-note');
   note?.addEventListener('focus', () => { noteSid = state.sessionId; });
   note?.addEventListener('blur', commitNote);
+  // Grows with its text; refit after every programmatic value change
+  // (renderFinish below) since no input event fires for those.
+  noteRefit = note ? autosize(note) : null;
   wireJournal();
   wireUndoRedo();
   pingHealth();
@@ -248,15 +253,12 @@ const router = createSerialRunner(routeOnce);
 function routeFromHash() { return router.run(); }
 
 async function routeOnce() {
-  // An open reason prompt holds an edit or delete that is not applied yet
-  // (apply-on-resolution, reasons.js). Every guard below reads journal state
-  // -- flushBeforeLeaving's pending count, and openForReview's resume, which
-  // DISCARDS unflushed events -- so the held op must be in the journal
-  // first. Awaited, not just called: resolving the popover only queues
-  // commitWithReason's continuation, and settleReasonPrompt's promise is
-  // what resolves once the op has actually been applied. (askReason's own
-  // hashchange listener also dismisses it, but go() writes the hash with
-  // replaceState, which fires no hashchange -- decision 10.)
+  // An open reason card no longer holds any op back (reasons.js applies at
+  // commit), so this only closes it: the card must not follow the reviewer to
+  // the next drawing, and a late pick must not swap an op in a journal that
+  // is about to be resumed or sealed. go() writes the hash with replaceState,
+  // which fires no hashchange (decision 10), so the card's own listener would
+  // never hear about it.
   await settleReasonPrompt();
   // Same reason for an un-blurred note: state.sessionId is still the drawing
   // being left, which is the one its text belongs to.
@@ -385,6 +387,7 @@ function syncCampaignChrome() {
       note.value = state.note || '';
       if (document.activeElement === note) note.blur();
     }
+    noteRefit?.();   // after hidden/value changed: a hidden box measures 0
   }
   const appr = document.getElementById('rb-approved');
   if (appr) {
@@ -509,8 +512,8 @@ function backToEmptyOrCurrent() {
 function wireHeader() {
   document.getElementById('file-close').addEventListener('click', async () => {
     // The beacon below sends journal.pending and clearSession() then ends
-    // the drawing: an op the reason prompt still holds must be applied
-    // first, or it is never journaled at all.
+    // the drawing: the reason card must not outlive it (ops are applied at
+    // commit now, so nothing is held back by it).
     await settleReasonPrompt();
     commitNote();   // likewise an un-blurred note, before the beacon below
     if (!confirm('Close this drawing? Your review is saved and reopens from its link.')) return;
@@ -992,10 +995,10 @@ async function openForReview(id, { skipFlush = false } = {}) {
   }
   // Reached without routeOnce too (scheduleFlush's 'open'/'open_stale', the
   // file-close handler's pendingOpen), and journal.resume() below wipes
-  // whatever is unflushed -- so a held reason-prompt op is applied (and
-  // thereby flushed or confirmed-away) before anything decides to leave.
+  // whatever is unflushed -- so the reason card, whose late pick would swap
+  // an op in that journal, is closed before anything decides to leave.
   // Below the no-op return above: re-asserting the drawing already open
-  // must not dismiss a prompt the reviewer is still reading.
+  // must not dismiss a card the reviewer is still reading.
   await settleReasonPrompt();
   // Taken before any await that yields to a TASK (settleReasonPrompt above
   // is microtask-only, so no flush tick can run in between), so a second
@@ -1183,11 +1186,10 @@ function wireJournal() {
     const sent = journal.pending.length;
     beaconEvents(sessionId, writer, journal.pending);
     // A pagehide listener cannot await. Beaconing first keeps the common
-    // case unchanged; the settleReasonPrompt() call below resolves any held
-    // prompt synchronously, its op is applied in the microtask checkpoint
-    // right after this listener returns (before the page goes), and the
-    // `.then` sends that op in a second beacon. Append is by seq server-side,
-    // so the overlap double-sends at worst, never drops.
+    // case unchanged; the settleReasonPrompt() call below closes any open
+    // card, and the `.then` re-beacons if anything was journaled meanwhile.
+    // Append is by seq server-side, so the overlap double-sends at worst,
+    // never drops.
     settleReasonPrompt().then(() => {
       if (journal.pending.length > sent) beaconEvents(sessionId, writer, journal.pending);
     });
@@ -1306,10 +1308,10 @@ function wireFinish() {
 }
 
 async function finish() {
-  // Before the snapshot: an edit still held by the reason prompt must be in
-  // the sealed revision, not applied a microtask after it was copied. Only
-  // microtasks pass here, so a second click (its own task) cannot slip in
-  // before `finishing` and btn.disabled are set below.
+  // Before the snapshot: close the reason card so a late pick cannot swap an
+  // op after the revision was copied. Only microtasks pass here, so a second
+  // click (its own task) cannot slip in before `finishing` and btn.disabled
+  // are set below.
   await settleReasonPrompt();
   commitNote();   // a note still being typed is part of what is sealed
   const btn = document.getElementById('finish-btn');

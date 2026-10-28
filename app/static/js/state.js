@@ -138,6 +138,20 @@ export function redo() {
   emit('change');
   emit('history');
 }
+// Swap the op on top of the undo stack for another. Used by a reason picked
+// AFTER its edit/delete was applied (reasons.js): undo + apply, so the journal
+// retracts the unexplained event and sends the explained one, and one Ctrl+Z
+// still reverts the whole change. Refused (false) unless `op` is still on top:
+// anything done since means the reason would describe a different state.
+export function replaceTop(op, next) {
+  if (state.readOnly || undoStack[undoStack.length - 1] !== op) return false;
+  undo();
+  apply(next);
+  return true;
+}
+// What reasons.js needs from the undo stack, bundled once for its callers.
+export const reasonIO = { apply, replaceTop, onOp: (fn) => on('op', fn) };
+
 // What the next undo / redo will do, for the buttons' tooltip and the toast
 // (main.js). An op names itself with describe() where the balloon number
 // matters; the number is captured when the op runs, because a deleted row is

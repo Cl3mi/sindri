@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { EDIT_REASONS, DELETE_REASONS, commitWithReason } from '../../app/static/js/reasons.js';
+import { EDIT_REASONS, DELETE_REASONS, createReasonSession, classifyKey,
+         openReason, settleReasonPrompt } from '../../app/static/js/reasons.js';
 
 test('vocabularies mirror journal.py exactly', () => {
   assert.deepEqual([...EDIT_REASONS].sort(),
@@ -9,118 +10,204 @@ test('vocabularies mirror journal.py exactly', () => {
     ['duplicate', 'empty_extraction', 'not_a_characteristic', 'other', 'unballooned_real_dimension', 'wrong_region']);
 });
 
-test('the op is applied once, with the chosen reason', async () => {
-  const applied = [];
-  await commitWithReason('edit', (reason) => ({ reason }), async () => 'misread_digit',
-                         (op) => applied.push(op));
-  assert.deepEqual(applied, [{ reason: 'misread_digit' }]);
+// ---- the session: when an op is applied and what a reason rides on ---------
+// Operator feedback 2026-10-28: the card appeared only AFTER the edit and
+// vanished on any key. The op is no longer held hostage to the card: it is
+// applied at commit, with whatever reason was picked while editing; a reason
+// picked afterwards replaces the still-top op with one that carries it, so the
+// journal ends exactly as if the reason had been picked up front.
+
+function rig() {
+  const log = { applied: [], replaced: [] };
+  const io = {
+    apply: (op) => log.applied.push(op),
+    replaceTop: (oldOp, newOp) => { log.replaced.push([oldOp, newOp]); return rig.top !== false; },
+  };
+  const makeOp = (reason) => ({ reason });
+  return { log, io, makeOp };
+}
+
+test('a reason picked while editing rides on the op applied at commit', () => {
+  const { log, io, makeOp } = rig();
+  const s = createReasonSession('edit', makeOp, io);
+  s.pick('misread_digit');
+  assert.deepEqual(log.applied, []);            // nothing applied before commit
+  s.commit();
+  assert.deepEqual(log.applied, [{ reason: 'misread_digit' }]);
+  assert.equal(s.phase, 'done');                 // explained: the card has no more to ask
 });
 
-test('dismissing applies the op with no reason; an off-vocabulary answer counts as none', async () => {
-  const applied = [];
-  await commitWithReason('delete', (reason) => ({ reason }), async () => undefined,
-                         (op) => applied.push(op));
-  await commitWithReason('delete', (reason) => ({ reason }), async () => 'misread_digit',
-                         (op) => applied.push(op));
-  assert.deepEqual(applied, [{ reason: undefined }, { reason: undefined }]);
+test('commit without a reason applies at once and leaves the card open for a late pick', () => {
+  const { log, io, makeOp } = rig();
+  const s = createReasonSession('edit', makeOp, io);
+  s.commit();
+  assert.deepEqual(log.applied, [{ reason: undefined }]);
+  assert.equal(s.phase, 'applied');
+  s.pick('wrong_tolerance');
+  assert.equal(log.replaced.length, 1);
+  assert.equal(log.replaced[0][0], log.applied[0]);
+  assert.deepEqual(log.replaced[0][1], { reason: 'wrong_tolerance' });
+  assert.equal(s.phase, 'done');
 });
 
-test('a failing prompt still applies the op: the edit is never lost', async () => {
-  const applied = [];
-  await commitWithReason('edit', (reason) => ({ reason }),
-                         async () => { throw new Error('no DOM'); }, (op) => applied.push(op));
-  assert.deepEqual(applied, [{ reason: undefined }]);
+test('a late pick after another op landed changes nothing and does not throw', () => {
+  const { log, io, makeOp } = rig();
+  rig.top = false;                               // the op is no longer on top of the undo stack
+  try {
+    const s = createReasonSession('delete', makeOp, io);
+    s.commit();
+    s.pick('duplicate');
+    assert.equal(log.replaced.length, 1);        // asked, was refused
+    assert.equal(s.phase, 'done');
+  } finally { rig.top = undefined; }
 });
 
-import { classifyKey } from '../../app/static/js/reasons.js';
+test('an off-vocabulary key is ignored, and commit is idempotent', () => {
+  const { log, io, makeOp } = rig();
+  const s = createReasonSession('edit', makeOp, io);
+  s.pick('misread_digit_typo');
+  s.commit(); s.commit();
+  assert.deepEqual(log.applied, [{ reason: undefined }]);
+  assert.equal(s.phase, 'applied');
+});
+
+test('delete reasons are validated against the delete vocabulary, not the edit one', () => {
+  const { log, io, makeOp } = rig();
+  const s = createReasonSession('delete', makeOp, io);
+  s.pick('misread_digit');                       // an EDIT reason
+  s.commit();
+  assert.deepEqual(log.applied, [{ reason: undefined }]);
+});
+
+test('cancel before commit never applies (Esc reverted the edit)', () => {
+  const { log, io, makeOp } = rig();
+  const s = createReasonSession('edit', makeOp, io);
+  s.pick('other');
+  s.cancel();
+  s.commit();
+  assert.deepEqual(log.applied, []);
+  assert.equal(s.phase, 'done');
+});
+
+test('end() closes an applied session without touching the journal', () => {
+  const { log, io, makeOp } = rig();
+  const s = createReasonSession('edit', makeOp, io);
+  s.commit();
+  s.end();
+  s.pick('other');
+  assert.equal(log.replaced.length, 0);
+  assert.equal(log.applied.length, 1);
+});
+
+// ---- key policy: the card persists, so only a deliberate pick consumes a key --
 
 const key = (k, extra = {}) => ({ key: k, target: { tagName: 'DIV', isContentEditable: false }, ...extra });
 const editing = { tagName: 'TD', isContentEditable: true };
 
-test('classifyKey: a digit outside an editor picks that chip', () => {
+test('classifyKey: a plain digit outside an editor picks that chip', () => {
   assert.deepEqual(classifyKey(key('3'), 5), { reason: 2 });
 });
 
-test('classifyKey: a digit typed into an editor dismisses and passes through', () => {
-  // Tab-ing to the next cell and typing "12.5" must not be eaten by the popover.
-  assert.equal(classifyKey(key('1', { target: editing }), 5), 'dismiss');
-  assert.equal(classifyKey(key('1', { target: { tagName: 'INPUT' } }), 5), 'dismiss');
+test('classifyKey: Alt+digit picks even inside an editor', () => {
+  assert.deepEqual(classifyKey(key('2', { target: editing, altKey: true }), 5), { reason: 1 });
 });
 
-test('classifyKey: out-of-range digit, modifiers and other keys dismiss', () => {
-  assert.equal(classifyKey(key('6'), 5), 'dismiss');
-  assert.equal(classifyKey(key('1', { ctrlKey: true }), 5), 'dismiss');
-  assert.equal(classifyKey(key('z', { ctrlKey: true }), 5), 'dismiss');
-  assert.equal(classifyKey(key('Tab'), 5), 'dismiss');
+test('classifyKey: a digit typed into an editor is the reviewer typing, not a pick', () => {
+  // Tab-ing to the next cell and typing "12.5" must not be eaten by the card.
+  assert.equal(classifyKey(key('1', { target: editing }), 5), 'ignore');
+  assert.equal(classifyKey(key('1', { target: { tagName: 'INPUT' } }), 5), 'ignore');
 });
 
-test('classifyKey: modifier-only keys and IME composition keep it open', () => {
+test('classifyKey: every other key passes through and leaves the card open', () => {
+  assert.equal(classifyKey(key('6'), 5), 'ignore');
+  assert.equal(classifyKey(key('1', { ctrlKey: true }), 5), 'ignore');
+  assert.equal(classifyKey(key('z', { ctrlKey: true }), 5), 'ignore');
+  assert.equal(classifyKey(key('Tab'), 5), 'ignore');
   for (const k of ['Shift', 'Control', 'Alt', 'Meta']) assert.equal(classifyKey(key(k), 5), 'ignore');
   assert.equal(classifyKey(key('a', { isComposing: true }), 5), 'ignore');
 });
 
-test('classifyKey: Escape is swallowed and dismisses', () => {
+test('classifyKey: Escape outside an editor closes the card; inside, it belongs to the editor', () => {
   assert.equal(classifyKey(key('Escape'), 5), 'swallow-dismiss');
+  assert.equal(classifyKey(key('Escape', { target: editing }), 5), 'ignore');
 });
 
-// ---- settleReasonPrompt must be awaitable --------------------------------
-// main.js settles any open prompt before it routes away, seals (Finish) or
-// swaps the open drawing, and then reads journal state (pending events,
-// the Finish snapshot). Resolving the popover is not enough: commitWithReason
-// applies the op only after its own `await ask()` continuation runs, so a
-// caller that read the journal straight after settling would miss the very
-// edit the popover was holding -- it would be sealed out of the revision or
-// wiped by journal.resume(). The returned promise resolves only once every
-// in-flight commit has APPLIED its op, however many async hops the `ask`
-// wrapper adds between askReason and commitWithReason.
+// ---- the card (DOM) ---------------------------------------------------------
 
-import { askReason, settleReasonPrompt } from '../../app/static/js/reasons.js';
-
-function fakeEl() {
-  return {
-    style: {}, children: [],
-    setAttribute() {}, addEventListener() {}, remove() {},
+function fakeEl(tag = 'div') {
+  const el = {
+    tagName: tag.toUpperCase(), style: {}, children: [], listeners: {}, removed: false,
+    className: '', textContent: '', attrs: {},
+    setAttribute(k, v) { this.attrs[k] = v; },
+    addEventListener(t, f) { (this.listeners[t] ||= []).push(f); },
+    remove() { this.removed = true; },
     appendChild(c) { this.children.push(c); },
     contains() { return false; },
     getBoundingClientRect() { return { left: 0, top: 0, bottom: 0, right: 0, height: 0, width: 0 }; },
+    classList: { toggle(c, on) { (el.classes ||= new Set())[on ? 'add' : 'delete'](c); } },
+    click() { for (const f of this.listeners.click || []) f({ stopPropagation() {}, preventDefault() {} }); },
   };
+  return el;
 }
+const all = (el) => [el, ...el.children.flatMap(all)];
 
 function withFakeDom(fn) {
   return async () => {
-    globalThis.document = {
-      createElement: fakeEl, body: fakeEl(), visibilityState: 'visible',
-      addEventListener() {}, removeEventListener() {},
-    };
+    const body = fakeEl('body');
+    globalThis.document = { createElement: fakeEl, body, visibilityState: 'visible',
+                            addEventListener() {}, removeEventListener() {} };
     globalThis.window = { innerHeight: 1000, innerWidth: 1000,
                           addEventListener() {}, removeEventListener() {} };
-    try { await fn(); } finally { delete globalThis.document; delete globalThis.window; }
+    try { await fn(body); } finally { delete globalThis.document; delete globalThis.window; }
   };
 }
 
-test('settleReasonPrompt resolves only after the held op has been applied', withFakeDom(async () => {
-  const applied = [];
-  // Extra async hops on purpose: a caller-side `await Promise.resolve()`
-  // would race these and lose; the settle promise must not.
-  const ask = async (kind) => { await null; return askReason(kind, null); };
-  const done = commitWithReason('delete', (reason) => ({ reason }), ask, (op) => applied.push(op));
-  await new Promise((r) => setTimeout(r, 0));   // the popover is now open
-  assert.deepEqual(applied, []);
-  await settleReasonPrompt();
-  assert.deepEqual(applied, [{ reason: undefined }]);
-  await done;
+const chips = (card) => all(card).filter((e) => e.className.split(' ').includes('chip'));
+const closeBtn = (card) => all(card).find((e) => e.className.split(' ').includes('reason-close'));
+
+test('the card has a visible close X; closing hides it but the edit still commits', withFakeDom((body) => {
+  const { log, io, makeOp } = rig();
+  const s = openReason('edit', makeOp, null, io);
+  const card = body.children[0];
+  assert.ok(closeBtn(card), 'a close button');
+  closeBtn(card).click();
+  assert.equal(card.removed, true);
+  s.commit();
+  assert.deepEqual(log.applied, [{ reason: undefined }]);   // reasonless, nothing lost
+}));
+
+test('clicking a chip while editing picks it; the card closes once the op is applied with it', withFakeDom((body) => {
+  const { log, io, makeOp } = rig();
+  const s = openReason('edit', makeOp, null, io);
+  const card = body.children[0];
+  chips(card)[0].click();                        // 'Misread digit'
+  assert.equal(card.removed, false);             // still up: the edit is not committed yet
+  s.commit();
+  assert.deepEqual(log.applied, [{ reason: 'misread_digit' }]);
+  assert.equal(card.removed, true);
+}));
+
+test('the card stays open after an unexplained commit until a chip or X', withFakeDom((body) => {
+  const { log, io, makeOp } = rig();
+  const s = openReason('delete', makeOp, null, io);
+  s.commit();
+  const card = body.children[0];
+  assert.equal(card.removed, false);
+  chips(card)[3].click();                        // 'Wrong region / misplaced box'
+  assert.deepEqual(log.replaced[0][1], { reason: 'wrong_region' });
+  assert.equal(card.removed, true);
+}));
+
+test('a second card replaces the first; settleReasonPrompt closes whatever is open', withFakeDom((body) => {
+  const { io, makeOp } = rig();
+  openReason('edit', makeOp, null, io);
+  const first = body.children[0];
+  openReason('edit', makeOp, null, io);
+  assert.equal(first.removed, true);
+  const second = body.children[1];
+  return settleReasonPrompt().then(() => assert.equal(second.removed, true));
 }));
 
 test('settleReasonPrompt with nothing open resolves at once', async () => {
   await settleReasonPrompt();
 });
-
-test('settleReasonPrompt still resolves when the held op throws on apply', withFakeDom(async () => {
-  // A failing apply is the commit's own failure; it must not also wedge
-  // navigation or Finish, which await this settle before doing anything.
-  const done = commitWithReason('edit', (reason) => ({ reason }),
-                                (kind) => askReason(kind, null),
-                                () => { throw new Error('apply failed'); });
-  await settleReasonPrompt();
-  await assert.rejects(done, /apply failed/);
-}));

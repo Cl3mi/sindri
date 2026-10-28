@@ -12,7 +12,7 @@ export const TEXT_MAX = 500;   // mirrors journal.SCAN_TEXT_MAX
 
 const finite = (v) => typeof v === 'number' && Number.isFinite(v);
 
-export function scanEvent({ box, ms, row, failed }) {
+export function scanEvent({ box, ms, row, failed, rotation }) {
   const e = {
     type: 'scan_read',
     row_id: row?.id ?? null,
@@ -29,5 +29,7 @@ export function scanEvent({ box, ms, row, failed }) {
     e.empty = !text && !String(row.nominal ?? '').trim();
   }
   if (failed) e.failed = true;
+  // Which orientation the server read it in (journal.py: a number in [-180, 180]).
+  if (finite(rotation) && Math.abs(rotation) <= 180) e.rotation = rotation;
   return e;
 }

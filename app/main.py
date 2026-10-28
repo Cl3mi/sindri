@@ -28,6 +28,7 @@ from app.pipeline.ocr import get_backend, backend_status
 from app.pipeline.parser import parse_value
 from app.pipeline import policy_rules as pr
 from app.pipeline.review import review_flags
+from app.pipeline.rotation_read import read_best_rotation
 from app.pipeline.place import place_balloons
 from app.batch.export_render import InputUnavailable, exportable, render_export
 from app.review.header import build_header
@@ -931,11 +932,11 @@ def read_region(req: ReadRegionRequest):
     if box[2] <= box[0] or box[3] <= box[1]:
         raise HTTPException(status_code=400, detail="degenerate box")
     crop = image.crop(box)
-    try:
-        ocr = _BACKEND.read_region(crop)
-        text, conf = ocr.text, ocr.confidence
-    except Exception:
-        text, conf = "", 0.0
+    # Orientation search: the reviewer says a value is in this rectangle, so
+    # spend extra reads on 90/180/45 degree text only when the upright read
+    # is poor (rotation_read.py). A failing backend is an empty read there.
+    read = read_best_rotation(_BACKEND, crop)
+    text, conf = read.text, read.confidence
     c = parse_value(text)
     c.id = uuid.uuid4().hex
     c.source = "manual"
@@ -951,7 +952,10 @@ def read_region(req: ReadRegionRequest):
         c.needs_review = True
         c.review_reasons = [*c.review_reasons, *extra]
     place_balloons([c])
-    return c.model_dump()
+    # scan_rotation is NOT a Characteristic field: it rides beside the row so
+    # the client can log it in the scan_read event, and is stripped before the
+    # row is added (viewer.js runReadRegion).
+    return {**c.model_dump(), "scan_rotation": read.angle}
 
 
 class NoCacheStaticFiles(StaticFiles):

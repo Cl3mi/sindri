@@ -186,6 +186,14 @@ def test_scan_read_is_a_log_only_event_with_a_checked_shape():
                     "empty": True, "failed": True})
 
 
+def test_scan_read_may_log_the_rotation_that_read_it():
+    """Optional and log-only (2026-10-28): which orientation the scan tool
+    kept, so the grader can later say whether sideways scans work. Old events
+    have none, and replay ignores it either way."""
+    for rotation in (0, -90, 90, 180, -45):
+        validate_event({**SCAN, "seq": 1, "rotation": rotation})
+
+
 @pytest.mark.parametrize("bad", [
     {"row_id": 5},                       # id must be a string or null
     {"box": [1, 2, 3]},                  # not 4 numbers
@@ -198,6 +206,10 @@ def test_scan_read_is_a_log_only_event_with_a_checked_shape():
     {"ms": True},
     {"empty": "no"},                     # a real bool
     {"failed": 1},
+    {"rotation": "90"},                  # degrees applied to the crop: a finite number
+    {"rotation": float("nan")},
+    {"rotation": True},
+    {"rotation": 361},                   # a real orientation, not an arbitrary number
 ])
 def test_scan_read_refuses_a_malformed_shape(bad):
     with pytest.raises(JournalError):
@@ -212,3 +224,20 @@ def test_a_scan_read_survives_its_rows_undo_but_can_never_be_retracted():
     assert [e["seq"] for e in net_events(events)] == [1]
     with pytest.raises(JournalError):
         net_events([*events[:1], ev(4, "retract", target=1)])
+
+
+def test_a_late_reason_pick_nets_to_the_single_explained_edit():
+    """The reason card (batch 3) lets a reviewer pick a reason AFTER the edit
+    was applied: the client undoes the unexplained edit and applies the same
+    edit with the reason (state.js replaceTop). The journal holds edit,
+    retract, edit(reason); the net operations, and so the sealed revision and
+    the grade, are the one explained edit -- as if it had been picked up front."""
+    events = [
+        {"seq": 1, "type": "edit_cell", "id": "a", "field": "nominal", "old": "10", "new": "12"},
+        {"seq": 2, "type": "retract", "target": 1},
+        {"seq": 3, "type": "edit_cell", "id": "a", "field": "nominal", "old": "10", "new": "12",
+         "reason": "misread_digit"},
+    ]
+    net = net_events(events)
+    assert [e["seq"] for e in net] == [3]
+    assert net[0]["reason"] == "misread_digit"
