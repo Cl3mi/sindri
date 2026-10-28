@@ -74,7 +74,12 @@ def check_out_dir(out, root) -> None:
     if out == root or root in out.parents:
         raise ValueError(f"--out {out} is inside the protected root {root}")
     for p in (out, *out.parents):
-        if (p / ".git").exists():
+        g = p / ".git"
+        # A file is a linked worktree; a directory counts only with HEAD. A
+        # stray EMPTY `.git` dir (sandboxes and tools leave them in /tmp and
+        # the home directory) is no repository, and treating it as one
+        # refused every folder beneath it.
+        if g.is_file() or (g.is_dir() and (g / "HEAD").exists()):
             raise ValueError(f"--out {out} is inside the git tree at {p}")
 
 

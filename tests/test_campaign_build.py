@@ -243,10 +243,28 @@ def test_out_dir_inside_the_protected_root_is_refused(tmp_path):
 
 def test_out_dir_inside_a_git_tree_is_refused(tmp_path):
     (tmp_path / "repo" / ".git").mkdir(parents=True)
+    (tmp_path / "repo" / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
     with pytest.raises(ValueError):
         export_share.check_out_dir(tmp_path / "repo" / "share", tmp_path / "root")
     with pytest.raises(ValueError):
         export_share.check_out_dir(tmp_path / "repo", tmp_path / "root")
+
+
+def test_out_dir_inside_a_linked_worktree_is_refused(tmp_path):
+    """A worktree's `.git` is a FILE pointing at the real git dir."""
+    (tmp_path / "wt").mkdir()
+    (tmp_path / "wt" / ".git").write_text("gitdir: /elsewhere/.git/worktrees/wt\n")
+    with pytest.raises(ValueError):
+        export_share.check_out_dir(tmp_path / "wt" / "share", tmp_path / "root")
+
+
+def test_an_empty_dot_git_directory_is_not_a_git_tree(tmp_path):
+    """A stray empty `.git` dir (the sandbox and some tools leave one in /tmp or
+    the home directory) is not a repository -- git itself says so -- and
+    refusing every output folder beneath it made the campaign unbuildable.
+    A real repo always has HEAD."""
+    (tmp_path / "home" / ".git").mkdir(parents=True)
+    export_share.check_out_dir(tmp_path / "home" / "bundle", tmp_path / "root")
 
 
 def test_both_tools_refuse_a_bad_out_dir_before_creating_it(tmp_path, sample_pdf,
