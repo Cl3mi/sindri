@@ -8,8 +8,9 @@ The memory note `sindri-client-review-campaign.md` has the same state in short.
 ## 0a. UPDATE (later the same day): smoke test and review-UX batches 1 and 2 done
 
 Tracker: `docs/plans/2026-10-28-review-ux-and-scan-logging-plan.md` (decisions table, B1 "As
-built", B2 tasks 7-11). Branch `feature/review-records` in `.worktrees/review-records`,
-UNMERGED and UNPUSHED; local `main` has the smoke test (ff-merged from `feature/campaign-smoke`).
+built", B2 tasks 7-11). Branch `feature/review-records` is MERGED into `main` and PUSHED
+(origin/main `95939a9`, smoke test included); its worktree and branch are removed.
+Verified on merged main: pytest 2938 passed / 2 skipped, node 321, guard 41/0.
 
 - **Smoke test: DONE** (`tests/test_campaign_ops_smoke.py`, 9 tests): local-up/pull/wipe through
   the real API and grader, and the vps-* command shapes against fake `ssh`/`rsync`. It found no
@@ -20,14 +21,13 @@ UNMERGED and UNPUSHED; local `main` has the smoke test (ff-merged from `feature/
   undone/failed) with scan-added vs typed misses in the campaign digest (counts only, no OCR
   text). Suite 2907 passed + 31 title-block tests that need the ignored local sample file the
   worktree lacks (2938 expected in the main checkout); node and guard (41/0) green.
-- **Unstaged in the worktree:** the `CLAUDE.md` edit (test count, "Journal events added after C1"
-  paragraph). The Bash guard refuses `git add CLAUDE.md`; the operator stages it.
+- CLAUDE.md edit (test count, "Journal events added after C1" paragraph): committed and merged.
 - **B2 (UI polish, no record change): DONE** (plan §3c): selection fix, undo/redo tooltip and
   toast, leader lines (+ Lines toggle), work list restyle with preview pane, and a headless
   Chromium pass on a synthetic bundle with screenshots. Still worth one look at a real drawing.
-- **Pilot bundle timing:** the branch now holds everything (records and UI), so build the
-  bundle after the merge.
-- **Next after B2:** merge (operator's go), operator builds the pilot bundle, then §3 items 2-6.
+- **Pilot bundle:** main holds everything (records and UI), so the operator builds it from main.
+- **Next:** operator builds the pilot bundle and eyeballs a real drawing (leader-line look, scan
+  selection timing; the operator may send further UI changes), then §3 items 2-6.
 
 ## 0. State at the end of this session
 
