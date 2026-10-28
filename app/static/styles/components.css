@@ -940,6 +940,9 @@ input[type="file"].sr {
 .wl-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg-base); }
 .wl-table-wrap { flex: 1; overflow: auto; min-height: 0; }
 .wl-toolbar .spacer { flex: 1; min-width: 0; }
+.wl-toolbar select { height: 26px; padding: 0 8px; background: var(--bg-input); color: var(--fg);
+  border: 1px solid var(--border); border-radius: var(--radius-md); font: inherit; font-size: var(--fs-sm); }
+.wl-toolbar select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
 .wl-queue-header { color: var(--fg-muted); font-size: var(--fs-xs); }
 .wl-table td { height: var(--row-h, 30px); white-space: nowrap; }
 .wl-table td.wl-file { max-width: 28ch; overflow: hidden; text-overflow: ellipsis; }

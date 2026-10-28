@@ -129,6 +129,13 @@ let _exportRunning = false; // a mass-export job is polling; only one per tab
 // The workbench table marks a row's standing with a coloured left bar
 // (table.inspection tr.review / .reviewed); the work list borrows the same
 // vocabulary so the two screens read alike: warn = needs you, ok = done.
+// "2026-10-28T18:44:58.716129+00:00" -> "2026-10-28 18:44": the seconds and the
+// offset are noise in a list people scan for "what changed lately".
+export function shortWhen(iso) {
+  const m = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/.exec(iso || '');
+  return m ? `${m[1]} ${m[2]}` : (iso || '');
+}
+
 export function rowTone(d) {
   switch (d.state) {
     case 'ready': case 'in_review': return 'review';
@@ -253,7 +260,7 @@ function row(d) {
     fileCell.appendChild(rel);
   }
   tr.querySelector('.wl-batch').textContent = d.batch_name || '';
-  tr.querySelector('.wl-updated').textContent = d.updated_at || '';
+  tr.querySelector('.wl-updated').textContent = shortWhen(d.updated_at);
   tr.querySelector('.wl-badges').textContent = badges;
   // setAttribute never parses its value as markup (unlike innerHTML), so a
   // file name with quotes or angle brackets in it is still safe here.

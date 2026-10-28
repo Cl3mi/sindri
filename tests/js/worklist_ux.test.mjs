@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { rowTone, previewFacts } = await import('../../app/static/js/worklist.js');
+const { rowTone, previewFacts, shortWhen } = await import('../../app/static/js/worklist.js');
 
 test('rowTone maps a drawing state onto the workbench row states', () => {
   assert.equal(rowTone({ state: 'ready' }), 'review');       // needs me, like a flagged row
@@ -32,4 +32,12 @@ test('previewFacts shows a thumbnail only when the extraction left an image', ()
   assert.deepEqual(f.facts, [['Flagged', '2 of 5 open'], ['Unchecked', '7'], ['Batch', 'pilot']]);
   assert.deepEqual(previewFacts({ ...base, state: 'ready', flagged_open: null, unchecked: null,
                                   flagged_total: null, batch_name: '' }).facts, []);
+});
+
+test('shortWhen drops seconds and the offset, and leaves anything odd alone', () => {
+  assert.equal(shortWhen('2026-10-28T18:44:58.716129+00:00'), '2026-10-28 18:44');
+  assert.equal(shortWhen('2026-10-28 09:05:00'), '2026-10-28 09:05');
+  assert.equal(shortWhen(''), '');
+  assert.equal(shortWhen(null), '');
+  assert.equal(shortWhen('yesterday'), 'yesterday');
 });
