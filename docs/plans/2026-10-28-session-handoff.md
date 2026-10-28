@@ -5,7 +5,7 @@ ARE HARDENED", then this file, then `docs/deploy/vps.md`, then
 `docs/plans/2026-10-23-session-handoff.md` §3.3-3.4 (hardening list, roadmap).
 The memory note `sindri-client-review-campaign.md` has the same state in short.
 
-## 0a. UPDATE (later the same day): smoke test and review-UX Batch 1 done, Batch 2 in progress
+## 0a. UPDATE (later the same day): smoke test and review-UX batches 1 and 2 done
 
 Tracker: `docs/plans/2026-10-28-review-ux-and-scan-logging-plan.md` (decisions table, B1 "As
 built", B2 tasks 7-11). Branch `feature/review-records` in `.worktrees/review-records`,
@@ -22,12 +22,11 @@ UNMERGED and UNPUSHED; local `main` has the smoke test (ff-merged from `feature/
   worktree lacks (2938 expected in the main checkout); node and guard (41/0) green.
 - **Unstaged in the worktree:** the `CLAUDE.md` edit (test count, "Journal events added after C1"
   paragraph). The Bash guard refuses `git add CLAUDE.md`; the operator stages it.
-- **B2 (UI polish, no record change): IN PROGRESS** in this order: 7 selection after add,
-  8 undo/redo tooltip + toast, 9 leader lines, 10 worklist restyle with preview pane, 11
-  headless-browser pass with screenshots. Update the plan's task marks as each lands.
-- **Pilot bundle timing:** all journal/grader changes are in B1, so a bundle built from the
-  merged branch grades correctly; B2 changes only the UI, which the operator would then review
-  in the old look if they build before B2 lands.
+- **B2 (UI polish, no record change): DONE** (plan §3c): selection fix, undo/redo tooltip and
+  toast, leader lines (+ Lines toggle), work list restyle with preview pane, and a headless
+  Chromium pass on a synthetic bundle with screenshots. Still worth one look at a real drawing.
+- **Pilot bundle timing:** the branch now holds everything (records and UI), so build the
+  bundle after the merge.
 - **Next after B2:** merge (operator's go), operator builds the pilot bundle, then §3 items 2-6.
 
 ## 0. State at the end of this session
