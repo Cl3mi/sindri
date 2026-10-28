@@ -301,6 +301,15 @@
           <span id="bulk-accept-label">Accept all</span>
         </button>
 
+        <button class="btn ghost" id="move-ok" title="Move the ticked (or selected) rows to OK" disabled>
+          <svg class="icon"><use href="#i-check"/></svg>
+          <span>Move to OK</span>
+        </button>
+        <button class="btn ghost" id="move-review" title="Move the ticked (or selected) rows to Review; they must be resolved before Approve" disabled>
+          <svg class="icon"><use href="#i-warn"/></svg>
+          <span>Move to Review</span>
+        </button>
+
         <textarea id="doc-note" rows="1" maxlength="2000" hidden
                   placeholder="Note on this drawing (optional) — e.g. “we never balloon chamfers”"></textarea>
 
@@ -321,6 +330,7 @@
               <th class="num">Nominal</th>
               <th class="num">+Tol</th>
               <th class="num">−Tol</th>
+              <th class="row-act" aria-label="Move"></th>
             </tr>
           </thead>
           <tbody id="grid-body"></tbody>
