@@ -5,6 +5,31 @@ ARE HARDENED", then this file, then `docs/deploy/vps.md`, then
 `docs/plans/2026-10-23-session-handoff.md` §3.3-3.4 (hardening list, roadmap).
 The memory note `sindri-client-review-campaign.md` has the same state in short.
 
+## 0a. UPDATE (later the same day): smoke test and review-UX Batch 1 done, Batch 2 in progress
+
+Tracker: `docs/plans/2026-10-28-review-ux-and-scan-logging-plan.md` (decisions table, B1 "As
+built", B2 tasks 7-11). Branch `feature/review-records` in `.worktrees/review-records`,
+UNMERGED and UNPUSHED; local `main` has the smoke test (ff-merged from `feature/campaign-smoke`).
+
+- **Smoke test: DONE** (`tests/test_campaign_ops_smoke.py`, 9 tests): local-up/pull/wipe through
+  the real API and grader, and the vps-* command shapes against fake `ssh`/`rsync`. It found no
+  bug in `campaign_ops.sh`. §3 item 1 below is therefore done.
+- **B1 (records and grading): DONE.** `empty_extraction` delete reason; `flag` journal event
+  (Move to Review, blocks Approve) and Move to OK/Review toolbar + per-row buttons; log-only
+  `scan_read` event for every scan-rectangle attempt, graded per scan (untouched/edited/deleted/
+  undone/failed) with scan-added vs typed misses in the campaign digest (counts only, no OCR
+  text). Suite 2907 passed + 31 title-block tests that need the ignored local sample file the
+  worktree lacks (2938 expected in the main checkout); node and guard (41/0) green.
+- **Unstaged in the worktree:** the `CLAUDE.md` edit (test count, "Journal events added after C1"
+  paragraph). The Bash guard refuses `git add CLAUDE.md`; the operator stages it.
+- **B2 (UI polish, no record change): IN PROGRESS** in this order: 7 selection after add,
+  8 undo/redo tooltip + toast, 9 leader lines, 10 worklist restyle with preview pane, 11
+  headless-browser pass with screenshots. Update the plan's task marks as each lands.
+- **Pilot bundle timing:** all journal/grader changes are in B1, so a bundle built from the
+  merged branch grades correctly; B2 changes only the UI, which the operator would then review
+  in the old look if they build before B2 lands.
+- **Next after B2:** merge (operator's go), operator builds the pilot bundle, then §3 items 2-6.
+
 ## 0. State at the end of this session
 
 - Branch `main`, PUSHED at the operator's go-ahead at the end of this session: `7153290`
