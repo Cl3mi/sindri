@@ -138,6 +138,14 @@ export function redo() {
   emit('change');
   emit('history');
 }
+// What the next undo / redo will do, for the buttons' tooltip and the toast
+// (main.js). An op names itself with describe() where the balloon number
+// matters; the number is captured when the op runs, because a deleted row is
+// no longer in state.rows to ask.
+const describeOp = (op) => (op.describe ? op.describe() : op.label);
+export const undoLabel = () => (undoStack.length ? describeOp(undoStack[undoStack.length - 1]) : null);
+export const redoLabel = () => (redoStack.length ? describeOp(redoStack[redoStack.length - 1]) : null);
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 export const canUndo = () => undoStack.length > 0;
 export const canRedo = () => redoStack.length > 0;
 
@@ -164,6 +172,7 @@ export function opAddRow(row) {
   const snapshot = { row };
   return {
     label: 'add balloon',
+    describe: () => `add balloon ${row.pos}`,
     do() {
       state.rows.push(row);
       renumber();
@@ -183,6 +192,7 @@ export function opDeleteRow(id, reason) {
   let removed = null;
   return {
     label: 'delete balloon',
+    describe: () => `delete balloon ${removed ? removed.pos : ''}`.trim(),
     do() {
       removed = state.rows.find((r) => r.id === id) || null;
       state.rows = state.rows.filter((r) => r.id !== id);
@@ -202,12 +212,14 @@ export function opDeleteRow(id, reason) {
 }
 
 export function opMoveRow(id, newXY) {
-  let oldXY = null;
+  let oldXY = null, pos = null;
   return {
     label: 'move balloon',
+    describe: () => `move balloon ${pos ?? ''}`.trim(),
     do() {
       const r = state.rows.find((x) => x.id === id);
       if (!r) return;
+      pos = r.pos;
       oldXY = r.balloon_xy ? [...r.balloon_xy] : null;
       r.balloon_xy = [...newXY];
     },
@@ -224,12 +236,14 @@ export function opMoveRow(id, newXY) {
 // target_region drives reading order; replay.py need not, since `pos` is
 // derived and replay.mismatches never compares it.
 export function opMoveTarget(id, newBox) {
-  let oldBox = null;
+  let oldBox = null, pos = null;
   return {
     label: 'move anchor',
+    describe: () => `move anchor of balloon ${pos ?? ''}`.trim(),
     do() {
       const r = state.rows.find((x) => x.id === id);
       if (!r) return;
+      pos = r.pos;
       oldBox = r.target_region ? [...r.target_region] : null;
       r.target_region = [...newBox];
       renumber();
@@ -255,12 +269,14 @@ export function opSetNote(text) {
 }
 
 export function opEditCell(id, field, newValue, reason) {
-  let oldValue = null;
+  let oldValue = null, pos = null;
   return {
     label: `edit ${field}`,
+    describe: () => `edit ${field} on balloon ${pos ?? ''}`.trim(),
     do() {
       const r = state.rows.find((x) => x.id === id);
       if (!r) return;
+      pos = r.pos;
       oldValue = r[field];
       r[field] = newValue;
     },
@@ -318,6 +334,7 @@ export function opBulkReview(ids, target /* true|false */) {
   const prev = new Map();
   return {
     label: target ? 'accept rows' : 'unaccept rows',
+    describe: () => `${target ? 'accept' : 'unaccept'} ${plural(prev.size || ids.length, 'row')}`,
     do() {
       for (const id of ids) {
         const r = state.rows.find((x) => x.id === id);
@@ -343,6 +360,7 @@ export function opFlagRows(ids) {
   const prev = new Map();
   return {
     label: 'move to review',
+    describe: () => `move ${plural(prev.size || ids.length, 'row')} to review`,
     do() {
       for (const id of ids) {
         const r = state.rows.find((x) => x.id === id);

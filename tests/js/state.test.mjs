@@ -228,3 +228,32 @@ test('a loaded session starts with no anchor request', () => {
   load([row('a', 0, 0)]);
   assert.equal(S.state.anchorId, null);
 });
+
+// Review UX round, task 8: the undo and redo buttons say what they will do.
+test('undoLabel and redoLabel name the operation and its balloon number', () => {
+  load([row('a', 0, 0), row('b', 100, 0), row('c', 200, 0)]);
+  S.renumber();
+  assert.equal(S.undoLabel(), null);
+  assert.equal(S.redoLabel(), null);
+  S.apply(S.opDeleteRow('b'));
+  assert.equal(S.undoLabel(), 'delete balloon 2');   // the row is gone, its number is not
+  S.undo();
+  assert.equal(S.undoLabel(), null);
+  assert.equal(S.redoLabel(), 'delete balloon 2');
+  S.redo();
+  S.apply(S.opEditCell('c', 'nominal', '9'));
+  assert.equal(S.undoLabel(), 'edit nominal on balloon 2');   // c became number 2
+  S.apply(S.opMoveRow('a', [5, 5]));
+  assert.equal(S.undoLabel(), 'move balloon 1');
+});
+
+test('undoLabel covers bulk and add operations', () => {
+  load([row('a', 0, 0), row('b', 100, 0)]);
+  S.renumber();
+  S.apply(S.opFlagRows(['a', 'b']));
+  assert.equal(S.undoLabel(), 'move 2 rows to review');
+  S.apply(S.opBulkReview(['a'], true));
+  assert.equal(S.undoLabel(), 'accept 1 row');
+  S.apply(S.opAddRow(row('n', 300, 0)));
+  assert.equal(S.undoLabel(), 'add balloon 3');
+});
