@@ -543,3 +543,39 @@ def test_predict_is_quiet_when_the_salt_is_persistent(tmp_path, capsys,
                  "--out", str(tmp_path / "runs" / "base")]) == 0
 
     assert "throwaway" not in capsys.readouterr().err.lower()
+
+
+def test_a_hashing_command_refuses_to_mint_a_salt(tmp_path, capsys, monkeypatch):
+    """summary prints salted ids; on a machine without the salt file it used
+    to mint one silently. It must stop with a fixed sentence and leave no
+    file behind."""
+    import app.eval.anon as anon_mod
+    monkeypatch.delenv("SINDRI_DOC_SALT", raising=False)
+    monkeypatch.delenv("SINDRI_ALLOW_NEW_SALT", raising=False)
+    absent = tmp_path / "absent-salt"
+    monkeypatch.setattr(anon_mod, "DEFAULT_SALT_FILE", absent)
+    corpus = tmp_path / "pdfs"
+    corpus.mkdir()
+
+    assert main(["probe", str(corpus)]) == 1
+
+    err = capsys.readouterr().err
+    assert err.startswith("ERROR: no doc-id salt")
+    assert err.count("\n") == 1
+    assert not absent.exists()
+
+
+def test_predict_with_a_throwaway_salt_leaves_no_file(tmp_path, capsys, monkeypatch):
+    import app.eval.anon as anon_mod
+    monkeypatch.delenv("SINDRI_DOC_SALT", raising=False)
+    absent = tmp_path / "absent-salt"
+    monkeypatch.setattr(anon_mod, "DEFAULT_SALT_FILE", absent)
+    pdfs, _ = _setup_corpus(tmp_path)
+    _no_model(monkeypatch)
+    _fake_predict(monkeypatch, lambda pdf_path, doc_id, dpi, backend, config,
+                  work_dir, detect_only=False: _stub_dump(doc_id, config))
+
+    assert main(["predict", "--pdfs", str(pdfs),
+                 "--out", str(tmp_path / "runs" / "base")]) == 0
+
+    assert not absent.exists()
