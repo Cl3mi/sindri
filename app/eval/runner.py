@@ -26,7 +26,7 @@ import fitz
 
 from pydantic import ValidationError
 
-from app.eval.anon import Anonymizer, salt_is_persistent
+from app.eval.anon import Anonymizer, SaltMissing, salt_is_persistent
 from app.eval.errors import RunnerError
 from app.eval.balloons import probe_pdf, shape_report
 from app.eval.balloon_cv import cv_report
@@ -96,10 +96,17 @@ def predict_one(pdf_path, doc_id: str, dpi: int, backend,
                           result=result)
 
 
-def _anon(args) -> Anonymizer:
+def _anon(args, throwaway_ok: bool = False) -> Anonymizer:
     """Every human-readable line goes through this. Default ON: client part
-    numbers must not reach an AI context (--show-ids is for a human terminal)."""
-    return Anonymizer(enabled=not getattr(args, "show_ids", False))
+    numbers must not reach an AI context (--show-ids is for a human terminal).
+
+    Without a persistent salt this refuses (SaltMissing, caught in main) rather
+    than mint one. Only `throwaway_ok` callers -- predict and verify, which run
+    in the GPU container and warn about it -- take an in-memory salt."""
+    enabled = not getattr(args, "show_ids", False)
+    if enabled and throwaway_ok and not salt_is_persistent():
+        return Anonymizer.ephemeral()
+    return Anonymizer(enabled=enabled)
 
 
 def _spread(values):
@@ -587,14 +594,13 @@ def _cmd_predict(args):
         extra=_predict_extra(getattr(args, "detect_only", False)))
     pdfs = {p.stem: p for p in Path(args.pdfs).glob(_PDF_GLOB)}
     doc_ids, _, _ = _select_docs(pdfs, args.splits, args.split)
-    # Must precede _anon(): constructing an Anonymizer mints the salt.
     if not getattr(args, "show_ids", False) and not salt_is_persistent():
         print("WARNING: no persistent doc-id salt (SINDRI_DOC_SALT unset, "
               "~/.claude/sindri-doc-salt absent) — the hashed ids below are "
               "throwaway and cannot be joined to a locally-scored report. "
               "Read per-document facts from `runner summary` instead.",
               file=sys.stderr)
-    anon = _anon(args)
+    anon = _anon(args, throwaway_ok=True)
     predicted = skipped = 0
     failures, effective_dpi = [], {}
     for i, doc_id in enumerate(doc_ids, 1):
@@ -809,6 +815,11 @@ def _cmd_reviewer_grade(args):
         gold = _load_gold_dir(gold_dir)
     except Exception:  # noqa: BLE001 -- a validation message quotes gold values
         return fail("--gold: a gold file could not be read")
+    # Stamped-space gold passes the frame check when the sheets are the same
+    # size, and would grade every position against the wrong frame.
+    if any(g.provenance.get("originals_space") is not True for g in gold.values()):
+        return fail("--gold: not ingested with --originals "
+                    "(re-ingest it; stamped-space positions are wrong)")
     try:
         # gold is keyed by real part number, the records by salted hash: join
         # through the same salt, and only for drawings the pull holds.
@@ -1543,6 +1554,10 @@ def main(argv=None) -> int:
         # no value, no traceback -- this stderr is read by agents. A
         # ProtectedRootsError (a broken roots file) is a ReviewRefused.
         print(f"ERROR: output refused: {e}", file=sys.stderr)
+        return 1
+    except SaltMissing as e:
+        # Fixed text (anon.py). Refused, not minted: see ensure_salt.
+        print(f"ERROR: {e}", file=sys.stderr)
         return 1
     except RunnerError as e:
         # A deliberate message, safe by construction (app/eval/errors.py).

@@ -23,6 +23,11 @@ def _isolated_runtime(tmp_path, monkeypatch):
     # Auth is opt-in; an ambient SINDRI_ACCESS_TOKEN in a developer's shell
     # must not gate the ~1940 existing tests that never set it themselves.
     monkeypatch.delenv("SINDRI_ACCESS_TOKEN", raising=False)
+    # A hashing command refuses without a salt (H3) and must never read, or
+    # mint, this machine's real ~/.claude/sindri-doc-salt. A test about a
+    # missing salt delenvs this and points DEFAULT_SALT_FILE at its own path.
+    monkeypatch.setenv("SINDRI_DOC_SALT", "conftest-salt")
+    monkeypatch.delenv("SINDRI_ALLOW_NEW_SALT", raising=False)
     # The runner's output checks (H1) consult the protected-roots file. A test
     # must never depend on -- or read -- this machine's real one, so by
     # default every test runs in the no-roots mode the GPU container and CI

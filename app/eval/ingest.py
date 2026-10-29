@@ -179,5 +179,10 @@ def build_gold_doc(pdf_path, excel_path, doc_id: str,
             # True when originals were in use but this drawing had none, so its
             # positions were dropped rather than left in the wrong space.
             "target_missing": target_missing,
+            # Whether the caller was working in originals space at all. A
+            # same-size stamped sheet has the right page_rect and wrong
+            # positions, so geometry cannot tell; the campaign grader refuses
+            # gold without this (absent on gold ingested before it existed).
+            "originals_space": target_pdf is not None or require_target,
         },
     )

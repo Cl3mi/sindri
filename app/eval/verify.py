@@ -88,7 +88,7 @@ def cmd_verify(args) -> int:
              for p in sorted(src.glob("*" + _DUMP_SUFFIX))}
     pdfs = {p.stem: p for p in Path(args.pdfs).glob(_PDF_GLOB)}
     doc_ids, _, _ = _select_docs(dumps, args.splits, args.split)
-    anon = _anon(args)
+    anon = _anon(args, throwaway_ok=True)
     backend = None
     verified = skipped = asked = no_answer = 0
     failures = []

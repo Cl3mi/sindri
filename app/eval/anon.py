@@ -15,19 +15,39 @@ from pathlib import Path
 from typing import Dict, Iterable, Optional
 
 SALT_ENV = "SINDRI_DOC_SALT"
+ALLOW_NEW_SALT_ENV = "SINDRI_ALLOW_NEW_SALT"
 DEFAULT_SALT_FILE = Path.home() / ".claude" / "sindri-doc-salt"
 _HASH_LEN = 8
 
 
-def ensure_salt(path=None) -> str:
-    """Return the persistent salt, creating it on first use. The env var wins
-    so a run can be reproduced elsewhere without copying the file."""
+class SaltMissing(RuntimeError):
+    """No persistent salt and no permission to mint one. The message is fixed
+    text by construction: it is printed to agents."""
+
+    def __init__(self):
+        super().__init__(
+            "no doc-id salt (SINDRI_DOC_SALT unset, ~/.claude/sindri-doc-salt "
+            "absent): copy the salt from the machine that scored the "
+            f"published digests; only on the very first machine set "
+            f"{ALLOW_NEW_SALT_ENV}=1 to mint one")
+
+
+def ensure_salt(path=None, mint: bool = False) -> str:
+    """Return the persistent salt. The env var wins so a run can be reproduced
+    elsewhere without copying the file.
+
+    A missing salt is NOT minted unless `mint` or SINDRI_ALLOW_NEW_SALT=1: a
+    machine that never received the file used to mint a fresh one on its first
+    hashing command, after which it looked persistent and every id it printed
+    or committed joined to nothing already published (H3)."""
     env = os.environ.get(SALT_ENV)
     if env:
         return env
     path = Path(path) if path is not None else DEFAULT_SALT_FILE
     if path.exists():
         return path.read_text(encoding="utf-8").strip()
+    if not (mint or os.environ.get(ALLOW_NEW_SALT_ENV)):
+        raise SaltMissing()
     path.parent.mkdir(parents=True, exist_ok=True)
     salt = os.urandom(32).hex()
     path.write_text(salt, encoding="utf-8")
@@ -38,8 +58,8 @@ def ensure_salt(path=None) -> str:
 def salt_is_persistent(path=None) -> bool:
     """Whether a salt already exists, without creating one.
 
-    False means the next ensure_salt() call mints a throwaway. That is what
-    happens inside the GPU container: no SINDRI_DOC_SALT is passed in and
+    False means the next ensure_salt() call refuses (SaltMissing). Inside the
+    GPU container, where predict/verify use Anonymizer.ephemeral() instead: no SINDRI_DOC_SALT is passed in and
     ~/.claude/sindri-doc-salt is not present, so the ids in a predict log are
     hashed under a salt that dies with the container and cannot be joined to a
     locally-scored report."""
@@ -61,6 +81,13 @@ class Anonymizer:
     def __init__(self, salt: Optional[str] = None, enabled: bool = True):
         self.enabled = enabled
         self.salt = salt if salt is not None else (ensure_salt() if enabled else "")
+
+    @classmethod
+    def ephemeral(cls) -> "Anonymizer":
+        """A throwaway in-memory salt, never written: the GPU container's ids
+        join to nothing by design, and a file left behind could later be
+        mistaken for the real salt."""
+        return cls(salt=os.urandom(32).hex())
 
     def __call__(self, doc_id: str) -> str:
         if not self.enabled:
