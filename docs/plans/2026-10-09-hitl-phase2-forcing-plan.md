@@ -47,9 +47,133 @@ assumes exists: `docs/plans/2026-10-08-batch-b3-ui-plan.state.md` (writer-token
 rotation via `/api/documents/{id}/open`, `ReviewStore.progress()`, the
 `document.flagged_total`/`flagged_open`/`unchecked` columns from migration 4),
 `docs/plans/2026-10-08-batch-b4-export-ops-plan.state.md` (the single export
-path in `app/batch/export_render.py`, migration count currently **5** —
+path in `app/batch/export_render.py`, migration count was **5** on 2026-10-09 and is **6** now (see REFRESH) —
 confirm with `python -c "from app.batch import db; print(len(db.MIGRATIONS))"`
 before Task 1, since this plan adds none).
+
+---
+
+## REFRESH 2026-10-29 — read this before any task
+
+This plan was written 2026-10-09, before the client review campaign (C1/C2) and
+review UX batches 1-3 landed on `main` (`a597d25`). The design and the phase 2
+decisions below still hold; the **mechanics around them moved**. Every claim here
+was checked against `main` on 2026-10-29; where a task body below disagrees, **this
+section wins**. Nothing in phase 2 is built yet.
+
+### R0. Gate: do not start building until the pilot is graded
+
+Phase 2 changes what a reviewer must do on every drawing, and its audit rate is a
+cost the pilot can price. The pilot's grading digest already separates what phase 2
+would force from what it cannot see: `precision_explicit_only` vs `precision`, and
+`confirmed_explicit` vs `confirmed_silent` (CLAUDE.md §2, C2). Order of work:
+
+1. Operator inspects the pilot (handoff 2026-10-29 §3.1); UI fixes first.
+2. Pilot run, pull, `score --reviewer-grade`, digest committed.
+3. **Then set `DEFAULT_AUDIT_RATE/MIN/MAX` (Task 4) from that digest's
+   `unflagged_phantom` / `unflagged_edited` counts and the silent share**, not from
+   the placeholder defaults this plan carries. A rate that cannot be justified from
+   a measured silent-error share is a guess, and the plan's own decision 5 says the
+   blind sample must match the audit sample's size.
+4. Re-check R1-R9 below against `main` of that day (they are dated) and build.
+
+If the client answers the ballooning-policy question (CLAUDE.md §3, verifier) or
+sends their own weights first, neither changes this plan.
+
+### R1. Facts that changed
+
+| Plan says | `main` today |
+|---|---|
+| migration count **5** (line ~50), "adds none" | **6** (`app/batch/db.py`; C1 added `batch.campaign`). Phase 2 still adds none. Re-run the one-liner before Task 1. |
+| baseline `1946 passed, 2 skipped`, node **272** | **2954 passed, 2 skipped; node 339** (2026-10-29). Re-measure as Task 1's first step, as the plan already says. `tests/test_title_block.py` needs an ignored local sample file: 2 tests fail in a worktree that lacks it. |
+| commit trailer `Claude Sonnet 5` | CLAUDE.md §4 wins: `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`. |
+| `EVENT_TYPES` = the 8 phase 1 types | already also holds `move_target`, `set_note`, `flag`, `scan_read`, and `LOG_ONLY_TYPES = {"scan_read"}` (never retracted, ignored by replay, skipped on reload). Task 1 **adds three names to the existing set**. |
+| Task 1 defines `EDIT_REASONS`/`DELETE_REASONS` | **They exist** in `app/review/journal.py` and are mirrored by `app/static/js/reasons.js` (pinned by `tests/js/reasons.test.mjs`). `DELETE_REASONS` already has a 6th key, `empty_extraction`. Task 1 must not redefine either set; decision 10's list is superseded by the code's. Only `BLIND_OUTCOMES` is new. |
+| Task 15 builds `EDIT_REASONS`/`DELETE_REASONS` in `queue.js` | **Import from `reasons.js`.** `queue.js` keeps only `queueRows`. Its "reason chips" helper and test are deleted (the labels are `REASON_LABELS` there). |
+| Tasks 16-17: popover appears after commit, op held until it resolves ("apply-on-popover-resolution, not apply-then-amend") | **Reversed in batch 3.** `createReasonSession` in `reasons.js`: the card opens while editing, has an X, never holds an op back (the op is applied at commit), and a late pick swaps the still-top op via `state.replaceTop`. Plain digits pick only outside an editor; Alt+digit works anywhere; the "1-5 only while open" scoping in Task 16's test is wrong for this. **Phase 2 adds no reason UI; it consumes this one.** |
+| settle rules absent | The reason card is settled before leaving a row/drawing (`settleReasonPrompt` at `routeOnce`, `finish`, `openForReview`, file close, `pagehide`). **The blind panel must follow the same rules**: a half-typed blind entry settles (submits or is discarded by an explicit rule) at each of those exits, or the journal loses the last keystrokes. Add the exits to Task 17's tests. |
+| `table.js` re-renders freely | It now **keeps the cell being edited** across a re-render. The blind-cell input needs the same treatment or the keystroke after a poll re-render is lost. |
+| per-row accept is new | `accept`/`unaccept`/`opBulkReview` exist, and so does `flag` (Move to Review: persistent manual flag, `needs_review` + reason `manual`, blocks Approve; Move to OK is `accept`). A manual flag is a flagged row, so it is in the queue already and is **never** an audit/blind candidate (sampling excludes `needs_review` rows from the audit draw by definition; add a test that a `manual` flag does not change that). |
+| Finish gate "advisory, client-side only" | Still true: `ReviewStore.seal()` has no gate; only `canFinish`/`progress().outstanding` in the browser. Task 8 is still needed and is more valuable now that the campaign's Approve is the same seal (`campaign.js`: "Approve is the same seal as Finish"). |
+| Tasks 10-11 export `Unsure` | Campaign instances **refuse export** on every instance, so `unsure` reaches the client report through the sealed revision and the grader, not through Excel/PDF. Tasks 10-11 still matter for the non-campaign product; do them after the grader work (R4), not before. |
+
+### R2. Campaign drawings take the same path
+
+`Worker._run` is also what turns a loaded campaign drawing (result.json already
+present, extraction skipped) into a review record: it calls `header_fn`, merges
+`campaign.json` into `header["campaign"]`, then `store.create`. Task 7's single call
+site (`assign_sampling` between `header_fn` and `store.create`) therefore covers
+campaign drawings too. Two consequences to test:
+
+* the sampling seed lives in `header["sampling"]`, next to `header["campaign"]`; a
+  campaign `pull` index and the grader read the header, so the seed and the rate
+  used must be recorded there (the grader needs them to know what was sampled);
+* a re-queued campaign row (loader resume) goes through `store.create` again.
+  `create` replaces a session only while it has **no events and no seal**
+  (otherwise `JournalInvalid`), so a redraw can only happen before the reviewer
+  has seen any blind row; that is safe and needs no special case, but pin it with
+  a test (events present -> same seed survives, create refused), because blinding
+  depends on a reviewer never seeing two different samples for one drawing.
+
+### R3. Phase 2 adds no HTTP route
+
+Events ride the existing `/events` and `/seal`. `tests/test_policy.py` (the
+campaign-only allowlist) therefore needs no new classification; if a task adds a
+route anyway, that test fails until it is classified, as designed.
+
+### R4. The grader must learn the new events (the original plan missed this)
+
+`app/review/grading.py` (C2, product code, written after this plan) consumes
+`sealed["net_events"]` and ignores event types it does not know. The three new
+types must be **graded**, or the forcing data is captured and then dropped:
+
+* `blind_submit{id, entered, outcome, dwell_ms}` → per-row `blind_outcome` in the
+  report; digest counts only (`blind_match`, `blind_kept_system`,
+  `blind_kept_entered`, `blind_edited`), a blind-flagged vs blind-audit split, and
+  the **blind miss rate on audit rows**, which is the phase's headline number
+  (how often a silent confirmation would have been wrong). `entered` is a client
+  value: report only, never digest.
+* `mark_unsure` / `unmark_unsure` → a count of unsure rows per group.
+* The digest keys follow the leak rules: closed words, counts, namespaced keys
+  (CLAUDE.md §5 digest-key trap), kind marker first. `precision_explicit_only`
+  and `confirmed_silent` change meaning once audit rows are forced: a forced
+  confirmation is explicit by construction. State in the digest which drawings
+  were reviewed under forcing (`header.sampling` present) so pre-phase-2 and
+  phase-2 drawings are never pooled silently.
+* The `LEVERS`/ranked-findings table in `campaign_grade.py` gets one entry for
+  "audit disagreement" mapped to the read-input lever.
+
+Add this as **Milestone 2b, Tasks 9a-9c, before the UI**: it is pure Python, has no
+UI dependency and pins what the UI must emit. `tests/eval/test_campaign_c2_seam.py`
+(real code writes the records, the grader reads them) gets one blind-submit example
+so a drift between emitter and grader fails a test.
+
+### R5. Replay parity now has more to cover
+
+`tests/review/test_journal_replay_parity.py`'s `_TYPE_KEYS` already includes `flag`,
+`scan_read`, `move_target`, `set_note`; Task 14 adds the three new types to that
+dict and to `tests/js/fuzz_journal.mjs`. The fuzz has no model of `scan_read`'s
+"never retracted" rule for the new types: `blind_submit` **can** be retracted
+(decision 6, an undo), `mark_unsure` too; none is LOG_ONLY. Keep them out of
+`LOG_ONLY_TYPES`.
+
+### R6. Things that stay exactly as written
+
+Decisions 1-9 and 11-13 (no migration, new row fields default False,
+sampling once in `Worker._run`, import-time audit config, equal-rate blind-flagged
+sample, `resolved` computed by replay, gate inside `seal()`, product-side
+`values.py` with a shared fixture, the server checks only the `match` claim, `unsure`
+alone drives exports, amber dashed PDF style, work-list badges widening) were
+re-read against the code and still hold. Task numbers in the CLAUDE.md paragraph
+references ("Task 14") are stale (it is Task 18); fix them when the paragraph is
+written.
+
+### R7. Not in this phase (unchanged, and now explicit)
+
+Phase 3 (the client report beyond R4's counts), phase 4 (dev validation on the GPU
+host, which must pass before any client ships forcing), phase 5 (bundle and
+reviewer gold). The parked list (client weights, high-confidence phantoms, adapter
+retrain, detection-order table rows) is untouched.
 
 ---
 
