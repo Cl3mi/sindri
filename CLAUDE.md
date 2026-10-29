@@ -382,6 +382,14 @@ reconcile (`reconcile_problems`). `runner campaign-deck` (§1) is the
 operator's drill-down over the report. `tests/eval/test_campaign_c2_seam.py`
 runs builder → loader → worker → real store/seal → pull → grader → CLI →
 deck examples on records the real code wrote; if it breaks, a seam drifted.
+**H2 + H3 (2026-10-29, branch `h2-h3-hardening`, not merged).** `ingest` records
+`provenance["originals_space"]` (outside `gold_hash`); `gold_cross_check` returns
+`gold_not_originals` and `score --reviewer-grade` refuses by a fixed sentence for gold
+without it, **so every gold dir ingested before this must be re-ingested with
+`--originals` before the pilot is graded.** `ensure_salt` no longer mints: a missing
+salt raises `SaltMissing` (one fixed `ERROR: no doc-id salt ...` line, exit 1) unless
+`SINDRI_ALLOW_NEW_SALT=1`; only `predict`/`verify` (the GPU container) use an in-memory
+`Anonymizer.ephemeral()`. `tests/conftest.py` sets a fixed env salt for every test.
 **RUNNER OUTPUT FLAGS ARE HARDENED (H1, 2026-10-27,
 `docs/plans/2026-10-23-runner-output-hardening-{design,plan}.md`, §8 "As built").**
 The guard allowlists runner subcommands by SHAPE, so the CLI itself refuses bad
