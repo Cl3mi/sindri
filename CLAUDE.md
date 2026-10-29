@@ -90,8 +90,9 @@ The export folder and the manifest stay out of git and out of the repo.
 
 ## 2. Where things stand
 
-**Read `docs/plans/2026-10-29-session-handoff.md` first (newest: review UX batch 3
-merged, operator inspects the pilot, then H2/H3 and the HITL phase 2 refresh), then
+**Read `docs/plans/2026-10-30-session-handoff.md` first (newest: H2/H3 merged, phase 2
+plan refreshed, new-device checklist, gold must be re-ingested), then
+`docs/plans/2026-10-29-session-handoff.md` (review UX batch 3 merged, operator inspects the pilot), then
 `docs/plans/2026-10-28-session-handoff.md`, then `docs/plans/2026-10-23-session-handoff.md`, the
 state of play before it: the client review campaign (C1 review app + VPS deploy, C2
 grading + findings digest) is built and merged, and it lists the hardening
@@ -1212,7 +1213,7 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 2954 passed, 2 skipped (2026-10-29, review-ux-batch3; node 339)
+python -m pytest -q                          # 2963 passed, 2 skipped (2026-10-30, H2/H3; node 339)
 bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 41 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```
