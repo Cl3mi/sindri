@@ -809,6 +809,11 @@ def _cmd_reviewer_grade(args):
         gold = _load_gold_dir(gold_dir)
     except Exception:  # noqa: BLE001 -- a validation message quotes gold values
         return fail("--gold: a gold file could not be read")
+    # Stamped-space gold passes the frame check when the sheets are the same
+    # size, and would grade every position against the wrong frame.
+    if any(g.provenance.get("originals_space") is not True for g in gold.values()):
+        return fail("--gold: not ingested with --originals "
+                    "(re-ingest it; stamped-space positions are wrong)")
     try:
         # gold is keyed by real part number, the records by salted hash: join
         # through the same salt, and only for drawings the pull holds.

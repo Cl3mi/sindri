@@ -42,9 +42,14 @@ def env(tmp_path, monkeypatch):
 
 
 def _gold(tmp_path, doc_id):
-    g = GoldDoc(doc_id=doc_id, pdf="x", excel="y", page_rect=(0.0, 0.0, 842.0, 595.0))
+    g = GoldDoc(doc_id=doc_id, pdf="x", excel="y", page_rect=(0.0, 0.0, 842.0, 595.0),
+                provenance={"originals_space": True})
+    return _gold_file(tmp_path, g)
+
+
+def _gold_file(tmp_path, g):
     (tmp_path / "gold").mkdir(exist_ok=True)
-    path = tmp_path / "gold" / f"{doc_id}.gold.json"
+    path = tmp_path / "gold" / f"{g.doc_id}.gold.json"
     path.write_text(g.model_dump_json())
     return path
 
@@ -478,7 +483,8 @@ def test_a_wrong_salt_exits_3_with_the_fixed_hint(tmp_path, env, capsys, monkeyp
 
 
 def test_a_frame_mismatch_everywhere_exits_3(tmp_path, env, capsys):
-    g = GoldDoc(doc_id="PART-9", pdf="x", excel="y", page_rect=(0.0, 0.0, 1191.0, 842.0))
+    g = GoldDoc(doc_id="PART-9", pdf="x", excel="y", page_rect=(0.0, 0.0, 1191.0, 842.0),
+                provenance={"originals_space": True})
     (tmp_path / "gold" / "PART-9.gold.json").write_text(g.model_dump_json())
     assert _run(tmp_path, env) == 3
     lines = _no_leak(capsys).out.strip().splitlines()
@@ -516,3 +522,17 @@ def test_grade_only_flags_are_refused_without_reviewer_grade(tmp_path, env, caps
     assert rc == 1
     err = _no_leak(capsys).err
     assert err.count("\n") == 1 and "--reviewer-grade" in err and str(tmp_path) not in err
+
+
+def test_gold_not_ingested_with_originals_is_refused_up_front(tmp_path, env, capsys):
+    """Quietly grading with the cross-check switched off would read as a result;
+    a gold dir that lacks ingest's originals-space record (stamped-space gold,
+    or gold from before the record existed) stops the run by a fixed sentence
+    before anything is written."""
+    g = GoldDoc(doc_id="PART-9", pdf="x", excel="y", page_rect=(0.0, 0.0, 842.0, 595.0))
+    _gold_file(tmp_path, g)
+    assert _run(tmp_path, env) == 1
+    cap = _no_leak(capsys)
+    assert cap.err == ("ERROR: --gold: not ingested with --originals "
+                       "(re-ingest it; stamped-space positions are wrong)\n")
+    assert not _out(env).exists()

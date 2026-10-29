@@ -81,6 +81,28 @@ def test_a_document_with_no_original_drops_its_positions(tmp_path):
     assert {c.balloon for c in gold.characteristics} == {1, 2}
 
 
+def test_gold_records_whether_it_was_ingested_in_originals_space(tmp_path):
+    """A same-size STAMPED sheet passes every page_rect check, so the campaign
+    grader cannot tell stamped-space gold from `--originals` gold by geometry;
+    the only evidence is what ingest did. Recorded in provenance (outside
+    gold_hash), True whenever the caller was working in originals space --
+    including a drawing with no original, whose positions were dropped and so
+    cannot be in the wrong frame either."""
+    stamped, xlsx = make_synthetic_doc(RECORDS, tmp_path, doc_id="SYN1")
+    original = _resized_copy(stamped, tmp_path / "SYN1_orig.pdf", 1.0)
+
+    plain = build_gold_doc(stamped, xlsx, doc_id="SYN1")
+    targeted = build_gold_doc(stamped, xlsx, doc_id="SYN1", target_pdf=original)
+    no_original = build_gold_doc(stamped, xlsx, doc_id="SYN1", target_pdf=None,
+                                 require_target=True)
+
+    assert plain.provenance["originals_space"] is False
+    assert targeted.provenance["originals_space"] is True
+    assert no_original.provenance["originals_space"] is True
+    # provenance is excluded from the hash, so the corpus is not invalidated
+    assert plain.gold_hash() == targeted.gold_hash()
+
+
 def test_gold_is_unchanged_when_no_originals_are_given(tmp_path):
     """Default off: omitting target_pdf must reproduce byte-identical gold, so
     adding this cannot silently move an existing corpus."""

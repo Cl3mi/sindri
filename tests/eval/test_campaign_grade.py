@@ -176,7 +176,7 @@ PAGE = (0, 0, 842, 595)
 
 
 def _gold(chars, page_rect=PAGE):
-    return GoldDoc(doc_id="D1", pdf="x", excel="y", page_rect=page_rect,
+    return GoldDoc(doc_id="D1", pdf="x", excel="y", page_rect=page_rect, provenance={"originals_space": True}, 
                    characteristics=chars)
 
 
@@ -548,13 +548,13 @@ def test_missing_pool_leaves_pooled_values_unmeasured(tmp_path):
 def _gold_at_fixture_row():
     # proposal_row's target_region [10,10,50,30] px at 300 dpi, in points.
     s = 300 / 72.0
-    return GoldDoc(doc_id="D", pdf="x", excel="y", page_rect=(0.0, 0.0, 842.0, 595.0),
+    return GoldDoc(doc_id="D", pdf="x", excel="y", page_rect=(0.0, 0.0, 842.0, 595.0), provenance={"originals_space": True}, 
                    characteristics=[_g(1, (30 / s, 20 / s), "10"),
                                     _g(2, (400.0, 400.0), "99")])
 
 
 def test_gold_cross_check_is_summed_as_counts_only(tmp_path):
-    bad_frame = GoldDoc(doc_id="D", pdf="x", excel="y", page_rect=(0, 0, 1191, 842),
+    bad_frame = GoldDoc(doc_id="D", pdf="x", excel="y", page_rect=(0, 0, 1191, 842), provenance={"originals_space": True}, 
                         characteristics=[])
     report, digest = grade_campaign(
         read_records(_campaign(tmp_path)),
@@ -797,7 +797,8 @@ def test_gold_asked_for_but_joined_to_nothing_is_a_problem(tmp_path):
 
 
 def test_a_frame_mismatch_on_every_drawing_is_gold_none_joined(tmp_path):
-    bad = GoldDoc(doc_id="D", pdf="x", excel="y", page_rect=(0, 0, 1191, 842))
+    bad = GoldDoc(doc_id="D", pdf="x", excel="y", page_rect=(0, 0, 1191, 842),
+                provenance={"originals_space": True})
     _, digest = grade_campaign(read_records(_campaign(tmp_path)),
                                gold_by_hash={"aaaaaaaa": bad, "bbbbbbbb": bad})
     assert digest["gold_cross_check"]["not_computed"] == {"frame_mismatch": 2}
@@ -969,3 +970,15 @@ def test_a_drawing_with_no_scans_reports_zero_attempts_not_a_missing_section():
     assert m["scans"]["attempts"] == 0 and m["scans"]["ms_median"] is None
     # A missed row graded before `via` existed is unknown, never typed.
     assert m["counts"]["missed_via_unknown"] == 1 and m["counts"]["missed_typed"] == 0
+
+
+@pytest.mark.parametrize("provenance", [{}, {"originals_space": False}])
+def test_gold_not_ingested_with_originals_refuses_to_compute(provenance):
+    # A same-size stamped sheet has the right page_rect and wrong positions
+    # everywhere, so the frame check cannot see it: ingest's own record is the
+    # only evidence. Gold from before the record existed has none and is
+    # refused too -- re-ingest it.
+    gold = _gold([_g(1, (30, 20), "10")])
+    gold.provenance = provenance
+    out = _check([_prow("ok", (20, 10, 40, 30))], [], {"ok": "confirmed"}, gold)
+    assert out == {"computed": False, "reason": "gold_not_originals"}

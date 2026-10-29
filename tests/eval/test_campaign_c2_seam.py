@@ -167,7 +167,7 @@ def chain(tmp_path, sample_pdf, monkeypatch):
         return GoldCharacteristic(
             balloon=n, position_pt=_center_pt(p["target_region"], rect),
             **{f: p[f] for f in ("char_type", "nominal", "upper_tol", "lower_tol")}, **kw)
-    gold = GoldDoc(doc_id=DOC_ID, pdf="x", excel="y", page_rect=rect,
+    gold = GoldDoc(doc_id=DOC_ID, pdf="x", excel="y", page_rect=rect, provenance={"originals_space": True}, 
                    characteristics=[gold_row(1, "r1"), gold_row(2, "r5")])
     gold.characteristics[0].nominal = "21"
     return {"tmp": tmp_path, "tar": tar, "hash": h, "gold": gold, "prop": prop,

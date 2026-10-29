@@ -281,8 +281,8 @@ def _same_frame(a, b) -> bool:
     a number that looks like a result. All four coordinates are compared: a
     shifted origin moves every gold position just as a resize does.
     Blind spot: gold ingested WITHOUT --originals from a stamped sheet of the
-    same size passes any rect check, so the caller (Task 7 / runner help) must
-    insist on the --originals gold dir."""
+    same size passes any rect check; `gold_cross_check` closes it with ingest's
+    `provenance["originals_space"]` record, and the CLI refuses such gold."""
     if not (_rect_ok(a) and _rect_ok(b)):
         return False
     return all(abs(a[k] - b[k]) <= FRAME_TOL_PT for k in range(4))
@@ -350,6 +350,10 @@ def gold_cross_check(proposal: List[dict], final: List[dict], grades: Dict[str, 
     # converts rows into; the frame check already requires the pages to agree.
     if params.reconcile_frames != "none":
         return {"computed": False, "reason": "unsupported_params"}
+    # The frame check below cannot see stamped-sheet gold of the same size, so
+    # ingest's own record is required (absent on pre-record gold: re-ingest).
+    if gold.provenance.get("originals_space") is not True:
+        return {"computed": False, "reason": "gold_not_originals"}
     if not _same_frame(gold.page_rect, page_rect):
         return {"computed": False, "reason": "frame_mismatch"}
     if (isinstance(render_scale, bool) or not isinstance(render_scale, (int, float))
