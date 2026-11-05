@@ -245,6 +245,9 @@ class SealRequest(BaseModel):
     final_seq: int
     rows: List[Characteristic]       # every row incl. suggestions; extras like `reviewed` are ignored
     reviewed_ids: List[str] = []
+    # The journal clock at Approve (journal.js elapsedMs). Untrusted: the
+    # store keeps it only if it is a finite non-negative number.
+    t_ms: Optional[float] = None
 
 
 class BatchCreate(BaseModel):
@@ -778,7 +781,8 @@ def seal_session(session_id: str, req: SealRequest):
             f"drawing is {doc['state']}, not ready for review")
     out = rt.store.seal(
         session_id, req.writer, req.final_seq,
-        [r.model_dump(mode="json") for r in req.rows], req.reviewed_ids)
+        [r.model_dump(mode="json") for r in req.rows], req.reviewed_ids,
+        approve_t_ms=req.t_ms)
     # store.seal and mark_finished are not one atomic step -- the store's own
     # lock and the repo's are separate -- so an event that lands in the gap
     # between them is sealed on disk but not yet reflected in the index; the

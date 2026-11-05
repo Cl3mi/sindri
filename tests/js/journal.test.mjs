@@ -403,3 +403,14 @@ test('a reload skips log-only events instead of refusing the whole session', () 
      { seq: 2, type: 'edit_cell', id: 'a', field: 'nominal', old: '1', new: '9' }]);
   assert.equal(S.state.rows[0].nominal, '9');
 });
+
+test('elapsedMs reads the same clock the events use, restarting with each open', async () => {
+  const { createJournal } = await import('../../app/static/js/journal.js');
+  let t = 1000;
+  const j = createJournal({ send: async () => ({ contiguous: 0 }), now: () => t });
+  j.start('s', 'w');
+  t = 1750;
+  assert.equal(j.elapsedMs(), 750);
+  j.start('s', 'w');
+  assert.equal(j.elapsedMs(), 0);
+});

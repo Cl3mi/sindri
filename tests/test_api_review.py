@@ -261,3 +261,22 @@ def test_seal_with_an_int_anchor_still_replays_ok(sample_pdf, stub_backend):
         "reviewed_ids": ["manual-1"]})
     assert r.status_code == 200
     assert r.json() == {"revision": 1, "replay_ok": True}
+
+
+def test_seal_carries_the_clients_approve_moment_into_the_revision(sample_pdf, stub_backend):
+    """H6: the seal is not a journal event, so the client says when Approve
+    happened (its t_ms) and the server keeps it beside the raw timing."""
+    import json
+    result = extract(sample_pdf)
+    sid, writer, rows = result["session_id"], result["writer"], result["rows"]
+    r = client.post(f"/api/session/{sid}/events", json={"writer": writer, "events": [
+        {"seq": 1, "type": "accept", "ids": [rows[0]["id"]], "t_ms": 1200}]})
+    assert r.status_code == 200
+    r = client.post(f"/api/session/{sid}/seal", json={
+        "writer": writer, "final_seq": 1, "rows": rows,
+        "reviewed_ids": [rows[0]["id"]], "t_ms": 9500})
+    assert r.status_code == 200
+    path = main.runtime().store.root / sid / "sealed" / "r1.json"
+    sealed = json.loads(path.read_text())
+    assert sealed["approve_t_ms"] == 9500
+    assert sealed["raw_timing"] == [{"seq": 1, "type": "accept", "t_ms": 1200}]

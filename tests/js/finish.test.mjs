@@ -186,3 +186,17 @@ test('a partial export of one revision does not excuse the next revision', async
   await exportAll({ sessionId: 's1' }, 2);
   assert.deepEqual(got, ['s1:xlsx:r1', 's1:xlsx:r2', 's1:pdf:r2']);
 });
+
+test('the seal carries the journal clock at Approve, so the tail after the last edit is not lost', async () => {
+  const journal = fakeJournal();
+  journal.elapsedMs = () => 4321;
+  const { finisher, calls } = harness({ journal });
+  await finisher.run(snap());
+  assert.equal(calls.seals[0].t_ms, 4321);
+});
+
+test('a journal without a clock seals without t_ms rather than inventing one', async () => {
+  const { finisher, calls } = harness();
+  await finisher.run(snap());
+  assert.equal('t_ms' in calls.seals[0], false);
+});

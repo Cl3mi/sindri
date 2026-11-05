@@ -35,9 +35,13 @@ export function createFinisher({ journal, seal, exportAll, canFinish }) {
       if (sealed && sealed.seq === seq) {
         revision = sealed.revision;
       } else {
-        const res = await seal(sessionId, {
+        const body = {
           writer: journal.writer, final_seq: seq, rows, reviewed_ids: reviewedIds,
-        });
+        };
+        // When Approve happened on the journal's own clock: review time
+        // would otherwise lose the tail between the last edit and Approve.
+        if (typeof journal.elapsedMs === 'function') body.t_ms = journal.elapsedMs();
+        const res = await seal(sessionId, body);
         revision = res.revision;
         sealed = { sessionId, seq, revision };
       }

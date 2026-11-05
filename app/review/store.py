@@ -8,6 +8,7 @@
 
 Everything here is CLIENT DATA under the corpus rules (CLAUDE.md §1)."""
 import json
+import math
 import os
 import secrets
 import shutil
@@ -257,8 +258,21 @@ class ReviewStore:
                     _fsync_dir(d)
             return contiguous_seq(have, start=through)
 
+    @staticmethod
+    def _timing(events) -> List[dict]:
+        """seq / type / t_ms only: enough to rebuild review time, no values
+        (a notes or cell text never lands here)."""
+        out = []
+        for e in sorted(events, key=lambda e: e["seq"]):
+            t = e.get("t_ms")
+            ok = (isinstance(t, (int, float)) and not isinstance(t, bool)
+                  and math.isfinite(t))
+            out.append({"seq": e["seq"], "type": e["type"], "t_ms": t if ok else None})
+        return out
+
     def seal(self, sid: str, writer: str, final_seq: int,
-             rows: List[dict], reviewed_ids: List[str]) -> dict:
+             rows: List[dict], reviewed_ids: List[str],
+             approve_t_ms=None) -> dict:
         with self._lock:
             d = self._dir(sid)
             self._check_writer(d, writer)
@@ -295,6 +309,23 @@ class ReviewStore:
                 raise JournalInvalid(f"corrupt review record: {exc}") from exc
             rev = self._revisions(d) + 1
             (d / "sealed").mkdir(exist_ok=True)
+            # H6: compaction drops undone work and its timing, so review time
+            # read from net_events is a lower bound. Events above `through`
+            # are still raw here; below it an earlier seal already compacted
+            # them, so that revision's own raw_timing is the only copy left.
+            prev = None
+            if rev > 1:
+                try:
+                    prev = json.loads((d / "sealed" / f"r{rev - 1}.json")
+                                      .read_text(encoding="utf-8")).get("raw_timing")
+                except (OSError, ValueError):
+                    prev = None
+            carried = (prev if isinstance(prev, list)
+                       else self._timing(e for e in events if e["seq"] <= through))
+            raw_timing = carried + self._timing(e for e in events if e["seq"] > through)
+            ok_t = (isinstance(approve_t_ms, (int, float))
+                    and not isinstance(approve_t_ms, bool)
+                    and math.isfinite(approve_t_ms) and approve_t_ms >= 0)
             _write_json(d / "sealed" / f"r{rev}.json", {
                 "revision": rev,
                 "sealed_at": datetime.now(timezone.utc).isoformat(),
@@ -302,6 +333,10 @@ class ReviewStore:
                 "rows": rows,
                 "reviewed_ids": sorted(reviewed_ids),
                 "net_events": net,
+                "raw_timing": raw_timing,
+                # The client's t_ms at Approve (the seal is not a journal
+                # event); None when absent or unusable, never a guess.
+                "approve_t_ms": approve_t_ms if ok_t else None,
                 "replay_mismatch_ids": bad,
             })
             _atomic_write(
