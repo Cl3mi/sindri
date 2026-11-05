@@ -132,9 +132,22 @@ async def _campaign_only_gate(request: Request, call_next):
     """The public campaign instance serves the review and nothing else
     (plan C1 decision 10) -- no upload, export or queue control, whatever
     the UI shows."""
-    if campaign_policy.campaign_only() and not campaign_policy.allowed(
-            request.method, request.url.path):
-        return JSONResponse({"detail": "not available on this instance"}, status_code=403)
+    if campaign_policy.campaign_only():
+        path = request.url.path
+        if not campaign_policy.allowed(request.method, path):
+            return JSONResponse({"detail": "not available on this instance"}, status_code=403)
+        # H4: a campaign instance serves its campaign's drawings, not whatever
+        # else sits on the volume. 404, like a drawing that does not exist: a
+        # reviewer learns nothing about what is there. A missing row falls
+        # through to the route's own 404.
+        doc_id, batch_id = campaign_policy.path_doc_id(path), campaign_policy.path_batch_id(path)
+        try:
+            if doc_id and runtime().repo.campaign_of(doc_id) is None:
+                return JSONResponse({"detail": "unknown document"}, status_code=404)
+            if batch_id and runtime().repo.batch_campaign(batch_id) is None:
+                return JSONResponse({"detail": "unknown batch"}, status_code=404)
+        except BatchError:
+            pass
     return await call_next(request)
 
 
@@ -245,6 +258,9 @@ class SealRequest(BaseModel):
     final_seq: int
     rows: List[Characteristic]       # every row incl. suggestions; extras like `reviewed` are ignored
     reviewed_ids: List[str] = []
+    # The journal clock at Approve (journal.js elapsedMs). Untrusted: the
+    # store keeps it only if it is a finite non-negative number.
+    t_ms: Optional[float] = None
 
 
 class BatchCreate(BaseModel):
@@ -338,7 +354,10 @@ def create_batch(req: BatchCreate):
 
 @app.get("/api/batches")
 def list_batches():
-    return {"batches": runtime().repo.list_batches()}
+    batches = runtime().repo.list_batches()
+    if campaign_policy.campaign_only():
+        batches = [b for b in batches if b["campaign"] is not None]
+    return {"batches": batches}
 
 
 @app.get("/api/batches/{batch_id}")
@@ -498,6 +517,8 @@ def list_documents(batch_id: Optional[str] = None, state: Optional[str] = None,
     cursor = rt.repo.now() - _CURSOR_MARGIN
     rows = rt.repo.list_documents(batch_id=batch_id, state=state, search=search,
                                   needs_me=needs_me, since=since)
+    if campaign_policy.campaign_only():
+        rows = [r for r in rows if r["campaign"] is not None]
     out = []
     for r in rows:
         if r["flagged_total"] is None and r["state"] in ("ready", "in_review", "finished"):
@@ -778,7 +799,8 @@ def seal_session(session_id: str, req: SealRequest):
             f"drawing is {doc['state']}, not ready for review")
     out = rt.store.seal(
         session_id, req.writer, req.final_seq,
-        [r.model_dump(mode="json") for r in req.rows], req.reviewed_ids)
+        [r.model_dump(mode="json") for r in req.rows], req.reviewed_ids,
+        approve_t_ms=req.t_ms)
     # store.seal and mark_finished are not one atomic step -- the store's own
     # lock and the repo's are separate -- so an event that lands in the gap
     # between them is sealed on disk but not yet reflected in the index; the
@@ -923,6 +945,14 @@ def read_region(req: ReadRegionRequest):
     png = work / "page.png"
     if not png.is_file():
         raise HTTPException(status_code=404, detail="unknown session")
+    if campaign_policy.campaign_only():
+        # The id is in the body, so the path scoping cannot see it. Scope
+        # first (a bounded set of real ids), then the limiter's dict can only
+        # ever hold the campaign's own sessions.
+        if runtime().repo.campaign_of(req.session_id) is None:
+            raise HTTPException(status_code=404, detail="unknown session")
+        if not campaign_policy.allow_read_region(req.session_id):
+            raise HTTPException(status_code=429, detail="too many scans, wait a moment")
     if len(req.box) != 4:
         raise HTTPException(status_code=400, detail="box must be [x0,y0,x1,y1]")
     image = Image.open(png).convert("RGB")

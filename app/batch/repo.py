@@ -719,6 +719,12 @@ class Repo:
             raise UnknownDocument(f"no document {str(doc_id)[:8]}")
         return row["campaign"]
 
+    def batch_campaign(self, batch_id) -> Optional[str]:
+        """The batch's campaign, None for an ordinary one; UnknownBatch if the
+        batch is gone. Used to scope a campaign-only instance's reads."""
+        with self._lock:
+            return self._batch(self._conn, batch_id)["campaign"]
+
     def enqueue(self, doc_id) -> None:
         """Queue one staged drawing of a batch that is NOT a draft (the
         worker and lifecycle tests build such fixtures with create_document).

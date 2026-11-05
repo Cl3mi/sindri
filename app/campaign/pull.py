@@ -88,6 +88,14 @@ def _loaded_facts(data: DataDir, doc_id: str) -> dict:
             for k in ("doc_hash", "group")}
 
 
+def _fsync_path(path) -> None:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def pull_campaign(campaign: str, repo: Repo, store: ReviewStore, data: DataDir,
                   out_path, skipped: list = None) -> int:
     """Pack and return the number of drawings packed. Drawings that could not
@@ -145,7 +153,12 @@ def pull_campaign(campaign: str, repo: Repo, store: ReviewStore, data: DataDir,
             _add(tar, f"{campaign}/index.json",
                  json.dumps({"campaign": campaign, "documents": index,
                              "skipped": index_skipped}, indent=1).encode())
+        # Bytes first, then the rename, then the directory entry: without the
+        # last two a power cut can leave `out_path` naming nothing, or not
+        # existing, after the operator was told the pull succeeded.
+        _fsync_path(partial)
         os.replace(partial, out_path)
+        _fsync_path(out_path.parent)
         ok = True
     finally:
         if not ok:

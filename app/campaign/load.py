@@ -12,6 +12,8 @@ Every message this prints names an entry (a salted doc hash) and an error
 TYPE, never an exception's text: a pydantic, PyMuPDF or OS message can quote
 a client value or a path (CLAUDE.md §1)."""
 import argparse
+import contextlib
+import fcntl
 import hashlib
 import json
 import math
@@ -88,7 +90,27 @@ def _check(entry: Path) -> dict:
     return {**facts, "_pages": pages}
 
 
+@contextlib.contextmanager
+def _load_lock(data: DataDir):
+    """One loader at a time per data dir. 'Already loaded?' and the insert are
+    separate steps with no UNIQUE index behind them (documents carry no
+    campaign column), so two loaders on one bundle could both see 'absent'
+    and insert a drawing twice. flock dies with the process: no stale lock."""
+    data.root.mkdir(parents=True, exist_ok=True)
+    with open(data.root / "campaign-load.lock", "a+") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
 def load_bundle(root, data: DataDir, repo: Repo) -> dict:
+    with _load_lock(data):
+        return _load_bundle(root, data, repo)
+
+
+def _load_bundle(root, data: DataDir, repo: Repo) -> dict:
     # `.`-prefixed dirs are campaign_build.py's `.<hash>.tmp` work dirs: a
     # hard kill can leave one complete, but it was never renamed into place,
     # i.e. never published, so it is not an entry.

@@ -75,7 +75,8 @@ def cmd_verify(args) -> int:
     from app.eval.dump import load_dump, save_dump
     from app.eval.outputs import check_client_dir_out, claim_dir
     from app.eval.runner import (_PDF_GLOB, _RUN_DIR_SHAPES, _WORK_DIR, _anon,
-                                 _inputs, _select_docs)
+                                 _inputs, _select_docs,
+                                 warn_if_throwaway_ids)
 
     # The same class-C rule as predict, checked before anything loads; and
     # --run is an input, so --out can be neither it nor inside it.
@@ -88,6 +89,7 @@ def cmd_verify(args) -> int:
              for p in sorted(src.glob("*" + _DUMP_SUFFIX))}
     pdfs = {p.stem: p for p in Path(args.pdfs).glob(_PDF_GLOB)}
     doc_ids, _, _ = _select_docs(dumps, args.splits, args.split)
+    warn_if_throwaway_ids(args)
     anon = _anon(args, throwaway_ok=True)
     backend = None
     verified = skipped = asked = no_answer = 0

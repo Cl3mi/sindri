@@ -51,7 +51,7 @@ def review_time_ms(events: List[dict]) -> int:
     """Active review time: gaps between consecutive events within a page
     session. The input is the COMPACTED net events.jsonl: the seal drops
     retracted pairs and their timing, plus the lead-in before the first event
-    and the tail before Approve, so the result is a LOWER bound, and a drawing
+    and the tail before Approve (see sealed_review_time_ms for revisions that keep them), so the result is a LOWER bound, and a drawing
     with fewer than 2 net events has no time (0). t_ms restarts at each open of the drawing (journal.start/resume;
     C1 state 'What's next' 5), so a decrease starts a new session and that gap
     is not counted. A boundary is only detected when t_ms DECREASES: an open
@@ -70,6 +70,25 @@ def review_time_ms(events: List[dict]) -> int:
             total += t - prev
         prev = t
     return int(total)
+
+
+def sealed_review_time_ms(sealed, net_events: List[dict]) -> int:
+    """review_time_ms over the richest timing the sealed revision holds (H6).
+
+    A revision written since H6 carries `raw_timing` (seq/type/t_ms of every
+    event, undone work included) and `approve_t_ms` (the client's clock at
+    Approve), which restore the seconds compaction dropped: undone work, and
+    the tail between the last edit and Approve. Older revisions have neither
+    and fall back to the net events, exactly as before. Still a lower bound:
+    reload gaps and the idle cap are not counted."""
+    raw = sealed.get("raw_timing") if isinstance(sealed, dict) else None
+    if not isinstance(raw, list):
+        return review_time_ms(net_events)
+    events = [e for e in raw if isinstance(e, dict)]
+    approve = sealed.get("approve_t_ms")
+    if approve is not None:
+        events.append({"t_ms": approve})   # review_time_ms skips unusable stamps
+    return review_time_ms(events)
 
 
 def _ratio(n, d):
@@ -645,7 +664,7 @@ def _grade_one(d, facts) -> dict:
     if g["ungradable"]:
         return {"status": "ungradable", "reason": g["ungradable"]}
     return {"status": "approved", "reason": None, "rows": g["rows"], "missed": g["missed"],
-            "scans": g["scans"], "scale": scale, "time_ms": review_time_ms(d.events)}
+            "scans": g["scans"], "scale": scale, "time_ms": sealed_review_time_ms(d.sealed, d.events)}
 
 
 def _note(sealed) -> Optional[str]:

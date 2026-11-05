@@ -4,7 +4,7 @@ import math
 import pytest
 
 from app.eval.campaign_grade import (IDLE_MS, group_metrics, px_to_mm,
-                                     reweight, review_time_ms)
+                                     reweight, review_time_ms, sealed_review_time_ms)
 
 
 def test_px_to_mm_uses_render_scale():
@@ -982,3 +982,29 @@ def test_gold_not_ingested_with_originals_refuses_to_compute(provenance):
     gold.provenance = provenance
     out = _check([_prow("ok", (20, 10, 40, 30))], [], {"ok": "confirmed"}, gold)
     assert out == {"computed": False, "reason": "gold_not_originals"}
+
+
+def test_sealed_time_counts_undone_work_and_the_tail_to_approve():
+    """H6: the net journal drops a retracted pair and everything before the
+    first/after the last surviving event. The sealed revision's raw timing
+    and Approve stamp give those seconds back."""
+    net = [{"t_ms": 0}, {"t_ms": 10000}]
+    sealed = {"raw_timing": [{"t_ms": 0}, {"t_ms": 3000}, {"t_ms": 6000},
+                             {"t_ms": 10000}],
+              "approve_t_ms": 12000}
+    assert review_time_ms(net) == 10000                    # the old lower bound
+    assert sealed_review_time_ms(sealed, net) == 12000
+
+
+def test_sealed_time_falls_back_to_the_net_events_for_an_older_revision():
+    net = [{"t_ms": 0}, {"t_ms": 4000}]
+    assert sealed_review_time_ms({}, net) == 4000
+    assert sealed_review_time_ms({"raw_timing": "garbage"}, net) == 4000
+
+
+def test_an_unusable_approve_stamp_adds_nothing_and_an_idle_tail_is_not_counted():
+    raw = [{"t_ms": 0}, {"t_ms": 1000}]
+    assert sealed_review_time_ms({"raw_timing": raw, "approve_t_ms": None}, []) == 1000
+    assert sealed_review_time_ms(
+        {"raw_timing": raw, "approve_t_ms": 1000 + IDLE_MS + 1}, []) == 1000
+    assert sealed_review_time_ms({"raw_timing": raw, "approve_t_ms": True}, []) == 1000

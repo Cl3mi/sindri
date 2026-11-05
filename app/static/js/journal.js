@@ -135,6 +135,9 @@ export function createJournal({ send, now = () => Date.now(),
     get lastSeq() { return seq; },
     get acked() { return acked; },
     get pending() { return pending.slice(); },
+    // The clock every event's t_ms is read from, exposed so Approve can stamp
+    // the seal with it (the seal is not a journal event).
+    elapsedMs: () => now() - t0,
     record,
     flush,
   };

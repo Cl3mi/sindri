@@ -589,3 +589,54 @@ def test_unless_reviewed_blocks_a_concurrent_append_for_its_whole_duration(tmp_p
     assert result["value"] == "done"
     assert append_done.is_set()
     assert store.has_events("s1") is True
+
+
+def _sealed(store, n=1):
+    return json.loads((store.root / SID / "sealed" / f"r{n}.json").read_text())
+
+
+def test_seal_keeps_the_raw_timing_of_undone_work(store, writer):
+    """H6: compaction drops a retracted pair and its timing, so review time
+    read from net_events alone undercounts the time spent on undone work.
+    The sealed revision keeps seq/type/t_ms of EVERY event (no values)."""
+    store.append(SID, writer, [
+        ev(1, "delete_row", id="b", t_ms=1000, reason="duplicate"),
+        ev(2, "retract", target=1, t_ms=4000),
+        ev(3, "accept", ids=["a"], t_ms=6000)])
+    store.seal(SID, writer, 3, [row("a"), row("b")], ["a"])
+    assert _sealed(store)["raw_timing"] == [
+        {"seq": 1, "type": "delete_row", "t_ms": 1000},
+        {"seq": 2, "type": "retract", "t_ms": 4000},
+        {"seq": 3, "type": "accept", "t_ms": 6000}]
+
+
+def test_a_later_seal_extends_the_raw_timing_it_cannot_recover(store, writer):
+    """Events at or below the first seal are already compacted on disk, so the
+    second revision must carry the first one's raw timing forward."""
+    store.append(SID, writer, [
+        ev(1, "delete_row", id="b", t_ms=1000), ev(2, "retract", target=1, t_ms=2000)])
+    store.seal(SID, writer, 2, [row("a"), row("b")], [])
+    store.append(SID, writer, [ev(3, "accept", ids=["a"], t_ms=9000)])
+    store.seal(SID, writer, 3, [row("a"), row("b")], ["a"])
+    assert [t["seq"] for t in _sealed(store, 2)["raw_timing"]] == [1, 2, 3]
+
+
+def test_an_event_without_a_usable_t_ms_is_recorded_as_none(store, writer):
+    store.append(SID, writer, [ev(1, "accept", ids=["a"])])
+    store.seal(SID, writer, 1, [row("a"), row("b")], ["a"])
+    assert _sealed(store)["raw_timing"] == [{"seq": 1, "type": "accept", "t_ms": None}]
+
+
+def test_seal_records_the_approve_moment_when_the_client_sends_one(store, writer):
+    """H6: the seal is not a journal event, so the tail between the last edit
+    and Approve was lost. The client's t_ms at Approve closes it."""
+    store.append(SID, writer, [ev(1, "accept", ids=["a"], t_ms=500)])
+    store.seal(SID, writer, 1, [row("a"), row("b")], ["a"], approve_t_ms=7000)
+    assert _sealed(store)["approve_t_ms"] == 7000
+
+
+@pytest.mark.parametrize("bad", [-1, float("nan"), float("inf"), True, "7", [1]])
+def test_a_bad_approve_t_ms_is_stored_as_none_never_raised(store, writer, bad):
+    store.append(SID, writer, [ev(1, "accept", ids=["a"])])
+    store.seal(SID, writer, 1, [row("a"), row("b")], ["a"], approve_t_ms=bad)
+    assert _sealed(store)["approve_t_ms"] is None
