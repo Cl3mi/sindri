@@ -572,6 +572,18 @@ def _predict_extra(detect_only: bool = False) -> dict:
             **({"detect_only": True} if detect_only else {})}
 
 
+def warn_if_throwaway_ids(args) -> None:
+    """predict and verify both run in the GPU container, which has no salt:
+    their hashed ids join to nothing, and without this line their logs read
+    as authoritative. One helper so the two commands cannot drift apart."""
+    if not getattr(args, "show_ids", False) and not salt_is_persistent():
+        print("WARNING: no persistent doc-id salt (SINDRI_DOC_SALT unset, "
+              "~/.claude/sindri-doc-salt absent) — the hashed ids below are "
+              "throwaway and cannot be joined to a locally-scored report. "
+              "Read per-document facts from `runner summary` instead.",
+              file=sys.stderr)
+
+
 def _cmd_verify(args):
     from app.eval.verify import cmd_verify
     return cmd_verify(args)
@@ -594,12 +606,7 @@ def _cmd_predict(args):
         extra=_predict_extra(getattr(args, "detect_only", False)))
     pdfs = {p.stem: p for p in Path(args.pdfs).glob(_PDF_GLOB)}
     doc_ids, _, _ = _select_docs(pdfs, args.splits, args.split)
-    if not getattr(args, "show_ids", False) and not salt_is_persistent():
-        print("WARNING: no persistent doc-id salt (SINDRI_DOC_SALT unset, "
-              "~/.claude/sindri-doc-salt absent) — the hashed ids below are "
-              "throwaway and cannot be joined to a locally-scored report. "
-              "Read per-document facts from `runner summary` instead.",
-              file=sys.stderr)
+    warn_if_throwaway_ids(args)
     anon = _anon(args, throwaway_ok=True)
     predicted = skipped = 0
     failures, effective_dpi = [], {}

@@ -56,3 +56,25 @@ def test_a_failing_document_costs_that_document_only(tmp_path, monkeypatch,
     assert _verify(tmp_path, src, pdfs) == 1
     out = capsys.readouterr().out
     assert "RuntimeError" in out and "secret" not in out
+
+
+def test_verify_warns_when_the_doc_ids_are_throwaway(tmp_path, monkeypatch,
+                                                     capsys):
+    """verify runs in the GPU container like predict, so it hashes ids with
+    the same throwaway salt: without the warning its log reads as joinable to
+    a locally scored report, which it is not (H3 follow-up)."""
+    import app.eval.anon as anon_mod
+    monkeypatch.delenv("SINDRI_DOC_SALT", raising=False)
+    monkeypatch.setattr(anon_mod, "DEFAULT_SALT_FILE", tmp_path / "absent-salt")
+    src, pdfs, _ = _setup(tmp_path, monkeypatch)
+    assert _verify(tmp_path, src, pdfs) == 0
+    err = capsys.readouterr().err
+    assert "throwaway" in err.lower() and "runner summary" in err
+
+
+def test_verify_is_quiet_when_the_salt_is_persistent(tmp_path, monkeypatch,
+                                                     capsys):
+    monkeypatch.setenv("SINDRI_DOC_SALT", "test-salt")
+    src, pdfs, _ = _setup(tmp_path, monkeypatch)
+    assert _verify(tmp_path, src, pdfs) == 0
+    assert "throwaway" not in capsys.readouterr().err.lower()
