@@ -686,12 +686,12 @@ def _serving_backend(env=None):
 
 # Flags of score's OTHER modes, with their parser defaults: given alongside
 # --reviewer-grade they would be silently ignored, which reads as if they had
-# applied. A value equal to the default cannot be told from "not passed".
+# applied. A value equal to the default cannot be told from "not passed", so a flag whose default is a real value (score's --split) takes None here and its reader applies the default.
 _NOT_WITH_REVIEWER_GRADE = (
     ("run", None), ("review_deck", None), ("policy_check", False),
     ("reapply_policy", False), ("gentol_check", False),
     ("phantom_profile", False), ("drop_check", False),
-    ("reparse_check", False), ("splits", None), ("split", "dev"),
+    ("reparse_check", False), ("splits", None), ("split", None),
     ("policy_out", None), ("gentol_out", None), ("phantom_out", None),
     ("drop_out", None), ("pdfs", None), ("max_pages", None),
     ("exclude_clamped", False), ("weights", None), ("allow_partial", False),
@@ -1025,7 +1025,7 @@ def _cmd_score(args):
     # computed over the whole gold set, so on a dev run it always names the ~80
     # documents that are simply in other splits, and a warning that fires
     # identically on every healthy run carries no signal.
-    expected, sp_hash, sp_name = _select_docs(set(gold), args.splits, args.split)
+    expected, sp_hash, sp_name = _select_docs(set(gold), args.splits, args.split or "dev")
     anon = _anon(args)
     missing_preds = sorted(d for d in expected if d not in dumps)
     # A missing dump has two causes that need opposite answers, and telling them
@@ -1407,7 +1407,10 @@ def main(argv=None) -> int:
     p.add_argument("--grade-out", default=None,
                    help="with --reviewer-grade: write the counts-only digest "
                         "here (for docs/eval/)")
-    p.add_argument("--splits", default=None); p.add_argument("--split", default="dev")
+    # --split has no parser default here: an explicit "--split dev" next to
+    # --reviewer-grade must be distinguishable from "not passed" (H9). Score
+    # reads it as `args.split or "dev"`.
+    p.add_argument("--splits", default=None); p.add_argument("--split", default=None)
     p.add_argument("--weights", default=None)
     p.add_argument("--pdfs", default=None,
                    help="source drawings, needed only to read page counts for "

@@ -244,7 +244,7 @@ def test_reviewer_grade_refuses_show_ids(tmp_path, env, capsys):
     ["--run", "x"], ["--review-deck", "x"], ["--policy-check"],
     ["--reapply-policy"], ["--gentol-check"], ["--phantom-profile"],
     ["--drop-check"], ["--reparse-check"], ["--splits", "s.json"],
-    ["--split", "test"], ["--policy-out", "p.json"], ["--gentol-out", "g.json"],
+    ["--split", "test"], ["--split", "dev"], ["--policy-out", "p.json"], ["--gentol-out", "g.json"],
     ["--phantom-out", "x.json"], ["--drop-out", "d.json"], ["--pdfs", "dir"],
     ["--max-pages", "1"], ["--exclude-clamped"], ["--weights", "w.json"],
     ["--allow-partial"], ["--flag-rules", "a"], ["--drop-rules", "a"],
