@@ -29,10 +29,10 @@ step below with the same bundle on both sides:
 - [ ] Hetzner snapshot backups are OFF for this server, or you accept that
       they hold client data until they expire.
 - [ ] ufw allows 22, 80 and 443 only. The app itself is bound to 127.0.0.1.
-- [ ] This instance holds ONE client's campaign data and nothing else. The
-      campaign-only mode allows reads of documents, batches, images and open
-      that are NOT scoped to campaign batches, so anything else loaded here
-      is visible to every reviewer.
+- [ ] This instance holds ONE client's campaign data and nothing else. Since
+      H4 the campaign-only mode also scopes reads (documents, batches, images,
+      open, events, seal) to campaign batches, so anything else on the volume
+      answers 404, but keep it single-purpose anyway.
 
 ## Install
 
@@ -59,8 +59,9 @@ step below with the same bundle on both sides:
 `/read_region`. Everything else answers 403 (no upload, export, start, delete),
 including FastAPI's `/docs`, `/redoc` and `/openapi.json`.
 
-`/api/read_region` (CPU OCR) has no rate limit of its own; the proxy's basic
-auth limits it to reviewers. Caddy's `request_body max_size` is 10MB: a seal
+`/api/read_region` (CPU OCR) is limited to 30 scans a minute per drawing
+(`SINDRI_READ_REGION_PER_MIN`, answers 429 beyond it); the proxy's basic auth
+limits it to reviewers. Caddy's `request_body max_size` is 10MB: a seal
 POST carries every row of a drawing (under 1 KB per row, so a few hundred rows
 is a few hundred KB) and events batches can be large too.
 
