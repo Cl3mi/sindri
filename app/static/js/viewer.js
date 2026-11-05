@@ -159,6 +159,17 @@ function fitPage() {
   renderMarkers();
 }
 
+// Live update of the marker being dragged (committed to state on mouseup).
+function placeDraggedMarker(v) {
+  const m = markerLayer.querySelector(`.marker[data-id="${cssEsc(dragging.id)}"]`);
+  if (m) {
+    m.style.left = v.x + 'px';
+    m.style.top  = v.y + 'px';
+  }
+  dragging.lastView = v;
+  syncLeaders();
+}
+
 // ----- mouse + wheel --------------------------------------------------
 function bindMouse() {
   viewport.addEventListener('wheel', (e) => {
@@ -166,6 +177,12 @@ function bindMouse() {
     e.preventDefault();
     const f = Math.pow(1.0015, -e.deltaY);
     zoomBy(f, viewportPoint(e.clientX, e.clientY));
+    // A zoom re-renders every marker from state, and the one being dragged is
+    // only in its new place in the DOM: without this it jumps back to where
+    // it was stored until the button is released (H8). The pointer is where
+    // the balloon belongs, and zoom is about the pointer, so lastView is
+    // still the right point to commit on release.
+    if (dragging && dragging.moved) placeDraggedMarker(viewportPoint(e.clientX, e.clientY));
   }, { passive: false });
 
   viewport.addEventListener('mousedown', (e) => {
@@ -280,16 +297,8 @@ function bindMouse() {
       // trembling click on a balloon must not journal a move_row.
       if (!dragging.moved
           && !beyondDeadZone(dragging.startClient, { x: e.clientX, y: e.clientY })) return;
-      const v = viewportPoint(e.clientX, e.clientY);
       dragging.moved = true;
-      // live update the marker DOM (commit to state on mouseup)
-      const m = markerLayer.querySelector(`.marker[data-id="${cssEsc(dragging.id)}"]`);
-      if (m) {
-        m.style.left = v.x + 'px';
-        m.style.top  = v.y + 'px';
-      }
-      dragging.lastView = v;
-      syncLeaders();
+      placeDraggedMarker(viewportPoint(e.clientX, e.clientY));
     }
   });
 
