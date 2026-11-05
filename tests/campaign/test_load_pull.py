@@ -449,3 +449,55 @@ def test_a_skipped_drawing_without_campaign_facts_is_still_listed(tmp_path, samp
     index, _ = _index(tmp_path / "out.tar")
     assert index["skipped"] == [{"id8": bb[:8], "state": "ready", "reason": "NoReviewRecord",
                                  "doc_hash": None, "group": None}]
+
+
+def test_pull_makes_the_archive_and_its_name_durable(tmp_path, sample_pdf, env,
+                                                     monkeypatch):
+    """H5: os.replace alone is not durable. The archive's bytes are synced
+    before the rename and the parent directory after it, or a power cut can
+    leave a name pointing at nothing (or no name at all)."""
+    import os
+    data, repo, store, worker = env
+    load.load_bundle(bundle(tmp_path, sample_pdf), data, repo)
+    drain(worker)
+    events = []
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def fsync(fd):
+        events.append(("fsync", os.readlink(f"/proc/self/fd/{fd}")))
+        return real_fsync(fd)
+
+    def replace(a, b):
+        events.append(("replace", str(b)))
+        return real_replace(a, b)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    monkeypatch.setattr(os, "replace", replace)
+    out = tmp_path / "out.tar"
+    pull.pull_campaign("pilot-1", repo, store, data, out)
+    at = events.index(("replace", str(out)))
+    assert ("fsync", str(out) + ".partial") in events[:at]
+    assert ("fsync", str(tmp_path)) in events[at + 1:]
+
+
+def test_two_loaders_on_one_bundle_never_interleave(tmp_path, sample_pdf, env):
+    """H5: the existence check and the insert are separate steps, so two
+    loaders could both see 'absent' and insert the same drawing twice. The
+    load holds an exclusive lock for its whole run."""
+    import fcntl
+    import threading
+    data, repo, store, worker = env
+    b = bundle(tmp_path, sample_pdf)
+    data.root.mkdir(parents=True, exist_ok=True)
+    held = open(data.root / "campaign-load.lock", "a+")
+    fcntl.flock(held, fcntl.LOCK_EX)
+    result = {}
+    t = threading.Thread(target=lambda: result.update(
+        load.load_bundle(b, data, repo)))
+    t.start()
+    t.join(0.4)
+    assert t.is_alive() and not result, "the load ran while another held the lock"
+    fcntl.flock(held, fcntl.LOCK_UN)
+    held.close()
+    t.join(10)
+    assert result["loaded"] == 2
