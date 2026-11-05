@@ -1049,6 +1049,11 @@ body.health-pending [data-campaign-hide] { display: none !important; }
 #rb-approved { color: var(--ok); font-size: var(--fs-sm); }
 
 /* Reason card, batch 3: a header with a close X, and the picked chip marked. */
+/* The card stays open after Enter and sits right under the edited cell, i.e.
+   over the NEXT row's cells: it used to swallow the first click on them (H8).
+   Only its chips and close button take the pointer; the rest lets it through. */
+.reason-popover { pointer-events: none; }
+.reason-popover .chip, .reason-popover .reason-close { pointer-events: auto; }
 .reason-popover .reason-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .reason-popover .reason-close { background: none; border: none; color: var(--fg-muted); cursor: pointer;
   font-size: var(--fs-lg, 18px); line-height: 1; padding: 0 4px; border-radius: var(--radius-md); }
