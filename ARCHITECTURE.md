@@ -1,11 +1,11 @@
 # Architecture
 
-Last synced against the code: 2026-11-21 (`main` @ `ba70ba1`).
+Last synced against the code: 2026-11-22 (`main` @ `82c7cf6`).
 
 This is the entry point for architecture questions. It says what the pieces are, how
 data moves, and **why the system has this shape**. It does not repeat measurements or
 decision write-ups: each "why" links to the plan/design doc that holds the evidence
-(ADRs in `docs/adr/`, evidence in `docs/plans/`). Operating rules for the
+(ADRs in `docs/adr/`, evidence in `docs/plans/`, one entry per run in `EXPERIMENTS.md`). Operating rules for the
 client corpus are in `CLAUDE.md` §1 and `docs/eval/DATA-HANDLING.md`; the product
 direction is in `ROADMAP.md`.
 
@@ -131,7 +131,8 @@ plus operator-only `review-serve`, `review-tally`, `campaign-deck`.
 - `ingest` builds gold from client Excel + stamped drawings (frame fixed with `--originals`);
   `splits.py` freezes train/dev/test; `predict` runs the pipeline on a GPU host and writes
   dumps; `score` matches predictions to gold (`matching.py`), prices errors with
-  `weights.json`, writes a client-value report; `summary`/`compare` emit **counts-only
+  `ReviewCostWeights` (`eval/models.py`; `--weights docs/eval/weights.json` holds the same
+  values), writes a client-value report; `summary`/`compare` emit **counts-only
   digests** committed under `docs/eval/`.
 - `reapply.py`, `policy_check.py`, `reparse.py`, `drop_check.py` re-price a rule or parser
   change from stored dumps in CPU seconds. `campaign_grade.py` grades reviewer behaviour
@@ -176,7 +177,7 @@ protected root) → `summary` (digest, safe to commit).
 | Chunked, resumable uploads | Large drawing sets over flaky links; completion hashes the file, duplicates detected by SHA-256 | [ADR 0010](docs/adr/0010-chunked-resumable-upload-protocol.md) |
 | Replay logic duplicated in JS and Python | UI must be instant; server must be able to re-derive the seal. Drift is caught by a fuzz test, not by sharing code | [ADR 0004](docs/adr/0004-replay-implemented-twice-in-js-and-python.md) |
 | Campaign-only mode as a *positive allowlist* | The public host serves one client's drawings; a new route must stay closed until classified | [ADR 0005](docs/adr/0005-campaign-only-positive-allowlist.md) |
-| Grading is client-primary, gold only a cross-check | The sealed review is the truth; gold covers a subset of what the client inspects | `2026-10-22-campaign-c2-grading-design.md` |
+| Grading is client-primary, gold only a cross-check | The sealed review is the truth; gold covers a subset of what the client inspects | [C2 grading design](docs/plans/2026-10-22-campaign-c2-grading-design.md) |
 | Digests are counts-only; client-value files only in the protected root | The corpus is under NDA and agents are guarded; every `--out` flag is validated by the CLI itself | [ADR 0007](docs/adr/0007-counts-only-digests-and-hardened-outputs.md) |
 | Scope: single-sheet drawings at a size the renderer handles | Other sheets are unrecoverable misses; scope is explicit and recorded in reports | [ADR 0011](docs/adr/0011-single-sheet-supported-size-scope-policy.md) |
 | VLM required for extraction; Tesseract is a loud CPU fallback | The image must boot without a GPU (CI, campaign VPS), but Tesseract cannot detect, so a GPU failure must announce itself rather than degrade silently | [ADR 0012](docs/adr/0012-vlm-required-for-extraction-tesseract-as-loud-fallback.md) |

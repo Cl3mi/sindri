@@ -8,7 +8,8 @@ pipeline internals that move under tuning.
 
 **Structure and rationale live elsewhere:** `ARCHITECTURE.md` is the entry point for how
 the system is built and why, `docs/adr/` holds the decision records (12, written
-retroactively 2026-11-21 from `docs/plans/`), and `README.md` is the run guide. This file
+retroactively 2026-11-21 from `docs/plans/`), `EXPERIMENTS.md` is the append-only log of
+every run (config, result, decision), and `README.md` is the run guide. This file
 stays the working log (measurements, dead ends, traps). When a figure here and an ADR
 disagree, the committed digest in `docs/eval/` wins; ADR figures were re-checked against
 those digests on 2026-11-21.
@@ -1132,7 +1133,7 @@ GPU days.
 * **Comment the *why*, not the what.** This codebase explains the trade a line
   makes and what breaks without it. Match that density.
 * Commits: imperative subject, body explaining *why*, trailer
-  `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`.
+  `Co-Authored-By: <the Claude model that wrote the commit> <noreply@anthropic.com>`.
 
 ## 5. Traps that are structural, not mistakes
 

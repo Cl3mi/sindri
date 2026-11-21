@@ -11,7 +11,8 @@ true, so uncertain rows are flagged for review, or held back as unexported sugge
 
 **Start with [`ARCHITECTURE.md`](ARCHITECTURE.md)** for the system design and why it is shaped
 this way. The decision records are in [`docs/adr/`](docs/adr/README.md), the plan in
-[`ROADMAP.md`](ROADMAP.md), and working notes for agents in [`CLAUDE.md`](CLAUDE.md).
+[`ROADMAP.md`](ROADMAP.md), the raw experiment log in [`EXPERIMENTS.md`](EXPERIMENTS.md), and
+working notes for agents in [`CLAUDE.md`](CLAUDE.md).
 
 ## How it works
 
