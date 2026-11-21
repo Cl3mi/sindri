@@ -1,0 +1,47 @@
+{
+  "env": {
+    "DISABLE_TELEMETRY": "1",
+    "DISABLE_ERROR_REPORTING": "1",
+    "DISABLE_FEEDBACK_COMMAND": "1",
+    "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+  },
+  "feedbackDrafts": "off",
+  "feedbackSurveyRate": 0,
+  "autoUploadSessions": false,
+  "disableClaudeAiConnectors": true,
+  "cleanupPeriodDays": 7,
+  "permissions": {
+    "deny": [
+      "Read(//home/clemi/sindri-client-data/**)",
+      "Read(//home/clemi/.claude/sindri-doc-salt)",
+      "Read(**/*.pdf)",
+      "Read(**/*.gold.json)",
+      "Read(**/*.pred.json)",
+      "Read(**/*.report.json)",
+      "Read(**/doc_id_map*)"
+    ]
+  },
+  "extraKnownMarketplaces": {
+    "superpowers-marketplace": {
+      "source": {
+        "source": "github",
+        "repo": "obra/superpowers-marketplace"
+      },
+      "autoUpdate": true
+    },
+    "claude-setup": {
+      "source": {
+        "source": "github",
+        "repo": "Cl3mi/claude-setup"
+      },
+      "autoUpdate": true
+    }
+  },
+  "enabledPlugins": {
+    "superpowers@superpowers-marketplace": true,
+    "docs-workflow@claude-setup": true,
+    "context-management@claude-setup": true,
+    "proto-workflow@claude-setup": true
+  }
+}
