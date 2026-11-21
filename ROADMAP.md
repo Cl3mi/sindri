@@ -10,7 +10,6 @@ makes → fold the findings into the application → regular use with the same c
 running continuously to detect drift between what the application does and what the client wants.
 
 ## Now
-- Operator: push `main` (3 commits ahead of `origin/main` as of 2026-11-21)
 - Operator: re-ingest gold with `--originals` (H2; the grader refuses pre-H2 gold)
 - Operator: inspect the test-run campaign `pilot-1` locally (`campaign_ops.sh local-up`) and report UI issues
 

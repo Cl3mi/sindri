@@ -86,7 +86,9 @@ Confirm the GPU is in use:
 | `SINDRI_ACCESS_TOKEN` | If set, every `/api/*` route needs it; unset means open |
 | `SINDRI_RETENTION_DAYS` | Days exported drawings' files are kept (default 30, `0` = off) |
 | `SINDRI_MIN_FREE_MB` | Free-disk reserve; uploads answer 507 below it (default 2048) |
-| `SINDRI_CAMPAIGN_ONLY` | `1` serves only the client review campaign (route allowlist) |
+| `SINDRI_CAMPAIGN_ONLY` | `1` serves only the client review campaign (route allowlist, campaign ids only) |
+| `SINDRI_READ_REGION_PER_MIN` | Campaign instances: `read_region` calls per session per minute (default 30) |
+| `SINDRI_REVIEW_CONSENT` | `1` records reviewer consent in each review header (compose sets `0`) |
 
 Run **exactly one** uvicorn process: the extraction worker, import recovery and housekeeping
 assume it, and the worker takes a lock file to enforce it

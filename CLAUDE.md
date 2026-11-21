@@ -52,7 +52,7 @@ advisory, and it has been right every single time it fired.
   `meta/`, `runs/<name>`, `gold`; see §2, "RUNNER OUTPUT FLAGS ARE HARDENED"). A
   refusal is a fixed sentence and exit 1 — fix the path, never the checker.
 * **Never widen the guard.** Re-verify after any change:
-  `bash ~/.claude/hooks/test-sindri-guard.sh` → `41 passed, 0 failed`.
+  `bash ~/.claude/hooks/test-sindri-guard.sh` → `51 passed, 0 failed`.
 
 ### Showing the client some drawings
 
@@ -97,7 +97,8 @@ The export folder and the manifest stay out of git and out of the repo.
 
 ## 2. Where things stand
 
-**Read `docs/plans/2026-10-30-session-handoff.md` first (newest: H2/H3 merged, phase 2
+**Read `docs/plans/2026-11-05-h4-h9-hardening-note.md` (newest: H4-H9 and H8 merged) and
+`docs/plans/2026-10-30-session-handoff.md` first (H2/H3 merged, phase 2
 plan refreshed, new-device checklist, gold must be re-ingested), then
 `docs/plans/2026-10-29-session-handoff.md` (review UX batch 3 merged, operator inspects the pilot), then
 `docs/plans/2026-10-28-session-handoff.md`, then `docs/plans/2026-10-23-session-handoff.md`, the
@@ -390,7 +391,7 @@ reconcile (`reconcile_problems`). `runner campaign-deck` (§1) is the
 operator's drill-down over the report. `tests/eval/test_campaign_c2_seam.py`
 runs builder → loader → worker → real store/seal → pull → grader → CLI →
 deck examples on records the real code wrote; if it breaks, a seam drifted.
-**H2 + H3 (2026-10-29, branch `h2-h3-hardening`, not merged).** `ingest` records
+**H2 + H3 (2026-10-29, merged at `5028931`).** `ingest` records
 `provenance["originals_space"]` (outside `gold_hash`); `gold_cross_check` returns
 `gold_not_originals` and `score --reviewer-grade` refuses by a fixed sentence for gold
 without it, **so every gold dir ingested before this must be re-ingested with
@@ -398,6 +399,15 @@ without it, **so every gold dir ingested before this must be re-ingested with
 salt raises `SaltMissing` (one fixed `ERROR: no doc-id salt ...` line, exit 1) unless
 `SINDRI_ALLOW_NEW_SALT=1`; only `predict`/`verify` (the GPU container) use an in-memory
 `Anonymizer.ephemeral()`. `tests/conftest.py` sets a fixed env salt for every test.
+**H4-H9 + H8 (2026-11-05, merged at `acacd2d` / `7b61c23`,
+`docs/plans/2026-11-05-h4-h9-hardening-note.md`).** `SINDRI_CAMPAIGN_ONLY` now 404s
+non-campaign document/image/session/batch ids and filters the list routes;
+`read_region` is rate-limited per session (`SINDRI_READ_REGION_PER_MIN`, default 30,
+campaign instances only). Sealed revisions carry `raw_timing` + `approve_t_ms` (review
+time is still a lower bound). `app/eval/digest_scan.py` scans every committed
+`*-grade.json`. Any explicit `--split` next to `--reviewer-grade` is refused (score's
+`--split` defaults to `None`, read as dev). Real-browser UI tests live in
+`tests/browser/` and skip without Playwright or a Chromium build (`SINDRI_CHROMIUM`).
 **RUNNER OUTPUT FLAGS ARE HARDENED (H1, 2026-10-27,
 `docs/plans/2026-10-23-runner-output-hardening-{design,plan}.md`, §8 "As built").**
 The guard allowlists runner subcommands by SHAPE, so the CLI itself refuses bad
@@ -481,8 +491,8 @@ one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
 Suite: see §6 for the current count (the 1946 that stood here was the
-2026-10-09 figure; §6 says 2963 as of 2026-10-30), with 2 skips that need
-`RUN_GPU_TESTS=1` on a GPU host. **`tesseract` is a device
+2026-10-09 figure; §6 says 2996 collected as of 2026-11-21), with skips that need
+`RUN_GPU_TESTS=1` on a GPU host or Playwright for `tests/browser/`. **`tesseract` is a device
 prerequisite** — without the binary six tests fail as `TesseractNotFoundError`
 and read as broken code. `SCHEMA_VERSION` = 1 — do not bump it. Split frozen
 at `6d174d5e4f1b9228` — do not regenerate it.
@@ -1221,10 +1231,15 @@ GPU days.
 ## 6. Verify before claiming anything works
 
 ```bash
-python -m pytest -q                          # 2963 passed, 2 skipped (2026-10-30, H2/H3; node 339)
-bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 41 passed, 0 failed
+python -m pytest -q                          # 2996 collected: 2990 passed, 5 skipped, 1 env (2026-11-21)
+bash ~/.claude/hooks/test-sindri-guard.sh    # guard: 51 passed, 0 failed
 python3 -m app.eval.experiment               # arm decision table
 ```
+
+Behind an HTTP proxy, set `NO_PROXY=127.0.0.1,localhost` or the 36 local-server tests
+(`review-serve`, `campaign-deck`) fail as 502. `tests/test_campaign_ops_smoke.py` runs
+`campaign_ops.sh`, which uses the system `python3`, so that interpreter needs PyMuPDF.
+`tests/test_vlm_verify_region.py` needs `torch` to collect.
 
 `experiment.py` now judges each arm against **the control its comparison file
 names** (`run_a`), and prints it as `[vs <run>]`. The old single global control

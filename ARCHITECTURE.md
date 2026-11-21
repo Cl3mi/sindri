@@ -125,7 +125,7 @@ routes, scoping reads to campaign batches, rate limit on `read_region`).
 - `app/excel.py` writes the client's Excel format.
 
 ### Eval harness (`app/eval/`)
-CLI `python -m app.eval.runner <probe|headers|ingest|split|predict|score|compare|summary|variants>`
+CLI `python -m app.eval.runner <probe|headers|ingest|split|predict|verify|score|compare|summary|variants>`
 plus operator-only `review-serve`, `review-tally`, `campaign-deck`.
 
 - `ingest` builds gold from client Excel + stamped drawings (frame fixed with `--originals`);
@@ -142,8 +142,8 @@ plus operator-only `review-serve`, `review-tally`, `campaign-deck`.
 
 **1. Live extraction (regular use).**
 Browser uploads (chunked) → draft batch + staged documents → `POST /batches/{id}/start`
-queues → `Worker` picks one → `extract()` → `result.json` + `proposal.json` + `header.json`
-written to the review dir → document `ready`.
+queues → `Worker` picks one → `extract()` → `result.json` in the drawing's data dir, then
+`proposal.json` + `header.json` in the review dir → document `ready`.
 
 **2. Review.**
 `POST /documents/{id}/open` rebuilds state from `proposal.json` + journal and issues a
