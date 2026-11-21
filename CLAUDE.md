@@ -6,6 +6,13 @@ effort** rather than raw accuracy. `app/pipeline/` is the product; `app/eval/` i
 the measurement harness. They are deliberately separate — eval never imports
 pipeline internals that move under tuning.
 
+**Structure and rationale live elsewhere:** `ARCHITECTURE.md` is the entry point for how
+the system is built and why, `docs/adr/` holds the decision records (12, written
+retroactively 2026-11-21 from `docs/plans/`), and `README.md` is the run guide. This file
+stays the working log (measurements, dead ends, traps). When a figure here and an ADR
+disagree, the committed digest in `docs/eval/` wins; ADR figures were re-checked against
+those digests on 2026-11-21.
+
 ## 1. Hard rules — the client corpus is under NDA
 
 A guard hook (`~/.claude/hooks/sindri-guard.py`) enforces this. It is not
@@ -473,8 +480,9 @@ meaning, and `_check_comparable` refuses a scoped report against an unscoped
 one. It keeps 15 of 20 dev documents. Under it, production is **133.93**, recall
 **0.7170**, missed **28.3%**, silent-wrong **22.8%**.
 
-Branch `worktree-eval-harness`, PR #2. Suite: **1946 passed, 2 skipped** (the 2
-skips need `RUN_GPU_TESTS=1` on a GPU host). **`tesseract` is a device
+Suite: see §6 for the current count (the 1946 that stood here was the
+2026-10-09 figure; §6 says 2963 as of 2026-10-30), with 2 skips that need
+`RUN_GPU_TESTS=1` on a GPU host. **`tesseract` is a device
 prerequisite** — without the binary six tests fail as `TesseractNotFoundError`
 and read as broken code. `SCHEMA_VERSION` = 1 — do not bump it. Split frozen
 at `6d174d5e4f1b9228` — do not regenerate it.
